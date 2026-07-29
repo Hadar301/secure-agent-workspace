@@ -1,0 +1,20 @@
+sandboxName: alice-openshell-saw
+
+# VM disk source — use registry for pre-built image, or dataSource for local build
+source:
+  registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway:latest"
+
+# Sandbox container image (leave empty to auto-detect from internal registry)
+# sandboxImage: "quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest"
+
+inference:
+  provider: gemini
+  model: gemini-2.5-flash
+  secretName: gemini
+
+accessControl:
+  owner: alice
+
+route:
+  enabled: true
+  dashboard: true

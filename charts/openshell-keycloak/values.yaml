@@ -1,0 +1,57 @@
+postgres:
+  image: "registry.redhat.io/rhel9/postgresql-16:latest"
+  storage: 1Gi
+  database: keycloak
+  username: keycloak
+
+keycloak:
+  name: openshell-keycloak
+  instances: 1
+
+  hostname: ""
+
+  realm: openshell
+  registrationAllowed: true
+
+  clients:
+    cli:
+      clientId: openshell-cli
+      public: true
+      # Access token lifetime in seconds. Set high for long-running sandboxes.
+      # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
+      # ssh-proxy and dashboard failures.
+      accessTokenLifespan: 86400
+      accessTokenLifespan: 900
+
+  testUsers:
+    - username: developer
+      firstName: Developer
+      lastName: User
+      password: developer
+      roles:
+        - openshell-user
+    - username: admin
+      firstName: Admin
+      lastName: User
+      password: admin
+      roles:
+        - openshell-user
+        - openshell-admin
+    - username: alice
+      firstName: Alice
+      lastName: User
+      password: alice
+      roles:
+        - openshell-user
+        - openshell-admin
+    - username: bob
+      firstName: Bob
+      lastName: User
+      password: bob
+      roles:
+        - openshell-user
+        - openshell-admin
+
+  roles:
+    - openshell-user
+    - openshell-admin

@@ -5,6 +5,22 @@ clusterGroup:
     external-secrets-operator:
       operatorGroup: true
       targetNamespaces: []
+    openshift-cnv:
+      operatorGroup: true
+      targetNamespaces:
+        - openshift-cnv
+    rhbk-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    rhdh-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    ansible-automation-platform:
+      operatorGroup: true
+      targetNamespaces: []
+    redhat-ods-operator:
+      operatorGroup: true
+      targetNamespaces: []
     secure-agent-workspace:
     vault:
   subscriptions:
@@ -12,6 +28,26 @@ clusterGroup:
       name: openshift-external-secrets-operator
       namespace: external-secrets-operator
       channel: stable-v1
+    openshift-virtualization:
+      name: kubevirt-hyperconverged
+      namespace: openshift-cnv
+      channel: stable
+    rhbk:
+      name: rhbk-operator
+      namespace: rhbk-operator
+      channel: stable-v26
+    rhdh:
+      name: rhdh
+      namespace: rhdh-operator
+      channel: fast
+    aap:
+      name: ansible-automation-platform-operator
+      namespace: ansible-automation-platform
+      channel: stable-2.5
+    openshift-ai:
+      name: rhods-operator
+      namespace: redhat-ods-operator
+      channel: fast
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets
@@ -23,3 +59,21 @@ clusterGroup:
       namespace: vault
       chart: hashicorp-vault
       chartVersion: 0.1.*
+    openshift-cnv:
+      name: openshift-cnv
+      namespace: openshift-cnv
+      path: charts/openshift-cnv
+    openshell-keycloak:
+      name: openshell-keycloak
+      namespace: secure-agent-workspace
+      path: charts/openshell-keycloak
+    pattern-secrets:
+      name: pattern-secrets
+      namespace: secure-agent-workspace
+      path: charts/pattern-secrets
+    openshell-saw:
+      name: openshell-saw
+      namespace: secure-agent-workspace
+      path: charts/openshell-saw
+      extraValueFiles:
+        - /overrides/openshell-saw.yaml

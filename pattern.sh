@@ -91,6 +91,7 @@ fi
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
 podman run -it --rm --pull=newer \
+    --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
     -e DISABLE_VALIDATE_ORIGIN \
@@ -115,12 +116,12 @@ podman run -it --rm --pull=newer \
     -e TOKEN_SECRET \
     -e UUID_FILE \
     -e VALUES_SECRET \
-    "${PKI_HOST_MOUNT_ARGS[@]}" \
+    ${PKI_HOST_MOUNT_ARGS[@]+"${PKI_HOST_MOUNT_ARGS[@]}"} \
     -v "$(pwd -P)":"$(pwd -P)" \
     -v "${HOME}":"${HOME}" \
     -v "${HOME}":/pattern-home \
-    "${PODMAN_ARGS[@]}" \
-    "${EXTRA_ARGS_ARRAY[@]}" \
+    ${PODMAN_ARGS[@]+"${PODMAN_ARGS[@]}"} \
+    ${EXTRA_ARGS_ARRAY[@]+"${EXTRA_ARGS_ARRAY[@]}"} \
     -w "$(pwd -P)" \
     "$PATTERN_UTILITY_CONTAINER" \
     "$@"

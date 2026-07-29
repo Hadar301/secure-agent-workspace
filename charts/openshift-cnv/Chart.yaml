@@ -1,0 +1,5 @@
+apiVersion: v2
+name: openshift-cnv
+description: Create HyperConverged CR to activate OpenShift Virtualization
+type: application
+version: 0.1.0

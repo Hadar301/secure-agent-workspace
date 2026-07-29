@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-cloudinit
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  userData: |
+    #cloud-config
+    hostname: {{ include "openshell-sandbox.fullname" . }}
+    fqdn: {{ include "openshell-sandbox.fullname" . }}.{{ .Release.Namespace }}.svc
+
+    users:
+      - default
+      - name: cloud-user
+        groups: [wheel]
+        sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - {{ .Values.sshPublicKey | quote }}
+
+    write_files:
+      - path: /etc/openshell/gateway.env
+        owner: root:root
+        permissions: "0644"
+        content: |
+          OPENSHELL_BIND_ADDRESS=0.0.0.0
+          OPENSHELL_SERVER_PORT=17670
+          OPENSHELL_DRIVERS=podman
+          OPENSHELL_GRPC_ENDPOINT=https://host.containers.internal:17670
+          OPENSHELL_SSH_GATEWAY_HOST=host.containers.internal
+          OPENSHELL_SSH_GATEWAY_PORT=17670
+          OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
+          OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
+          OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/ca.crt
+          {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+          {{- if or .Values.oidc.token $oidcIssuer }}
+          OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml
+          {{- end }}
+
+      {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+      {{- if or .Values.oidc.token $oidcIssuer }}
+      - path: /etc/openshell/gateway.toml
+        owner: root:root
+        permissions: "0644"
+        content: |
+          [openshell.gateway.oidc]
+          issuer = {{ $oidcIssuer | quote }}
+          audience = {{ .Values.oidc.clientId | quote }}
+
+          [openshell.gateway.auth]
+          allow_unauthenticated_users = false
+
+          [openshell.gateway.mtls_auth]
+          enabled = false
+      {{- end }}
+
+    runcmd:
+      - |
+        set -euo pipefail
+        echo "=== Installing OpenShell binaries ==="
+
+        # Install OpenShell CLI via pip
+        echo "Installing OpenShell CLI..."
+        pip3 install openshell{{ if .Values.openshell.cliVersion }}=={{ .Values.openshell.cliVersion }}{{ end }} \
+          --extra-index-url {{ .Values.openshell.pipIndexUrl }} 2>&1 | tail -3
+
+        # Extract gateway binary from ODH container image
+        echo "Installing OpenShell Gateway from {{ .Values.openshell.gatewayImage }}..."
+        GW_CID=$(podman create {{ .Values.openshell.gatewayImage }} 2>/dev/null)
+        podman cp "${GW_CID}:/usr/local/bin/openshell-gateway" /usr/local/bin/openshell-gateway
+        podman rm "${GW_CID}" >/dev/null
+        chmod 755 /usr/local/bin/openshell-gateway
+
+        # Extract supervisor binary from ODH container image
+        echo "Installing OpenShell Supervisor from {{ .Values.openshell.supervisorImage }}..."
+        SV_CID=$(podman create {{ .Values.openshell.supervisorImage }} 2>/dev/null)
+        podman cp "${SV_CID}:/openshell-sandbox" /usr/local/bin/openshell-sandbox
+        podman rm "${SV_CID}" >/dev/null
+        chmod 755 /usr/local/bin/openshell-sandbox
+
+        echo "OpenShell binaries installed."
+        openshell --version || true
+
+      - |
+        set -euo pipefail
+        echo "=== Configuring OpenShell gateway ==="
+        USER_NAME="cloud-user"
+        USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
+        install -d -m 0750 -o root -g "${USER_NAME}" /etc/openshell
+        install -d -m 0755 "${USER_HOME}/.config"
+        chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config"
+        install -d -m 0755 "${USER_HOME}/.config/openshell"
+        cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
+        if [[ -f /etc/openshell/gateway.toml ]]; then
+          cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
+        fi
+        chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
+        systemctl start openshell-gateway-setup.service
+
+    final_message: "openshell-saw cloud-init finished"
