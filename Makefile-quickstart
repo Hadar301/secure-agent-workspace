@@ -163,9 +163,12 @@ delete-keycloak: ## Uninstall Keycloak + PostgreSQL
 
 # --- SSH secret ---
 
-ssh-secret: ## Create the SSH private key secret for sandbox Jobs
+ssh-secret: ## Create SSH key secrets for sandbox Jobs
 	oc -n $(NS) create secret generic openshell-aap-ssh \
 		--from-file=key=$(SSH_KEY_PATH) \
+		--dry-run=client -o yaml | oc apply -f -
+	oc -n $(NS) create secret generic openshell-ssh-pubkey \
+		--from-file=key=$(SSH_KEY_PATH).pub \
 		--dry-run=client -o yaml | oc apply -f -
 
 # --- Sandbox ---

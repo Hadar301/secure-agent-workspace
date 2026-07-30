@@ -8,21 +8,24 @@ NS="${KEYCLOAK_NS:-openshell-agents}"
 CHART="${KEYCLOAK_CHART:-charts/openshell-keycloak}"
 
 # Check RHBK operator is installed in the target namespace
-if ! oc get csv -n "${NS}" 2>/dev/null | grep -q rhbk; then
+RHBK_CSV="$(oc get csv -n "${NS}" -o name 2>/dev/null | grep rhbk || true)"
+if [[ -z "${RHBK_CSV}" ]]; then
   RHBK_NS=$(oc get csv --all-namespaces 2>/dev/null | grep rhbk | awk '{print $1}' | head -1)
-  if [[ -n "${RHBK_NS}" ]]; then
+  if [[ -n "${RHBK_NS}" && "${RHBK_NS}" != "${NS}" ]]; then
     echo "Error: RHBK operator is installed in '${RHBK_NS}' but Keycloak needs it in '${NS}'."
     echo ""
     echo "  Either:"
     echo "    1. Run: make keycloak KEYCLOAK_NS=${RHBK_NS}"
     echo "    2. Or install the RHBK operator in '${NS}' from OperatorHub"
     echo "    3. Or use ./pattern.sh make install (installs operator in ${NS} automatically)"
+  elif [[ -n "${RHBK_NS}" ]]; then
+    echo "RHBK operator found in '${NS}' (CSV may still be installing)..."
   else
     echo "Error: RHBK operator not installed."
     echo ""
     echo "  Install it from OperatorHub or use ./pattern.sh make install."
+    exit 1
   fi
-  exit 1
 fi
 
 echo "Deploying Keycloak via RHBK operator in ${NS}..."
