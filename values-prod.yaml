@@ -13,6 +13,7 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - rhbk-operator
+        - openshell-agents
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []

@@ -156,6 +156,27 @@ data:
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
+    # Fetch OIDC token from Keycloak if not already provided
+    source "${WORK_DIR}/run-create.env" 2>/dev/null || true
+    if [[ -z "${OIDC_TOKEN:-}" && -n "${OIDC_ISSUER:-}" ]]; then
+      OWNER="{{ .Values.accessControl.owner }}"
+      if [[ -n "${OWNER}" ]]; then
+        echo "Fetching OIDC token for '${OWNER}' from Keycloak..."
+        OIDC_TOKEN=$(curl -sk -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+          -d "grant_type=password" \
+          -d "client_id=${OIDC_CLIENT_ID:-openshell-cli}" \
+          -d "username=${OWNER}" \
+          -d "password=${OWNER}" \
+          -d "scope=openid" 2>/dev/null \
+          | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+        if [[ -n "${OIDC_TOKEN}" ]]; then
+          echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "${WORK_DIR}/run-create.env"
+          echo "OIDC token obtained for ${OWNER}"
+        else
+          echo "WARNING: Could not fetch OIDC token (sandbox will deploy without OIDC auth)"
+        fi
+      fi
+    fi
     # Inject SSH public key from the SSH secret if not set via helm values
     if [[ -f /ssh-key/public_key ]]; then
       SSH_PUB="$(cat /ssh-key/public_key)"
