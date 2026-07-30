@@ -18,7 +18,12 @@ stringData:
         sudo: ["ALL=(ALL) NOPASSWD:ALL"]
         shell: /bin/bash
         ssh_authorized_keys:
-          - {{ include "openshell-sandbox.sshPublicKey" . | quote }}
+          {{- $sshKey := include "openshell-sandbox.sshPublicKey" . }}
+          {{- if $sshKey }}
+          - {{ $sshKey | quote }}
+          {{- else }}
+          - "__SSH_PUBLIC_KEY__"
+          {{- end }}
 
     write_files:
       - path: /etc/openshell/gateway.env
