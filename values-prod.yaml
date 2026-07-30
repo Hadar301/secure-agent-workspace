@@ -11,7 +11,8 @@ clusterGroup:
         - openshift-cnv
     rhbk-operator:
       operatorGroup: true
-      targetNamespaces: []
+      targetNamespaces:
+        - rhbk-operator
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
