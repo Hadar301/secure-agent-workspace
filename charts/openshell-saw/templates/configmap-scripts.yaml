@@ -49,6 +49,58 @@ data:
     cp /ssh-key/key "${SSH_KEY}"
     chmod 600 "${SSH_KEY}"
 
+    # --- Ensure golden image DataSource exists ---
+    GOLDEN_DS="{{ .Values.source.dataSource }}"
+    GOLDEN_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
+    if [[ -n "${GOLDEN_DS}" ]] && ! kubectl get datasource "${GOLDEN_DS}" -n "${GOLDEN_NS}" >/dev/null 2>&1; then
+      echo "Golden image DataSource '${GOLDEN_DS}' not found in '${GOLDEN_NS}'. Creating it..."
+      GOLDEN_IS="${GOLDEN_DS}"
+      kubectl apply -f - <<DVEOF
+    apiVersion: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    metadata:
+      name: ${GOLDEN_IS}-golden
+      namespace: ${GOLDEN_NS}
+      annotations:
+        cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+    spec:
+      source:
+        registry:
+          url: "docker://image-registry.openshift-image-registry.svc:5000/${GOLDEN_NS}/${GOLDEN_IS}:latest"
+          pullMethod: node
+      storage:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+    ---
+    apiVersion: cdi.kubevirt.io/v1beta1
+    kind: DataSource
+    metadata:
+      name: ${GOLDEN_DS}
+      namespace: ${GOLDEN_NS}
+    spec:
+      source:
+        pvc:
+          name: ${GOLDEN_IS}-golden
+          namespace: ${GOLDEN_NS}
+    DVEOF
+      echo "Waiting for golden image import..."
+      golden_deadline=$((SECONDS + 900))
+      while true; do
+        gphase="$(kubectl get dv "${GOLDEN_IS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        gprog="$(kubectl get dv "${GOLDEN_IS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.progress}' 2>/dev/null || true)"
+        echo "  golden image: phase=${gphase:-pending} progress=${gprog:-N/A}"
+        if [[ "${gphase}" == "Succeeded" ]]; then break; fi
+        if (( SECONDS > golden_deadline )); then
+          echo "Timed out waiting for golden image import" >&2
+          exit 1
+        fi
+        sleep 15
+      done
+    fi
+
     # --- Wait for DataVolume provisioning ---
     DV_NAME="${VM_NAME}-root"
     echo "Waiting for DataVolume ${DV_NAME} to be provisioned..."
