@@ -86,7 +86,8 @@ data:
         echo "WARNING: No SSH public key found, VM may not be accessible via SSH"
       fi
       kubectl create secret generic "${CLOUDINIT_SECRET}" -n "${NS}" \
-        --from-literal=userData="${USERDATA}"
+        --from-literal=userData="${USERDATA}" \
+        --dry-run=client -o yaml | kubectl apply -f -
       echo "Cloud-init secret '${CLOUDINIT_SECRET}' created"
     else
       echo "Cloud-init secret '${CLOUDINIT_SECRET}' already exists"

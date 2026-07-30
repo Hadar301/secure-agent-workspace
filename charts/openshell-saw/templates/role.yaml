@@ -29,7 +29,7 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create"]
+    verbs: ["create", "get", "patch"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get"]
