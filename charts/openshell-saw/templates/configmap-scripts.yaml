@@ -66,6 +66,29 @@ data:
       sleep 10
     done
 
+    # --- Create cloud-init Secret from template ConfigMap ---
+    CLOUDINIT_SECRET="${VM_NAME}-cloudinit"
+    CLOUDINIT_TEMPLATE="${VM_NAME}-cloudinit-template"
+    echo "Ensuring cloud-init secret from template..."
+    USERDATA="$(kubectl get configmap "${CLOUDINIT_TEMPLATE}" -n "${NS}" -o jsonpath='{.data.userData}')"
+    PUB_KEY=""
+    if [[ -f /ssh-key/public_key ]]; then
+      PUB_KEY="$(cat /ssh-key/public_key)"
+    fi
+    if [[ -z "${PUB_KEY}" ]]; then
+      PUB_KEY="$(kubectl get secret {{ .Values.sshSecret }} -n "${NS}" -o jsonpath='{.data.public_key}' 2>/dev/null | base64 -d || true)"
+    fi
+    if [[ -n "${PUB_KEY}" ]]; then
+      USERDATA="$(echo "${USERDATA}" | sed "s|__SSH_PUBLIC_KEY__|${PUB_KEY}|g")"
+      echo "SSH public key injected into cloud-init"
+    else
+      echo "WARNING: No SSH public key found, VM may not be accessible via SSH"
+    fi
+    kubectl create secret generic "${CLOUDINIT_SECRET}" -n "${NS}" \
+      --from-literal=userData="${USERDATA}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    echo "Cloud-init secret '${CLOUDINIT_SECRET}' ready"
+
     # --- Label and start VM ---
     echo "Labeling vm/${VM_NAME}..."
     kubectl -n "${NS}" label vm "${VM_NAME}" \
@@ -178,13 +201,13 @@ data:
       OWNER="{{ .Values.accessControl.owner }}"
       if [[ -n "${OWNER}" ]]; then
         echo "Fetching OIDC token for '${OWNER}' from Keycloak..."
-        OIDC_TOKEN=$(curl -sk -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+        TOKEN_RESPONSE=$(curl -sk -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
           -d "grant_type=password" \
           -d "client_id=${OIDC_CLIENT_ID:-openshell-cli}" \
           -d "username=${OWNER}" \
           -d "password=${OWNER}" \
-          -d "scope=openid" 2>/dev/null \
-          | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+          -d "scope=openid" 2>/dev/null || true)
+        OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
         if [[ -n "${OIDC_TOKEN}" ]]; then
           echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "${WORK_DIR}/run-create.env"
           echo "OIDC token obtained for ${OWNER}"
