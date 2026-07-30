@@ -1,4 +1,5 @@
 sandboxName: alice-openshell-saw
+sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIb2BQl5DC0J2bGvA3A7JlAGIAubeh8fSAMq538H3ljk openshell-sandbox"
 
 # VM disk source — clone from golden image built in build-saw-images namespace
 source:
