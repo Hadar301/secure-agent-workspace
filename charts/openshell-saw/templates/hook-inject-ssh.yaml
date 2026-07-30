@@ -18,7 +18,7 @@ spec:
       serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-setup
       containers:
         - name: inject
-          image: {{ .Values.job.image }}
+          image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
           command:
             - /bin/bash
             - -c
