@@ -19,6 +19,7 @@ NAMESPACE_MODE ?= shared
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 KEYCLOAK_CHART := charts/openshell-keycloak
+KEYCLOAK_NS    ?= $(NS)
 SCRIPTS_DIR    := scripts
 GUI_PORT       ?= 18789
 
@@ -118,13 +119,13 @@ pattern-install: ensure-images
 
 keycloak: ## Deploy Keycloak instance + realm via RHBK operator
 	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
-	@echo "Deploying Keycloak via RHBK operator..."
+	@echo "Deploying Keycloak via RHBK operator in $(KEYCLOAK_NS)..."
 	helm upgrade --install openshell-keycloak $(KEYCLOAK_CHART) \
-		--namespace $(NS) --create-namespace --timeout 10m
+		--namespace $(KEYCLOAK_NS) --create-namespace --timeout 10m
 	@echo "Waiting for Keycloak to be ready..."
 	@deadline=$$((SECONDS + 300)); \
 	while true; do \
-		ready=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); \
+		ready=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); \
 		if [ "$$ready" = "True" ]; then echo "Keycloak is ready."; break; fi; \
 		if [ $$SECONDS -gt $$deadline ]; then echo "Timed out waiting for Keycloak."; exit 1; fi; \
 		echo "  waiting for Keycloak (ready=$$ready)..."; \
@@ -132,10 +133,10 @@ keycloak: ## Deploy Keycloak instance + realm via RHBK operator
 	done
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
-	@host=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+	@host=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
 		| sed 's|^https://||;s|/$$||'); \
 	if [ -z "$${host}" ]; then \
-		host=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+		host=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 	fi; \
 	if [ -z "$${host}" ]; then \
 		echo "Error: Keycloak not found. Run 'make keycloak' first." >&2; \
@@ -157,9 +158,9 @@ logout: ## Revoke OIDC token and clear sandbox credentials
 	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/openshell-saw-logout.sh
 
 delete-keycloak: ## Uninstall Keycloak + PostgreSQL
-	-helm uninstall openshell-keycloak --namespace $(NS) 2>/dev/null
-	-oc delete pvc keycloak-db -n $(NS) 2>/dev/null
-	-oc delete secret keycloak-db-secret -n $(NS) 2>/dev/null
+	-helm uninstall openshell-keycloak --namespace $(KEYCLOAK_NS) 2>/dev/null
+	-oc delete pvc keycloak-db -n $(KEYCLOAK_NS) 2>/dev/null
+	-oc delete secret keycloak-db-secret -n $(KEYCLOAK_NS) 2>/dev/null
 	@echo "Keycloak cleaned up."
 
 # --- SSH secret ---

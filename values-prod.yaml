@@ -9,10 +9,10 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - openshift-cnv
-    rhbk-operator:
+    openshell-agents:
       operatorGroup: true
       targetNamespaces:
-        - rhbk-operator
+        - openshell-agents
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -22,7 +22,6 @@ clusterGroup:
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
-    openshell-agents:
     vault:
   subscriptions:
     eso:
@@ -35,7 +34,7 @@ clusterGroup:
       channel: stable
     rhbk:
       name: rhbk-operator
-      namespace: rhbk-operator
+      namespace: openshell-agents
       channel: stable-v26
     rhdh:
       name: rhdh
@@ -66,7 +65,7 @@ clusterGroup:
       path: charts/openshift-cnv
     openshell-keycloak:
       name: openshell-keycloak
-      namespace: rhbk-operator
+      namespace: openshell-agents
       path: charts/openshell-keycloak
     pattern-secrets:
       name: pattern-secrets
