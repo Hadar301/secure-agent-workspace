@@ -105,8 +105,13 @@ build-cli-logs: ## Follow NemoClaw CLI build logs
 # --- Gateway VM image ---
 
 build-gateway-image: ## Build the bootc gateway VM image
+	@GOLDEN_FLAG=""; \
+	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep -q datavolumes; then \
+		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \
+		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
-		--namespace $(BUILD_NS) --create-namespace
+		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
 
 build-gateway-image-logs: ## Follow gateway image build logs

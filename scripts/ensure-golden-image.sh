@@ -16,13 +16,29 @@ if ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; the
   sleep 10
 fi
 
+# Check if CDI CRDs are available (requires OpenShift Virtualization / CNV)
+CDI_AVAILABLE=true
+if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep -q datavolumes; then
+  CDI_AVAILABLE=false
+  echo "WARNING: CDI CRDs not available (OpenShift Virtualization not installed yet)."
+  echo "  Will build the container image only. Golden image import will happen"
+  echo "  after OpenShift Virtualization is installed (re-run this or let ArgoCD sync)."
+fi
+
 echo "=== Checking golden image in namespace '${NS}' ==="
 
+HELM_GOLDEN_FLAG=""
+if [[ "${CDI_AVAILABLE}" == "false" ]]; then
+  HELM_GOLDEN_FLAG="--set goldenImage.enabled=false"
+fi
+
 # 1. Already ready?
-DV_PHASE=$(oc get dv openshell-gateway-golden -n "${NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-if [[ "${DV_PHASE}" == "Succeeded" ]]; then
-  echo "Golden image: ready"
-  exit 0
+if [[ "${CDI_AVAILABLE}" == "true" ]]; then
+  DV_PHASE=$(oc get dv openshell-gateway-golden -n "${NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  if [[ "${DV_PHASE}" == "Succeeded" ]]; then
+    echo "Golden image: ready"
+    exit 0
+  fi
 fi
 
 # 2. Build exists and running? Follow it.
@@ -45,7 +61,7 @@ if [[ "${BUILD_PHASE}" == "Running" || "${BUILD_PHASE}" == "Pending" || "${BUILD
       sleep 3
       echo "  Starting new build..."
       helm upgrade --install openshell-gateway-image "${HELM_DIR}/openshell-gateway-image" \
-        --namespace "${NS}" --create-namespace
+        --namespace "${NS}" --create-namespace ${HELM_GOLDEN_FLAG}
       oc start-build openshell-gateway -n "${NS}" 2>/dev/null || true
     fi
   fi
@@ -76,10 +92,10 @@ else
   # Create namespace if needed
   oc create namespace "${NS}" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
 
-  # Deploy BuildConfig + ImageStream + golden image DataVolume via helm
+  # Deploy BuildConfig + ImageStream (+ golden image DataVolume if CDI is available)
   echo "  Installing openshell-gateway-image chart..."
   helm upgrade --install openshell-gateway-image "${HELM_DIR}/openshell-gateway-image" \
-    --namespace "${NS}" --create-namespace
+    --namespace "${NS}" --create-namespace ${HELM_GOLDEN_FLAG}
 
   # Trigger build
   echo "  Starting build..."
@@ -103,7 +119,13 @@ else
   echo "  Build complete."
 fi
 
-# 4. Wait for CDI golden image import
+# 4. Wait for CDI golden image import (skip if CDI not available)
+if [[ "${CDI_AVAILABLE}" == "false" ]]; then
+  echo "Container image built. Golden image import deferred until OpenShift Virtualization is installed."
+  echo "  Re-run 'make ensure-images' or 'make build-gateway-image' after CNV is ready."
+  exit 0
+fi
+
 DV_PHASE=$(oc get dv openshell-gateway-golden -n "${NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
 if [[ "${DV_PHASE}" == "Succeeded" ]]; then
   echo "Golden image: ready"
