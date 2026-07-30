@@ -13,7 +13,6 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - rhbk-operator
-        - openshell-agents
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -67,7 +66,7 @@ clusterGroup:
       path: charts/openshift-cnv
     openshell-keycloak:
       name: openshell-keycloak
-      namespace: openshell-agents
+      namespace: rhbk-operator
       path: charts/openshell-keycloak
     pattern-secrets:
       name: pattern-secrets
