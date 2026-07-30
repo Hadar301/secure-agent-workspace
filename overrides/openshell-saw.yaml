@@ -1,8 +1,9 @@
 sandboxName: alice-openshell-saw
 
-# VM disk source — use registry for pre-built image, or dataSource for local build
+# VM disk source — clone from golden image built in build-saw-images namespace
 source:
-  registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway:latest"
+  dataSource: openshell-gateway
+  dataSourceNamespace: build-saw-images
 
 # Sandbox container image (leave empty to auto-detect from internal registry)
 # sandboxImage: "quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest"
