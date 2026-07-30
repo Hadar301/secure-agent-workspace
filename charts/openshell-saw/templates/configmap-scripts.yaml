@@ -118,6 +118,32 @@ data:
       sleep 10
     done
 
+    # --- Create cloud-init Secret from template ConfigMap ---
+    CLOUDINIT_SECRET="${VM_NAME}-cloudinit"
+    CLOUDINIT_TEMPLATE="${VM_NAME}-cloudinit-template"
+    if ! kubectl get secret "${CLOUDINIT_SECRET}" -n "${NS}" >/dev/null 2>&1; then
+      echo "Creating cloud-init secret from template..."
+      USERDATA="$(kubectl get configmap "${CLOUDINIT_TEMPLATE}" -n "${NS}" -o jsonpath='{.data.userData}')"
+      PUB_KEY=""
+      if [[ -f /ssh-key/public_key ]]; then
+        PUB_KEY="$(cat /ssh-key/public_key)"
+      fi
+      if [[ -z "${PUB_KEY}" ]]; then
+        PUB_KEY="$(kubectl get secret {{ .Values.sshSecret }} -n "${NS}" -o jsonpath='{.data.public_key}' 2>/dev/null | base64 -d || true)"
+      fi
+      if [[ -n "${PUB_KEY}" ]]; then
+        USERDATA="$(echo "${USERDATA}" | sed "s|__SSH_PUBLIC_KEY__|${PUB_KEY}|g")"
+        echo "SSH public key injected into cloud-init"
+      else
+        echo "WARNING: No SSH public key found, VM may not be accessible via SSH"
+      fi
+      kubectl create secret generic "${CLOUDINIT_SECRET}" -n "${NS}" \
+        --from-literal=userData="${USERDATA}"
+      echo "Cloud-init secret '${CLOUDINIT_SECRET}' created"
+    else
+      echo "Cloud-init secret '${CLOUDINIT_SECRET}' already exists"
+    fi
+
     # --- Label and start VM ---
     echo "Labeling vm/${VM_NAME}..."
     kubectl -n "${NS}" label vm "${VM_NAME}" \
