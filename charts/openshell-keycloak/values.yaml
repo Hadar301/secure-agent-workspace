@@ -3,6 +3,7 @@ postgres:
   storage: 1Gi
   database: keycloak
   username: keycloak
+  password: keycloak-db-pass
 
 keycloak:
   name: openshell-keycloak
