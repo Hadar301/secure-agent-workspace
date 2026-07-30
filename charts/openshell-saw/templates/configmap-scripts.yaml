@@ -127,6 +127,21 @@ data:
       exit 1
     fi
 
+    # --- Wait for cloud-init to finish (installs OpenShell binaries) ---
+    echo "Waiting for cloud-init to finish..."
+    deadline=$((SECONDS + 600))
+    while true; do
+      if guest_ssh "cloud-init status 2>/dev/null | grep -q done" 2>/dev/null; then
+        echo "Cloud-init finished."
+        break
+      fi
+      if (( SECONDS > deadline )); then
+        echo "WARNING: cloud-init did not finish in time, proceeding anyway..."
+        break
+      fi
+      sleep 10
+    done
+
     # --- Post-clone hygiene ---
     echo "Post-clone hygiene (hostname)..."
     guest_ssh "sudo hostnamectl set-hostname '${VM_NAME}' || true; openshell gateway select openshell >/dev/null 2>&1 || true" || true
@@ -140,7 +155,8 @@ data:
         echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
         SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
         guest_ssh "podman login --tls-verify=false -u serviceaccount -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
-        SANDBOX_IMAGE="${REGISTRY_ROUTE}/${NS}/nemoclaw-sandbox:latest"
+        BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
+        SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi
     fi
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
@@ -204,7 +220,7 @@ data:
       echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
     fi
     if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
-      echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
+      echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
     guest_scp "${WORK_DIR}/run-create.env" "/home/${SSH_USER}/run-create.env"
 

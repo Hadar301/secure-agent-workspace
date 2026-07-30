@@ -34,23 +34,8 @@ vm:
   memory: 8Gi
   diskSize: 40Gi
 
-# Sandbox container image. When set, the sandbox is created with --from <image>.
-# Examples:
-#   quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest    (pre-built NemoClaw)
-#   image-registry.openshift-image-registry.svc:5000/openshell-agents/nemoclaw-sandbox:latest  (cluster-built)
-# When empty, the setup Job auto-detects from the internal registry or uses the default.
 # Sandbox container image. When empty, auto-detects from the internal registry.
-# Set explicitly to use a pre-built image (e.g., quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest).
-sandboxImage: "quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest"
-
-# OpenShell binaries — installed at VM boot time (always gets latest).
-openshell:
-  # CLI installed via pip
-  pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
-  cliVersion: ""  # empty = latest
-  # Gateway and supervisor from ODH container images
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:odh-stable"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:odh-stable"
+sandboxImage: ""
 
 # Agent to run inside the sandbox: openclaw, hermes, or langchain-deepagents-code
 agent: openclaw

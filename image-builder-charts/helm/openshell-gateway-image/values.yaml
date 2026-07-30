@@ -1,6 +1,11 @@
+openshell:
+  version: "0.0.89"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:odh-stable"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:odh-stable"
+  pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
+
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
-  # Fedora Cloud qcow2 base image for containerDisk format
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   memoryLimit: "4Gi"
 

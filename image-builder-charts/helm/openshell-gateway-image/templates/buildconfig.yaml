@@ -8,11 +8,25 @@ spec:
   source:
     type: Dockerfile
     dockerfile: |
+      # Extract OpenShell binaries from ODH container images
+      FROM {{ .Values.openshell.gatewayImage }} AS gateway-bin
+      FROM {{ .Values.openshell.supervisorImage }} AS supervisor-bin
+
       FROM {{ .Values.build.builderImage }} AS builder
 
       ENV LIBGUESTFS_BACKEND=direct
 
-      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
+      RUN dnf install -y libguestfs-tools-c qemu-img curl python3-pip && dnf clean all
+
+      # Download OpenShell CLI via pip
+      RUN pip3 install openshell=={{ .Values.openshell.version }} \
+            --extra-index-url {{ .Values.openshell.pipIndexUrl }} \
+            --root /build/openshell-cli-root --prefix /usr && \
+          pip3 cache purge
+
+      # Copy ODH binaries from container images
+      COPY --from=gateway-bin /usr/local/bin/openshell-gateway /build/openshell-gateway
+      COPY --from=supervisor-bin /openshell-sandbox /build/openshell-supervisor
 
       WORKDIR /build
       RUN curl -fL --retry 3 -o base.qcow2 "{{ .Values.build.fedoraCloud }}"
@@ -148,10 +162,14 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
-      # Bake system packages into the qcow2 (no OpenShell binaries — installed at boot)
+      # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
             --install podman,podman-docker,curl,jq,qemu-guest-agent,openssh-clients,openssh-server \
             --install nodejs,cloud-init,python3-pip \
+            --copy-in /build/openshell-cli-root/usr:/  \
+            --copy-in /build/openshell-gateway:/usr/local/bin/ \
+            --copy-in /build/openshell-supervisor:/usr/local/bin/ \
+            --run-command 'chmod 755 /usr/local/bin/openshell-gateway /usr/local/bin/openshell-supervisor' \
             --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
             --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
             --run-command 'systemctl enable podman.socket' \

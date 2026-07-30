@@ -59,32 +59,6 @@ stringData:
     runcmd:
       - |
         set -euo pipefail
-        echo "=== Installing OpenShell binaries ==="
-
-        # Install OpenShell CLI via pip
-        echo "Installing OpenShell CLI..."
-        pip3 install openshell{{ if .Values.openshell.cliVersion }}=={{ .Values.openshell.cliVersion }}{{ end }} \
-          --extra-index-url {{ .Values.openshell.pipIndexUrl }} 2>&1 | tail -3
-
-        # Extract gateway binary from ODH container image
-        echo "Installing OpenShell Gateway from {{ .Values.openshell.gatewayImage }}..."
-        GW_CID=$(podman create {{ .Values.openshell.gatewayImage }} 2>/dev/null)
-        podman cp "${GW_CID}:/usr/local/bin/openshell-gateway" /usr/local/bin/openshell-gateway
-        podman rm "${GW_CID}" >/dev/null
-        chmod 755 /usr/local/bin/openshell-gateway
-
-        # Extract supervisor binary from ODH container image
-        echo "Installing OpenShell Supervisor from {{ .Values.openshell.supervisorImage }}..."
-        SV_CID=$(podman create {{ .Values.openshell.supervisorImage }} 2>/dev/null)
-        podman cp "${SV_CID}:/openshell-sandbox" /usr/local/bin/openshell-sandbox
-        podman rm "${SV_CID}" >/dev/null
-        chmod 755 /usr/local/bin/openshell-sandbox
-
-        echo "OpenShell binaries installed."
-        openshell --version || true
-
-      - |
-        set -euo pipefail
         echo "=== Configuring OpenShell gateway ==="
         USER_NAME="cloud-user"
         USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
