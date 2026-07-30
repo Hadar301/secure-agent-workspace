@@ -113,7 +113,7 @@ ensure-images: ## Build golden image if not already present
 	@NS=$(BUILD_NS) HELM_DIR=$(HELM_DIR) $(SCRIPTS_DIR)/ensure-golden-image.sh
 
 # Ensure golden image is built before pattern-install runs
-pattern-install: ensure-images
+pattern-install: generate-keys ensure-images
 
 # --- Keycloak / OIDC ---
 
