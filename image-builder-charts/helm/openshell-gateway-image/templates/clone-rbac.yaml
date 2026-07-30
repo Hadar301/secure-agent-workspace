@@ -1,10 +1,8 @@
-{{- if .Values.source.dataSourceNamespace }}
-{{- if ne .Values.source.dataSourceNamespace .Release.Namespace }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: cdi-clone-source
-  namespace: {{ .Values.source.dataSourceNamespace }}
+  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
@@ -16,15 +14,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: cdi-clone-from-{{ .Values.source.dataSourceNamespace }}
-  namespace: {{ .Values.source.dataSourceNamespace }}
+  name: cdi-clone-source
+  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: cdi-clone-source
 subjects:
-  - kind: ServiceAccount
-    name: default
-    namespace: {{ .Release.Namespace }}
-{{- end }}
-{{- end }}
+  - kind: Group
+    name: system:serviceaccounts
+    apiGroup: rbac.authorization.k8s.io

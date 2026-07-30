@@ -41,7 +41,7 @@ vm:
 # When empty, the setup Job auto-detects from the internal registry or uses the default.
 # Sandbox container image. When empty, auto-detects from the internal registry.
 # Set explicitly to use a pre-built image (e.g., quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest).
-sandboxImage: ""
+sandboxImage: "quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest"
 
 # OpenShell binaries — installed at VM boot time (always gets latest).
 openshell:
