@@ -1,3 +1,4 @@
+{{- if not (include "openshell-sandbox.sshPublicKey" .) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,3 +47,4 @@ spec:
                 -p "{\"stringData\":{\"userData\":$(echo "${UPDATED}" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}}"
 
               echo "SSH public key injected."
+{{- end }}

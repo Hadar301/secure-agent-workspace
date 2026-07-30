@@ -154,7 +154,7 @@ data:
       if [[ -n "${REGISTRY_ROUTE}" ]]; then
         echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
         SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-        guest_ssh "podman login --tls-verify=false -u serviceaccount -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+        guest_ssh "podman login --tls-verify=false -u unused -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
         BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
         SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi

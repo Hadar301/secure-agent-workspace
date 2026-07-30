@@ -59,6 +59,14 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "  RHBK (Keycloak): installed"
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
+	@echo "Checking image registry route..."
+	@if oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then \
+		echo "  Image registry route: enabled"; \
+	else \
+		echo "  Image registry route: not enabled. Enabling..."; \
+		oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1; \
+		echo "  Image registry route: enabled"; \
+	fi
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
@@ -80,6 +88,7 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 build: ## Build NemoClaw sandbox image
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
+	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 
 build-logs: ## Follow NemoClaw image build logs

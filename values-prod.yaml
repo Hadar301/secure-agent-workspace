@@ -63,6 +63,10 @@ clusterGroup:
       name: openshift-cnv
       namespace: openshift-cnv
       path: charts/openshift-cnv
+    openshift-registry:
+      name: openshift-registry
+      namespace: openshift-image-registry
+      path: charts/openshift-registry
     openshell-keycloak:
       name: openshell-keycloak
       namespace: openshell-agents
