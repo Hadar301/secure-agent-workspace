@@ -118,19 +118,8 @@ pattern-install: ensure-images
 # --- Keycloak / OIDC ---
 
 keycloak: ## Deploy Keycloak instance + realm via RHBK operator
-	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
-	@echo "Deploying Keycloak via RHBK operator in $(KEYCLOAK_NS)..."
-	helm upgrade --install openshell-keycloak $(KEYCLOAK_CHART) \
-		--namespace $(KEYCLOAK_NS) --create-namespace --timeout 10m
-	@echo "Waiting for Keycloak to be ready..."
-	@deadline=$$((SECONDS + 300)); \
-	while true; do \
-		ready=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); \
-		if [ "$$ready" = "True" ]; then echo "Keycloak is ready."; break; fi; \
-		if [ $$SECONDS -gt $$deadline ]; then echo "Timed out waiting for Keycloak."; exit 1; fi; \
-		echo "  waiting for Keycloak (ready=$$ready)..."; \
-		sleep 10; \
-	done
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) \
+	$(SCRIPTS_DIR)/deploy-keycloak.sh
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
 	@host=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
