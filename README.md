@@ -209,7 +209,7 @@ make build-cli                # NemoClaw CLI image
 make build-gateway-image      # Bootc gateway VM image
 
 # 5. Verify golden image is ready
-oc get dv openshell-gateway-golden -n openshell-agents
+oc get dv openshell-gateway-golden -n build-saw-images
 # Wait for PHASE=Succeeded
 
 # 6. Deploy Keycloak
