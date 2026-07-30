@@ -6,12 +6,12 @@ metadata:
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "-5"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 3
-  activeDeadlineSeconds: 60
+  activeDeadlineSeconds: 120
   template:
     spec:
       restartPolicy: OnFailure
