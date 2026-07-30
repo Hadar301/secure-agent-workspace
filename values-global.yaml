@@ -3,6 +3,9 @@ global:
   singleArgoCD: true
   secretLoader:
     disabled: false
+  # SSH public key for sandbox VM access. Generate with: make generate-keys
+  # Then paste the content of .generated-ssh-keys/sandbox-ssh.pub here.
+  sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIb2BQl5DC0J2bGvA3A7JlAGIAubeh8fSAMq538H3ljk openshell-sandbox"
 main:
   clusterGroupName: prod
   multiSourceConfig:

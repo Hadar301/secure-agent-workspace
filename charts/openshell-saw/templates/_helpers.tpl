@@ -48,15 +48,14 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 
 {{/*
 Resolve the SSH public key.
-Priority: explicit sshPublicKey > lookup from openshell-aap-ssh secret.
+Priority: explicit sshPublicKey > global.sshPublicKey.
 */}}
 {{- define "openshell-sandbox.sshPublicKey" -}}
 {{- if .Values.sshPublicKey -}}
   {{- .Values.sshPublicKey -}}
-{{- else -}}
-  {{- $sshSecret := lookup "v1" "Secret" .Release.Namespace "openshell-aap-ssh" -}}
-  {{- if $sshSecret -}}
-    {{- index $sshSecret.data "public_key" | b64dec -}}
+{{- else if .Values.global -}}
+  {{- if .Values.global.sshPublicKey -}}
+    {{- .Values.global.sshPublicKey -}}
   {{- end -}}
 {{- end -}}
 {{- end }}
