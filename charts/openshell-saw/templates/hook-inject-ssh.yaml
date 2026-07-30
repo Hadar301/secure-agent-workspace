@@ -1,0 +1,50 @@
+{{- if not (include "openshell-sandbox.sshPublicKey" .) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-inject-ssh
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 60
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-setup
+      containers:
+        - name: inject
+          image: {{ .Values.job.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              # Read public key from the SSH secret
+              PUB_KEY=$(kubectl get secret {{ .Values.sshSecret }} -n {{ .Release.Namespace }} \
+                -o jsonpath='{.data.public_key}' 2>/dev/null | base64 -d || true)
+
+              if [[ -z "${PUB_KEY}" ]]; then
+                echo "WARNING: No public_key found in secret {{ .Values.sshSecret }}. Skipping SSH key injection."
+                exit 0
+              fi
+
+              echo "Injecting SSH public key into cloud-init secret..."
+
+              # Get current cloud-init, replace the placeholder, update the secret
+              CLOUDINIT=$(kubectl get secret {{ include "openshell-sandbox.fullname" . }}-cloudinit \
+                -n {{ .Release.Namespace }} -o jsonpath='{.data.userData}' | base64 -d)
+
+              UPDATED=$(echo "${CLOUDINIT}" | sed "s|__SSH_PUBLIC_KEY__|${PUB_KEY}|g")
+
+              kubectl patch secret {{ include "openshell-sandbox.fullname" . }}-cloudinit \
+                -n {{ .Release.Namespace }} --type merge \
+                -p "{\"stringData\":{\"userData\":$(echo "${UPDATED}" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}}"
+
+              echo "SSH public key injected."
+{{- end }}

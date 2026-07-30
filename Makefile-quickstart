@@ -19,6 +19,7 @@ NAMESPACE_MODE ?= shared
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 KEYCLOAK_CHART := charts/openshell-keycloak
+KEYCLOAK_NS    ?= $(NS)
 SCRIPTS_DIR    := scripts
 GUI_PORT       ?= 18789
 
@@ -58,6 +59,14 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "  RHBK (Keycloak): installed"
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
+	@echo "Checking image registry route..."
+	@if oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then \
+		echo "  Image registry route: enabled"; \
+	else \
+		echo "  Image registry route: not enabled. Enabling..."; \
+		oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1; \
+		echo "  Image registry route: enabled"; \
+	fi
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
@@ -79,6 +88,7 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 build: ## Build NemoClaw sandbox image
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
+	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 
 build-logs: ## Follow NemoClaw image build logs
@@ -112,30 +122,19 @@ ensure-images: ## Build golden image if not already present
 	@NS=$(BUILD_NS) HELM_DIR=$(HELM_DIR) $(SCRIPTS_DIR)/ensure-golden-image.sh
 
 # Ensure golden image is built before pattern-install runs
-pattern-install: ensure-images
+pattern-install: generate-keys ensure-images
 
 # --- Keycloak / OIDC ---
 
 keycloak: ## Deploy Keycloak instance + realm via RHBK operator
-	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
-	@echo "Deploying Keycloak via RHBK operator..."
-	helm upgrade --install openshell-keycloak $(KEYCLOAK_CHART) \
-		--namespace $(NS) --create-namespace --timeout 10m
-	@echo "Waiting for Keycloak to be ready..."
-	@deadline=$$((SECONDS + 300)); \
-	while true; do \
-		ready=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); \
-		if [ "$$ready" = "True" ]; then echo "Keycloak is ready."; break; fi; \
-		if [ $$SECONDS -gt $$deadline ]; then echo "Timed out waiting for Keycloak."; exit 1; fi; \
-		echo "  waiting for Keycloak (ready=$$ready)..."; \
-		sleep 10; \
-	done
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) \
+	$(SCRIPTS_DIR)/deploy-keycloak.sh
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
-	@host=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+	@host=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
 		| sed 's|^https://||;s|/$$||'); \
 	if [ -z "$${host}" ]; then \
-		host=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+		host=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 	fi; \
 	if [ -z "$${host}" ]; then \
 		echo "Error: Keycloak not found. Run 'make keycloak' first." >&2; \
@@ -157,9 +156,9 @@ logout: ## Revoke OIDC token and clear sandbox credentials
 	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/openshell-saw-logout.sh
 
 delete-keycloak: ## Uninstall Keycloak + PostgreSQL
-	-helm uninstall openshell-keycloak --namespace $(NS) 2>/dev/null
-	-oc delete pvc keycloak-db -n $(NS) 2>/dev/null
-	-oc delete secret keycloak-db-secret -n $(NS) 2>/dev/null
+	-helm uninstall openshell-keycloak --namespace $(KEYCLOAK_NS) 2>/dev/null
+	-oc delete pvc keycloak-db -n $(KEYCLOAK_NS) 2>/dev/null
+	-oc delete secret keycloak-db-secret -n $(KEYCLOAK_NS) 2>/dev/null
 	@echo "Keycloak cleaned up."
 
 # --- SSH secret ---

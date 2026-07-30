@@ -127,6 +127,21 @@ data:
       exit 1
     fi
 
+    # --- Wait for cloud-init to finish (installs OpenShell binaries) ---
+    echo "Waiting for cloud-init to finish..."
+    deadline=$((SECONDS + 600))
+    while true; do
+      if guest_ssh "cloud-init status 2>/dev/null | grep -q done" 2>/dev/null; then
+        echo "Cloud-init finished."
+        break
+      fi
+      if (( SECONDS > deadline )); then
+        echo "WARNING: cloud-init did not finish in time, proceeding anyway..."
+        break
+      fi
+      sleep 10
+    done
+
     # --- Post-clone hygiene ---
     echo "Post-clone hygiene (hostname)..."
     guest_ssh "sudo hostnamectl set-hostname '${VM_NAME}' || true; openshell gateway select openshell >/dev/null 2>&1 || true" || true
@@ -139,8 +154,9 @@ data:
       if [[ -n "${REGISTRY_ROUTE}" ]]; then
         echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
         SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-        guest_ssh "podman login --tls-verify=false -u serviceaccount -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
-        SANDBOX_IMAGE="${REGISTRY_ROUTE}/${NS}/nemoclaw-sandbox:latest"
+        guest_ssh "podman login --tls-verify=false -u unused -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+        BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
+        SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi
     fi
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
@@ -156,11 +172,32 @@ data:
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
+    # Fetch OIDC token from Keycloak if not already provided
+    source "${WORK_DIR}/run-create.env" 2>/dev/null || true
+    if [[ -z "${OIDC_TOKEN:-}" && -n "${OIDC_ISSUER:-}" ]]; then
+      OWNER="{{ .Values.accessControl.owner }}"
+      if [[ -n "${OWNER}" ]]; then
+        echo "Fetching OIDC token for '${OWNER}' from Keycloak..."
+        OIDC_TOKEN=$(curl -sk -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+          -d "grant_type=password" \
+          -d "client_id=${OIDC_CLIENT_ID:-openshell-cli}" \
+          -d "username=${OWNER}" \
+          -d "password=${OWNER}" \
+          -d "scope=openid" 2>/dev/null \
+          | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+        if [[ -n "${OIDC_TOKEN}" ]]; then
+          echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "${WORK_DIR}/run-create.env"
+          echo "OIDC token obtained for ${OWNER}"
+        else
+          echo "WARNING: Could not fetch OIDC token (sandbox will deploy without OIDC auth)"
+        fi
+      fi
+    fi
     # Inject SSH public key from the SSH secret if not set via helm values
     if [[ -f /ssh-key/public_key ]]; then
       SSH_PUB="$(cat /ssh-key/public_key)"
       if [[ -n "${SSH_PUB}" ]]; then
-        echo "SSH_PUBKEY=${SSH_PUB}" >> "${WORK_DIR}/run-create.env"
+        echo "SSH_PUBKEY=\"${SSH_PUB}\"" >> "${WORK_DIR}/run-create.env"
         guest_ssh "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${SSH_PUB}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || true
         echo "Injected SSH public key from secret"
       fi
@@ -179,11 +216,11 @@ data:
       guest_scp "${WORK_DIR}/vertex-sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
       echo "Injected Vertex SA JSON from provider secret"
     fi
-    if [[ -n "${SANDBOX_IMAGE}" ]]; then
+    if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
       echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
     fi
-    if [[ -n "${REGISTRY_ROUTE}" ]]; then
-      echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
+    if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
+      echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
     guest_scp "${WORK_DIR}/run-create.env" "/home/${SSH_USER}/run-create.env"
 

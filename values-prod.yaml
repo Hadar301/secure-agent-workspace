@@ -9,9 +9,10 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - openshift-cnv
-    rhbk-operator:
+    openshell-agents:
       operatorGroup: true
-      targetNamespaces: []
+      targetNamespaces:
+        - openshell-agents
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -21,7 +22,6 @@ clusterGroup:
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
-    secure-agent-workspace:
     vault:
   subscriptions:
     eso:
@@ -34,7 +34,7 @@ clusterGroup:
       channel: stable
     rhbk:
       name: rhbk-operator
-      namespace: rhbk-operator
+      namespace: openshell-agents
       channel: stable-v26
     rhdh:
       name: rhdh
@@ -63,17 +63,21 @@ clusterGroup:
       name: openshift-cnv
       namespace: openshift-cnv
       path: charts/openshift-cnv
+    openshift-registry:
+      name: openshift-registry
+      namespace: openshift-image-registry
+      path: charts/openshift-registry
     openshell-keycloak:
       name: openshell-keycloak
-      namespace: secure-agent-workspace
+      namespace: openshell-agents
       path: charts/openshell-keycloak
     pattern-secrets:
       name: pattern-secrets
-      namespace: secure-agent-workspace
+      namespace: openshell-agents
       path: charts/pattern-secrets
     openshell-saw:
       name: openshell-saw
-      namespace: secure-agent-workspace
+      namespace: openshell-agents
       path: charts/openshell-saw
       extraValueFiles:
         - /overrides/openshell-saw.yaml

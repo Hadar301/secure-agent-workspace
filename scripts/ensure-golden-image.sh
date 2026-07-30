@@ -7,6 +7,15 @@ set -euo pipefail
 NS="${NS:-build-saw-images}"
 HELM_DIR="${HELM_DIR:-image-builder-charts/helm}"
 
+# Ensure the internal image registry has an external route
+# (needed for VMs to pull sandbox images from the registry)
+if ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then
+  echo "Enabling external image registry route..."
+  oc patch configs.imageregistry.operator.openshift.io/cluster \
+    --patch '{"spec":{"defaultRoute":true}}' --type=merge 2>/dev/null
+  sleep 10
+fi
+
 echo "=== Checking golden image in namespace '${NS}' ==="
 
 # 1. Already ready?

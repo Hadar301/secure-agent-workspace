@@ -3,6 +3,7 @@ postgres:
   storage: 1Gi
   database: keycloak
   username: keycloak
+  password: keycloak-db-pass
 
 keycloak:
   name: openshell-keycloak
@@ -21,7 +22,6 @@ keycloak:
       # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
       # ssh-proxy and dashboard failures.
       accessTokenLifespan: 86400
-      accessTokenLifespan: 900
 
   testUsers:
     - username: developer

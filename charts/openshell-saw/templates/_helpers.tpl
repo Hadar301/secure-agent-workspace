@@ -45,3 +45,17 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
   {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Resolve the SSH public key.
+Priority: explicit sshPublicKey > global.sshPublicKey.
+*/}}
+{{- define "openshell-sandbox.sshPublicKey" -}}
+{{- if .Values.sshPublicKey -}}
+  {{- .Values.sshPublicKey -}}
+{{- else if .Values.global -}}
+  {{- if .Values.global.sshPublicKey -}}
+    {{- .Values.global.sshPublicKey -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}

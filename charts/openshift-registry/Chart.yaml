@@ -1,0 +1,5 @@
+apiVersion: v2
+name: openshift-registry
+description: Enable external route for the internal image registry
+type: application
+version: 0.1.0

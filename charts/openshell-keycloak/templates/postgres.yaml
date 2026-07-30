@@ -1,18 +1,11 @@
-{{- $existingSecret := lookup "v1" "Secret" .Release.Namespace "keycloak-db-secret" }}
 apiVersion: v1
 kind: Secret
 metadata:
   name: keycloak-db-secret
 type: Opaque
-{{- if $existingSecret }}
-data:
-  username: {{ index $existingSecret.data "username" }}
-  password: {{ index $existingSecret.data "password" }}
-{{- else }}
 stringData:
   username: {{ .Values.postgres.username }}
-  password: {{ randAlphaNum 16 | quote }}
-{{- end }}
+  password: {{ .Values.postgres.password }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

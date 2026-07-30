@@ -72,6 +72,15 @@ spec:
         features:
           acpi: {}
           smm: {}
+      accessCredentials:
+        - sshPublicKey:
+            source:
+              secret:
+                secretName: openshell-ssh-pubkey
+            propagationMethod:
+              qemuGuestAgent:
+                users:
+                  - cloud-user
       networks:
         - name: default
           pod: {}

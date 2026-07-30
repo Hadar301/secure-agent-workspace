@@ -1,7 +1,17 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+spec:
+  lookupPolicy:
+    local: true
+---
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root
   labels:
     {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
 spec:
@@ -35,6 +45,30 @@ spec:
           value: {{ .Values.build.agentTimeout | quote }}
         - name: NEMOCLAW_WEB_SEARCH_ENABLED
           value: {{ .Values.build.webSearchEnabled | quote }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
+  triggers: []
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
+      USER sandbox
+  strategy:
+    type: Docker
+    dockerStrategy:
+      from:
+        kind: ImageStreamTag
+        name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
   output:
     to:
       kind: ImageStreamTag
