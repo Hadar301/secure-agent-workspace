@@ -8,19 +8,17 @@ spec:
   source:
     type: Dockerfile
     dockerfile: |
-      FROM {{ .Values.build.baseImage }}
+      FROM {{ .Values.build.builderImage }} AS builder
 
-      # System packages only — OpenShell binaries are installed at VM boot time
-      RUN dnf install -y \
-            podman podman-docker curl jq \
-            qemu-guest-agent openssh-clients openssh-server \
-            nodejs cloud-init python3-pip \
-          && dnf clean all
+      ENV LIBGUESTFS_BACKEND=direct
 
-      # Install systemd user service for the gateway
-      # (binary path will be populated at boot time by cloud-init)
-      RUN mkdir -p /usr/lib/systemd/user && \
-          cat > /usr/lib/systemd/user/openshell-gateway.service <<'GWUNIT'
+      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
+
+      WORKDIR /build
+      RUN curl -fL --retry 3 -o base.qcow2 "{{ .Values.build.fedoraCloud }}"
+
+      # Write the gateway systemd user service
+      RUN cat > /build/openshell-gateway.service <<'GWUNIT'
       [Unit]
       Description=OpenShell Gateway
       After=default.target
@@ -41,20 +39,8 @@ spec:
       WantedBy=default.target
       GWUNIT
 
-      RUN useradd -m -G wheel cloud-user 2>/dev/null; \
-          echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user && \
-          chmod 440 /etc/sudoers.d/cloud-user && \
-          mkdir -p /var/lib/systemd/linger && \
-          touch /var/lib/systemd/linger/cloud-user
-
-      RUN systemctl enable podman.socket && \
-          systemctl enable qemu-guest-agent.service && \
-          systemctl enable cloud-init-main.service && \
-          systemctl enable cloud-init-local.service && \
-          systemctl enable cloud-config.service && \
-          systemctl enable cloud-final.service
-
-      RUN cat > /etc/systemd/system/openshell-gateway-setup.service <<'UNIT'
+      # Write the first-boot setup service
+      RUN cat > /build/openshell-gateway-setup.service <<'UNIT'
       [Unit]
       Description=OpenShell gateway user-service setup (first boot)
       After=multi-user.target
@@ -70,16 +56,14 @@ spec:
       WantedBy=multi-user.target
       UNIT
 
-      RUN mkdir -p /usr/local/sbin
-
-      RUN cat > /usr/local/sbin/openshell-gateway-user-setup.sh <<'SETUP'
+      # Write the user-setup script
+      RUN cat > /build/openshell-gateway-user-setup.sh <<'SETUP'
       #!/usr/bin/env bash
       set -euo pipefail
       USER_NAME="cloud-user"
       USER_UID="$(id -u "${USER_NAME}")"
       USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
 
-      # Start user systemd session
       systemctl start "user@${USER_UID}.service"
       for _ in $(seq 1 90); do
         if [[ -S "/run/user/${USER_UID}/bus" ]]; then break; fi
@@ -116,7 +100,6 @@ spec:
 
       sleep 3
 
-      # Copy gateway config from /etc/openshell/ (placed by cloud-init)
       install -d -m 0755 "${USER_HOME}/.config/openshell"
       cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
       if [[ -f /etc/openshell/gateway.toml ]]; then
@@ -124,7 +107,6 @@ spec:
       fi
       chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
 
-      # Determine auth mode from gateway.toml presence
       AUTH_MODE="mtls"
       OIDC_FIELDS=""
       if [[ -f /etc/openshell/gateway.toml ]]; then
@@ -154,7 +136,6 @@ spec:
           echo openshell > \"\${HOME}/.config/openshell/active_gateway\"
         "
 
-      # Pre-pull sandbox image if configured in gateway.env
       SANDBOX_IMAGE="$(grep -oP 'OPENSHELL_SANDBOX_IMAGE=\K.*' /etc/openshell/gateway.env || true)"
       if [[ -n "${SANDBOX_IMAGE}" ]]; then
         echo "Pre-pulling sandbox image: ${SANDBOX_IMAGE}"
@@ -167,12 +148,28 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
-      RUN chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh && \
-          systemctl enable openshell-gateway-setup.service
+      # Bake system packages into the qcow2 (no OpenShell binaries — installed at boot)
+      RUN virt-customize -a base.qcow2 \
+            --install podman,podman-docker,curl,jq,qemu-guest-agent,openssh-clients,openssh-server \
+            --install nodejs,cloud-init,python3-pip \
+            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
+            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
+            --run-command 'systemctl enable podman.socket' \
+            --mkdir /usr/lib/systemd/user \
+            --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
+            --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
+            --run-command 'mkdir -p /usr/local/sbin' \
+            --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
+            --run-command 'systemctl enable openshell-gateway-setup.service' \
+            --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
+            --selinux-relabel && \
+          mkdir -p /output && \
+          qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2 && \
+          rm -f base.qcow2
 
-      RUN mkdir -p /etc/openshell && \
-          chown root:root /etc/openshell && \
-          chmod 750 /etc/openshell
+      FROM registry.access.redhat.com/ubi9-micro:latest
+      COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2
   strategy:
     type: Docker
     dockerStrategy: {}
