@@ -181,6 +181,7 @@ spec:
             --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
             --run-command 'systemctl enable openshell-gateway-setup.service' \
             --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
+            --run-command 'cloud-init clean --logs --seed' \
             --selinux-relabel && \
           mkdir -p /output && \
           qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2 && \
