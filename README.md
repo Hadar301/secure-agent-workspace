@@ -129,7 +129,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 
 | Software | Version |
 |---|---|
-| Red Hat OpenShift | 4.16+ |
+| Red Hat OpenShift | 4.22+ |
 | OpenShift Virtualization operator | stable channel |
 | Red Hat Build of Keycloak operator | stable-v24 channel |
 | Helm CLI | 3.x |
@@ -144,7 +144,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 
 ### Prerequisites
 
-1. An OpenShift 4.16+ cluster with the required operators installed (see Requirements)
+1. An OpenShift 4.22+ cluster with the required operators installed (see Requirements)
 2. `oc` CLI logged in with cluster-admin
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
@@ -180,9 +180,9 @@ cp values-secret.yaml.template ~/values-secret.yaml
 # These build the sandbox container image and bootc gateway VM image
 # inside the cluster via OpenShift BuildConfig. This step will be
 # replaced by pre-built upstream golden images in a future release.
-make build                    # NemoClaw sandbox image
-make build-cli                # NemoClaw CLI image
-make build-gateway-image      # Bootc gateway VM image
+make build-nemoclaw           # NemoClaw sandbox image
+make build-nemoclaw-cli       # NemoClaw CLI image
+make build-openshell-gateway-image  # Bootc gateway VM image
 
 # 5. Deploy the pattern (runs inside the VP utility container)
 ./pattern.sh make install
@@ -204,12 +204,12 @@ make check-prereqs
 make generate-keys
 
 # 4. Build images (one-time, ~15 min total)
-make build                    # NemoClaw sandbox image
-make build-cli                # NemoClaw CLI image
-make build-gateway-image      # Bootc gateway VM image
+make build-nemoclaw           # NemoClaw sandbox image
+make build-nemoclaw-cli       # NemoClaw CLI image
+make build-openshell-gateway-image  # Bootc gateway VM image
 
 # 5. Verify golden image is ready
-oc get dv openshell-gateway-golden -n build-saw-images
+oc get dv openshell-gateway-golden -n openshell-agents
 # Wait for PHASE=Succeeded
 
 # 6. Deploy Keycloak

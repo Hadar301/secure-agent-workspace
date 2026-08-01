@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-NS="${NS:-build-saw-images}"
+NS="${NS:-openshell-agents}"
 HELM_DIR="${HELM_DIR:-image-builder-charts/helm}"
 
 # Wait for the latest build to leave Pending/New, then follow logs and verify completion
@@ -35,19 +35,8 @@ follow_and_verify_build() {
   return 1
 }
 
-# Ensure the internal image registry is enabled and has an external route
-REGISTRY_STATE="$(oc get configs.imageregistry.operator.openshift.io/cluster -o jsonpath='{.spec.managementState}' 2>/dev/null || true)"
-if [[ "${REGISTRY_STATE}" != "Managed" ]]; then
-  echo "Enabling internal image registry (was ${REGISTRY_STATE:-unknown})..."
-  oc patch configs.imageregistry.operator.openshift.io/cluster \
-    --patch '{"spec":{"managementState":"Managed","defaultRoute":true}}' --type=merge 2>/dev/null
-  echo "Waiting for registry to be available..."
-  for _ in $(seq 1 30); do
-    AVAIL="$(oc get configs.imageregistry.operator.openshift.io/cluster -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)"
-    if [[ "${AVAIL}" == "True" ]]; then break; fi
-    sleep 10
-  done
-elif ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then
+# Ensure the internal image registry has an external route
+if ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then
   echo "Enabling external image registry route..."
   oc patch configs.imageregistry.operator.openshift.io/cluster \
     --patch '{"spec":{"defaultRoute":true}}' --type=merge 2>/dev/null

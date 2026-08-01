@@ -1,5 +1,5 @@
 NS             ?= openshell-agents
-BUILD_NS       ?= build-saw-images
+BUILD_NS       ?= openshell-agents
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 AGENT          ?= openclaw
@@ -13,7 +13,7 @@ OIDC_ISSUER    ?=
 OIDC_CLIENT_ID ?= openshell-cli
 OIDC_FLOW      ?= browser
 OIDC_TOKEN_DIR ?= $(HOME)/.config/openshell/oidc
-SSH_KEY_PATH   ?= .generated-ssh-keys/sandbox-ssh
+SSH_KEY_PATH   ?= $(HOME)/.generated-ssh-keys/sandbox-ssh
 OWNER          ?=
 NAMESPACE_MODE ?= shared
 HELM_DIR       := image-builder-charts/helm/
@@ -60,18 +60,16 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
 	@echo "Checking image registry route..."
-	@if oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then \
-		echo "  Image registry route: enabled"; \
-	else \
-		echo "  Image registry route: not enabled. Enabling..."; \
+	@if ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then \
+		echo "  Image registry route: enabling..."; \
 		oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1; \
-		echo "  Image registry route: enabled"; \
-	fi
+	fi; \
+	echo "  Image registry route: enabled"
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build build-logs build-cli build-cli-logs \
-        build-gateway-image build-gateway-image-logs import-golden-image ensure-images \
+        build-nemoclaw build-nemoclaw-logs build-nemoclaw-cli build-nemoclaw-cli-logs \
+        build-openshell-gateway-image build-openshell-gateway-image-logs import-golden-image ensure-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
@@ -85,28 +83,28 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 
 # --- NemoClaw images ---
 
-build: ## Build NemoClaw sandbox image
+build-nemoclaw: ## Build NemoClaw sandbox image
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 
-build-logs: ## Follow NemoClaw image build logs
+build-nemoclaw-logs: ## Follow NemoClaw image build logs
 	oc logs -f bc/nemoclaw-sandbox -n $(BUILD_NS)
 
-build-cli: ## Build NemoClaw CLI image
+build-nemoclaw-cli: ## Build NemoClaw CLI image
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 
-build-cli-logs: ## Follow NemoClaw CLI build logs
+build-nemoclaw-cli-logs: ## Follow NemoClaw CLI build logs
 	oc logs -f bc/nemoclaw-cli -n $(BUILD_NS)
 
 # --- Gateway VM image ---
 
-build-gateway-image: ## Build the bootc gateway VM image
+build-openshell-gateway-image: ## Build the bootc gateway VM image
 	@GOLDEN_FLAG=""; \
-	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep -q datavolumes; then \
+	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
 	fi; \
@@ -114,7 +112,7 @@ build-gateway-image: ## Build the bootc gateway VM image
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
 
-build-gateway-image-logs: ## Follow gateway image build logs
+build-openshell-gateway-image-logs: ## Follow gateway image build logs
 	oc logs -f bc/openshell-gateway -n $(BUILD_NS)
 
 GOLDEN_IMAGE_URL ?= docker://quay.io/rh-ai-quickstart/openshell-gateway:latest
@@ -126,8 +124,9 @@ import-golden-image: ## Import pre-built golden image from quay.io (skips build)
 ensure-images: ## Build golden image if not already present
 	@NS=$(BUILD_NS) HELM_DIR=$(HELM_DIR) $(SCRIPTS_DIR)/ensure-golden-image.sh
 
-# Ensure golden image is built before pattern-install runs
-pattern-install: generate-keys ensure-images
+# Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
+# (openshell-gateway-image app). For manual flow, run: make ensure-images
+pattern-install: generate-keys
 
 # --- Keycloak / OIDC ---
 
@@ -207,7 +206,10 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) --gateway-insecure $$OIDC_OPTS; \
 	openshell gateway select $(OPENSHELL_SAW_NAME); \
 	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"; \
-	if [ -n "$$OIDC_ISSUER" ]; then echo "Next: openshell gateway login"; fi
+	if [ -n "$$OIDC_ISSUER" ]; then \
+		echo "Launching gateway login..."; \
+		openshell gateway login $(OPENSHELL_SAW_NAME) --gateway-insecure; \
+	fi
 
 openshell-saw-list: ## List all sandboxes
 	@printf "%-20s %-12s %-10s %s\n" "NAME" "STATUS" "VM" "CREATED"
@@ -233,11 +235,14 @@ openshell-saw-ssh: .check-saw-name ## SSH into a sandbox
 # --- User access ---
 
 openshell-saw-tui: .check-saw-name ## Launch OpenClaw TUI
-	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $(OPENSHELL_SAW_NAME) " \
+	@SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) --gateway-insecure sandbox list --names 2>/dev/null | head -1); \
+	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
+	echo "Connecting to sandbox '$$SANDBOX'..."; \
+	ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $$SANDBOX " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
-		-tt sandbox@openshell-$(OPENSHELL_SAW_NAME).default openclaw
+		-tt sandbox@openshell-$$SANDBOX.default openclaw
 
 openshell-saw-gui: .check-saw-name ## Open OpenClaw web UI (GUI_PORT=18789)
 	@OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) GATEWAY_NAME=$(OPENSHELL_SAW_NAME) \

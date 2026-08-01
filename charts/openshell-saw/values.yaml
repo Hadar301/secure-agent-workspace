@@ -25,7 +25,12 @@ sshPublicKey: ""
 # and imported by the openshell-gateway-image helm chart.
 source:
   dataSource: openshell-gateway
-  dataSourceNamespace: "build-saw-images"
+  dataSourceNamespace: "openshell-agents"
+  # Registry URL for golden image import. Used by the setup Job to bootstrap
+  # the DataSource on first run. Defaults to the internal registry.
+  goldenImageURL: ""
+  # CDI pull method: "node" (uses node runtime, trusts internal CA) or "pod" (CDI importer pod)
+  pullMethod: "node"
   registryURL: ""
   httpURL: ""
 

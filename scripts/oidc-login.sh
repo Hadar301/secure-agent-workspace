@@ -40,9 +40,18 @@ auto_detect_issuer() {
     die "OIDC_ISSUER not set and 'oc' not found. Set OIDC_ISSUER or install the OpenShift CLI."
   fi
   local host
-  host="$(oc get route openshell-keycloak -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+  # Try externalURL from Keycloak CR first
+  host="$(oc get keycloak openshell-keycloak -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null | sed 's|^https://||;s|/$||' || true)"
+  # Fall back to route by label (RHBK generates route names)
   if [[ -z "${host}" ]]; then
-    die "OIDC_ISSUER not set and no Keycloak Route found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak' first."
+    host="$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)"
+  fi
+  # Fall back to route by name
+  if [[ -z "${host}" ]]; then
+    host="$(oc get route openshell-keycloak -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+  fi
+  if [[ -z "${host}" ]]; then
+    die "OIDC_ISSUER not set and no Keycloak found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak' first."
   fi
   OIDC_ISSUER="https://${host}/realms/openshell"
   echo "Auto-detected OIDC issuer: ${OIDC_ISSUER}"

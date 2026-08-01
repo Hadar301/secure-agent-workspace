@@ -1,7 +1,6 @@
 clusterGroup:
   name: prod
   namespaces:
-    build-saw-images:
     external-secrets:
     external-secrets-operator:
       operatorGroup: true
@@ -68,10 +67,6 @@ clusterGroup:
       name: openshift-registry
       namespace: openshift-image-registry
       path: charts/openshift-registry
-    openshell-gateway-image:
-      name: openshell-gateway-image
-      namespace: build-saw-images
-      path: image-builder-charts/helm/openshell-gateway-image
     openshell-keycloak:
       name: openshell-keycloak
       namespace: openshell-agents
