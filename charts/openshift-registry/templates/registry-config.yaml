@@ -3,4 +3,5 @@ kind: Config
 metadata:
   name: cluster
 spec:
+  managementState: Managed
   defaultRoute: true

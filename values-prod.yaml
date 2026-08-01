@@ -1,6 +1,7 @@
 clusterGroup:
   name: prod
   namespaces:
+    build-saw-images:
     external-secrets:
     external-secrets-operator:
       operatorGroup: true
@@ -16,9 +17,9 @@ clusterGroup:
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
-    ansible-automation-platform:
-      operatorGroup: true
-      targetNamespaces: []
+    # ansible-automation-platform:
+    #   operatorGroup: true
+    #   targetNamespaces: []
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -40,10 +41,10 @@ clusterGroup:
       name: rhdh
       namespace: rhdh-operator
       channel: fast
-    aap:
-      name: ansible-automation-platform-operator
-      namespace: ansible-automation-platform
-      channel: stable-2.5
+    # aap:
+    #   name: ansible-automation-platform-operator
+    #   namespace: ansible-automation-platform
+    #   channel: stable-2.5
     openshift-ai:
       name: rhods-operator
       namespace: redhat-ods-operator
@@ -67,6 +68,10 @@ clusterGroup:
       name: openshift-registry
       namespace: openshift-image-registry
       path: charts/openshift-registry
+    openshell-gateway-image:
+      name: openshell-gateway-image
+      namespace: build-saw-images
+      path: image-builder-charts/helm/openshell-gateway-image
     openshell-keycloak:
       name: openshell-keycloak
       namespace: openshell-agents
