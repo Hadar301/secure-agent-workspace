@@ -20,6 +20,7 @@ spec:
       COPY nemoclaw/package.json nemoclaw/package-lock.json nemoclaw/tsconfig.json nemoclaw/tsconfig.shared.json ./nemoclaw/
       RUN npm ci --ignore-scripts && cd nemoclaw && npm ci --ignore-scripts
       COPY . .
+      RUN git rev-parse HEAD > .source-revision 2>/dev/null || echo "0000000000000000000000000000000000000000" > .source-revision
       RUN npm run build:cli
 
       FROM {{ .Values.build.nodeImage }}

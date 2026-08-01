@@ -15,6 +15,9 @@ spec:
   storage:
     accessModes:
       - ReadWriteOnce
+    {{- if .Values.goldenImage.storageClassName }}
+    storageClassName: {{ .Values.goldenImage.storageClassName | quote }}
+    {{- end }}
     resources:
       requests:
         storage: {{ .Values.goldenImage.diskSize }}

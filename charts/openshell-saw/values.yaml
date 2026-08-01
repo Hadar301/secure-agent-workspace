@@ -25,7 +25,12 @@ sshPublicKey: ""
 # and imported by the openshell-gateway-image helm chart.
 source:
   dataSource: openshell-gateway
-  dataSourceNamespace: "build-saw-images"
+  dataSourceNamespace: "openshell-agents"
+  # Registry URL for golden image import. Used by the setup Job to bootstrap
+  # the DataSource on first run. Defaults to the internal registry.
+  goldenImageURL: ""
+  # CDI pull method: "node" (uses node runtime, trusts internal CA) or "pod" (CDI importer pod)
+  pullMethod: "node"
   registryURL: ""
   httpURL: ""
 
@@ -51,9 +56,10 @@ inference:
   apiKey: ""
   endpointUrl: ""
   webSearch: ""
-  # Name of a k8s Secret containing an 'api_key' field (created by ESO/pattern-secrets).
-  # When set, overrides inference.apiKey. Provider name is used by default if empty.
-  secretName: ""
+  # Name of a k8s Secret containing provider, model, and api_key fields.
+  # Defaults to "inference" (created by ESO from Vault via values-secret.yaml).
+  # The Job reads provider/model/api_key from this secret automatically.
+  secretName: "inference"
 
 # Vertex AI via GCP service account (legacy — optional).
 # When set, the Vertex provider is configured via openshell provider commands
@@ -78,9 +84,9 @@ job:
 
 # Expose the sandbox gateway and dashboard via OpenShift Routes.
 route:
-  enabled: false
+  enabled: true
   host: ""
-  dashboard: false
+  dashboard: true
 
 # OIDC authentication.
 # issuerUrl can be set explicitly, or computed from global.clusterDomain

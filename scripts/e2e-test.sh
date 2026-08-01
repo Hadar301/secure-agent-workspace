@@ -8,7 +8,7 @@
 # Prerequisites:
 #   - oc logged in to the cluster
 #   - OpenShift Virtualization + RHBK operators installed
-#   - Bootc gateway image built (make build-gateway-image)
+#   - Bootc gateway image built (make build-openshell-gateway-image)
 #   - ~/values-secret.yaml with at least one provider API key
 #
 # Usage:
