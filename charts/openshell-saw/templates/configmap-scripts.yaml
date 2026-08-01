@@ -89,17 +89,13 @@ data:
       --dry-run=client -o yaml | kubectl apply -f -
     echo "Cloud-init secret '${CLOUDINIT_SECRET}' ready"
 
-    # --- Label and start VM ---
+    # --- Label VM ---
     echo "Labeling vm/${VM_NAME}..."
     kubectl -n "${NS}" label vm "${VM_NAME}" \
       "app.kubernetes.io/name=${VM_NAME}" \
       "app.kubernetes.io/part-of=openshell-cnv-fedora" \
       "openshell.pattern/role=gateway" \
       --overwrite
-
-    echo "Setting runStrategy=Always and starting vm/${VM_NAME}..."
-    kubectl -n "${NS}" patch vm "${VM_NAME}" --type merge -p '{"spec":{"runStrategy":"Always"}}'
-    virtctl -n "${NS}" start "${VM_NAME}" 2>/dev/null || true
 
     # --- Wait for VMI Running + Ready ---
     echo "Waiting for vmi/${VM_NAME} to be Running and Ready..."
@@ -225,7 +221,21 @@ data:
         echo "Injected SSH public key from secret"
       fi
     fi
-    # Inject API key from ESO-managed provider secret (mounted at /provider-secret)
+    # Inject provider, model, and API key from ESO-managed secret (mounted at /provider-secret)
+    if [[ -f /provider-secret/provider ]]; then
+      PROVIDER_FROM_SECRET="$(cat /provider-secret/provider)"
+      if [[ -n "${PROVIDER_FROM_SECRET}" ]]; then
+        echo "NEMOCLAW_PROVIDER=${PROVIDER_FROM_SECRET}" >> "${WORK_DIR}/run-create.env"
+        echo "Injected provider from secret: ${PROVIDER_FROM_SECRET}"
+      fi
+    fi
+    if [[ -f /provider-secret/model ]]; then
+      MODEL_FROM_SECRET="$(cat /provider-secret/model)"
+      if [[ -n "${MODEL_FROM_SECRET}" ]]; then
+        echo "NEMOCLAW_MODEL=${MODEL_FROM_SECRET}" >> "${WORK_DIR}/run-create.env"
+        echo "Injected model from secret: ${MODEL_FROM_SECRET}"
+      fi
+    fi
     if [[ -f /provider-secret/api_key ]]; then
       PROVIDER_KEY="$(cat /provider-secret/api_key)"
       if [[ -n "${PROVIDER_KEY}" ]]; then

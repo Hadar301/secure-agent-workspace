@@ -1,21 +1,5 @@
-sandboxName: alice-openshell-saw
-
-# VM disk source — clone from golden image built in build-saw-images namespace
-source:
-  dataSource: openshell-gateway
-  dataSourceNamespace: build-saw-images
-
-# Sandbox container image (leave empty to auto-detect from internal registry)
-# sandboxImage: "quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest"
-
-inference:
-  provider: gemini
-  model: gemini-2.5-flash
-  secretName: gemini
-
+# Per-user sandbox configuration.
+# Only the owner is required — all other values use defaults from values.yaml.
+# Override inference.provider/model here if the user needs a different provider.
 accessControl:
   owner: alice
-
-route:
-  enabled: true
-  dashboard: true
