@@ -14,6 +14,33 @@ spec:
     spec:
       serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-setup
       restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-secrets
+          image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for required secrets..."
+              deadline=$((SECONDS + 600))
+              while true; do
+                all_ready=true
+                for secret in {{ .Values.sshSecret }} {{ .Values.inference.secretName | default .Values.inference.provider }}; do
+                  if [[ -n "${secret}" ]] && ! kubectl get secret "${secret}" -n {{ .Release.Namespace }} >/dev/null 2>&1; then
+                    echo "  waiting for secret/${secret}..."
+                    all_ready=false
+                  fi
+                done
+                if [[ "${all_ready}" == "true" ]]; then
+                  echo "All secrets ready."
+                  exit 0
+                fi
+                if (( SECONDS > deadline )); then
+                  echo "Timed out waiting for secrets" >&2
+                  exit 1
+                fi
+                sleep 10
+              done
       containers:
         - name: setup
           image: {{ .Values.job.image }}
