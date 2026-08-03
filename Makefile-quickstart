@@ -211,8 +211,19 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) --gateway-insecure $$OIDC_OPTS; \
 	openshell gateway select $(OPENSHELL_SAW_NAME); \
 	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"; \
-	if [ -n "$$OIDC_ISSUER" ]; then \
-		echo "Launching gateway login..."; \
+	OIDC_TOKEN_FILE="$(OIDC_TOKEN_DIR)/token.json"; \
+	GW_TOKEN_DIR="$$HOME/.config/openshell/gateways/$(OPENSHELL_SAW_NAME)"; \
+	if [ -f "$$OIDC_TOKEN_FILE" ] && [ -n "$$OIDC_ISSUER" ]; then \
+		echo "Copying OIDC token to gateway config..."; \
+		mkdir -p "$$GW_TOKEN_DIR"; \
+		python3 -c " \
+import json; \
+t = json.load(open('$$OIDC_TOKEN_FILE')); \
+gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
+json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
+		echo "Token configured. No additional login needed."; \
+	elif [ -n "$$OIDC_ISSUER" ]; then \
+		echo "No existing token found. Launching gateway login..."; \
 		openshell gateway login $(OPENSHELL_SAW_NAME) --gateway-insecure; \
 	fi
 

@@ -241,17 +241,16 @@ make status
 oc get vmi -n openshell-agents
 # Wait for PHASE=Running, READY=True
 
-# 13. Configure the openshell CLI
+# 13. Configure the openshell CLI (automatically copies your OIDC token — no additional login needed)
 make openshell-saw-configure-gateway
 
-# 14. Login to the gateway
-openshell gateway login
-
-# 15. Verify
+# 14. Verify
 openshell --gateway-insecure sandbox list
 ```
 
 > **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true`.
+
+> **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
 You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically.
 
