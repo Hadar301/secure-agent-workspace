@@ -1,7 +1,7 @@
 source:
   git:
     uri: "https://github.com/NVIDIA/NemoClaw.git"
-    ref: "main"
+    ref: "5cd29cce9568fa6a3c790c967daa41cd87eec418"
 
 build:
   baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:latest"
