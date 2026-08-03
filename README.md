@@ -176,13 +176,10 @@ make generate-keys
 cp values-secret.yaml.template ~/values-secret.yaml
 # Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
 
-# 4. Build images (one-time, ~15 min total)
-# These build the sandbox container image and bootc gateway VM image
-# inside the cluster via OpenShift BuildConfig. This step will be
-# replaced by pre-built upstream golden images in a future release.
-make build-nemoclaw           # NemoClaw sandbox image
-make build-nemoclaw-cli       # NemoClaw CLI image
-make build-openshell-gateway-image  # Bootc gateway VM image
+# 4. Copy pre-built images to the cluster (~5 min)
+# Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
+# No build needed — images are pre-built by maintainers.
+make copy-images
 
 # 5. Deploy the pattern (runs inside the VP utility container)
 ./pattern.sh make install
@@ -203,14 +200,8 @@ make check-prereqs
 # 3. Generate SSH keys
 make generate-keys
 
-# 4. Build images (one-time, ~15 min total)
-make build-nemoclaw           # NemoClaw sandbox image
-make build-nemoclaw-cli       # NemoClaw CLI image
-make build-openshell-gateway-image  # Bootc gateway VM image
-
-# 5. Verify golden image is ready
-oc get dv openshell-gateway-golden -n openshell-agents
-# Wait for PHASE=Succeeded
+# 4. Copy pre-built images to the cluster
+make copy-images
 
 # 6. Deploy Keycloak
 make keycloak

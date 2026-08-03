@@ -1,5 +1,6 @@
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
+QUAY_REPO      ?= quay.io/rh-ai-quickstart
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 AGENT          ?= openclaw
@@ -68,8 +69,8 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build-nemoclaw build-nemoclaw-logs build-nemoclaw-cli build-nemoclaw-cli-logs \
-        build-openshell-gateway-image build-openshell-gateway-image-logs import-golden-image ensure-images \
+        build-nemoclaw build-nemoclaw-cli \
+        build-openshell-gateway copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
@@ -83,26 +84,26 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 
 # --- NemoClaw images ---
 
-build-nemoclaw: ## Build NemoClaw sandbox image
+build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
+	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	oc image mirror $${REGISTRY}/$(BUILD_NS)/nemoclaw-sandbox:latest $(QUAY_REPO)/nemoclaw-sandbox:latest --insecure=true
 
-build-nemoclaw-logs: ## Follow NemoClaw image build logs
-	oc logs -f bc/nemoclaw-sandbox -n $(BUILD_NS)
-
-build-nemoclaw-cli: ## Build NemoClaw CLI image
+build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
-
-build-nemoclaw-cli-logs: ## Follow NemoClaw CLI build logs
-	oc logs -f bc/nemoclaw-cli -n $(BUILD_NS)
+	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	oc image mirror $${REGISTRY}/$(BUILD_NS)/nemoclaw-cli:latest $(QUAY_REPO)/nemoclaw-cli:latest --insecure=true
 
 # --- Gateway VM image ---
 
-build-openshell-gateway-image: ## Build the bootc gateway VM image
+build-openshell-gateway: ## Build gateway VM image and push to quay
 	@echo "Cleaning up old golden image..."
 	-@oc delete dv openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
 	-@oc delete datasource openshell-gateway -n $(BUILD_NS) 2>/dev/null
@@ -116,21 +117,36 @@ build-openshell-gateway-image: ## Build the bootc gateway VM image
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	oc image mirror $${REGISTRY}/$(BUILD_NS)/openshell-gateway:latest $(QUAY_REPO)/openshell-gateway:latest --insecure=true
 
-build-openshell-gateway-image-logs: ## Follow gateway image build logs
-	oc logs -f bc/openshell-gateway -n $(BUILD_NS)
-
-GOLDEN_IMAGE_URL ?= docker://quay.io/rh-ai-quickstart/openshell-gateway:latest
-
-import-golden-image: ## Import pre-built golden image from quay.io (skips build)
-	@NS=$(NS) GOLDEN_IMAGE_URL=$(GOLDEN_IMAGE_URL) \
-	$(SCRIPTS_DIR)/import-golden-image.sh
-
-ensure-images: ## Build golden image if not already present
-	@NS=$(BUILD_NS) HELM_DIR=$(HELM_DIR) $(SCRIPTS_DIR)/ensure-golden-image.sh
+copy-images: ## Mirror pre-built images from quay to the internal registry
+	@echo "Ensuring namespace and image registry route..."
+	@oc create namespace $(BUILD_NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+	@oc patch configs.imageregistry.operator.openshift.io/cluster \
+		--patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1 || true
+	@for i in $$(seq 1 30); do \
+		REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+		if [ -n "$$REGISTRY" ]; then break; fi; \
+		sleep 5; \
+	done
+	@echo "Authenticating to internal registry..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	TOKEN=$$(oc whoami -t); \
+	podman login --tls-verify=false -u unused -p $${TOKEN} $${REGISTRY} >/dev/null 2>&1 || \
+	docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || true
+	@echo "Mirroring images from $(QUAY_REPO) to internal registry..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
+	for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
+		echo "  Mirroring $${image}..."; \
+		oc image mirror $(QUAY_REPO)/$${image}:latest $${REGISTRY}/$(BUILD_NS)/$${image}:latest --insecure=true 2>&1 | tail -1; \
+	done; \
+	echo "All images mirrored."
 
 # Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
-# (openshell-gateway-image app). For manual flow, run: make ensure-images
+# (openshell-gateway-image app). For manual flow, run: make copy-images
 pattern-install: generate-keys
 
 # --- Keycloak / OIDC ---

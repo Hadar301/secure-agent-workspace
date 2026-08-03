@@ -1,7 +1,7 @@
 source:
   git:
     uri: "https://github.com/NVIDIA/NemoClaw.git"
-    ref: "5cd29cce9568fa6a3c790c967daa41cd87eec418"
+    ref: "main"
 
 build:
   nodeImage: "node:22-trixie-slim"
