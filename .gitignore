@@ -3,3 +3,5 @@
 
 # Secret values (never commit)
 values-secret.yaml
+.vscode/
+.DS_Store

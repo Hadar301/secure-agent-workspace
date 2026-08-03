@@ -1,5 +1,5 @@
 openshell:
-  version: "0.0.89"
+  version: "0.0.96"
   gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:odh-stable"
   supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:odh-stable"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
