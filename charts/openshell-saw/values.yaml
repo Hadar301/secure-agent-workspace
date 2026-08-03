@@ -48,6 +48,20 @@ agent: openclaw
 # Onboarding CLI: openclaw (runs inside sandbox) or nemoclaw (runs on gateway VM, requires Docker)
 onboardCli: openclaw
 
+# OpenClaw gateway runtime configuration inside the sandbox.
+openclaw:
+  # Bind address for `openclaw gateway` started by setup script.
+  # Defaults to localhost for least exposure. Override to 0.0.0.0 only
+  # when external access via route/port-forward is explicitly required.
+  gatewayHost: "127.0.0.1"
+
+# OpenShell gateway runtime configuration inside the sandbox VM.
+openshell:
+  # Bind address for `openshell-gateway` listener.
+  # Keep default 0.0.0.0 for remote CLI access via route; set to 127.0.0.1
+  # to restrict access to local VM context only.
+  bindAddress: "0.0.0.0"
+
 # Inference provider configuration.
 # Provider keys: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom
 inference:

@@ -103,6 +103,11 @@ build-nemoclaw-cli-logs: ## Follow NemoClaw CLI build logs
 # --- Gateway VM image ---
 
 build-openshell-gateway-image: ## Build the bootc gateway VM image
+	@echo "Cleaning up old golden image..."
+	-@oc delete dv openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete datasource openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	-@oc delete pvc openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete builds -l buildconfig=openshell-gateway -n $(BUILD_NS) 2>/dev/null
 	@GOLDEN_FLAG=""; \
 	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \

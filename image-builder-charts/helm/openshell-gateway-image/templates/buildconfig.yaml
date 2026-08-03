@@ -191,7 +191,8 @@ spec:
       COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2
   strategy:
     type: Docker
-    dockerStrategy: {}
+    dockerStrategy:
+      forcePull: true
   output:
     to:
       kind: ImageStreamTag
