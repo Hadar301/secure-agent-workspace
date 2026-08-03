@@ -619,7 +619,7 @@ data:
 
     # --- Start openclaw gateway inside sandbox ---
     echo "Starting openclaw gateway inside sandbox..."
-    OPENCLAW_GATEWAY_HOST="${OPENCLAW_GATEWAY_HOST:-0.0.0.0}"
+    OPENCLAW_GATEWAY_HOST="${OPENCLAW_GATEWAY_HOST:-127.0.0.1}"
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
       nohup openclaw gateway --host "'"${OPENCLAW_GATEWAY_HOST}"'" --port 18789 > /tmp/openclaw-gateway.log 2>&1 &
       for i in $(seq 1 10); do

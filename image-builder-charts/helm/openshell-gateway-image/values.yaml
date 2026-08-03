@@ -1,7 +1,7 @@
 openshell:
   version: "0.0.96"
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway@sha256:38e22f33f8498ddd3f2429599d1e0c12d468d834e4bf31e681474d93fd70f696"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor@sha256:4cc8c56eb7a378511c08acdd542181447fca45e5fc34fc4c2403bb46224faf84"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway@sha256:1a9bf1b5064befde7d5b392e657951ac115eabf255bcff1e9c0d8b17e8142a17"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor@sha256:0e5a9ae58295a5072f22bd3ea09cd083caab512fe2193e1b0a0f2d45196192b7"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 build:

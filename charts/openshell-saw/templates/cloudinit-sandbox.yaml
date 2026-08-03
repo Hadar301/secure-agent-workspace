@@ -29,7 +29,7 @@ data:
         owner: root:root
         permissions: "0644"
         content: |
-          OPENSHELL_BIND_ADDRESS=0.0.0.0
+          OPENSHELL_BIND_ADDRESS={{ .Values.openshell.bindAddress | quote }}
           OPENSHELL_SERVER_PORT=17670
           OPENSHELL_DRIVERS=podman
           OPENSHELL_SSH_GATEWAY_HOST=host.containers.internal
