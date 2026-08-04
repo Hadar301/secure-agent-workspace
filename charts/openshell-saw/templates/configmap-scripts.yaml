@@ -619,19 +619,18 @@ data:
 
     # --- Start openclaw gateway inside sandbox ---
     echo "Starting openclaw gateway inside sandbox..."
-    OPENCLAW_GATEWAY_HOST="${OPENCLAW_GATEWAY_HOST:-127.0.0.1}"
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
-      nohup openclaw gateway "'"${OPENCLAW_GATEWAY_HOST}"'" --port 18789 > /tmp/openclaw-gateway.log 2>&1 &
-      for i in $(seq 1 10); do
+      nohup openclaw gateway run --port 18789 --allow-unconfigured > /tmp/openclaw-gateway.log 2>&1 &
+      for i in $(seq 1 15); do
         sleep 3
-        if openclaw health >/dev/null 2>&1; then
+        if curl -sf --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
           echo "openclaw gateway ready"
           exit 0
         fi
         echo "  waiting for gateway... (attempt $i)"
       done
       echo "WARN: gateway health check timed out"
-      cat /tmp/openclaw-gateway.log 2>/dev/null | tail -5
+      cat /tmp/openclaw-gateway.log 2>/dev/null | tail -10
     ' || echo "WARN: openclaw gateway start failed"
 
     echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
