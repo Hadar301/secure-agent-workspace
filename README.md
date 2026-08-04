@@ -183,6 +183,15 @@ make copy-images
 
 # 5. Deploy the pattern (runs inside the VP utility container)
 ./pattern.sh make install
+
+# 6. Authenticate and configure the CLI
+make login                    # Opens browser → login with alice / alice
+export OPENSHELL_SAW_NAME=openshell-saw
+make openshell-saw-configure-gateway
+openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure   # Authenticate CLI with gateway
+
+# 7. Verify
+openshell --gateway-insecure sandbox list
 ```
 
 #### Option B: Quickstart (manual, step-by-step)
@@ -232,10 +241,13 @@ make status
 oc get vmi -n openshell-agents
 # Wait for PHASE=Running, READY=True
 
-# 13. Configure the openshell CLI (automatically copies your OIDC token — no additional login needed)
+# 13. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Verify
+# 14. Authenticate CLI with the gateway (required — the gateway validates OIDC tokens directly)
+openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure
+
+# 15. Verify
 openshell --gateway-insecure sandbox list
 ```
 
