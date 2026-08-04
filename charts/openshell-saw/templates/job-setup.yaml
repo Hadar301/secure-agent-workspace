@@ -27,7 +27,12 @@ spec:
               while true; do
                 all_ready=true
                 for secret in "{{ .Values.sshSecret }}" "{{ .Values.inference.secretName | default .Values.inference.provider }}"; do
-                  if [[ -n "${secret}" ]] && ! kubectl get secret "${secret}" -n {{ .Release.Namespace }} >/dev/null 2>&1; then
+                  [[ -z "${secret}" ]] && continue
+                  if ! [[ "${secret}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+                    echo "ERROR: invalid secret name: ${secret}" >&2
+                    exit 1
+                  fi
+                  if ! kubectl get secret "${secret}" -n {{ .Release.Namespace }} >/dev/null 2>&1; then
                     echo "  waiting for secret/${secret}..."
                     all_ready=false
                   fi
