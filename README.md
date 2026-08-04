@@ -169,28 +169,34 @@ Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default s
 git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 cd secure-agent-workspace
 
-# 2. Generate SSH keys for sandbox provisioning
+# 2. Log in to OpenShift with cluster-admin
+oc login --server=https://api.<cluster>:6443 -u <user>
+
+# 3. Generate SSH keys for sandbox provisioning
 make generate-keys
 
-# 3. Configure secrets
+# 4. Configure secrets
 cp values-secret.yaml.template ~/values-secret.yaml
 # Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
 
-# 4. Copy pre-built images to the cluster (~5 min)
+# 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
 # No build needed — images are pre-built by maintainers.
 make copy-images
 
-# 5. Deploy the pattern (runs inside the VP utility container)
+# 6. Deploy the pattern (runs inside the VP utility container)
+# NOTE: The deploying branch must exist on the remote (origin).
+# If deploying from a local-only branch, set TARGET_REVISION first:
+#   export TARGET_REVISION=main
 ./pattern.sh make install
 
-# 6. Authenticate and configure the CLI
+# 7. Authenticate and configure the CLI
 make login                    # Opens browser → login with alice / alice
 export OPENSHELL_SAW_NAME=openshell-saw
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure   # Authenticate CLI with gateway
 
-# 7. Verify
+# 8. Verify
 openshell --gateway-insecure sandbox list
 ```
 
@@ -203,13 +209,16 @@ Install operators from OperatorHub first, then deploy components manually.
 git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 cd secure-agent-workspace
 
-# 2. Verify prerequisites
+# 2. Log in to OpenShift with cluster-admin
+oc login --server=https://api.<cluster>:6443 -u <user>
+
+# 3. Verify prerequisites
 make check-prereqs
 
-# 3. Generate SSH keys
+# 4. Generate SSH keys
 make generate-keys
 
-# 4. Copy pre-built images to the cluster
+# 5. Copy pre-built images to the cluster
 make copy-images
 
 # 6. Deploy Keycloak
@@ -244,7 +253,7 @@ oc get vmi -n openshell-agents
 # 13. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Authenticate CLI with the gateway (required — the gateway validates OIDC tokens directly)
+# 14. Authenticate CLI with the gateway
 openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure
 
 # 15. Verify

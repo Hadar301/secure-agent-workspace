@@ -2,3 +2,6 @@
 # Only the owner is required — all other values use defaults from values.yaml.
 accessControl:
   owner: alice
+
+job:
+  waitForSecrets: true

@@ -85,6 +85,7 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 # --- NemoClaw images ---
 
 build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
+	-@oc delete is nemoclaw-sandbox nemoclaw-sandbox-root -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
@@ -93,6 +94,7 @@ build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO)
 
 build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
+	-@oc delete is nemoclaw-cli -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
@@ -107,6 +109,7 @@ build-openshell-gateway: ## Build gateway VM image and push to quay
 	-@oc delete datasource openshell-gateway -n $(BUILD_NS) 2>/dev/null
 	-@oc delete pvc openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
 	-@oc delete builds -l buildconfig=openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	-@oc delete is openshell-gateway -n $(BUILD_NS) 2>/dev/null
 	@GOLDEN_FLAG=""; \
 	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \
@@ -229,11 +232,13 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	if [ -f "$$OIDC_TOKEN_FILE" ] && [ -n "$$OIDC_ISSUER" ]; then \
 		echo "Copying OIDC token to gateway config..."; \
 		mkdir -p "$$GW_TOKEN_DIR"; \
+		chmod 700 "$$GW_TOKEN_DIR"; \
 		python3 -c " \
 import json; \
 t = json.load(open('$$OIDC_TOKEN_FILE')); \
 gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
 json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
+		chmod 600 "$$GW_TOKEN_DIR/oidc_token.json" 2>/dev/null; \
 		echo "Token configured." || \
 		echo "Token copy skipped (already authenticated via gateway login)."; \
 	fi
