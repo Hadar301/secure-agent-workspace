@@ -90,16 +90,14 @@ build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
-	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-	oc image mirror $${REGISTRY}/$(BUILD_NS)/nemoclaw-sandbox:latest $(QUAY_REPO)/nemoclaw-sandbox:latest --insecure=true
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO)
 
 build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
-	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-	oc image mirror $${REGISTRY}/$(BUILD_NS)/nemoclaw-cli:latest $(QUAY_REPO)/nemoclaw-cli:latest --insecure=true
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO)
 
 # --- Gateway VM image ---
 
@@ -118,8 +116,7 @@ build-openshell-gateway: ## Build gateway VM image and push to quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
 	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
-	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-	oc image mirror $${REGISTRY}/$(BUILD_NS)/openshell-gateway:latest $(QUAY_REPO)/openshell-gateway:latest --insecure=true
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO)
 
 copy-images: ## Mirror pre-built images from quay to the internal registry
 	@echo "Ensuring namespace and image registry route..."

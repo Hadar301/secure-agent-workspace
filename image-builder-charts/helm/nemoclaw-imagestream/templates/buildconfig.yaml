@@ -20,6 +20,10 @@ spec:
     git:
       uri: {{ .Values.source.git.uri }}
       ref: {{ .Values.source.git.ref }}
+    configMaps:
+      - configMap:
+          name: nemoclaw-audit-patch
+        destinationDir: tools/mcp-tool-discovery-runtime
   strategy:
     type: Docker
     dockerStrategy:
