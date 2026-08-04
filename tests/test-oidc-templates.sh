@@ -95,14 +95,9 @@ run_test "renders with defaults" \
 
 PS_OUTPUT="$(helm template pattern-secrets "${CHARTS_DIR}/pattern-secrets" --namespace openshell-agents 2>&1)"
 assert_contains "${PS_OUTPUT}" "kind: ExternalSecret" "ExternalSecret resources created"
-assert_contains "${PS_OUTPUT}" "name: anthropic" "anthropic secret defined"
-assert_contains "${PS_OUTPUT}" "name: gemini" "gemini secret defined"
-assert_contains "${PS_OUTPUT}" "name: openai" "openai secret defined"
-assert_contains "${PS_OUTPUT}" "name: nvidia" "nvidia secret defined"
-assert_contains "${PS_OUTPUT}" "name: openrouter" "openrouter secret defined"
-assert_contains "${PS_OUTPUT}" "name: vertex" "vertex secret defined"
-assert_contains "${PS_OUTPUT}" "name: tavily" "tavily secret defined"
-assert_contains "${PS_OUTPUT}" "name: brave-search" "brave-search secret defined"
+assert_contains "${PS_OUTPUT}" "name: inference" "unified inference secret defined"
+assert_contains "${PS_OUTPUT}" "name: openshell-ssh-pubkey" "SSH public key secret defined"
+assert_contains "${PS_OUTPUT}" "name: openshell-aap-ssh" "SSH private key secret defined"
 assert_contains "${PS_OUTPUT}" "vault-backend" "vault backend referenced"
 
 # ============================================================
