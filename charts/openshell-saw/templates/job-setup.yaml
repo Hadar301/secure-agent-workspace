@@ -1,3 +1,5 @@
+{{- include "openshell-sandbox.validateSecretName" .Values.sshSecret }}
+{{- include "openshell-sandbox.validateSecretName" (.Values.inference.secretName | default .Values.inference.provider) }}
 apiVersion: batch/v1
 kind: Job
 metadata:

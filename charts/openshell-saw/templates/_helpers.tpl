@@ -47,6 +47,15 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 {{- end }}
 
 {{/*
+Validate a Kubernetes secret name (RFC 1123 subdomain).
+*/}}
+{{- define "openshell-sandbox.validateSecretName" -}}
+{{- if and . (not (regexMatch "^[a-z0-9][a-z0-9.-]*$" .)) -}}
+  {{- fail (printf "invalid secret name %q — must match ^[a-z0-9][a-z0-9.-]*$" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Resolve the SSH public key.
 Priority: explicit sshPublicKey > global.sshPublicKey.
 */}}
