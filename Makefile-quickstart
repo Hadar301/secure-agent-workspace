@@ -234,10 +234,8 @@ import json; \
 t = json.load(open('$$OIDC_TOKEN_FILE')); \
 gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
 json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
-		echo "Token configured. No additional login needed."; \
-	elif [ -n "$$OIDC_ISSUER" ]; then \
-		echo "No existing token found. Launching gateway login..."; \
-		openshell gateway login $(OPENSHELL_SAW_NAME) --gateway-insecure; \
+		echo "Token configured." || \
+		echo "Token copy skipped (already authenticated via gateway login)."; \
 	fi
 
 openshell-saw-list: ## List all sandboxes
