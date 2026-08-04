@@ -262,7 +262,7 @@ openshell-saw-ssh: .check-saw-name ## SSH into a sandbox
 # --- User access ---
 
 openshell-saw-tui: .check-saw-name ## Launch OpenClaw TUI
-	@SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) --gateway-insecure sandbox list --names 2>/dev/null | head -1); \
+	@SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) --gateway-insecure sandbox list --names 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$$' | head -1); \
 	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
 	echo "Connecting to sandbox '$$SANDBOX'..."; \
 	ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $$SANDBOX " \
