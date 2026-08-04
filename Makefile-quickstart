@@ -56,8 +56,16 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Checking operators..."
 	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
 	@echo "  OpenShift Virtualization: installed"
-	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
-	@echo "  RHBK (Keycloak): installed"
+	@if oc get csv -n $(NS) 2>/dev/null | grep -q rhbk; then \
+		echo "  RHBK (Keycloak): installed in $(NS)"; \
+	elif oc get csv --all-namespaces 2>/dev/null | grep -q rhbk; then \
+		RHBK_NS=$$(oc get csv --all-namespaces 2>/dev/null | grep rhbk | awk '{print $$1}' | head -1); \
+		echo "Error: RHBK operator found in namespace '$${RHBK_NS}' but not in '$(NS)'."; \
+		echo "  Install it in '$(NS)': oc apply -f - <<< '{\"apiVersion\":\"operators.coreos.com/v1alpha1\",\"kind\":\"Subscription\",\"metadata\":{\"name\":\"rhbk-operator\",\"namespace\":\"$(NS)\"},\"spec\":{\"channel\":\"stable-v26\",\"name\":\"rhbk-operator\",\"source\":\"redhat-operators\",\"sourceNamespace\":\"openshift-marketplace\"}}'"; \
+		exit 1; \
+	else \
+		echo "Error: RHBK operator not installed."; exit 1; \
+	fi
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
 	@echo "Checking image registry route..."
