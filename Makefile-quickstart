@@ -143,7 +143,7 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
 	TOKEN=$$(oc whoami -t); \
 	podman login --tls-verify=false -u unused -p $${TOKEN} $${REGISTRY} >/dev/null 2>&1 || \
-	docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || true
+	docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || echo "WARN: Container runtime login failed — oc image mirror will use oc credentials"
 	@echo "Mirroring images from $(QUAY_REPO) to internal registry..."
 	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
 	if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
@@ -246,7 +246,7 @@ import json; \
 t = json.load(open('$$OIDC_TOKEN_FILE')); \
 gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
 json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
-		chmod 600 "$$GW_TOKEN_DIR/oidc_token.json" 2>/dev/null; \
+		chmod 600 "$$GW_TOKEN_DIR/oidc_token.json" 2>/dev/null && \
 		echo "Token configured." || \
 		echo "Token copy skipped (already authenticated via gateway login)."; \
 	fi
