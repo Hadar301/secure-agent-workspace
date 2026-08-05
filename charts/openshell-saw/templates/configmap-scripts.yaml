@@ -467,6 +467,7 @@ data:
     fi
 
     # --- Prerequisites for nemoclaw onboard path ---
+    ONBOARD_OK=1
     if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
       if ! command -v docker &>/dev/null; then
         echo "Installing podman-docker..."
@@ -529,14 +530,16 @@ data:
       [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
       ONBOARD_ENV+=("NEMOCLAW_SANDBOX_NAME=${SANDBOX_NAME}")
 
-      env "${ONBOARD_ENV[@]}" \
-        nemoclaw onboard \
-          --non-interactive \
-          --name "${SANDBOX_NAME}" \
-          --agent "${NEMOCLAW_AGENT}" \
-          --yes \
-          --yes-i-accept-third-party-software \
-        || echo "WARN: nemoclaw onboard failed, tui may not work"
+      if ! env "${ONBOARD_ENV[@]}" \
+          nemoclaw onboard \
+            --non-interactive \
+            --name "${SANDBOX_NAME}" \
+            --agent "${NEMOCLAW_AGENT}" \
+            --yes \
+            --yes-i-accept-third-party-software; then
+        ONBOARD_OK=0
+        echo "WARN: nemoclaw onboard failed, tui may not work"
+      fi
 
     else
       # --- openclaw onboard: runs inside the sandbox ---
@@ -571,11 +574,13 @@ data:
         [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ARGS+=(--custom-model-id "${NEMOCLAW_MODEL}")
       fi
 
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-        openclaw onboard "${ONBOARD_ARGS[@]}" \
-        || echo "WARN: openclaw onboard failed, tui may not work"
+      if ! openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+          openclaw onboard "${ONBOARD_ARGS[@]}"; then
+        ONBOARD_OK=0
+        echo "WARN: openclaw onboard failed, tui may not work"
+      fi
 
-      if [[ -n "${NEMOCLAW_MODEL}" && "${NEMOCLAW_PROVIDER}" != "custom" ]]; then
+      if [[ "${ONBOARD_OK}" -eq 1 && -n "${NEMOCLAW_MODEL}" && "${NEMOCLAW_PROVIDER}" != "custom" ]]; then
         BARE_MODEL="${NEMOCLAW_MODEL##*/}"
         MODEL_PREFIX=""
         case "${NEMOCLAW_PROVIDER}" in
@@ -599,7 +604,10 @@ data:
 
     # --- Extract auth token for GUI access ---
     echo "Extracting auth token for GUI access..."
-    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]] && command -v nemoclaw &>/dev/null; then
+    if [[ "${ONBOARD_OK}" -ne 1 ]]; then
+      echo "WARN: skipping auth token extraction because onboard did not complete"
+      TOKEN=""
+    elif [[ "${ONBOARD_CLI}" == "nemoclaw" ]] && command -v nemoclaw &>/dev/null; then
       DASHBOARD_URL=$(nemoclaw sandbox dashboard-url "${SANDBOX_NAME}" 2>/dev/null | grep -o 'http[^ ]*' | tail -1)
       TOKEN=$(echo "${DASHBOARD_URL}" | grep -o '#token=.*' | sed 's/#token=//')
     else
@@ -608,7 +616,7 @@ data:
         const c = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json','utf8'));
         fs.writeFileSync('/tmp/auth-token', (c.gateway && c.gateway.auth && c.gateway.auth.token) || '');
       " || true
-      TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]')
+      TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]' || true)
     fi
     if [[ -n "${TOKEN}" ]]; then
       echo "${TOKEN}" > "${HOME}/.openclaw-token-${SANDBOX_NAME}"
@@ -618,20 +626,24 @@ data:
     fi
 
     # --- Start openclaw gateway inside sandbox ---
-    echo "Starting openclaw gateway inside sandbox..."
-    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
-      nohup openclaw gateway run --bind lan --port 18789 --allow-unconfigured > /tmp/openclaw-gateway.log 2>&1 &
-      for i in $(seq 1 15); do
-        sleep 3
-        if curl -sf --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
-          echo "openclaw gateway ready"
-          exit 0
-        fi
-        echo "  waiting for gateway... (attempt $i)"
-      done
-      echo "WARN: gateway health check timed out"
-      cat /tmp/openclaw-gateway.log 2>/dev/null | tail -10
-    ' || echo "WARN: openclaw gateway start failed"
+    if [[ "${ONBOARD_OK}" -eq 1 ]]; then
+      echo "Starting openclaw gateway inside sandbox..."
+      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
+        nohup openclaw gateway run --bind lan --port 18789 --allow-unconfigured > /tmp/openclaw-gateway.log 2>&1 &
+        for i in $(seq 1 15); do
+          sleep 3
+          if curl -sf --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
+            echo "openclaw gateway ready"
+            exit 0
+          fi
+          echo "  waiting for gateway... (attempt $i)"
+        done
+        echo "WARN: gateway health check timed out"
+        cat /tmp/openclaw-gateway.log 2>/dev/null | tail -10
+      ' || echo "WARN: openclaw gateway start failed"
+    else
+      echo "WARN: skipping openclaw gateway restart (onboard did not complete)"
+    fi
 
     echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
 
