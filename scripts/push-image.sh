@@ -26,5 +26,11 @@ fi
 # Authenticate to the internal registry using the current user's token
 oc registry login --registry="${REGISTRY}" --insecure=true
 
+# Verify quay.io authentication before mirroring
+if ! podman login --get-login "${QUAY_REPO%%/*}" >/dev/null 2>&1 && \
+   ! docker login --get-login "${QUAY_REPO%%/*}" >/dev/null 2>&1; then
+  echo "WARN: Not authenticated to ${QUAY_REPO%%/*} — run 'podman login ${QUAY_REPO%%/*}' first" >&2
+fi
+
 oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
   "${QUAY_REPO}/${IMAGE}:latest" --insecure=true
