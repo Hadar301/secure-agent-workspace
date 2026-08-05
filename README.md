@@ -169,23 +169,35 @@ Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default s
 git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 cd secure-agent-workspace
 
-# 2. Generate SSH keys for sandbox provisioning
+# 2. Log in to OpenShift with cluster-admin
+oc login --server=https://api.<cluster>:6443 -u <user>
+
+# 3. Generate SSH keys for sandbox provisioning
 make generate-keys
 
-# 3. Configure secrets
+# 4. Configure secrets
 cp values-secret.yaml.template ~/values-secret.yaml
 # Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
 
-# 4. Build images (one-time, ~15 min total)
-# These build the sandbox container image and bootc gateway VM image
-# inside the cluster via OpenShift BuildConfig. This step will be
-# replaced by pre-built upstream golden images in a future release.
-make build-nemoclaw           # NemoClaw sandbox image
-make build-nemoclaw-cli       # NemoClaw CLI image
-make build-openshell-gateway-image  # Bootc gateway VM image
+# 5. Copy pre-built images to the cluster (~5 min)
+# Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
+# No build needed — images are pre-built by maintainers.
+make copy-images
 
-# 5. Deploy the pattern (runs inside the VP utility container)
+# 6. Deploy the pattern (runs inside the VP utility container)
+# NOTE: The deploying branch must exist on the remote (origin).
+# If deploying from a local-only branch, set TARGET_REVISION first:
+#   export TARGET_REVISION=main
 ./pattern.sh make install
+
+# 7. Authenticate and configure the CLI
+make login                    # Opens browser → login with alice / alice
+export OPENSHELL_SAW_NAME=openshell-saw
+make openshell-saw-configure-gateway
+openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure   # Authenticate CLI with gateway
+
+# 8. Verify
+openshell --gateway-insecure sandbox list
 ```
 
 #### Option B: Quickstart (manual, step-by-step)
@@ -197,20 +209,17 @@ Install operators from OperatorHub first, then deploy components manually.
 git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 cd secure-agent-workspace
 
-# 2. Verify prerequisites
+# 2. Log in to OpenShift with cluster-admin
+oc login --server=https://api.<cluster>:6443 -u <user>
+
+# 3. Verify prerequisites
 make check-prereqs
 
-# 3. Generate SSH keys
+# 4. Generate SSH keys
 make generate-keys
 
-# 4. Build images (one-time, ~15 min total)
-make build-nemoclaw           # NemoClaw sandbox image
-make build-nemoclaw-cli       # NemoClaw CLI image
-make build-openshell-gateway-image  # Bootc gateway VM image
-
-# 5. Verify golden image is ready
-oc get dv openshell-gateway-golden -n openshell-agents
-# Wait for PHASE=Succeeded
+# 5. Copy pre-built images to the cluster
+make copy-images
 
 # 6. Deploy Keycloak
 make keycloak
@@ -244,14 +253,16 @@ oc get vmi -n openshell-agents
 # 13. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Login to the gateway
-openshell gateway login
+# 14. Authenticate CLI with the gateway
+openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure
 
 # 15. Verify
 openshell --gateway-insecure sandbox list
 ```
 
 > **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true`.
+
+> **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
 You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically.
 

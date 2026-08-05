@@ -48,13 +48,6 @@ agent: openclaw
 # Onboarding CLI: openclaw (runs inside sandbox) or nemoclaw (runs on gateway VM, requires Docker)
 onboardCli: openclaw
 
-# OpenClaw gateway runtime configuration inside the sandbox.
-openclaw:
-  # Bind address for `openclaw gateway` started by setup script.
-  # Defaults to localhost for least exposure. Override to 0.0.0.0 only
-  # when external access via route/port-forward is explicitly required.
-  gatewayHost: "127.0.0.1"
-
 # OpenShell gateway runtime configuration inside the sandbox VM.
 openshell:
   # Bind address for `openshell-gateway` listener.
@@ -95,6 +88,10 @@ job:
   image: "registry.fedoraproject.org/fedora:44"
   backoffLimit: 2
   activeDeadlineSeconds: 1800
+  # Wait for ESO-managed secrets before starting the setup Job.
+  # Set to true when using Validated Pattern / External Secrets Operator.
+  # Leave false for manual/quickstart path where secrets are created directly.
+  waitForSecrets: false
 
 # Expose the sandbox gateway and dashboard via OpenShift Routes.
 route:

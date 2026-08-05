@@ -1,5 +1,6 @@
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
+QUAY_REPO      ?= quay.io/rh-ai-quickstart
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 AGENT          ?= openclaw
@@ -55,8 +56,16 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Checking operators..."
 	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
 	@echo "  OpenShift Virtualization: installed"
-	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
-	@echo "  RHBK (Keycloak): installed"
+	@if oc get csv -n $(NS) 2>/dev/null | grep -q rhbk; then \
+		echo "  RHBK (Keycloak): installed in $(NS)"; \
+	elif oc get csv --all-namespaces 2>/dev/null | grep -q rhbk; then \
+		RHBK_NS=$$(oc get csv --all-namespaces 2>/dev/null | grep rhbk | awk '{print $$1}' | head -1); \
+		echo "Error: RHBK operator found in namespace '$${RHBK_NS}' but not in '$(NS)'."; \
+		echo "  Install it in '$(NS)': oc apply -f - <<< '{\"apiVersion\":\"operators.coreos.com/v1alpha1\",\"kind\":\"Subscription\",\"metadata\":{\"name\":\"rhbk-operator\",\"namespace\":\"$(NS)\"},\"spec\":{\"channel\":\"stable-v26\",\"name\":\"rhbk-operator\",\"source\":\"redhat-operators\",\"sourceNamespace\":\"openshift-marketplace\"}}'"; \
+		exit 1; \
+	else \
+		echo "Error: RHBK operator not installed."; exit 1; \
+	fi
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
 	@echo "Checking image registry route..."
@@ -68,8 +77,8 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build-nemoclaw build-nemoclaw-logs build-nemoclaw-cli build-nemoclaw-cli-logs \
-        build-openshell-gateway-image build-openshell-gateway-image-logs import-golden-image ensure-images \
+        build-nemoclaw build-nemoclaw-cli \
+        build-openshell-gateway copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
@@ -83,31 +92,32 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 
 # --- NemoClaw images ---
 
-build-nemoclaw: ## Build NemoClaw sandbox image
+build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
+	-@oc delete is nemoclaw-sandbox nemoclaw-sandbox-root -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
+	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO)
 
-build-nemoclaw-logs: ## Follow NemoClaw image build logs
-	oc logs -f bc/nemoclaw-sandbox -n $(BUILD_NS)
-
-build-nemoclaw-cli: ## Build NemoClaw CLI image
+build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
+	-@oc delete is nemoclaw-cli -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
-
-build-nemoclaw-cli-logs: ## Follow NemoClaw CLI build logs
-	oc logs -f bc/nemoclaw-cli -n $(BUILD_NS)
+	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO)
 
 # --- Gateway VM image ---
 
-build-openshell-gateway-image: ## Build the bootc gateway VM image
+build-openshell-gateway: ## Build gateway VM image and push to quay
 	@echo "Cleaning up old golden image..."
 	-@oc delete dv openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
 	-@oc delete datasource openshell-gateway -n $(BUILD_NS) 2>/dev/null
 	-@oc delete pvc openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
 	-@oc delete builds -l buildconfig=openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	-@oc delete is openshell-gateway -n $(BUILD_NS) 2>/dev/null
 	@GOLDEN_FLAG=""; \
 	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \
@@ -116,21 +126,35 @@ build-openshell-gateway-image: ## Build the bootc gateway VM image
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO)
 
-build-openshell-gateway-image-logs: ## Follow gateway image build logs
-	oc logs -f bc/openshell-gateway -n $(BUILD_NS)
-
-GOLDEN_IMAGE_URL ?= docker://quay.io/rh-ai-quickstart/openshell-gateway:latest
-
-import-golden-image: ## Import pre-built golden image from quay.io (skips build)
-	@NS=$(NS) GOLDEN_IMAGE_URL=$(GOLDEN_IMAGE_URL) \
-	$(SCRIPTS_DIR)/import-golden-image.sh
-
-ensure-images: ## Build golden image if not already present
-	@NS=$(BUILD_NS) HELM_DIR=$(HELM_DIR) $(SCRIPTS_DIR)/ensure-golden-image.sh
+copy-images: ## Mirror pre-built images from quay to the internal registry
+	@echo "Ensuring namespace and image registry route..."
+	@oc create namespace $(BUILD_NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+	@oc patch configs.imageregistry.operator.openshift.io/cluster \
+		--patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1 || true
+	@for i in $$(seq 1 30); do \
+		REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+		if [ -n "$$REGISTRY" ]; then break; fi; \
+		sleep 5; \
+	done
+	@echo "Authenticating to internal registry..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	TOKEN=$$(oc whoami -t); \
+	podman login --tls-verify=false -u unused -p $${TOKEN} $${REGISTRY} >/dev/null 2>&1 || \
+	docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || echo "WARN: Container runtime login failed — oc image mirror will use oc credentials"
+	@echo "Mirroring images from $(QUAY_REPO) to internal registry..."
+	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+	if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
+	for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
+		echo "  Mirroring $${image}..."; \
+		oc image mirror $(QUAY_REPO)/$${image}:latest $${REGISTRY}/$(BUILD_NS)/$${image}:latest --insecure=true 2>&1 | tail -1; \
+	done; \
+	echo "All images mirrored."
 
 # Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
-# (openshell-gateway-image app). For manual flow, run: make ensure-images
+# (openshell-gateway-image app). For manual flow, run: make copy-images
 pattern-install: generate-keys
 
 # --- Keycloak / OIDC ---
@@ -211,9 +235,20 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) --gateway-insecure $$OIDC_OPTS; \
 	openshell gateway select $(OPENSHELL_SAW_NAME); \
 	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"; \
-	if [ -n "$$OIDC_ISSUER" ]; then \
-		echo "Launching gateway login..."; \
-		openshell gateway login $(OPENSHELL_SAW_NAME) --gateway-insecure; \
+	OIDC_TOKEN_FILE="$(OIDC_TOKEN_DIR)/token.json"; \
+	GW_TOKEN_DIR="$$HOME/.config/openshell/gateways/$(OPENSHELL_SAW_NAME)"; \
+	if [ -f "$$OIDC_TOKEN_FILE" ] && [ -n "$$OIDC_ISSUER" ]; then \
+		echo "Copying OIDC token to gateway config..."; \
+		mkdir -p "$$GW_TOKEN_DIR"; \
+		chmod 700 "$$GW_TOKEN_DIR"; \
+		python3 -c " \
+import json; \
+t = json.load(open('$$OIDC_TOKEN_FILE')); \
+gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
+json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
+		chmod 600 "$$GW_TOKEN_DIR/oidc_token.json" 2>/dev/null && \
+		echo "Token configured." || \
+		echo "Token copy skipped (already authenticated via gateway login)."; \
 	fi
 
 openshell-saw-list: ## List all sandboxes
@@ -240,7 +275,7 @@ openshell-saw-ssh: .check-saw-name ## SSH into a sandbox
 # --- User access ---
 
 openshell-saw-tui: .check-saw-name ## Launch OpenClaw TUI
-	@SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) --gateway-insecure sandbox list --names 2>/dev/null | head -1); \
+	@SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) --gateway-insecure sandbox list --names 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$$' | head -1); \
 	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
 	echo "Connecting to sandbox '$$SANDBOX'..."; \
 	ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $$SANDBOX " \

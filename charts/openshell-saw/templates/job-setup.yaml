@@ -1,3 +1,5 @@
+{{- include "openshell-sandbox.validateSecretName" .Values.sshSecret }}
+{{- include "openshell-sandbox.validateSecretName" (.Values.inference.secretName | default .Values.inference.provider) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -14,6 +16,40 @@ spec:
     spec:
       serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-setup
       restartPolicy: OnFailure
+      {{- if .Values.job.waitForSecrets }}
+      initContainers:
+        - name: wait-for-secrets
+          image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for required secrets..."
+              deadline=$((SECONDS + 600))
+              while true; do
+                all_ready=true
+                for secret in "{{ .Values.sshSecret }}" "{{ .Values.inference.secretName | default .Values.inference.provider }}"; do
+                  [[ -z "${secret}" ]] && continue
+                  if ! [[ "${secret}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+                    echo "ERROR: invalid secret name: ${secret}" >&2
+                    exit 1
+                  fi
+                  if ! kubectl get secret "${secret}" -n {{ .Release.Namespace }} >/dev/null 2>&1; then
+                    echo "  waiting for secret/${secret}..."
+                    all_ready=false
+                  fi
+                done
+                if [[ "${all_ready}" == "true" ]]; then
+                  echo "All secrets ready."
+                  exit 0
+                fi
+                if (( SECONDS > deadline )); then
+                  echo "Timed out waiting for secrets" >&2
+                  exit 1
+                fi
+                sleep 10
+              done
+      {{- end }}
       containers:
         - name: setup
           image: {{ .Values.job.image }}
