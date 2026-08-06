@@ -278,7 +278,8 @@ data:
       if [[ -n "${REGISTRY_ROUTE}" ]]; then
         echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
         SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-        guest_ssh "podman login --tls-verify=false -u unused -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+        guest_ssh "docker login --username unused --password '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+        guest_ssh "sudo docker login --username unused --password '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
         BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
         SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi
@@ -286,6 +287,46 @@ data:
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
       echo "Sandbox image: ${SANDBOX_IMAGE}"
     fi
+
+    # --- Install OpenShell gateway and supervisor binaries ---
+    GATEWAY_IMAGE="{{ .Values.openshell.gatewayImage }}"
+    SUPERVISOR_IMAGE="{{ .Values.openshell.supervisorImage }}"
+    OPENSHELL_PIP_VERSION="{{ .Values.openshell.version }}"
+    echo "Installing OpenShell binaries (gateway=${GATEWAY_IMAGE}, supervisor=${SUPERVISOR_IMAGE}, cli=${OPENSHELL_PIP_VERSION})..."
+    guest_ssh "
+      docker pull '${GATEWAY_IMAGE}' && \
+      CID=\$(docker create '${GATEWAY_IMAGE}') && \
+      docker cp \${CID}:/usr/local/bin/openshell-gateway /tmp/openshell-gateway && \
+      docker rm \${CID} && \
+      sudo mv /tmp/openshell-gateway /usr/local/bin/openshell-gateway && \
+      sudo chmod 755 /usr/local/bin/openshell-gateway && \
+      echo 'gateway installed'
+    " || echo "WARN: gateway binary install failed"
+    guest_ssh "
+      docker pull '${SUPERVISOR_IMAGE}' && \
+      CID=\$(docker create '${SUPERVISOR_IMAGE}') && \
+      docker cp \${CID}:/openshell-sandbox /tmp/openshell-supervisor && \
+      docker rm \${CID} && \
+      sudo mv /tmp/openshell-supervisor /usr/local/bin/openshell-supervisor && \
+      sudo chmod 755 /usr/local/bin/openshell-supervisor && \
+      echo 'supervisor installed'
+    " || echo "WARN: supervisor binary install failed"
+    guest_ssh "
+      pip3 install openshell==${OPENSHELL_PIP_VERSION} \
+        {{- if .Values.openshell.pipIndexUrl }}
+        --extra-index-url {{ .Values.openshell.pipIndexUrl }} \
+        {{- end }}
+        && echo 'openshell CLI installed'
+    " || echo "WARN: openshell CLI install failed"
+    guest_ssh "openshell-gateway --version; openshell-supervisor --version; openshell --version" || true
+
+    # --- Install lsof (needed by nemoclaw for gateway listener identification) ---
+    echo "Installing lsof..."
+    guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install failed"
+
+    # --- Restart gateway with new binaries ---
+    echo "Restarting gateway service..."
+    guest_ssh "systemctl --user restart openshell-gateway.service && sleep 3 && systemctl --user is-active openshell-gateway.service" || echo "WARN: gateway restart failed"
 
     # --- SCP SA JSON + scripts ---
     echo "Copying scripts to vm/${VM_NAME}..."
@@ -296,8 +337,8 @@ data:
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
-    # Fetch OIDC token from Keycloak if not already provided
     source "${WORK_DIR}/run-create.env" 2>/dev/null || true
+    # Fetch OIDC token from Keycloak if not already provided
     if [[ -z "${OIDC_TOKEN:-}" && -n "${OIDC_ISSUER:-}" ]]; then
       OWNER="{{ .Values.accessControl.owner }}"
       if [[ -n "${OWNER}" ]]; then
@@ -450,10 +491,10 @@ data:
     if ! command -v nemoclaw &>/dev/null; then
       if [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
         echo "Installing nemoclaw CLI from ${NEMOCLAW_CLI_IMAGE}..."
-        CID="$(podman create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
+        CID="$(docker create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
         if [[ -n "${CID}" ]]; then
-          podman cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
-          podman rm "${CID}" >/dev/null
+          docker cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
+          docker rm "${CID}" >/dev/null
           sudo mv /tmp/nemoclaw-cli /opt/nemoclaw
           printf '#!/usr/bin/env bash\nexec node /opt/nemoclaw/bin/nemoclaw.js "$@"\n' | sudo tee /usr/local/bin/nemoclaw >/dev/null
           sudo chmod 755 /usr/local/bin/nemoclaw
@@ -463,15 +504,6 @@ data:
         fi
       else
         echo "WARN: nemoclaw not found and NEMOCLAW_CLI_IMAGE not set"
-      fi
-    fi
-
-    # --- Prerequisites for nemoclaw onboard path ---
-    ONBOARD_OK=1
-    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
-      if ! command -v docker &>/dev/null; then
-        echo "Installing podman-docker..."
-        sudo dnf install -y --setopt=install_weak_deps=False podman-docker
       fi
     fi
 
@@ -487,162 +519,40 @@ data:
       echo "OIDC token configured for gateway auth"
     fi
 
-    # --- Create sandbox ---
+    # --- Configure inference provider on the gateway ---
+    PROVIDER_TYPE=""
+    CRED_KEY=""
+    case "${NEMOCLAW_PROVIDER}" in
+      gemini)      PROVIDER_TYPE="google-vertex-ai"; CRED_KEY="GOOGLE_API_KEY" ;;
+      anthropic)   PROVIDER_TYPE="claude-code";      CRED_KEY="ANTHROPIC_API_KEY" ;;
+      openai)      PROVIDER_TYPE="codex";            CRED_KEY="OPENAI_API_KEY" ;;
+      build)       PROVIDER_TYPE="nvidia";           CRED_KEY="NVIDIA_API_KEY" ;;
+      ollama)      PROVIDER_TYPE="ollama";           CRED_KEY="" ;;
+      *)           PROVIDER_TYPE="nvidia";           CRED_KEY="API_KEY" ;;
+    esac
+
+    if [[ -n "${NEMOCLAW_PROVIDER}" && -n "${NEMOCLAW_API_KEY}" ]]; then
+      echo "Configuring inference provider on gateway (type=${PROVIDER_TYPE})..."
+      openshell provider create \
+        --name inference \
+        --type "${PROVIDER_TYPE}" \
+        --credential "${CRED_KEY}=${NEMOCLAW_API_KEY}" \
+        2>&1 || openshell provider update inference \
+        --credential "${CRED_KEY}=${NEMOCLAW_API_KEY}" \
+        2>&1 || echo "WARN: could not configure provider on gateway"
+    fi
+
+    # --- Create sandbox from pre-built image ---
     CREATE_ARGS=(--name "${SANDBOX_NAME}")
     if [[ -n "${SANDBOX_IMAGE}" ]]; then
       CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
-    fi
-    if [[ -n "${PROVIDER_NAME}" ]] && openshell provider get "${PROVIDER_NAME}" >/dev/null 2>&1; then
-      CREATE_ARGS+=(--provider "${PROVIDER_NAME}")
+      # Pre-pull so Docker daemon has the image cached (avoids auth issues during sandbox create)
+      echo "Pre-pulling sandbox image..."
+      sudo docker pull "${SANDBOX_IMAGE}" 2>&1 | tail -1 || true
     fi
     if ! openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
       echo "Creating sandbox (image=${SANDBOX_IMAGE:-default}, agent=${NEMOCLAW_AGENT})..."
       openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready"
-    fi
-
-    # --- Onboard: configure inference provider ---
-    echo "Running ${ONBOARD_CLI} onboard (provider=${NEMOCLAW_PROVIDER:-vertex-legacy}, model=${NEMOCLAW_MODEL:-${VERTEX_MODEL}})..."
-
-    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
-      # --- nemoclaw onboard: runs on gateway VM ---
-      CRED_ENV=""
-      case "${NEMOCLAW_PROVIDER}" in
-        gemini)              CRED_ENV="GEMINI_API_KEY" ;;
-        anthropic)           CRED_ENV="ANTHROPIC_API_KEY" ;;
-        anthropicCompatible) CRED_ENV="COMPATIBLE_ANTHROPIC_API_KEY" ;;
-        openai)              CRED_ENV="OPENAI_API_KEY" ;;
-        build)               CRED_ENV="NVIDIA_INFERENCE_API_KEY" ;;
-        openrouter)          CRED_ENV="OPENROUTER_API_KEY" ;;
-        custom)              CRED_ENV="COMPATIBLE_API_KEY" ;;
-        ollama|"")           CRED_ENV="" ;;
-        *)                   CRED_ENV="COMPATIBLE_API_KEY" ;;
-      esac
-
-      ONBOARD_ENV=(
-        "NEMOCLAW_NON_INTERACTIVE=1"
-        "NEMOCLAW_YES=1"
-        "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1"
-      )
-      [[ -n "${NEMOCLAW_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_PROVIDER=${NEMOCLAW_PROVIDER}")
-      [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
-      [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
-      [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
-      [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
-      ONBOARD_ENV+=("NEMOCLAW_SANDBOX_NAME=${SANDBOX_NAME}")
-
-      if ! env "${ONBOARD_ENV[@]}" \
-          nemoclaw onboard \
-            --non-interactive \
-            --name "${SANDBOX_NAME}" \
-            --agent "${NEMOCLAW_AGENT}" \
-            --yes \
-            --yes-i-accept-third-party-software; then
-        ONBOARD_OK=0
-        echo "WARN: nemoclaw onboard failed, tui may not work"
-      fi
-
-    else
-      # --- openclaw onboard: runs inside the sandbox ---
-      AUTH_CHOICE=""
-      KEY_FLAG=""
-      case "${NEMOCLAW_PROVIDER}" in
-        gemini)      AUTH_CHOICE="gemini-api-key";     KEY_FLAG="--gemini-api-key" ;;
-        anthropic)   AUTH_CHOICE="apiKey";             KEY_FLAG="--anthropic-api-key" ;;
-        openai)      AUTH_CHOICE="openai-api-key";     KEY_FLAG="--openai-api-key" ;;
-        build)       AUTH_CHOICE="nvidia-api-key";     KEY_FLAG="--nvidia-api-key" ;;
-        openrouter)  AUTH_CHOICE="openrouter-api-key"; KEY_FLAG="--openrouter-api-key" ;;
-        ollama)      AUTH_CHOICE="ollama";             KEY_FLAG="" ;;
-        custom)      AUTH_CHOICE="custom-api-key";     KEY_FLAG="--custom-api-key" ;;
-        *)           AUTH_CHOICE="skip";               KEY_FLAG="" ;;
-      esac
-
-      ONBOARD_ARGS=(
-        --non-interactive
-        --accept-risk
-        --skip-channels
-        --skip-skills
-        --skip-hooks
-        --skip-search
-        --skip-ui
-        --skip-health
-        --no-install-daemon
-      )
-      [[ -n "${AUTH_CHOICE}" ]] && ONBOARD_ARGS+=(--auth-choice "${AUTH_CHOICE}")
-      [[ -n "${KEY_FLAG}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ARGS+=("${KEY_FLAG}" "${NEMOCLAW_API_KEY}")
-      if [[ "${NEMOCLAW_PROVIDER}" == "custom" ]]; then
-        [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ARGS+=(--custom-base-url "${NEMOCLAW_ENDPOINT_URL}")
-        [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ARGS+=(--custom-model-id "${NEMOCLAW_MODEL}")
-      fi
-
-      if ! openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-          openclaw onboard "${ONBOARD_ARGS[@]}"; then
-        ONBOARD_OK=0
-        echo "WARN: openclaw onboard failed, tui may not work"
-      fi
-
-      if [[ "${ONBOARD_OK}" -eq 1 && -n "${NEMOCLAW_MODEL}" && "${NEMOCLAW_PROVIDER}" != "custom" ]]; then
-        BARE_MODEL="${NEMOCLAW_MODEL##*/}"
-        MODEL_PREFIX=""
-        case "${NEMOCLAW_PROVIDER}" in
-          gemini)      MODEL_PREFIX="google" ;;
-          anthropic)   MODEL_PREFIX="claude-cli" ;;
-          openai)      MODEL_PREFIX="openai" ;;
-          build)       MODEL_PREFIX="inference" ;;
-          openrouter)  MODEL_PREFIX="openrouter" ;;
-          ollama)      MODEL_PREFIX="ollama" ;;
-        esac
-        if [[ -n "${MODEL_PREFIX}" ]]; then
-          FULL_MODEL="${MODEL_PREFIX}/${BARE_MODEL}"
-        else
-          FULL_MODEL="${BARE_MODEL}"
-        fi
-        echo "Setting model to ${FULL_MODEL}..."
-        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-          openclaw models set "${FULL_MODEL}" 2>/dev/null || true
-      fi
-    fi
-
-    # --- Extract auth token for GUI access ---
-    echo "Extracting auth token for GUI access..."
-    if [[ "${ONBOARD_OK}" -ne 1 ]]; then
-      echo "WARN: skipping auth token extraction because onboard did not complete"
-      TOKEN=""
-    elif [[ "${ONBOARD_CLI}" == "nemoclaw" ]] && command -v nemoclaw &>/dev/null; then
-      DASHBOARD_URL=$(nemoclaw sandbox dashboard-url "${SANDBOX_NAME}" 2>/dev/null | grep -o 'http[^ ]*' | tail -1)
-      TOKEN=$(echo "${DASHBOARD_URL}" | grep -o '#token=.*' | sed 's/#token=//')
-    else
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
-        const fs = require('fs');
-        const c = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json','utf8'));
-        fs.writeFileSync('/tmp/auth-token', (c.gateway && c.gateway.auth && c.gateway.auth.token) || '');
-      " || true
-      TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]' || true)
-    fi
-    if [[ -n "${TOKEN}" ]]; then
-      echo "${TOKEN}" > "${HOME}/.openclaw-token-${SANDBOX_NAME}"
-      echo "Auth token saved"
-    else
-      echo "WARN: could not extract auth token (make gui may not work)"
-    fi
-
-    # --- Start openclaw gateway inside sandbox ---
-    if [[ "${ONBOARD_OK}" -eq 1 ]]; then
-      echo "Starting openclaw gateway inside sandbox..."
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
-        nohup openclaw gateway run --bind lan --port 18789 --allow-unconfigured > /tmp/openclaw-gateway.log 2>&1 &
-        for i in $(seq 1 15); do
-          sleep 3
-          if curl -sf --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
-            echo "openclaw gateway ready"
-            exit 0
-          fi
-          echo "  waiting for gateway... (attempt $i)"
-        done
-        echo "WARN: gateway health check timed out"
-        cat /tmp/openclaw-gateway.log 2>/dev/null | tail -10
-      ' || echo "WARN: openclaw gateway start failed"
-    else
-      echo "WARN: skipping openclaw gateway restart (onboard did not complete)"
     fi
 
     echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
@@ -706,19 +616,10 @@ data:
     export ONBOARD_CLI="${ONBOARD_CLI:-openclaw}"
     export PROVIDER_NAME SANDBOX_IMAGE="${SANDBOX_IMAGE:-}" VERTEX_MODEL="${VERTEX_MODEL:-}"
     export NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"
-    export OIDC_TOKEN="${OIDC_TOKEN:-}" OIDC_ISSUER="${OIDC_ISSUER:-}" OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}" OIDC_PASSTHROUGH="${OIDC_PASSTHROUGH:-}"
+    export OIDC_TOKEN="${OIDC_TOKEN:-}" OIDC_ISSUER="${OIDC_ISSUER:-}" OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}"
     "${HOME}/setup-nemoclaw.sh"
 
     SSH_PUBKEY="${SSH_PUBKEY}" SANDBOX_NAME="${SANDBOX_NAME}" "${HOME}/inject-user-pubkey.sh"
-
-    if [[ -n "${OIDC_TOKEN}" && "${OIDC_PASSTHROUGH}" == "true" ]]; then
-      echo "Writing OIDC token to sandbox for MCP server auth..."
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c "
-        mkdir -p /sandbox/.oidc
-        printf '{\"access_token\":\"%s\"}' '${OIDC_TOKEN}' > /sandbox/.oidc/token.json
-        chmod 600 /sandbox/.oidc/token.json
-      " || echo "WARN: could not write OIDC token to sandbox"
-    fi
 
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
       shred -u "${SA_JSON}" 2>/dev/null || rm -f "${SA_JSON}"
