@@ -37,12 +37,13 @@ data:
           OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
           OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/ca.crt
           {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
-          {{- if $oidcIssuer }}
+          {{- if or .Values.oidc.token $oidcIssuer }}
           OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml
+          OPENSHELL_ENABLE_MTLS_AUTH=true
           {{- end }}
 
       {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
-      {{- if $oidcIssuer }}
+      {{- if or .Values.oidc.token $oidcIssuer }}
       - path: /etc/openshell/gateway.toml
         owner: root:root
         permissions: "0644"
