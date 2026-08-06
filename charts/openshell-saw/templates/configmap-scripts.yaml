@@ -728,8 +728,15 @@ data:
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c \
       'nohup openclaw gateway run --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &' \
       2>/dev/null || echo "WARN: could not start openclaw gateway"
-    sleep 3
-    if openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- curl -sf http://127.0.0.1:18789/health 2>/dev/null | grep -q ok; then
+    OPENCLAW_READY=0
+    for i in $(seq 1 10); do
+      if openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- curl -sf http://127.0.0.1:18789/health 2>/dev/null | grep -q ok; then
+        OPENCLAW_READY=1; break
+      fi
+      echo "  waiting for openclaw gateway... (attempt $i)"
+      sleep 3
+    done
+    if [[ "${OPENCLAW_READY}" -eq 1 ]]; then
       echo "openclaw gateway ready (dashboard token saved to config)"
     else
       echo "WARN: openclaw gateway health check failed — dashboard may not work"
