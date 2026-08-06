@@ -22,7 +22,7 @@ data:
 
     # --- Install dependencies (in the Job Pod, not the VM) ---
     echo "Installing openssh-clients..."
-    dnf install -y --setopt=install_weak_deps=False openssh-clients
+    dnf install -y --setopt=install_weak_deps=False openssh-clients {{ if .Values.dashboard.enabled }}jq{{ end }}
 
     echo "Installing kubectl..."
     K8S_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
@@ -353,7 +353,7 @@ data:
     {{- if .Values.vertexSaJson }}
     guest_scp "/gcp-sa/sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
     {{- end }}
-    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh run-create.sh; do
+    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh setup-dashboard.sh run-create.sh; do
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
@@ -421,6 +421,66 @@ data:
     if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
       echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
+    {{- if .Values.dashboard.enabled }}
+    # --- Resolve dashboard webui Route for oauth2-proxy redirect URL ---
+    WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+    if [[ -n "${WEBUI_ROUTE_HOST}" ]]; then
+      DASHBOARD_REDIRECT_URL="https://${WEBUI_ROUTE_HOST}/oauth2/callback"
+      echo "DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}" >> "${WORK_DIR}/run-create.env"
+
+      # --- Register this sandbox's exact redirect URI on the shared Keycloak
+      # client. Keycloak's redirect URI matching only supports a *trailing*
+      # wildcard, which can't express "any per-VM hostname, fixed path" — a
+      # single "https://*/oauth2/callback" entry is rejected outright
+      # ("Invalid parameter: redirect_uri"). Read-modify-write the client's
+      # redirectUris/webOrigins via the Admin API instead.
+      KC_NS="{{ .Values.dashboard.keycloakNamespace | default .Release.Namespace }}"
+      KC_ADMIN_SECRET="{{ .Values.oidc.keycloakName }}-initial-admin"
+      KC_ADMIN_USER="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KC_NS}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)"
+      KC_ADMIN_PASS="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KC_NS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+      KC_BASE="$(echo "${OIDC_ISSUER:-}" | sed 's#/realms/.*##')"
+      KC_REALM="{{ .Values.oidc.realm }}"
+      DASHBOARD_CLIENT_ID="{{ .Values.dashboard.clientId }}"
+      if [[ -n "${KC_ADMIN_USER}" && -n "${KC_BASE}" ]]; then
+        echo "Registering redirect URI on Keycloak client '${DASHBOARD_CLIENT_ID}'..."
+        KC_ADMIN_TOKEN="$(curl -sk -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
+          -d "grant_type=password" -d "client_id=admin-cli" \
+          -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASS}" \
+          | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+        if [[ -n "${KC_ADMIN_TOKEN}" ]]; then
+          CLIENT_UUID="$(curl -sk -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
+            "${KC_BASE}/admin/realms/${KC_REALM}/clients?clientId=${DASHBOARD_CLIENT_ID}" \
+            | jq -r '.[0].id // empty')"
+          if [[ -n "${CLIENT_UUID}" ]]; then
+            CLIENT_JSON="$(curl -sk -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
+              "${KC_BASE}/admin/realms/${KC_REALM}/clients/${CLIENT_UUID}")"
+            WEBUI_ORIGIN="https://${WEBUI_ROUTE_HOST}"
+            UPDATED_JSON="$(echo "${CLIENT_JSON}" | jq \
+              --arg redirect "${DASHBOARD_REDIRECT_URL}" --arg origin "${WEBUI_ORIGIN}" \
+              '.redirectUris = ((.redirectUris // []) + [$redirect] | unique) |
+               .webOrigins = ((.webOrigins // []) + [$origin] | unique)')"
+            HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' -X PUT \
+              -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" -H "Content-Type: application/json" \
+              -d "${UPDATED_JSON}" \
+              "${KC_BASE}/admin/realms/${KC_REALM}/clients/${CLIENT_UUID}")"
+            if [[ "${HTTP_CODE}" == "204" ]]; then
+              echo "Redirect URI registered: ${DASHBOARD_REDIRECT_URL}"
+            else
+              echo "WARNING: failed to register redirect URI (HTTP ${HTTP_CODE}) — dashboard OIDC login will fail"
+            fi
+          else
+            echo "WARNING: Keycloak client '${DASHBOARD_CLIENT_ID}' not found — dashboard OIDC login will fail"
+          fi
+        else
+          echo "WARNING: could not obtain Keycloak admin token — dashboard OIDC login will fail"
+        fi
+      else
+        echo "WARNING: Keycloak admin credentials not found in ${KC_NS}/${KC_ADMIN_SECRET} — dashboard OIDC login will fail"
+      fi
+    else
+      echo "WARNING: ${VM_NAME}-webui route not found — dashboard OIDC redirect will be misconfigured"
+    fi
+    {{- end }}
     guest_scp "${WORK_DIR}/run-create.env" "/home/${SSH_USER}/run-create.env"
 
     # --- Run sandbox setup ---
@@ -655,6 +715,153 @@ data:
       echo "setup-nemoclaw PARTIAL agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME} (nemoclaw onboard failed, provider fallback used)"
     fi
 
+  setup-dashboard.sh: |
+    #!/usr/bin/env bash
+    # Runs OpenShell Dashboard + oauth2-proxy inside the VM via docker,
+    # managed as `systemctl --user` services. Requires OIDC to be configured on
+    # the gateway (the dashboard's gRPC client has no mTLS support).
+    # This branch has no podman at all (see docs/jira/switch-podman-to-docker.md),
+    # so both containers run via docker instead of podman, unlike deployment-test.
+    set -euo pipefail
+
+    if [[ "${DASHBOARD_ENABLED:-false}" != "true" ]]; then
+      echo "Dashboard disabled, skipping."
+      exit 0
+    fi
+
+    : "${DASHBOARD_IMAGE:?}"
+    : "${DASHBOARD_PROXY_IMAGE:?}"
+    : "${DASHBOARD_COOKIE_SECRET:?}"
+    : "${DASHBOARD_REDIRECT_URL:?DASHBOARD_REDIRECT_URL not set — was the *-webui route created?}"
+    : "${OIDC_ISSUER:?dashboard requires an OIDC-configured gateway (oidc.issuerUrl)}"
+    DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+
+    mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.config/openshell"
+
+    # Copy just the CA cert (public, not sensitive — never the private key) to a
+    # dedicated, world-readable location instead of exposing the whole TLS dir,
+    # same reasoning as the rootless-podman case this was originally written
+    # for: don't expose the gateway's private key to the container's bind mount.
+    CA_SRC="${HOME}/.local/state/openshell/tls/ca.crt"
+    CA_FOR_DASHBOARD="${HOME}/.config/openshell/dashboard-gateway-ca.crt"
+    if [[ -f "${CA_SRC}" ]]; then
+      install -m 0644 "${CA_SRC}" "${CA_FOR_DASHBOARD}"
+    else
+      echo "WARN: gateway CA cert not found at ${CA_SRC}, dashboard gRPC connection will likely fail"
+    fi
+    chmod o+x "${HOME}" "${HOME}/.config" "${HOME}/.config/openshell" 2>/dev/null || true
+
+    cat > "${HOME}/.config/openshell/dashboard.env" <<ENVEOF
+    PORT=8090
+    OPENSHELL_GATEWAY_URL=grpcs://localhost:17670
+    GATEWAY_CA_CERT=/tls/ca.crt
+    AUTH_DISABLED=false
+    ADMIN_ROLE=openshell-admin
+    ENVEOF
+
+    cat > "${HOME}/.config/openshell/dashboard-proxy.env" <<ENVEOF
+    OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:8080
+    OAUTH2_PROXY_UPSTREAMS=http://localhost:8090
+    OAUTH2_PROXY_PROVIDER=oidc
+    OAUTH2_PROXY_OIDC_ISSUER_URL=${OIDC_ISSUER}
+    OAUTH2_PROXY_CLIENT_ID=${DASHBOARD_CLIENT_ID}
+    OAUTH2_PROXY_CLIENT_SECRET_FILE=/dev/null
+    OAUTH2_PROXY_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
+    OAUTH2_PROXY_COOKIE_SECRET=${DASHBOARD_COOKIE_SECRET}
+    OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+    OAUTH2_PROXY_CODE_CHALLENGE_METHOD=S256
+    OAUTH2_PROXY_EMAIL_DOMAINS=*
+    OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
+    OAUTH2_PROXY_COOKIE_SECURE=true
+    OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+    # oauth2-proxy rejects the id_token by default if the OIDC provider's
+    # email_verified claim is false — true for real SSO-federated Keycloak
+    # accounts (confirmed live on deployment-test: "email in id_token (...)
+    # isn't verified", HTTP 500 at /oauth2/callback), as opposed to the
+    # realm's manually created test users (alice/bob/admin/developer) which
+    # don't hit this. Relevant here since this branch's task requires a real
+    # user identity, not alice.
+    OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL=true
+    # --cookie-refresh defaults to disabled (0) — oauth2-proxy never uses the
+    # refresh token to renew an expired access token on its own, it just keeps
+    # forwarding the stale one until the gateway rejects it. Keycloak already
+    # issues a normal (non-offline) refresh token by default on every login
+    # regardless of scope — that's all --cookie-refresh needs. Do NOT add
+    # offline_access here: Keycloak only grants an *offline* token if the
+    # authenticating user has the realm's offline_access role, which
+    # federated/SSO accounts don't get by default (unlike the built-in test
+    # users) — confirmed on deployment-test this causes "not_allowed: Offline
+    # tokens not allowed for the user or client" and a 500 at /oauth2/callback
+    # for real users. See bug #13 in docs/openshell-dashboard-integration.md.
+    OAUTH2_PROXY_SCOPE=openid email profile
+    OAUTH2_PROXY_COOKIE_REFRESH=60s
+    ENVEOF
+    chmod 600 "${HOME}/.config/openshell/dashboard.env" "${HOME}/.config/openshell/dashboard-proxy.env"
+
+    # No explicit After=/Requires= on openshell-gateway.service here: the
+    # golden image's openshell-gateway.service has "After=default.target" +
+    # "WantedBy=default.target" (a self-referential pattern already present
+    # before this change). Chaining any unit's ordering through it — even
+    # indirectly via WantedBy=openshell-gateway.service — reliably produces a
+    # systemd ordering cycle at boot, silently dropping the dependent unit's
+    # start job (confirmed on deployment-test). Decoupling entirely and
+    # relying on Restart=on-failure to self-heal any startup race is far more
+    # robust than fighting that cycle.
+    cat > "${HOME}/.config/systemd/user/openshell-dashboard.service" <<UNITEOF
+    [Unit]
+    Description=OpenShell Dashboard (BFF + UI)
+
+    [Service]
+    Type=simple
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+    UNITEOF
+
+    cat > "${HOME}/.config/systemd/user/openshell-dashboard-proxy.service" <<UNITEOF
+    [Unit]
+    Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
+
+    [Service]
+    Type=simple
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard-proxy
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard-proxy
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+    UNITEOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now openshell-dashboard.service openshell-dashboard-proxy.service
+
+    echo "Waiting for dashboard to become ready..."
+    ok=0
+    for i in $(seq 1 15); do
+      sleep 2
+      if curl -sf --max-time 2 http://127.0.0.1:8090/api/v1/healthz >/dev/null 2>&1; then
+        ok=1
+        break
+      fi
+      echo "  waiting for dashboard... (attempt $i)"
+    done
+    if [[ "${ok}" -ne 1 ]]; then
+      echo "WARN: dashboard health check timed out"
+      docker logs openshell-dashboard 2>&1 | tail -10 || true
+      docker logs openshell-dashboard-proxy 2>&1 | tail -10 || true
+    else
+      echo "dashboard ready"
+    fi
+
+    echo "setup-dashboard OK"
+
   inject-user-pubkey.sh: |
     #!/usr/bin/env bash
     set -euo pipefail
@@ -698,7 +905,8 @@ data:
     chmod +x \
       "${HOME}/configure-vertex-user.sh" \
       "${HOME}/setup-nemoclaw.sh" \
-      "${HOME}/inject-user-pubkey.sh"
+      "${HOME}/inject-user-pubkey.sh" \
+      "${HOME}/setup-dashboard.sh"
 
     # Vertex AI legacy path: configure provider via openshell commands
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
@@ -727,6 +935,11 @@ data:
         chmod 600 /sandbox/.oidc/token.json
       " || echo "WARN: could not write OIDC token to sandbox"
     fi
+
+    export DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-false}" DASHBOARD_IMAGE="${DASHBOARD_IMAGE:-}"
+    export DASHBOARD_PROXY_IMAGE="${DASHBOARD_PROXY_IMAGE:-}" DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+    export DASHBOARD_COOKIE_SECRET="${DASHBOARD_COOKIE_SECRET:-}" DASHBOARD_REDIRECT_URL="${DASHBOARD_REDIRECT_URL:-}"
+    "${HOME}/setup-dashboard.sh"
 
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
       shred -u "${SA_JSON}" 2>/dev/null || rm -f "${SA_JSON}"
