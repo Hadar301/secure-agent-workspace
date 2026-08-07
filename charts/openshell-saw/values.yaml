@@ -109,7 +109,7 @@ route:
   dashboard: true
   # OpenShell Dashboard web UI (see `dashboard` below). Distinct from `dashboard`
   # above, which is the OpenClaw in-sandbox web UI on port 18789.
-  webui: false
+  webui: true
 
 # OpenShell Dashboard — standalone Go BFF + React admin UI for OpenShell
 # (gateways, workspaces, sandboxes, providers). Runs via docker inside the
@@ -119,7 +119,7 @@ route:
 # dashboard's gRPC client has no mTLS support, so it only works against an
 # OIDC-configured gateway.
 dashboard:
-  enabled: false
+  enabled: true
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
