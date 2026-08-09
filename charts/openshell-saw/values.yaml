@@ -136,12 +136,12 @@ dashboard:
 # Governance interceptor — enforces signed sandbox policies.
 # Runs as a Docker container inside the gateway VM.
 governance:
-  enabled: false
+  enabled: true
   image: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
   # gRPC endpoint reachable from the gateway VM.
   # For external service via Route: "https://governance-interceptor-<ns>.apps.<domain>"
   # For in-VM container: "http://127.0.0.1:18081"
-  endpoint: ""
+  endpoint: "https://governance-interceptor-openshell-agents.apps.cluster-j76gz.dyn.redhatworkshops.io"
   port: 18081
   failurePolicy: "fail_closed"
   timeout: "500ms"
