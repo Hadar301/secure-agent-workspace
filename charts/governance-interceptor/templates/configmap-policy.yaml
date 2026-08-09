@@ -24,14 +24,20 @@ data:
 
   github-profile.yaml: |
     display_name: GitHub
-    description: GitHub API integration
+    description: GitHub API and Git operations
     provider_type: custom
     endpoints:
       - host: api.github.com
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-write
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries: [/usr/bin/gh, /usr/local/bin/gh, /usr/bin/git, /usr/local/bin/git]
 
   inference-profile.yaml: |
     display_name: Inference
@@ -42,7 +48,7 @@ data:
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-write
 
   google-vertex-ai-profile.yaml: |
     display_name: Google Vertex AI
@@ -53,7 +59,7 @@ data:
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-write
 
   slack-profile.yaml: |
     display_name: Slack
@@ -64,5 +70,5 @@ data:
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-only
 {{- end }}
