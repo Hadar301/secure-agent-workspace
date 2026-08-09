@@ -1,0 +1,39 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: governance-interceptor
+spec: {}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: governance-interceptor
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM {{ .Values.build.builderImage }} AS builder
+
+      RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
+
+      WORKDIR /build
+      RUN git clone --depth 1 --branch {{ .Values.source.git.ref }} {{ .Values.source.git.uri }} .
+
+      WORKDIR /build/{{ .Values.build.contextDir }}
+      RUN cargo build --release
+
+      FROM registry.access.redhat.com/ubi9-micro:latest
+      COPY --from=builder /build/target/release/openshell-governance-interceptor-example /usr/local/bin/governance-interceptor
+      ENTRYPOINT ["governance-interceptor"]
+  strategy:
+    type: Docker
+    dockerStrategy:
+      forcePull: true
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+  resources:
+    limits:
+      memory: 4Gi
+  triggers: []

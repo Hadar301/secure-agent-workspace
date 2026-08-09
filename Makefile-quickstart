@@ -112,13 +112,13 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 
 # --- Governance interceptor image ---
 
-build-governance-interceptor: ## Build governance interceptor image and push to quay
-	@echo "Building governance interceptor image..."
-	docker build -t $(QUAY_REPO)/governance-interceptor:latest \
-		-f image-builder-charts/governance-interceptor/Dockerfile \
-		image-builder-charts/governance-interceptor/
-	@echo "Pushing to $(QUAY_REPO)/governance-interceptor:latest..."
-	docker push $(QUAY_REPO)/governance-interceptor:latest
+build-governance-interceptor: ## Build governance interceptor image on cluster and push to quay
+	-@oc delete is governance-interceptor -n $(BUILD_NS) 2>/dev/null
+	helm upgrade --install governance-interceptor-image $(HELM_DIR)governance-interceptor-image \
+		--namespace $(BUILD_NS) --create-namespace
+	oc start-build governance-interceptor -n $(BUILD_NS) --follow
+	@echo "Pushing governance-interceptor to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) governance-interceptor $(QUAY_REPO)
 
 # --- Gateway VM image ---
 
