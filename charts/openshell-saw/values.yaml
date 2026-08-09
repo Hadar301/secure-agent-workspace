@@ -134,14 +134,15 @@ dashboard:
   keycloakNamespace: ""
 
 # Governance interceptor — enforces signed sandbox policies.
-# Runs as a Docker container inside the gateway VM.
+# Deployed as a Kubernetes pod, accessed from VM over the pod network.
 governance:
   enabled: true
   image: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
   # gRPC endpoint reachable from the gateway VM.
-  # For external service via Route: "https://governance-interceptor-<ns>.apps.<domain>"
+  # For in-cluster Service (VM → Service over pod network, no TLS needed):
+  #   "http://governance-interceptor.<namespace>.svc.cluster.local:18081"
   # For in-VM container: "http://127.0.0.1:18081"
-  endpoint: "http://127.0.0.1:18081"
+  endpoint: "http://governance-interceptor.openshell-agents.svc.cluster.local:18081"
   port: 18081
   failurePolicy: "fail_closed"
   timeout: "500ms"

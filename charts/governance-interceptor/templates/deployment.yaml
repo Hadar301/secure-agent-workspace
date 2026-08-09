@@ -53,6 +53,14 @@ spec:
               subPath: github-profile.yaml
               readOnly: true
             - name: policy
+              mountPath: /config/profiles/inference.yaml
+              subPath: inference-profile.yaml
+              readOnly: true
+            - name: policy
+              mountPath: /config/profiles/google-vertex-ai.yaml
+              subPath: google-vertex-ai-profile.yaml
+              readOnly: true
+            - name: policy
               mountPath: /config/profiles/slack.yaml
               subPath: slack-profile.yaml
               readOnly: true

@@ -6,9 +6,13 @@ metadata:
   labels:
     app.kubernetes.io/name: governance-interceptor
     app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    haproxy.router.openshift.io/backend-protocol: h2
 spec:
   port:
-    targetPort: grpc
+    targetPort: grpc-tls
+  tls:
+    termination: reencrypt
   to:
     kind: Service
     name: governance-interceptor

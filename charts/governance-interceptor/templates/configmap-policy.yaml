@@ -42,6 +42,30 @@ data:
       - host: api.github.com
         port: 443
         protocol: rest
+        enforcement: enforce
+        access: full
+
+  inference-profile.yaml: |
+    display_name: Inference
+    description: Managed inference provider
+    provider_type: openai
+    endpoints:
+      - host: inference.local
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+
+  google-vertex-ai-profile.yaml: |
+    display_name: Google Vertex AI
+    description: Google Gemini API
+    provider_type: google-vertex-ai
+    endpoints:
+      - host: generativelanguage.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
 
   slack-profile.yaml: |
     display_name: Slack
@@ -51,4 +75,6 @@ data:
       - host: slack.com
         port: 443
         protocol: rest
+        enforcement: enforce
+        access: full
 {{- end }}
