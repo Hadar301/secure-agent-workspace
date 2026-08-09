@@ -6,9 +6,9 @@ WORKDIR /build
 RUN git clone --depth 1 https://github.com/NVIDIA/OpenShell.git .
 
 WORKDIR /build/examples/governance-interceptor
-RUN cargo build --release && ls -la /build/target/release/openshell*
+RUN cargo build --release --target-dir /out
 
 FROM --platform=linux/amd64 debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/target/release/openshell-governance-interceptor-example /usr/local/bin/governance-interceptor
+COPY --from=builder /out/release/governance-interceptor /usr/local/bin/governance-interceptor
 ENTRYPOINT ["governance-interceptor"]

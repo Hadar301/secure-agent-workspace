@@ -20,10 +20,10 @@ spec:
       RUN git clone --depth 1 --branch {{ .Values.source.git.ref }} {{ .Values.source.git.uri }} .
 
       WORKDIR /build/{{ .Values.build.contextDir }}
-      RUN cargo build --release --target-dir /out && find /out/release -maxdepth 1 -type f -executable
+      RUN cargo build --release --target-dir /out
 
       FROM registry.access.redhat.com/ubi9-micro:latest
-      COPY --from=builder /out/release/openshell-governance-interceptor-example /usr/local/bin/governance-interceptor
+      COPY --from=builder /out/release/governance-interceptor /usr/local/bin/governance-interceptor
       ENTRYPOINT ["governance-interceptor"]
   strategy:
     type: Docker
