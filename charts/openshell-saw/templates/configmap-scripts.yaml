@@ -342,6 +342,15 @@ data:
     echo "Installing lsof..."
     guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install failed (non-fatal)"
 
+    {{- if .Values.governance.enabled }}
+    # --- Start governance interceptor inside the VM ---
+    echo "Starting governance interceptor..."
+    guest_scp "${SCRIPTS_DIR}/setup-governance.sh" "/home/${SSH_USER}/setup-governance.sh"
+    guest_ssh "chmod +x ~/setup-governance.sh && GOVERNANCE_IMAGE='{{ .Values.governance.image }}' GOVERNANCE_PORT='{{ .Values.governance.port | default 18081 }}' ~/setup-governance.sh" || {
+      echo "ERROR: governance interceptor failed to start" >&2; exit 1
+    }
+    {{- end }}
+
     # --- Restart gateway with new binaries ---
     echo "Restarting gateway service..."
     if ! guest_ssh "systemctl --user restart openshell-gateway.service && sleep 3 && systemctl --user is-active openshell-gateway.service"; then
@@ -747,6 +756,9 @@ data:
     else
       echo "setup-nemoclaw PARTIAL agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME} (nemoclaw onboard failed, provider fallback used)"
     fi
+
+  setup-governance.sh: |
+{{ .Files.Get "files/setup-governance.sh" | indent 4 }}
 
   setup-dashboard.sh: |
     #!/usr/bin/env bash
