@@ -64,29 +64,8 @@ spec:
               mountPath: /config/profiles/slack.yaml
               subPath: slack-profile.yaml
               readOnly: true
-        - name: envoy-tls-proxy
-          image: envoyproxy/envoy:v1.33-latest
-          args: ["-c", "/etc/envoy/envoy.yaml"]
-          ports:
-            - name: grpc-tls
-              containerPort: 18443
-              protocol: TCP
-          volumeMounts:
-            - name: envoy-config
-              mountPath: /etc/envoy/envoy.yaml
-              subPath: envoy.yaml
-              readOnly: true
-            - name: tls-certs
-              mountPath: /tls
-              readOnly: true
       volumes:
         - name: policy
           configMap:
             name: governance-interceptor-policy
-        - name: envoy-config
-          configMap:
-            name: governance-interceptor-envoy
-        - name: tls-certs
-          secret:
-            secretName: governance-interceptor-tls
 {{- end }}
