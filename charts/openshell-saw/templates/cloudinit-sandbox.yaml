@@ -70,19 +70,19 @@ data:
           timeout        = {{ .Values.governance.timeout | default "500ms" | quote }}
 
           [[openshell.gateway.interceptors.bindings]]
-          rpc = "CreateSandbox"
+          rpc = "openshell.v1.OpenShell/CreateSandbox"
           phases = ["modify_operation", "validate"]
 
           [[openshell.gateway.interceptors.bindings]]
-          rpc = "CreateProvider"
+          rpc = "openshell.v1.OpenShell/CreateProvider"
           phases = ["validate"]
 
           [[openshell.gateway.interceptors.bindings]]
-          rpc = "UpdateConfig"
+          rpc = "openshell.v1.OpenShell/UpdateConfig"
           phases = ["validate"]
 
           [[openshell.gateway.interceptors.bindings]]
-          rpc = "SubmitPolicyAnalysis"
+          rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
           phases = ["validate"]
           {{- end }}
       {{- end }}
