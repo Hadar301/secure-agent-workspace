@@ -22,18 +22,6 @@ data:
       run_as_user: sandbox
       run_as_group: sandbox
 
-    network_policies:
-      inference_api:
-        name: inference-api
-        endpoints:
-          - host: inference.local
-            port: 443
-            protocol: rest
-            enforcement: enforce
-            access: full
-        binaries:
-          - path: /usr/bin/curl
-
   github-profile.yaml: |
     display_name: GitHub
     description: GitHub API integration
