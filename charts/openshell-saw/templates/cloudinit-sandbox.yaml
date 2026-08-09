@@ -54,6 +54,37 @@ data:
 
           [openshell.gateway.auth]
           allow_unauthenticated_users = false
+
+          {{- if .Values.governance.enabled }}
+          [openshell.gateway]
+          provider_profile_sources = [
+            { type = "interceptor", name = "governance" },
+          ]
+
+          [[openshell.gateway.interceptors]]
+          name           = "governance"
+          grpc_endpoint  = {{ .Values.governance.endpoint | quote }}
+          order          = 10
+          failure_policy = {{ .Values.governance.failurePolicy | default "fail_closed" | quote }}
+          binding_policy = "allowlist"
+          timeout        = {{ .Values.governance.timeout | default "500ms" | quote }}
+
+          [[openshell.gateway.interceptors.bindings]]
+          rpc = "CreateSandbox"
+          phases = ["modify_operation", "validate"]
+
+          [[openshell.gateway.interceptors.bindings]]
+          rpc = "CreateProvider"
+          phases = ["validate"]
+
+          [[openshell.gateway.interceptors.bindings]]
+          rpc = "UpdateConfig"
+          phases = ["validate"]
+
+          [[openshell.gateway.interceptors.bindings]]
+          rpc = "SubmitPolicyAnalysis"
+          phases = ["validate"]
+          {{- end }}
       {{- end }}
 
     runcmd:

@@ -110,6 +110,16 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
 
+# --- Governance interceptor image ---
+
+build-governance-interceptor: ## Build governance interceptor image and push to quay
+	@echo "Building governance interceptor image..."
+	docker build -t $(QUAY_REPO)/governance-interceptor:latest \
+		-f image-builder-charts/governance-interceptor/Dockerfile \
+		image-builder-charts/governance-interceptor/
+	@echo "Pushing to $(QUAY_REPO)/governance-interceptor:latest..."
+	docker push $(QUAY_REPO)/governance-interceptor:latest
+
 # --- Gateway VM image ---
 
 build-openshell-gateway: ## Build gateway VM image and push to quay

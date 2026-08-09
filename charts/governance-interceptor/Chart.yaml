@@ -1,0 +1,6 @@
+apiVersion: v2
+name: governance-interceptor
+description: OpenShell governance interceptor for signed sandbox policies
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -133,6 +133,19 @@ dashboard:
   # where openshell-keycloak and openshell-saw are co-located).
   keycloakNamespace: ""
 
+# Governance interceptor — enforces signed sandbox policies.
+# Runs as a Docker container inside the gateway VM.
+governance:
+  enabled: false
+  image: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
+  # gRPC endpoint reachable from the gateway VM.
+  # For external service via Route: "https://governance-interceptor-<ns>.apps.<domain>"
+  # For in-VM container: "http://127.0.0.1:18081"
+  endpoint: ""
+  port: 18081
+  failurePolicy: "fail_closed"
+  timeout: "500ms"
+
 # OIDC authentication.
 # issuerUrl can be set explicitly, or computed from global.clusterDomain
 # when deployed via the validated pattern.

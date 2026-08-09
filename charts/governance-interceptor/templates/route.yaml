@@ -1,0 +1,17 @@
+{{- if .Values.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: governance-interceptor
+  labels:
+    app.kubernetes.io/name: governance-interceptor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  port:
+    targetPort: grpc
+  tls:
+    termination: passthrough
+  to:
+    kind: Service
+    name: governance-interceptor
+{{- end }}

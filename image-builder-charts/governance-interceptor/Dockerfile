@@ -1,0 +1,14 @@
+FROM rust:1.90-slim AS builder
+
+RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 https://github.com/NVIDIA/OpenShell.git .
+
+WORKDIR /build/examples/governance-interceptor
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/openshell-governance-interceptor-example /usr/local/bin/governance-interceptor
+ENTRYPOINT ["governance-interceptor"]
