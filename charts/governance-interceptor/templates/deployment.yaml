@@ -35,16 +35,12 @@ spec:
             - name: grpc
               containerPort: {{ .Values.port }}
               protocol: TCP
-          readinessProbe:
-            grpc:
+          startupProbe:
+            tcpSocket:
               port: {{ .Values.port }}
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            grpc:
-              port: {{ .Values.port }}
-            initialDelaySeconds: 10
-            periodSeconds: 30
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 5
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

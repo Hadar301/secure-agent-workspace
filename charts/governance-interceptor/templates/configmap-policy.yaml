@@ -23,7 +23,7 @@ data:
       run_as_group: sandbox
 
     network_policies:
-      inference:
+      inference_api:
         name: inference-api
         endpoints:
           - host: inference.local
@@ -33,22 +33,6 @@ data:
             access: full
         binaries:
           - path: /usr/bin/curl
-
-    tool_policies:
-      - name: allow-core-tools
-        tools:
-          - web-search
-          - file-read
-          - file-write
-          - code-execution
-        action: allow
-
-      - name: block-dangerous-tools
-        tools:
-          - shell-exec
-          - network-scan
-          - process-spawn
-        action: deny
 
   github-profile.yaml: |
     display_name: GitHub
