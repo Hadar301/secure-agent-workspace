@@ -44,6 +44,26 @@ endpoints:
     protocol: rest
 PROFILE
 
+cat > /tmp/governance/profiles/inference.yaml << 'PROFILE'
+display_name: Inference
+description: Managed inference provider
+provider_type: openai
+endpoints:
+  - host: inference.local
+    port: 443
+    protocol: rest
+PROFILE
+
+cat > /tmp/governance/profiles/google-vertex-ai.yaml << 'PROFILE'
+display_name: Google Vertex AI
+description: Google Gemini API
+provider_type: google-vertex-ai
+endpoints:
+  - host: generativelanguage.googleapis.com
+    port: 443
+    protocol: rest
+PROFILE
+
 echo "Starting governance interceptor container..."
 docker rm -f governance-interceptor 2>/dev/null || true
 docker run -d --name governance-interceptor \
