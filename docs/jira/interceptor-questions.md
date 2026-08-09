@@ -65,11 +65,10 @@ Questions to resolve as we build and integrate the governance interceptor.
 ## Networking
 
 12. **VM to interceptor connectivity**
-    - Current approach: interceptor runs as a cluster pod, exposed via OpenShift Route (passthrough TLS)
-    - Gateway VM reaches interceptor via the Route hostname
-    - Should the gateway-to-interceptor connection use mTLS for mutual authentication?
-    - If mTLS: who issues the client cert for the gateway? Same CA as the gateway's own TLS? Separate governance CA?
-    - Alternative: run interceptor inside the VM as a Docker container (simpler but per-VM, not shared)
+    - **Tested: in-VM Docker container** — works on `127.0.0.1:18081`, gateway connects directly. Simple but per-VM, not shared.
+    - **Tested: cluster pod via OpenShift Route** — gRPC over edge-terminated Route returns 502 Bad Gateway (HAProxy h2c backend issue). Passthrough TLS fails because interceptor doesn't have TLS. Needs investigation.
+    - **To explore: external service with mTLS** — run interceptor as a standalone service outside the cluster, gateway connects via mTLS. Preferred for shared/multi-VM deployments.
+    - Key requirement from user: interceptor should NOT be per-VM. It should be a shared service that all gateways connect to.
 
 ## Upstream
 
