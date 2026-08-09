@@ -69,6 +69,9 @@ Questions to resolve as we build and integrate the governance interceptor.
     - **Tested: cluster pod via OpenShift Route** — gRPC over edge-terminated Route returns 502 Bad Gateway (HAProxy h2c backend issue). Passthrough TLS fails because interceptor doesn't have TLS. Needs investigation.
     - **To explore: external service with mTLS** — run interceptor as a standalone service outside the cluster, gateway connects via mTLS. Preferred for shared/multi-VM deployments.
     - Key requirement from user: interceptor should NOT be per-VM. It should be a shared service that all gateways connect to.
+    - **Root cause of Route failure**: tonic's `Endpoint::connect()` doesn't apply `tls-native-roots` automatically for HTTPS URLs — needs explicit `.tls_config(ClientTlsConfig::new())`. The gateway's `reqwest` (used for OIDC) works fine with the same CA because it configures TLS separately. This is likely an upstream bug or missing config in `connect_endpoint()` at `openshell-gateway-interceptors/src/plan.rs:865`.
+    - **Workaround proven**: envoy TLS sidecar + passthrough Route works (curl verifies connection). Blocked only by tonic client TLS config.
+    - **Fix needed**: upstream PR to add `.tls_config(ClientTlsConfig::new())` to the interceptor endpoint connection, or add a `tls_ca` field to the interceptor TOML config.
 
 ## Upstream
 

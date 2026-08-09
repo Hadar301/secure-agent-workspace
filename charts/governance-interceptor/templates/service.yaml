@@ -6,12 +6,18 @@ metadata:
   labels:
     app.kubernetes.io/name: governance-interceptor
     app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: governance-interceptor-tls
 spec:
   type: ClusterIP
   ports:
     - name: grpc
       port: {{ .Values.port }}
       targetPort: grpc
+      protocol: TCP
+    - name: grpc-tls
+      port: 18443
+      targetPort: grpc-tls
       protocol: TCP
   selector:
     app.kubernetes.io/name: governance-interceptor
