@@ -49,10 +49,10 @@ spec:
               mountPath: /config/policy.yaml
               subPath: policy.yaml
               readOnly: true
-            {{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
+            {{- range .Values.profiles }}
             - name: policy
-              mountPath: /config/profiles/{{ base $path }}
-              subPath: {{ base $path | replace ".yaml" "-profile.yaml" }}
+              mountPath: /config/profiles/{{ . }}.yaml
+              subPath: {{ . }}-profile.yaml
               readOnly: true
             {{- end }}
       volumes:

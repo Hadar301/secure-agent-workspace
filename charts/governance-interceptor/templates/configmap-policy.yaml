@@ -9,8 +9,8 @@ metadata:
 data:
   policy.yaml: |
 {{ .Files.Get "policy.yaml" | indent 4 }}
-{{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
-  {{ base $path | replace ".yaml" "-profile.yaml" }}: |
-{{ $.Files.Get $path | indent 4 }}
+{{- range .Values.profiles }}
+  {{ . }}-profile.yaml: |
+{{ $.Files.Get (printf "profiles/%s.yaml" .) | indent 4 }}
 {{- end }}
 {{- end }}

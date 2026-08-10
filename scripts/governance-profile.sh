@@ -16,31 +16,22 @@ set -euo pipefail
 NS="${NS:-openshell-agents}"
 SAW_NAME="${SAW_NAME:-openshell-saw}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VALUES_FILE="${REPO_DIR}/charts/governance-interceptor/values.yaml"
 PROFILES_DIR="${REPO_DIR}/charts/governance-interceptor/profiles"
 SSH_KEY="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
-
-# Profile name → file mapping
-declare -A PROFILE_MAP=(
-  [github]="github.yaml"
-  [google-vertex-ai]="google-vertex-ai.yaml"
-  [inference]="inference.yaml"
-  [slack]="slack.yaml"
-)
 
 usage() {
   echo "Usage: $0 {list|add|remove} [profile-name]"
   echo ""
   echo "Commands:"
   echo "  list                 List active governance profiles"
-  echo "  add <name>           Add a provider profile (git push + ArgoCD sync)"
-  echo "  remove <name>        Remove a provider profile (git push + ArgoCD sync)"
+  echo "  add <name>           Enable a provider profile (git push + ArgoCD sync)"
+  echo "  remove <name>        Disable a provider profile (git push + ArgoCD sync)"
   echo ""
-  echo "Available profiles: ${!PROFILE_MAP[*]}"
-  echo ""
-  echo "Examples:"
-  echo "  $0 list"
-  echo "  $0 remove github       # revoke GitHub access"
-  echo "  $0 add github          # restore GitHub access"
+  echo "Available profiles:"
+  for f in "${PROFILES_DIR}"/*.yaml; do
+    echo "  - $(basename "${f}" .yaml)"
+  done
   exit 1
 }
 
@@ -60,52 +51,56 @@ wait_for_sync() {
   echo "  Done."
 }
 
+is_profile_enabled() {
+  grep -qE "^  - ${1}$" "${VALUES_FILE}"
+}
+
 cmd_list() {
   echo "Governance provider profiles:"
   echo ""
   openshell --gateway "${SAW_NAME}" --gateway-insecure provider list-profiles 2>&1 \
     | grep -v 'TLS certificate'
   echo ""
-  echo "Profile files in git:"
-  for name in "${!PROFILE_MAP[@]}"; do
-    file="${PROFILES_DIR}/${PROFILE_MAP[$name]}"
-    if [[ -f "${file}" ]]; then
-      echo "  [active]   ${name}  → profiles/${PROFILE_MAP[$name]}"
-    elif [[ -f "${file}.disabled" ]]; then
-      echo "  [disabled] ${name}  → profiles/${PROFILE_MAP[$name]}.disabled"
+  echo "Profiles in values.yaml:"
+  for f in "${PROFILES_DIR}"/*.yaml; do
+    local name
+    name=$(basename "${f}" .yaml)
+    if is_profile_enabled "${name}"; then
+      echo "  [enabled]  ${name}"
     else
-      echo "  [missing]  ${name}  → profiles/${PROFILE_MAP[$name]}"
+      echo "  [disabled] ${name}"
     fi
   done
 }
 
 cmd_add() {
   local name="${1:?Profile name is required}"
-  local file="${PROFILE_MAP[$name]:-}"
 
-  if [[ -z "${file}" ]]; then
-    echo "Error: unknown profile '${name}'. Available: ${!PROFILE_MAP[*]}" >&2
+  if [[ ! -f "${PROFILES_DIR}/${name}.yaml" ]]; then
+    echo "Error: no profile file found at profiles/${name}.yaml" >&2
+    echo "Available: $(ls "${PROFILES_DIR}"/*.yaml | xargs -I{} basename {} .yaml | tr '\n' ' ')" >&2
     exit 1
   fi
 
-  local path="${PROFILES_DIR}/${file}"
-
-  if [[ -f "${path}" ]]; then
-    echo "Profile '${name}' is already active."
+  if is_profile_enabled "${name}"; then
+    echo "Profile '${name}' is already enabled."
     return 0
   fi
 
-  if [[ -f "${path}.disabled" ]]; then
-    echo "Restoring profile '${name}'..."
-    git -C "${REPO_DIR}" mv "${path}.disabled" "${path}" > /dev/null 2>&1
-  else
-    echo "Error: no profile file found for '${name}' (expected ${path} or ${path}.disabled)" >&2
-    exit 1
+  echo "Enabling profile '${name}'..."
+  # Add the profile to the list in values.yaml (after the last profile entry)
+  sed -i '' "/^profiles:/,/^[^ ]/ { /^  - /{ H; }; }; /^profiles:/,/^[^ ]/ { /^$/{ x; s/$/  - ${name}/; p; d; }; }" "${VALUES_FILE}" 2>/dev/null \
+    || sed -i "s/^profiles:$/&\n  - ${name}/" "${VALUES_FILE}"
+
+  # If that didn't work (profile section is at end of file), append
+  if ! is_profile_enabled "${name}"; then
+    echo "  - ${name}" >> "${VALUES_FILE}"
   fi
 
+  git -C "${REPO_DIR}" add "${VALUES_FILE}" > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "policy: enable ${name} provider profile" --no-verify > /dev/null 2>&1
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
-  echo "  Pushed: profiles/${file}"
+  echo "  Pushed: added '${name}' to profiles list"
 
   wait_for_sync
   echo ""
@@ -114,25 +109,21 @@ cmd_add() {
 
 cmd_remove() {
   local name="${1:?Profile name is required}"
-  local file="${PROFILE_MAP[$name]:-}"
 
-  if [[ -z "${file}" ]]; then
-    echo "Error: unknown profile '${name}'. Available: ${!PROFILE_MAP[*]}" >&2
-    exit 1
-  fi
-
-  local path="${PROFILES_DIR}/${file}"
-
-  if [[ ! -f "${path}" ]]; then
+  if ! is_profile_enabled "${name}"; then
     echo "Profile '${name}' is already disabled."
     return 0
   fi
 
-  echo "Removing profile '${name}'..."
-  git -C "${REPO_DIR}" mv "${path}" "${path}.disabled" > /dev/null 2>&1
+  echo "Disabling profile '${name}'..."
+  # Remove the profile from the list in values.yaml
+  sed -i '' "/^  - ${name}$/d" "${VALUES_FILE}" 2>/dev/null \
+    || sed -i "/^  - ${name}$/d" "${VALUES_FILE}"
+
+  git -C "${REPO_DIR}" add "${VALUES_FILE}" > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "policy: revoke ${name} provider profile" --no-verify > /dev/null 2>&1
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
-  echo "  Pushed: profiles/${file} → profiles/${file}.disabled"
+  echo "  Pushed: removed '${name}' from profiles list"
 
   wait_for_sync
   echo ""

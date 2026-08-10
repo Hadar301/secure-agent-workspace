@@ -18,6 +18,15 @@ failurePolicy: "fail_closed"
 # Timeout for interceptor evaluation calls
 timeout: "500ms"
 
+# Provider profiles to enforce.
+# Each entry maps to a file in profiles/<name>.yaml.
+# Add or remove entries to control which providers are allowed.
+profiles:
+  - github
+  - google-vertex-ai
+  - inference
+  - slack
+
 resources:
   limits:
     memory: 256Mi
