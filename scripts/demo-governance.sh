@@ -134,7 +134,7 @@ banner "5. Gateway Interceptor Audit Log"
 step "The gateway logs every interceptor decision (allow/deny):"
 echo ""
 run_on_vm "journalctl --user -u openshell-gateway.service --no-pager" \
-  | grep 'interceptor.*evaluated' \
+  | { grep 'interceptor.*evaluated' || true; } \
   | sed 's/.*gateway interceptor evaluated /  /' \
   | tail -6
 echo ""
