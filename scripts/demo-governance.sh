@@ -54,8 +54,10 @@ run_on_vm() {
     | grep -v 'You are using a client virtctl'
 }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Clean up any stale demo providers from previous runs
-for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked; do
+for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked demo-jira; do
   gw provider delete "${p}" > /dev/null 2>&1 || true
 done
 
@@ -148,7 +150,6 @@ step "An admin decides GitHub access should no longer be allowed."
 step "Admin removes the github profile from git and pushes..."
 echo ""
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" "${SCRIPT_DIR}/governance-profile.sh" remove github
 
 echo -e "${YELLOW}  GitHub profile revoked via GitOps.${RESET}"
@@ -191,13 +192,82 @@ echo ""
 
 press_enter
 
-# --- 8. Cleanup ---
-banner "8. Cleanup"
+# --- 8. Add a new provider profile ---
+banner "8. Adding a New Provider — Jira"
 
-gw provider delete demo-vertex > /dev/null 2>&1 || true
-gw provider delete demo-github > /dev/null 2>&1 || true
-gw provider delete demo-vertex-ok > /dev/null 2>&1 || true
-gw provider delete demo-github-restored > /dev/null 2>&1 || true
+step "A team needs Jira access from their sandbox."
+step "First, let's see that Jira is not currently allowed:"
+echo ""
+gw provider create --name demo-jira --type jira --credential JIRA_TOKEN=demo-token || true
+echo ""
+
+press_enter
+
+step "Admin creates a Jira profile YAML:"
+echo ""
+
+JIRA_PROFILE=$(mktemp /tmp/jira-profile-XXXXXX.yaml)
+cat > "${JIRA_PROFILE}" << 'PROFILE'
+display_name: Jira
+description: Atlassian Jira project tracking
+provider_type: custom
+endpoints:
+  - host: your-org.atlassian.net
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+PROFILE
+
+echo -e "  ${BOLD}${JIRA_PROFILE}${RESET}"
+cat "${JIRA_PROFILE}" | sed 's/^/    /'
+echo ""
+
+press_enter
+
+step "Admin adds the profile via governance-profile.sh create:"
+echo ""
+NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" \
+  "${SCRIPT_DIR}/governance-profile.sh" create jira "${JIRA_PROFILE}"
+rm -f "${JIRA_PROFILE}"
+echo ""
+
+step "Profile registry now shows Jira:"
+echo ""
+NS="${NS}" SAW_NAME="${SAW_NAME}" "${SCRIPT_DIR}/governance-profile.sh" list
+echo ""
+
+press_enter
+
+step "Creating a Jira provider (now allowed):"
+echo ""
+gw provider create --name demo-jira --type jira --credential JIRA_TOKEN=demo-token || true
+echo ""
+
+press_enter
+
+# --- 9. Remove the Jira profile ---
+banner "9. Removing Jira Profile"
+
+step "Admin removes Jira access:"
+echo ""
+NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" \
+  "${SCRIPT_DIR}/governance-profile.sh" remove jira
+echo ""
+
+step "Jira provider creation blocked again:"
+echo ""
+gw provider create --name demo-jira-blocked --type jira --credential JIRA_TOKEN=demo-token || true
+echo ""
+
+press_enter
+
+# --- 10. Cleanup ---
+banner "10. Cleanup"
+
+for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-jira; do
+  gw provider delete "${p}" > /dev/null 2>&1 || true
+done
 echo -e "${GREEN}  Demo providers cleaned up.${RESET}"
 echo ""
 
@@ -209,6 +279,8 @@ echo -e "  ${GREEN}✓${RESET} VM gateway connects to interceptor over pod netwo
 echo -e "  ${GREEN}✓${RESET} Governed providers (google-vertex-ai, github) — ${GREEN}allowed${RESET}"
 echo -e "  ${RED}✗${RESET} Ungoverned providers (custom, claude-code) — ${RED}blocked${RESET}"
 echo -e "  ${YELLOW}!${RESET} Revoked profile (github removed) — ${RED}blocked until restored${RESET}"
+echo -e "  ${GREEN}✓${RESET} New profile added (jira) — ${GREEN}allowed after GitOps sync${RESET}"
+echo -e "  ${GREEN}✓${RESET} Profile registry tracks available vs active"
 echo -e "  ${GREEN}✓${RESET} Signed policy injected into sandbox creation (patch_count=2)"
 echo -e "  ${GREEN}✓${RESET} Full audit trail in gateway logs"
 echo ""
