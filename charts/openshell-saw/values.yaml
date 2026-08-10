@@ -136,7 +136,7 @@ dashboard:
 # Governance interceptor — enforces signed sandbox policies.
 # Deployed as a Kubernetes pod, accessed from VM over the pod network.
 governance:
-  enabled: false
+  enabled: true
   # gRPC endpoint reachable from the gateway VM (in-cluster Service, no TLS needed).
   endpoint: "http://governance-interceptor.openshell-agents.svc.cluster.local:18081"
   port: 18081
