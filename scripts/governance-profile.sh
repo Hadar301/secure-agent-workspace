@@ -17,6 +17,7 @@ NS="${NS:-openshell-agents}"
 SAW_NAME="${SAW_NAME:-openshell-saw}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILES_DIR="${REPO_DIR}/charts/governance-policy/profiles"
+SSH_KEY="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
 
 usage() {
   echo "Usage: $0 {list|add|remove|create} [profile-name] [file]"
@@ -44,7 +45,16 @@ wait_for_sync() {
   oc annotate application governance-policy -n vp-gitops \
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
   sleep 20
-  echo "  ConfigMap synced. Waiting for interceptor file watcher + gateway hot-reload..."
+  oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
+  oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
+  echo "  Interceptor synced."
+  echo "  Restarting gateway to pick up new manifest..."
+  virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
+    --local-ssh-opts="-o StrictHostKeyChecking=no" \
+    --local-ssh-opts="-o UserKnownHostsFile=/dev/null" \
+    --local-ssh-opts="-o LogLevel=ERROR" \
+    --command "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
+  echo "  Done."
 }
 
 cmd_list() {

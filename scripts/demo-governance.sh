@@ -299,7 +299,7 @@ echo -e "  ${GREEN}✓${RESET} Governed providers (google-vertex-ai, github) —
 echo -e "  ${RED}✗${RESET} Ungoverned providers (custom, claude-code) — ${RED}blocked${RESET}"
 echo -e "  ${YELLOW}!${RESET} Revoked profile (github removed) — ${RED}blocked until restored${RESET}"
 echo -e "  ${GREEN}✓${RESET} New profile added (jira) — ${GREEN}allowed after GitOps sync${RESET}"
-echo -e "  ${GREEN}✓${RESET} Gateway hot-reloads manifest — no restart needed"
+echo -e "  ${GREEN}✓${RESET} Policy separated from interceptor — just drop a profile YAML"
 echo -e "  ${GREEN}✓${RESET} Signed policy injected into sandbox creation (patch_count=2)"
 echo -e "  ${GREEN}✓${RESET} Full audit trail in gateway logs"
 echo ""
