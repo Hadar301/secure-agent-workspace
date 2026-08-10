@@ -22,13 +22,11 @@ timeout: "500ms"
 # Each entry maps to a file in profiles/<name>.yaml.
 # Add or remove entries to control which providers are allowed.
 profiles:
+  - github
   - google-vertex-ai
   - inference
   - slack
 
-  - google-vertex-ai
-  - inference
-  - slack  - github
 resources:
   limits:
     memory: 256Mi
@@ -36,5 +34,3 @@ resources:
   requests:
     memory: 128Mi
     cpu: 100m
-  - github
-  - github

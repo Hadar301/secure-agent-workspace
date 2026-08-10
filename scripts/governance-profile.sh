@@ -104,14 +104,7 @@ cmd_add() {
   fi
 
   echo "Enabling profile '${name}'..."
-  # Add the profile to the list in values.yaml (after the last profile entry)
-  sed -i '' "/^profiles:/,/^[^ ]/ { /^  - /{ H; }; }; /^profiles:/,/^[^ ]/ { /^$/{ x; s/$/  - ${name}/; p; d; }; }" "${VALUES_FILE}" 2>/dev/null \
-    || sed -i "s/^profiles:$/&\n  - ${name}/" "${VALUES_FILE}"
-
-  # If that didn't work (profile section is at end of file), append
-  if ! is_profile_enabled "${name}"; then
-    echo "  - ${name}" >> "${VALUES_FILE}"
-  fi
+  yq -i '.profiles += ["'"${name}"'"]' "${VALUES_FILE}"
 
   git -C "${REPO_DIR}" add "${VALUES_FILE}" > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "policy: enable ${name} provider profile" --no-verify > /dev/null 2>&1
@@ -132,9 +125,7 @@ cmd_remove() {
   fi
 
   echo "Disabling profile '${name}'..."
-  # Remove the profile from the list in values.yaml
-  sed -i '' "/^  - ${name}$/d" "${VALUES_FILE}" 2>/dev/null \
-    || sed -i "/^  - ${name}$/d" "${VALUES_FILE}"
+  yq -i 'del(.profiles[] | select(. == "'"${name}"'"))' "${VALUES_FILE}"
 
   git -C "${REPO_DIR}" add "${VALUES_FILE}" > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "policy: revoke ${name} provider profile" --no-verify > /dev/null 2>&1
@@ -169,13 +160,7 @@ cmd_create() {
 
   # Add to profiles list in values.yaml
   if ! is_profile_enabled "${name}"; then
-    sed -i '' "/^  - slack$/a\\
-\\  - ${name}" "${VALUES_FILE}" 2>/dev/null \
-      || sed -i "/^  - slack$/a\\  - ${name}" "${VALUES_FILE}"
-
-    if ! is_profile_enabled "${name}"; then
-      echo "  - ${name}" >> "${VALUES_FILE}"
-    fi
+    yq -i '.profiles += ["'"${name}"'"]' "${VALUES_FILE}"
   fi
 
   git -C "${REPO_DIR}" add "${dest}" "${VALUES_FILE}" > /dev/null 2>&1
