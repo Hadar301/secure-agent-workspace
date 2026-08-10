@@ -41,19 +41,29 @@ usage() {
 }
 
 wait_for_sync() {
+  local expected_key="${1:-}"
+  local expected_action="${2:-}"
   echo "  Waiting for ArgoCD to sync..."
   oc annotate application governance-policy -n vp-gitops \
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
-  sleep 20
-  oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
-  oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
-  echo "  Interceptor synced."
-  echo "  Restarting gateway to pick up new manifest..."
-  virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
-    --local-ssh-opts="-o StrictHostKeyChecking=no" \
-    --local-ssh-opts="-o UserKnownHostsFile=/dev/null" \
-    --local-ssh-opts="-o LogLevel=ERROR" \
-    --command "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
+
+  for _ in $(seq 1 24); do
+    sleep 5
+    local keys
+    keys=$(oc get configmap governance-interceptor-profiles -n "${NS}" \
+      -o jsonpath='{.data}' 2>/dev/null | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin).keys()))" 2>/dev/null || true)
+    if [[ -n "${expected_key}" ]]; then
+      if [[ "${expected_action}" == "appear" ]] && echo "${keys}" | grep -q "${expected_key}"; then
+        echo "  ConfigMap updated."
+        break
+      elif [[ "${expected_action}" == "disappear" ]] && ! echo "${keys}" | grep -q "${expected_key}"; then
+        echo "  ConfigMap updated."
+        break
+      fi
+    fi
+  done
+  echo "  Waiting for interceptor file watcher + gateway refresh..."
+  sleep 30
   echo "  Done."
 }
 
@@ -73,21 +83,28 @@ cmd_add() {
   fi
 
   # Try to restore from git history
-  if git -C "${REPO_DIR}" show "HEAD~10:charts/governance-policy/profiles/${name}.yaml" > "${PROFILES_DIR}/${name}.yaml" 2>/dev/null \
-     || git -C "${REPO_DIR}" show "HEAD~10:charts/governance-interceptor/profiles/${name}.yaml" > "${PROFILES_DIR}/${name}.yaml" 2>/dev/null; then
-    echo "Restoring profile '${name}' from git history..."
-  else
+  local restored=false
+  for path in "charts/governance-policy/profiles/${name}.yaml" "charts/governance-interceptor/profiles/${name}.yaml"; do
+    local commit
+    commit=$(git -C "${REPO_DIR}" log --all --diff-filter=D --format='%H' -1 -- "${path}" 2>/dev/null || true)
+    if [[ -n "${commit}" ]] && git -C "${REPO_DIR}" show "${commit}~1:${path}" > "${PROFILES_DIR}/${name}.yaml" 2>/dev/null; then
+      restored=true
+      break
+    fi
+  done
+  if [[ "${restored}" != "true" ]]; then
     echo "Error: profile '${name}' not found in git history. Use 'create' instead." >&2
     rm -f "${PROFILES_DIR}/${name}.yaml"
     exit 1
   fi
+  echo "Restoring profile '${name}' from git history..."
 
   git -C "${REPO_DIR}" add "${PROFILES_DIR}/${name}.yaml" > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "policy: enable ${name} provider profile" --no-verify > /dev/null 2>&1
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
   echo "  Pushed: restored profiles/${name}.yaml"
 
-  wait_for_sync
+  wait_for_sync "${name}.yaml" appear
   echo ""
   echo "Profile '${name}' enabled."
 }
@@ -108,7 +125,7 @@ cmd_remove() {
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
   echo "  Pushed: removed profiles/${name}.yaml"
 
-  wait_for_sync
+  wait_for_sync "${name}.yaml" disappear
   echo ""
   echo "Profile '${name}' disabled."
 }
@@ -138,7 +155,7 @@ cmd_create() {
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
   echo "  Pushed: profiles/${name}.yaml"
 
-  wait_for_sync
+  wait_for_sync "${name}.yaml" appear
   echo ""
   echo "Profile '${name}' created and enabled."
 }
