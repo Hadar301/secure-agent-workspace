@@ -17,5 +17,12 @@ spec:
         - port: {{ .Values.port }}
           protocol: TCP
       from:
-        - podSelector: {}
+        # KubeVirt VM pods (gateway connects to interceptor)
+        - podSelector:
+            matchLabels:
+              kubevirt.io: virt-launcher
+        # Setup Job pods (preflight check)
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openshell-saw
 {{- end }}
