@@ -47,24 +47,22 @@ wait_for_sync() {
   oc annotate application governance-policy -n vp-gitops \
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
 
-  for _ in $(seq 1 24); do
+  local profile_name="${expected_key%.yaml}"
+  for i in $(seq 1 36); do
     sleep 5
-    local keys
-    keys=$(oc get configmap governance-interceptor-profiles -n "${NS}" \
-      -o jsonpath='{.data}' 2>/dev/null | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin).keys()))" 2>/dev/null || true)
-    if [[ -n "${expected_key}" ]]; then
-      if [[ "${expected_action}" == "appear" ]] && echo "${keys}" | grep -q "${expected_key}"; then
-        echo "  ConfigMap updated."
-        break
-      elif [[ "${expected_action}" == "disappear" ]] && ! echo "${keys}" | grep -q "${expected_key}"; then
-        echo "  ConfigMap updated."
-        break
+    local profiles
+    profiles=$(openshell --gateway "${SAW_NAME}" --gateway-insecure provider list-profiles 2>&1 || true)
+    if [[ -n "${expected_action}" && -n "${profile_name}" ]]; then
+      if [[ "${expected_action}" == "appear" ]] && echo "${profiles}" | grep -q "${profile_name}"; then
+        echo "  Profile '${profile_name}' is now active. (${i} polls)"
+        return 0
+      elif [[ "${expected_action}" == "disappear" ]] && ! echo "${profiles}" | grep -q "${profile_name}"; then
+        echo "  Profile '${profile_name}' removed. (${i} polls)"
+        return 0
       fi
     fi
   done
-  echo "  Waiting for interceptor file watcher + gateway refresh..."
-  sleep 30
-  echo "  Done."
+  echo "  Warning: timed out waiting for profile change (3 min)."
 }
 
 cmd_list() {
