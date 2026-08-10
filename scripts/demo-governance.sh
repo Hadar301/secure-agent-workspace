@@ -56,10 +56,23 @@ run_on_vm() {
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Clean up any stale demo providers from previous runs
-for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked demo-jira; do
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROFILES_DIR="${REPO_DIR}/charts/governance-interceptor/profiles"
+VALUES_FILE="${REPO_DIR}/charts/governance-interceptor/values.yaml"
+
+# Clean up any stale state from previous runs
+for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked demo-jira demo-jira-blocked; do
   gw provider delete "${p}" > /dev/null 2>&1 || true
 done
+
+# Remove jira profile if left over from a previous run
+if [[ -f "${PROFILES_DIR}/jira.yaml" ]]; then
+  rm -f "${PROFILES_DIR}/jira.yaml"
+  yq -i 'del(.profiles[] | select(. == "jira"))' "${VALUES_FILE}"
+  git -C "${REPO_DIR}" add -A > /dev/null 2>&1
+  git -C "${REPO_DIR}" commit -m "demo: clean up stale jira profile" --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+fi
 
 banner "Governance Interceptor Demo — Secure Agent Workspace"
 
@@ -265,10 +278,18 @@ press_enter
 # --- 10. Cleanup ---
 banner "10. Cleanup"
 
-for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-jira; do
+for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-jira demo-jira-blocked; do
   gw provider delete "${p}" > /dev/null 2>&1 || true
 done
-echo -e "${GREEN}  Demo providers cleaned up.${RESET}"
+
+# Remove jira profile file from git (step 9 only removes from values.yaml)
+if [[ -f "${PROFILES_DIR}/jira.yaml" ]]; then
+  rm -f "${PROFILES_DIR}/jira.yaml"
+  git -C "${REPO_DIR}" add -A > /dev/null 2>&1
+  git -C "${REPO_DIR}" commit -m "demo: remove jira profile file" --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+fi
+echo -e "${GREEN}  Demo providers and jira profile cleaned up.${RESET}"
 echo ""
 
 banner "Demo Complete"
