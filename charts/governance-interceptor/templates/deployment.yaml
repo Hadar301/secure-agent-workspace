@@ -49,21 +49,12 @@ spec:
               mountPath: /config/policy.yaml
               subPath: policy.yaml
               readOnly: true
+            {{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
             - name: policy
-              subPath: github-profile.yaml
+              mountPath: /config/profiles/{{ base $path }}
+              subPath: {{ base $path | replace ".yaml" "-profile.yaml" }}
               readOnly: true
-            - name: policy
-              mountPath: /config/profiles/inference.yaml
-              subPath: inference-profile.yaml
-              readOnly: true
-            - name: policy
-              mountPath: /config/profiles/google-vertex-ai.yaml
-              subPath: google-vertex-ai-profile.yaml
-              readOnly: true
-            - name: policy
-              mountPath: /config/profiles/slack.yaml
-              subPath: slack-profile.yaml
-              readOnly: true
+            {{- end }}
       volumes:
         - name: policy
           configMap:

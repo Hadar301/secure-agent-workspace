@@ -9,11 +9,8 @@ metadata:
 data:
   policy.yaml: |
 {{ .Files.Get "policy.yaml" | indent 4 }}
-{{ .Files.Get "profiles/github.yaml" | indent 4 }}
-  inference-profile.yaml: |
-{{ .Files.Get "profiles/inference.yaml" | indent 4 }}
-  google-vertex-ai-profile.yaml: |
-{{ .Files.Get "profiles/google-vertex-ai.yaml" | indent 4 }}
-  slack-profile.yaml: |
-{{ .Files.Get "profiles/slack.yaml" | indent 4 }}
+{{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
+  {{ base $path | replace ".yaml" "-profile.yaml" }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
 {{- end }}

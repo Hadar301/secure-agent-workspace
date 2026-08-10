@@ -149,16 +149,11 @@ step "Admin removes the github profile from git and pushes..."
 echo ""
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CHART_DIR="${REPO_DIR}/charts/governance-interceptor"
-PROFILE_FILE="${CHART_DIR}/profiles/github.yaml"
-TEMPLATE_FILE="${CHART_DIR}/templates/configmap-policy.yaml"
+PROFILE_FILE="${REPO_DIR}/charts/governance-interceptor/profiles/github.yaml"
 
-# Remove profile file, remove its .Files.Get and volumeMount from templates, commit, push
-git -C "${REPO_DIR}" mv "${PROFILE_FILE}" "${PROFILE_FILE}.disabled" > /dev/null 2>&1
-sed -i.bak '/github-profile\.yaml/d' "${TEMPLATE_FILE}"
-sed -i.bak '/github\.yaml/d' "${CHART_DIR}/templates/deployment.yaml"
-git -C "${REPO_DIR}" add -A > /dev/null 2>&1
-git -C "${REPO_DIR}" commit -m "demo: revoke github provider profile" --no-verify > /dev/null 2>&1
+# Remove the profile file — the Helm templates use .Files.Glob so this is all that's needed
+git -C "${REPO_DIR}" rm "${PROFILE_FILE}" > /dev/null 2>&1
+git -C "${REPO_DIR}" commit -m "policy: revoke github provider profile" --no-verify > /dev/null 2>&1
 git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
 
 echo -e "  ${BOLD}git commit + push${RESET} — removed profiles/github.yaml"
@@ -199,10 +194,8 @@ banner "7. Restoring GitHub Access"
 step "Admin restores the github profile in git and pushes..."
 echo ""
 
-# Revert the commit
+# Revert the commit that removed the profile
 git -C "${REPO_DIR}" revert HEAD --no-edit --no-verify > /dev/null 2>&1
-# Clean up sed backup files
-rm -f "${TEMPLATE_FILE}.bak" "${CHART_DIR}/templates/deployment.yaml.bak"
 git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
 
 echo -e "  ${BOLD}git revert + push${RESET} — restored profiles/github.yaml"
