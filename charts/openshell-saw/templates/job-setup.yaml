@@ -1,5 +1,8 @@
 {{- include "openshell-sandbox.validateSecretName" .Values.sshSecret }}
 {{- include "openshell-sandbox.validateSecretName" (.Values.inference.secretName | default .Values.inference.provider) }}
+{{- if .Values.inference.webSearchSecretName }}
+{{- include "openshell-sandbox.validateSecretName" .Values.inference.webSearchSecretName }}
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -28,7 +31,7 @@ spec:
               deadline=$((SECONDS + 600))
               while true; do
                 all_ready=true
-                for secret in "{{ .Values.sshSecret }}" "{{ .Values.inference.secretName | default .Values.inference.provider }}"; do
+                for secret in "{{ .Values.sshSecret }}" "{{ .Values.inference.secretName | default .Values.inference.provider }}"{{- if .Values.inference.webSearchSecretName }} "{{ .Values.inference.webSearchSecretName }}"{{- end }}; do
                   [[ -z "${secret}" ]] && continue
                   if ! [[ "${secret}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
                     echo "ERROR: invalid secret name: ${secret}" >&2
@@ -71,6 +74,11 @@ spec:
               mountPath: /provider-secret
               readOnly: true
             {{- end }}
+            {{- if .Values.inference.webSearchSecretName }}
+            - name: search-secret
+              mountPath: /search-secret
+              readOnly: true
+            {{- end }}
             - name: ssh-key
               mountPath: /ssh-key
               readOnly: true
@@ -91,6 +99,12 @@ spec:
         - name: provider-secret
           secret:
             secretName: {{ .Values.inference.secretName | default .Values.inference.provider }}
+            optional: true
+        {{- end }}
+        {{- if .Values.inference.webSearchSecretName }}
+        - name: search-secret
+          secret:
+            secretName: {{ .Values.inference.webSearchSecretName }}
             optional: true
         {{- end }}
         - name: ssh-key

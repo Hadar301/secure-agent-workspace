@@ -19,6 +19,12 @@ MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
 ENDPOINT_URL="${ENDPOINT_URL:-}"
 WEB_SEARCH="${WEB_SEARCH:-}"
+# Map provider name to the K8s Secret name created by ESO from Vault
+case "${WEB_SEARCH}" in
+  tavily) WEB_SEARCH_SECRET_NAME="tavily" ;;
+  brave)  WEB_SEARCH_SECRET_NAME="brave-search" ;;
+  *)      WEB_SEARCH_SECRET_NAME="" ;;
+esac
 GCP_SA_JSON="${GCP_SA_JSON:-}"
 OIDC_ISSUER="${OIDC_ISSUER:-}"
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}"
@@ -110,6 +116,7 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set inference.apiKey="${API_KEY}" \
   --set inference.endpointUrl="${ENDPOINT_URL}" \
   --set inference.webSearch="${WEB_SEARCH}" \
+  --set inference.webSearchSecretName="${WEB_SEARCH_SECRET_NAME}" \
   ${GCP_SA_JSON:+--set-file vertexSaJson="${GCP_SA_JSON}"} \
   ${OIDC_OPTS} \
   --set accessControl.owner="${OWNER}" \

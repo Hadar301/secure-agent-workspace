@@ -415,6 +415,19 @@ data:
       guest_scp "${WORK_DIR}/vertex-sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
       echo "Injected Vertex SA JSON from provider secret"
     fi
+    # Inject web search API key from ESO-managed secret (mounted at /search-secret)
+    if [[ -f /search-secret/api_key ]]; then
+      SEARCH_KEY="$(cat /search-secret/api_key)"
+      if [[ -n "${SEARCH_KEY}" ]]; then
+        case "${NEMOCLAW_WEB_SEARCH_PROVIDER:-}" in
+          tavily) echo "TAVILY_API_KEY=${SEARCH_KEY}" >> "${WORK_DIR}/run-create.env"
+                  echo "Injected TAVILY_API_KEY from search secret" ;;
+          brave)  echo "BRAVE_API_KEY=${SEARCH_KEY}"  >> "${WORK_DIR}/run-create.env"
+                  echo "Injected BRAVE_API_KEY from search secret" ;;
+          *)      echo "WARN: /search-secret/api_key found but NEMOCLAW_WEB_SEARCH_PROVIDER is '${NEMOCLAW_WEB_SEARCH_PROVIDER:-}' — skipping injection" ;;
+        esac
+      fi
+    fi
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
       echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
     fi
@@ -561,6 +574,8 @@ data:
     NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
     NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
     NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    TAVILY_API_KEY="${TAVILY_API_KEY:-}"
+    BRAVE_API_KEY="${BRAVE_API_KEY:-}"
     # Vertex AI legacy path
     PROVIDER_NAME="${PROVIDER_NAME:-}"
     VERTEX_MODEL="${VERTEX_MODEL:-claude-sonnet-4-6}"
@@ -657,6 +672,8 @@ data:
     [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
     [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
     [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
+    [[ -n "${TAVILY_API_KEY}" ]] && ONBOARD_ENV+=("TAVILY_API_KEY=${TAVILY_API_KEY}")
+    [[ -n "${BRAVE_API_KEY}" ]]  && ONBOARD_ENV+=("BRAVE_API_KEY=${BRAVE_API_KEY}")
     [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
 
     ONBOARD_OK=1
@@ -932,6 +949,8 @@ data:
     NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
     NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
     NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    TAVILY_API_KEY="${TAVILY_API_KEY:-}"
+    BRAVE_API_KEY="${BRAVE_API_KEY:-}"
     PROVIDER_NAME="${PROVIDER_NAME:-}"
     SA_JSON="${SA_JSON:-}"
 
@@ -951,7 +970,7 @@ data:
 
     # Run nemoclaw onboard (handles both Vertex and direct providers)
     export SANDBOX_NAME NEMOCLAW_AGENT NEMOCLAW_PROVIDER NEMOCLAW_MODEL NEMOCLAW_API_KEY
-    export NEMOCLAW_ENDPOINT_URL NEMOCLAW_WEB_SEARCH_PROVIDER
+    export NEMOCLAW_ENDPOINT_URL NEMOCLAW_WEB_SEARCH_PROVIDER TAVILY_API_KEY BRAVE_API_KEY
     export ONBOARD_CLI="${ONBOARD_CLI:-openclaw}"
     export PROVIDER_NAME SANDBOX_IMAGE="${SANDBOX_IMAGE:-}" VERTEX_MODEL="${VERTEX_MODEL:-}"
     export NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"

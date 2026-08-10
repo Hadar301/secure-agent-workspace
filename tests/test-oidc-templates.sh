@@ -98,6 +98,8 @@ assert_contains "${PS_OUTPUT}" "kind: ExternalSecret" "ExternalSecret resources 
 assert_contains "${PS_OUTPUT}" "name: inference" "unified inference secret defined"
 assert_contains "${PS_OUTPUT}" "name: openshell-ssh-pubkey" "SSH public key secret defined"
 assert_contains "${PS_OUTPUT}" "name: openshell-aap-ssh" "SSH private key secret defined"
+assert_contains "${PS_OUTPUT}" "name: tavily" "tavily web search ExternalSecret defined"
+assert_contains "${PS_OUTPUT}" "name: brave-search" "brave-search web search ExternalSecret defined"
 assert_contains "${PS_OUTPUT}" "vault-backend" "vault backend referenced"
 
 # ============================================================
@@ -176,6 +178,42 @@ run_test "renders with ESO provider secret" \
 assert_contains "${SB_ESO}" "secretName: gemini" "provider secret mounted in job"
 assert_contains "${SB_ESO}" "/provider-secret" "provider secret mount path present"
 assert_contains "${SB_ESO}" "provider-secret/api_key" "API key read from provider secret"
+
+# ============================================================
+echo ""
+echo "=== Sandbox Chart (with web search secret) ==="
+# ============================================================
+
+SB_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+  --set sandboxName=my-sandbox \
+  --set sshPublicKey="${SSH_KEY}" \
+  --set inference.provider=gemini \
+  --set inference.model=flash \
+  --set inference.apiKey=test-key \
+  --set inference.webSearch=tavily \
+  --set inference.webSearchSecretName=tavily 2>&1)"
+run_test "renders with web search secret" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set inference.provider=gemini \
+    --set inference.model=flash \
+    --set inference.apiKey=test-key \
+    --set inference.webSearch=tavily \
+    --set inference.webSearchSecretName=tavily
+
+assert_contains "${SB_SEARCH}" "secretName: tavily" "search secret mounted in job"
+assert_contains "${SB_SEARCH}" "/search-secret" "search secret mount path present"
+assert_contains "${SB_SEARCH}" "search-secret/api_key" "search API key read from secret"
+assert_contains "${SB_SEARCH}" "NEMOCLAW_WEB_SEARCH_PROVIDER=tavily" "web search provider set in env"
+
+SB_NO_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+  --set sandboxName=my-sandbox \
+  --set sshPublicKey="${SSH_KEY}" \
+  --set inference.provider=gemini \
+  --set inference.model=flash \
+  --set inference.apiKey=test-key 2>&1)"
+assert_not_contains "${SB_NO_SEARCH}" "name: search-secret" "no search-secret volume when webSearchSecretName unset"
 
 # ============================================================
 echo ""

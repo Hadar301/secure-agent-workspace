@@ -72,6 +72,10 @@ inference:
   apiKey: ""
   endpointUrl: ""
   webSearch: ""
+  # Name of a k8s Secret containing the web search API key (field: api_key).
+  # Set to "tavily" or "brave-search" when using WEB_SEARCH=tavily or WEB_SEARCH=brave.
+  # The Secret is created by ESO from Vault via values-secret.yaml.
+  webSearchSecretName: ""
   # Name of a k8s Secret containing provider, model, and api_key fields.
   # Defaults to "inference" (created by ESO from Vault via values-secret.yaml).
   # The Job reads provider/model/api_key from this secret automatically.
