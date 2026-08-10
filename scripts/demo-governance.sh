@@ -145,28 +145,33 @@ press_enter
 banner "6. Revoking Access — Remove GitHub Profile"
 
 step "An admin decides GitHub access should no longer be allowed."
-step "Removing the GitHub profile from the governance policy..."
+step "Admin removes the github profile from git and pushes..."
 echo ""
 
-# Pause ArgoCD sync so it doesn't revert our changes
-oc patch application governance-interceptor -n vp-gitops --type=merge \
-  -p '{"spec":{"syncPolicy":null}}' > /dev/null 2>&1
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CHART_DIR="${REPO_DIR}/charts/governance-interceptor"
+PROFILE_FILE="${CHART_DIR}/profiles/github.yaml"
+TEMPLATE_FILE="${CHART_DIR}/templates/configmap-policy.yaml"
 
-# Back up and remove the github profile
-GITHUB_PROFILE_BACKUP=$(oc get configmap governance-interceptor-policy -n "${NS}" -o jsonpath='{.data.github-profile\.yaml}')
-oc get configmap governance-interceptor-policy -n "${NS}" -o json \
-  | jq 'del(.data["github-profile.yaml"])' \
-  | oc replace -f - > /dev/null 2>&1
+# Remove profile file, remove its .Files.Get and volumeMount from templates, commit, push
+git -C "${REPO_DIR}" mv "${PROFILE_FILE}" "${PROFILE_FILE}.disabled" > /dev/null 2>&1
+sed -i.bak '/github-profile\.yaml/d' "${TEMPLATE_FILE}"
+sed -i.bak '/github\.yaml/d' "${CHART_DIR}/templates/deployment.yaml"
+git -C "${REPO_DIR}" add -A > /dev/null 2>&1
+git -C "${REPO_DIR}" commit -m "demo: revoke github provider profile" --no-verify > /dev/null 2>&1
+git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
 
-# Remove the github volume mount from the deployment so the pod doesn't crash
-oc get deployment governance-interceptor -n "${NS}" -o json \
-  | jq '(.spec.template.spec.containers[0].volumeMounts) |= [.[] | select(.subPath != "github-profile.yaml")]' \
-  | oc replace -f - > /dev/null 2>&1
+echo -e "  ${BOLD}git commit + push${RESET} — removed profiles/github.yaml"
+echo ""
 
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
+step "Waiting for ArgoCD to sync..."
+# Force ArgoCD to pick up the new commit
+oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
+sleep 20
+oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
-echo -e "${YELLOW}  GitHub profile removed. Interceptor and gateway restarted.${RESET}"
+echo -e "${YELLOW}  ArgoCD synced. GitHub profile removed.${RESET}"
 echo ""
 
 step "Available profiles now (GitHub is gone):"
@@ -191,19 +196,25 @@ press_enter
 # --- 7. Restore profile ---
 banner "7. Restoring GitHub Access"
 
-step "Admin restores the GitHub profile..."
+step "Admin restores the github profile in git and pushes..."
 echo ""
 
-# Re-enable ArgoCD sync — it will restore the configmap and deployment
-oc patch application governance-interceptor -n vp-gitops --type=merge \
-  -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' > /dev/null 2>&1
-oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
-sleep 15
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
+# Revert the commit
+git -C "${REPO_DIR}" revert HEAD --no-edit --no-verify > /dev/null 2>&1
+# Clean up sed backup files
+rm -f "${TEMPLATE_FILE}.bak" "${CHART_DIR}/templates/deployment.yaml.bak"
+git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
 
+echo -e "  ${BOLD}git revert + push${RESET} — restored profiles/github.yaml"
+echo ""
+
+step "Waiting for ArgoCD to sync..."
+oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
+sleep 20
+oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
-echo -e "${GREEN}  GitHub profile restored via GitOps.${RESET}"
+echo -e "${GREEN}  ArgoCD synced. GitHub profile restored.${RESET}"
 echo ""
 
 step "GitHub provider creation works again:"
