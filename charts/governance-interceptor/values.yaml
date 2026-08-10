@@ -19,6 +19,7 @@ profiles:
   - inference
   - slack
   - github
+  - jira
 resources:
   limits:
     memory: 256Mi
