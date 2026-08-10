@@ -1,32 +1,23 @@
 # Governance interceptor for signed sandbox policies.
 # Runs as a gRPC service that the OpenShell gateway calls
 # to enforce admin-controlled, cryptographically signed policies.
-
 enabled: true
-
 image: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
-
 # gRPC listen port
 port: 18081
-
 # Interceptor-to-gateway connection (for hot-reload push)
 gatewayEndpoint: "https://127.0.0.1:17670"
-
 # Fail-closed: deny all operations if interceptor is unreachable
 failurePolicy: "fail_closed"
-
 # Timeout for interceptor evaluation calls
 timeout: "500ms"
-
 # Provider profiles to enforce.
 # Each entry maps to a file in profiles/<name>.yaml.
 # Add or remove entries to control which providers are allowed.
 profiles:
-  - github
   - google-vertex-ai
   - inference
   - slack
-
 resources:
   limits:
     memory: 256Mi
