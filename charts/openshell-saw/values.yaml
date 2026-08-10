@@ -137,8 +137,9 @@ dashboard:
 # Deployed as a Kubernetes pod, accessed from VM over the pod network.
 governance:
   enabled: true
-  # gRPC endpoint reachable from the gateway VM (in-cluster Service, no TLS needed).
-  endpoint: "http://governance-interceptor.openshell-agents.svc.cluster.local:18081"
+  # gRPC endpoint reachable from the gateway VM. Leave empty to derive
+  # from the release namespace (http://governance-interceptor.<namespace>.svc.cluster.local:18081).
+  endpoint: ""
   port: 18081
   failurePolicy: "fail_closed"
   timeout: "500ms"
