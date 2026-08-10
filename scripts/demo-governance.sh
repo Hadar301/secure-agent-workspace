@@ -148,25 +148,10 @@ step "An admin decides GitHub access should no longer be allowed."
 step "Admin removes the github profile from git and pushes..."
 echo ""
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PROFILE_FILE="${REPO_DIR}/charts/governance-interceptor/profiles/github.yaml"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" "${SCRIPT_DIR}/governance-profile.sh" remove github
 
-# Remove the profile file — the Helm templates use .Files.Glob so this is all that's needed
-git -C "${REPO_DIR}" rm "${PROFILE_FILE}" > /dev/null 2>&1
-git -C "${REPO_DIR}" commit -m "policy: revoke github provider profile" --no-verify > /dev/null 2>&1
-git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
-
-echo -e "  ${BOLD}git commit + push${RESET} — removed profiles/github.yaml"
-echo ""
-
-step "Waiting for ArgoCD to sync..."
-# Force ArgoCD to pick up the new commit
-oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
-sleep 20
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
-run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
-
-echo -e "${YELLOW}  ArgoCD synced. GitHub profile removed.${RESET}"
+echo -e "${YELLOW}  GitHub profile revoked via GitOps.${RESET}"
 echo ""
 
 step "Available profiles now (GitHub is gone):"
@@ -191,23 +176,12 @@ press_enter
 # --- 7. Restore profile ---
 banner "7. Restoring GitHub Access"
 
-step "Admin restores the github profile in git and pushes..."
+step "Admin restores the github profile..."
 echo ""
 
-# Revert the commit that removed the profile
-git -C "${REPO_DIR}" revert HEAD --no-edit --no-verify > /dev/null 2>&1
-git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" "${SCRIPT_DIR}/governance-profile.sh" add github
 
-echo -e "  ${BOLD}git revert + push${RESET} — restored profiles/github.yaml"
-echo ""
-
-step "Waiting for ArgoCD to sync..."
-oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
-sleep 20
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
-run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
-
-echo -e "${GREEN}  ArgoCD synced. GitHub profile restored.${RESET}"
+echo -e "${GREEN}  GitHub profile restored via GitOps.${RESET}"
 echo ""
 
 step "GitHub provider creation works again:"
