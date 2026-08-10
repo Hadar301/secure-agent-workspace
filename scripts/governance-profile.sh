@@ -42,13 +42,11 @@ restart_interceptor() {
 
 cmd_list() {
   local saw_name="${SAW_NAME:-openshell-saw}"
-  local ssh_key="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
 
   echo "Governance provider profiles (from gateway via interceptor):"
   echo ""
-  virtctl ssh -i "${ssh_key}" -n "${NS}" "cloud-user@vmi/${saw_name}" \
-    --command "openshell provider list-profiles" 2>&1 \
-    | grep -v 'You are using a client virtctl'
+  openshell --gateway "${saw_name}" --gateway-insecure provider list-profiles 2>&1 \
+    | grep -v 'TLS certificate'
 }
 
 cmd_add() {
