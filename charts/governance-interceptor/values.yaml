@@ -18,6 +18,7 @@ profiles:
   - google-vertex-ai
   - inference
   - slack
+  - github
 resources:
   limits:
     memory: 256Mi
