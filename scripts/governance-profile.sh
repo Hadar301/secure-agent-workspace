@@ -47,6 +47,8 @@ wait_for_sync() {
   oc annotate application governance-interceptor -n vp-gitops \
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
   sleep 20
+  # Restart the interceptor so it loads the updated ConfigMap immediately
+  oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
   oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
   echo "  Interceptor synced."
   # Gateway polls the interceptor manifest every 10s; wait for at least
