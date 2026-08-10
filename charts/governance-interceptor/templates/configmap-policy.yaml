@@ -8,67 +8,13 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
   policy.yaml: |
-    version: 1
-
-    filesystem_policy:
-      include_workdir: true
-      read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
-      read_write: [/sandbox, /tmp, /dev/null]
-
-    landlock:
-      compatibility: best_effort
-
-    process:
-      run_as_user: sandbox
-      run_as_group: sandbox
-
+{{ .Files.Get "policy.yaml" | indent 4 }}
   github-profile.yaml: |
-    display_name: GitHub
-    description: GitHub API and Git operations
-    provider_type: custom
-    endpoints:
-      - host: api.github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries: [/usr/bin/gh, /usr/local/bin/gh, /usr/bin/git, /usr/local/bin/git]
-
+{{ .Files.Get "profiles/github.yaml" | indent 4 }}
   inference-profile.yaml: |
-    display_name: Inference
-    description: Managed inference provider
-    provider_type: openai
-    endpoints:
-      - host: inference.local
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-
+{{ .Files.Get "profiles/inference.yaml" | indent 4 }}
   google-vertex-ai-profile.yaml: |
-    display_name: Google Vertex AI
-    description: Google Gemini API
-    provider_type: google-vertex-ai
-    endpoints:
-      - host: generativelanguage.googleapis.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-
+{{ .Files.Get "profiles/google-vertex-ai.yaml" | indent 4 }}
   slack-profile.yaml: |
-    display_name: Slack
-    description: Slack API integration
-    provider_type: custom
-    endpoints:
-      - host: slack.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
+{{ .Files.Get "profiles/slack.yaml" | indent 4 }}
 {{- end }}
