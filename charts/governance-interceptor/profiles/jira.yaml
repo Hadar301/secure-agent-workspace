@@ -1,0 +1,9 @@
+display_name: Jira
+description: Atlassian Jira project tracking
+provider_type: custom
+endpoints:
+  - host: your-org.atlassian.net
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
