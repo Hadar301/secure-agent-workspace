@@ -219,7 +219,7 @@ press_enter
 step "Admin creates a Jira profile YAML:"
 echo ""
 
-JIRA_PROFILE=$(mktemp /tmp/jira-profile-XXXXXX.yaml)
+JIRA_PROFILE="/tmp/demo-jira-profile.yaml"
 cat > "${JIRA_PROFILE}" << 'PROFILE'
 display_name: Jira
 description: Atlassian Jira project tracking
