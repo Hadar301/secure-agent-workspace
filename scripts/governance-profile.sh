@@ -41,17 +41,14 @@ restart_interceptor() {
 }
 
 cmd_list() {
-  echo "Governance provider profiles (configmap/${CONFIGMAP}):"
+  local saw_name="${SAW_NAME:-openshell-saw}"
+  local ssh_key="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
+
+  echo "Governance provider profiles (from gateway via interceptor):"
   echo ""
-  oc get configmap "${CONFIGMAP}" -n "${NS}" -o json \
-    | jq -r '.data | to_entries[] | select(.key != "policy.yaml") | .key | rtrimstr("-profile.yaml")' \
-    | while read -r name; do
-        echo "  - ${name}"
-      done
-  echo ""
-  echo "Policy:"
-  oc get configmap "${CONFIGMAP}" -n "${NS}" -o jsonpath='{.data.policy\.yaml}' | head -5
-  echo "  ..."
+  virtctl ssh -i "${ssh_key}" -n "${NS}" "cloud-user@vmi/${saw_name}" \
+    --command "openshell provider list-profiles" 2>&1 \
+    | grep -v 'You are using a client virtctl'
 }
 
 cmd_add() {
