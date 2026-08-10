@@ -9,6 +9,7 @@ metadata:
 data:
   policy.yaml: |
 {{ .Files.Get "policy.yaml" | indent 4 }}
+  github-profile.yaml: |
 {{ .Files.Get "profiles/github.yaml" | indent 4 }}
   inference-profile.yaml: |
 {{ .Files.Get "profiles/inference.yaml" | indent 4 }}

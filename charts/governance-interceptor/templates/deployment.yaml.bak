@@ -50,6 +50,7 @@ spec:
               subPath: policy.yaml
               readOnly: true
             - name: policy
+              mountPath: /config/profiles/github.yaml
               subPath: github-profile.yaml
               readOnly: true
             - name: policy
