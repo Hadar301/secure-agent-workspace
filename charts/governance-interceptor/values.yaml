@@ -26,6 +26,9 @@ profiles:
   - inference
   - slack
 
+  - google-vertex-ai
+  - inference
+  - slack  - github
 resources:
   limits:
     memory: 256Mi
@@ -33,3 +36,4 @@ resources:
   requests:
     memory: 128Mi
     cpu: 100m
+  - github
