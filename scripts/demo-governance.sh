@@ -57,8 +57,7 @@ run_on_vm() {
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PROFILES_DIR="${REPO_DIR}/charts/governance-interceptor/profiles"
-VALUES_FILE="${REPO_DIR}/charts/governance-interceptor/values.yaml"
+PROFILES_DIR="${REPO_DIR}/charts/governance-policy/profiles"
 
 # Clean up any stale state from previous runs
 for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked demo-jira demo-jira-blocked; do
@@ -68,7 +67,6 @@ done
 # Remove jira profile if left over from a previous run
 if [[ -f "${PROFILES_DIR}/jira.yaml" ]]; then
   rm -f "${PROFILES_DIR}/jira.yaml"
-  yq -i 'del(.profiles[] | select(. == "jira"))' "${VALUES_FILE}"
   git -C "${REPO_DIR}" add -A > /dev/null 2>&1
   git -C "${REPO_DIR}" commit -m "demo: clean up stale jira profile" --no-verify > /dev/null 2>&1
   git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1

@@ -71,6 +71,10 @@ clusterGroup:
       name: pattern-secrets
       namespace: openshell-agents
       path: charts/pattern-secrets
+    governance-policy:
+      name: governance-policy
+      namespace: openshell-agents
+      path: charts/governance-policy
     governance-interceptor:
       name: governance-interceptor
       namespace: openshell-agents

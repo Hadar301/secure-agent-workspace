@@ -25,7 +25,7 @@ spec:
             - --listen
             - "0.0.0.0:{{ .Values.port }}"
             - --policy
-            - /config/policy.yaml
+            - /config/policy/policy.yaml
             - --profiles
             - /config/profiles
             {{- if .Values.gatewayEndpoint }}
@@ -46,17 +46,16 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: policy
-              mountPath: /config/policy.yaml
-              subPath: policy.yaml
+              mountPath: /config/policy
               readOnly: true
-            {{- range .Values.profiles }}
-            - name: policy
-              mountPath: /config/profiles/{{ . }}.yaml
-              subPath: {{ . }}-profile.yaml
+            - name: profiles
+              mountPath: /config/profiles
               readOnly: true
-            {{- end }}
       volumes:
         - name: policy
           configMap:
             name: governance-interceptor-policy
+        - name: profiles
+          configMap:
+            name: governance-interceptor-profiles
 {{- end }}
