@@ -72,8 +72,9 @@ cmd_remove() {
   local name="${1:?Profile name is required}"
 
   echo "Removing profile '${name}'..."
-  oc patch configmap "${CONFIGMAP}" -n "${NS}" --type=json \
-    -p "[{\"op\":\"remove\",\"path\":\"/data/${name}-profile.yaml\"}]"
+  oc get configmap "${CONFIGMAP}" -n "${NS}" -o json \
+    | jq "del(.data[\"${name}-profile.yaml\"])" \
+    | oc replace -f -
 
   restart_interceptor
 }

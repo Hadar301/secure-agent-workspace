@@ -142,10 +142,11 @@ step "Removing the GitHub profile from the governance policy..."
 echo ""
 
 GITHUB_PROFILE_BACKUP=$(oc get configmap governance-interceptor-policy -n "${NS}" -o jsonpath='{.data.github-profile\.yaml}')
-oc patch configmap governance-interceptor-policy -n "${NS}" --type=json \
-  -p '[{"op":"remove","path":"/data/github-profile.yaml"}]' > /dev/null 2>&1
+oc get configmap governance-interceptor-policy -n "${NS}" -o json \
+  | jq 'del(.data["github-profile.yaml"])' \
+  | oc replace -f - > /dev/null 2>&1
 oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=30s > /dev/null 2>&1
+oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
 
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
@@ -177,10 +178,10 @@ banner "7. Restoring GitHub Access"
 step "Admin restores the GitHub profile..."
 echo ""
 
-oc patch configmap governance-interceptor-policy -n "${NS}" --type=json \
-  -p "[{\"op\":\"add\",\"path\":\"/data/github-profile.yaml\",\"value\":\"${GITHUB_PROFILE_BACKUP}\"}]" > /dev/null 2>&1
+oc patch configmap governance-interceptor-policy -n "${NS}" --type=merge \
+  -p "{\"data\":{\"github-profile.yaml\":$(echo "${GITHUB_PROFILE_BACKUP}" | jq -Rs .)}}" > /dev/null 2>&1
 oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=30s > /dev/null 2>&1
+oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
 
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
