@@ -47,9 +47,11 @@ gw() {
 
 run_on_vm() {
   virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
-    --local-ssh-opts="-o StrictHostKeyChecking=no" --command "$1" 2>&1 \
-    | grep -v 'You are using a client virtctl' \
-    | grep -v 'Warning: Permanently added'
+    --local-ssh-opts="-o StrictHostKeyChecking=no" \
+    --local-ssh-opts="-o UserKnownHostsFile=/dev/null" \
+    --local-ssh-opts="-o LogLevel=ERROR" \
+    --command "$1" 2>&1 \
+    | grep -v 'You are using a client virtctl'
 }
 
 # Clean up any stale demo providers from previous runs
