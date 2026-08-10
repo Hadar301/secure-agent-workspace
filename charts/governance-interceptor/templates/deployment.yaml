@@ -20,6 +20,7 @@ spec:
       containers:
         - name: interceptor
           image: {{ .Values.image }}
+          imagePullPolicy: Always
           args:
             - --listen
             - "0.0.0.0:{{ .Values.port }}"
