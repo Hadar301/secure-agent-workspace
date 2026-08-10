@@ -52,6 +52,11 @@ run_on_vm() {
     | grep -v 'Warning: Permanently added'
 }
 
+# Clean up any stale demo providers from previous runs
+for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-github-blocked; do
+  gw provider delete "${p}" > /dev/null 2>&1 || true
+done
+
 banner "Governance Interceptor Demo — Secure Agent Workspace"
 
 echo -e "This demo shows how a ${BOLD}governance interceptor${RESET} enforces"
