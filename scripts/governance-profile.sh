@@ -48,8 +48,9 @@ wait_for_sync() {
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
   sleep 20
   oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
+  echo "  Interceptor synced."
 
-  echo "  Restarting gateway to pick up new profiles..."
+  echo "  Restarting gateway to reload profiles (brief disruption)..."
   virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
     --local-ssh-opts="-o StrictHostKeyChecking=no" \
     --local-ssh-opts="-o UserKnownHostsFile=/dev/null" \
