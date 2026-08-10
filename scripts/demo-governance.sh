@@ -40,9 +40,16 @@ step() {
   echo -e "${BOLD}▸ $1${RESET}"
 }
 
+gw() {
+  openshell --gateway "${SAW_NAME}" --gateway-insecure "$@" 2>&1 \
+    | grep -v 'TLS certificate'
+}
+
 run_on_vm() {
-  virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" --command "$1" 2>&1 \
-    | grep -v 'You are using a client virtctl'
+  virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
+    --local-ssh-opts="-o StrictHostKeyChecking=no" --command "$1" 2>&1 \
+    | grep -v 'You are using a client virtctl' \
+    | grep -v 'Warning: Permanently added'
 }
 
 banner "Governance Interceptor Demo — Secure Agent Workspace"
@@ -79,7 +86,7 @@ banner "2. Governed Provider Profiles"
 step "These profiles are enforced by the interceptor — only these provider"
 step "types can be created on the sandbox:"
 echo ""
-run_on_vm "openshell provider list-profiles"
+gw provider list-profiles
 echo ""
 
 press_enter
@@ -89,12 +96,12 @@ banner "3. Allowed Providers (should succeed)"
 
 step "Creating a Google Vertex AI provider (governed profile):"
 echo ""
-run_on_vm "openshell provider create --name demo-vertex --type google-vertex-ai --credential GOOGLE_API_KEY=demo-key"
+gw provider create --name demo-vertex --type google-vertex-ai --credential GOOGLE_API_KEY=demo-key
 echo ""
 
 step "Creating a GitHub provider (governed profile):"
 echo ""
-run_on_vm "openshell provider create --name demo-github --type github --credential GITHUB_TOKEN=demo-token"
+gw provider create --name demo-github --type github --credential GITHUB_TOKEN=demo-token
 echo ""
 
 press_enter
@@ -104,12 +111,12 @@ banner "4. Blocked Providers (should fail)"
 
 step "Attempting to create a 'custom' provider (not in governance profiles):"
 echo ""
-run_on_vm "openshell provider create --name demo-blocked --type custom --credential key=value" || true
+gw provider create --name demo-blocked --type custom --credential key=value || true
 echo ""
 
 step "Attempting to create an Anthropic provider (not in governance profiles):"
 echo ""
-run_on_vm "openshell provider create --name demo-blocked2 --type claude-code --credential ANTHROPIC_API_KEY=demo-key" || true
+gw provider create --name demo-blocked2 --type claude-code --credential ANTHROPIC_API_KEY=demo-key || true
 echo ""
 
 press_enter
@@ -147,19 +154,19 @@ echo ""
 
 step "Available profiles now (GitHub is gone):"
 echo ""
-run_on_vm "openshell provider list-profiles"
+gw provider list-profiles
 echo ""
 
 press_enter
 
 step "Trying to create a GitHub provider (no longer in governance):"
 echo ""
-run_on_vm "openshell provider create --name demo-github-blocked --type github --credential GITHUB_TOKEN=demo-token" || true
+gw provider create --name demo-github-blocked --type github --credential GITHUB_TOKEN=demo-token || true
 echo ""
 
 step "Google Vertex AI still works (profile is still present):"
 echo ""
-run_on_vm "openshell provider create --name demo-vertex-ok --type google-vertex-ai --credential GOOGLE_API_KEY=demo-key" || true
+gw provider create --name demo-vertex-ok --type google-vertex-ai --credential GOOGLE_API_KEY=demo-key || true
 echo ""
 
 press_enter
@@ -182,7 +189,7 @@ echo ""
 
 step "GitHub provider creation works again:"
 echo ""
-run_on_vm "openshell provider create --name demo-github-restored --type github --credential GITHUB_TOKEN=demo-token" || true
+gw provider create --name demo-github-restored --type github --credential GITHUB_TOKEN=demo-token || true
 echo ""
 
 press_enter
@@ -190,12 +197,10 @@ press_enter
 # --- 8. Cleanup ---
 banner "8. Cleanup"
 
-run_on_vm "
-openshell provider delete demo-vertex 2>/dev/null
-openshell provider delete demo-github 2>/dev/null
-openshell provider delete demo-vertex-ok 2>/dev/null
-openshell provider delete demo-github-restored 2>/dev/null
-" > /dev/null 2>&1 || true
+gw provider delete demo-vertex > /dev/null 2>&1 || true
+gw provider delete demo-github > /dev/null 2>&1 || true
+gw provider delete demo-vertex-ok > /dev/null 2>&1 || true
+gw provider delete demo-github-restored > /dev/null 2>&1 || true
 echo -e "${GREEN}  Demo providers cleaned up.${RESET}"
 echo ""
 
