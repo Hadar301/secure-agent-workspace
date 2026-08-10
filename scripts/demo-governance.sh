@@ -148,13 +148,22 @@ step "An admin decides GitHub access should no longer be allowed."
 step "Removing the GitHub profile from the governance policy..."
 echo ""
 
+# Pause ArgoCD sync so it doesn't revert our changes
+oc patch application governance-interceptor -n vp-gitops --type=merge \
+  -p '{"spec":{"syncPolicy":null}}' > /dev/null 2>&1
+
+# Back up and remove the github profile
 GITHUB_PROFILE_BACKUP=$(oc get configmap governance-interceptor-policy -n "${NS}" -o jsonpath='{.data.github-profile\.yaml}')
 oc get configmap governance-interceptor-policy -n "${NS}" -o json \
   | jq 'del(.data["github-profile.yaml"])' \
   | oc replace -f - > /dev/null 2>&1
-oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
-oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
 
+# Remove the github volume mount from the deployment so the pod doesn't crash
+oc get deployment governance-interceptor -n "${NS}" -o json \
+  | jq '(.spec.template.spec.containers[0].volumeMounts) |= [.[] | select(.subPath != "github-profile.yaml")]' \
+  | oc replace -f - > /dev/null 2>&1
+
+oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
 echo -e "${YELLOW}  GitHub profile removed. Interceptor and gateway restarted.${RESET}"
@@ -185,14 +194,16 @@ banner "7. Restoring GitHub Access"
 step "Admin restores the GitHub profile..."
 echo ""
 
-oc patch configmap governance-interceptor-policy -n "${NS}" --type=merge \
-  -p "{\"data\":{\"github-profile.yaml\":$(echo "${GITHUB_PROFILE_BACKUP}" | jq -Rs .)}}" > /dev/null 2>&1
-oc rollout restart deployment/governance-interceptor -n "${NS}" > /dev/null 2>&1
+# Re-enable ArgoCD sync — it will restore the configmap and deployment
+oc patch application governance-interceptor -n vp-gitops --type=merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' > /dev/null 2>&1
+oc annotate application governance-interceptor -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
+sleep 15
 oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=60s > /dev/null 2>&1
 
 run_on_vm "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
 
-echo -e "${GREEN}  GitHub profile restored.${RESET}"
+echo -e "${GREEN}  GitHub profile restored via GitOps.${RESET}"
 echo ""
 
 step "GitHub provider creation works again:"
