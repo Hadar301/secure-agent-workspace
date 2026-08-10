@@ -2,7 +2,7 @@
 # Runs as a gRPC service that the OpenShell gateway calls
 # to enforce admin-controlled, cryptographically signed policies.
 
-enabled: false
+enabled: true
 
 image: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
 
