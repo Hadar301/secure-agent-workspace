@@ -63,21 +63,25 @@ is_profile_enabled() {
 }
 
 cmd_list() {
-  echo "Governance provider profiles:"
+  echo "Active profiles (enforced on gateway):"
   echo ""
   openshell --gateway "${SAW_NAME}" --gateway-insecure provider list-profiles 2>&1 \
     | grep -v 'TLS certificate'
   echo ""
-  echo "Profiles in values.yaml:"
-  for f in "${PROFILES_DIR}"/*.yaml; do
-    local name
-    name=$(basename "${f}" .yaml)
-    if is_profile_enabled "${name}"; then
-      echo "  [enabled]  ${name}"
-    else
-      echo "  [disabled] ${name}"
-    fi
-  done
+
+  echo "Profile registry (all available):"
+  local active
+  active=$(oc get configmap governance-interceptor-policy -n "${NS}" -o json 2>/dev/null \
+    | jq -r '.data | keys[] | select(endswith("-profile.yaml")) | rtrimstr("-profile.yaml")' 2>/dev/null)
+  oc get configmap governance-profile-registry -n "${NS}" -o json 2>/dev/null \
+    | jq -r '.data | keys[] | rtrimstr(".yaml")' \
+    | while read -r name; do
+        if echo "${active}" | grep -qx "${name}"; then
+          echo "  [enabled]  ${name}"
+        else
+          echo "  [disabled] ${name}"
+        fi
+      done
 }
 
 cmd_add() {
