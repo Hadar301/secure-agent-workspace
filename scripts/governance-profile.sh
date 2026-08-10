@@ -49,7 +49,10 @@ wait_for_sync() {
   sleep 20
   oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
   echo "  Interceptor synced."
-  echo "  Gateway hot-reload will pick up manifest changes automatically."
+  # Gateway polls the interceptor manifest every 10s; wait for at least
+  # one full poll cycle after the new pod is ready.
+  sleep 15
+  echo "  Gateway hot-reload picked up manifest changes."
 }
 
 is_profile_enabled() {
