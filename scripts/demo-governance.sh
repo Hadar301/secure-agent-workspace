@@ -245,7 +245,7 @@ NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" \
 rm -f "${JIRA_PROFILE}"
 echo ""
 
-step "Profile registry now shows Jira:"
+step "Active profiles now include Jira:"
 echo ""
 NS="${NS}" SAW_NAME="${SAW_NAME}" "${SCRIPT_DIR}/governance-profile.sh" list
 echo ""
@@ -301,7 +301,7 @@ echo -e "  ${GREEN}✓${RESET} Governed providers (google-vertex-ai, github) —
 echo -e "  ${RED}✗${RESET} Ungoverned providers (custom, claude-code) — ${RED}blocked${RESET}"
 echo -e "  ${YELLOW}!${RESET} Revoked profile (github removed) — ${RED}blocked until restored${RESET}"
 echo -e "  ${GREEN}✓${RESET} New profile added (jira) — ${GREEN}allowed after GitOps sync${RESET}"
-echo -e "  ${GREEN}✓${RESET} Profile registry tracks available vs active"
+echo -e "  ${GREEN}✓${RESET} Gateway hot-reloads manifest — no restart needed"
 echo -e "  ${GREEN}✓${RESET} Signed policy injected into sandbox creation (patch_count=2)"
 echo -e "  ${GREEN}✓${RESET} Full audit trail in gateway logs"
 echo ""

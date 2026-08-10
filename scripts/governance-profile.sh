@@ -49,18 +49,7 @@ wait_for_sync() {
   sleep 20
   oc rollout status deployment/governance-interceptor -n "${NS}" --timeout=90s > /dev/null 2>&1
   echo "  Interceptor synced."
-
-  # Gateway caches the interceptor manifest at startup and does not re-fetch
-  # on reconnect. A restart is needed to pick up profile changes.
-  # RFE filed: https://github.com/NVIDIA/OpenShell/issues/2667
-  echo "  INFO: Gateway restart required — gateway caches interceptor manifest at startup (RFE #2667)."
-  echo "  Restarting gateway..."
-  virtctl ssh -i "${SSH_KEY}" -n "${NS}" "cloud-user@vmi/${SAW_NAME}" \
-    --local-ssh-opts="-o StrictHostKeyChecking=no" \
-    --local-ssh-opts="-o UserKnownHostsFile=/dev/null" \
-    --local-ssh-opts="-o LogLevel=ERROR" \
-    --command "systemctl --user restart openshell-gateway.service; sleep 5" > /dev/null 2>&1
-  echo "  Done."
+  echo "  Gateway hot-reload will pick up manifest changes automatically."
 }
 
 is_profile_enabled() {
@@ -72,21 +61,6 @@ cmd_list() {
   echo ""
   openshell --gateway "${SAW_NAME}" --gateway-insecure provider list-profiles 2>&1 \
     | grep -v 'TLS certificate'
-  echo ""
-
-  echo "Profile registry (all available):"
-  local active
-  active=$(oc get configmap governance-interceptor-policy -n "${NS}" -o json 2>/dev/null \
-    | jq -r '.data | keys[] | select(endswith("-profile.yaml")) | rtrimstr("-profile.yaml")' 2>/dev/null)
-  oc get configmap governance-profile-registry -n "${NS}" -o json 2>/dev/null \
-    | jq -r '.data | keys[] | rtrimstr(".yaml")' \
-    | while read -r name; do
-        if echo "${active}" | grep -qx "${name}"; then
-          echo "  [enabled]  ${name}"
-        else
-          echo "  [disabled] ${name}"
-        fi
-      done
 }
 
 cmd_add() {
