@@ -84,7 +84,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete delete-all status \
-        governance-list-profiles governance-add-profile governance-remove-profile governance-demo \
+        governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
         .check-saw-name .check-ssh-key .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -307,13 +307,16 @@ PROFILE_NAME   ?=
 PROFILE_FILE   ?=
 
 governance-list-profiles: ## List governance provider profiles
-	@NS=$(NS) $(SCRIPTS_DIR)/governance-profile.sh list
+	@NS=$(NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh list
 
-governance-add-profile: ## Add a provider profile (PROFILE_NAME=github PROFILE_FILE=profiles/github.yaml)
-	@NS=$(NS) $(SCRIPTS_DIR)/governance-profile.sh add $(PROFILE_NAME) $(PROFILE_FILE)
+governance-add-profile: ## Enable an existing profile (PROFILE_NAME=github)
+	@NS=$(NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh add $(PROFILE_NAME)
 
-governance-remove-profile: ## Remove a provider profile (PROFILE_NAME=github)
-	@NS=$(NS) $(SCRIPTS_DIR)/governance-profile.sh remove $(PROFILE_NAME)
+governance-remove-profile: ## Disable a provider profile (PROFILE_NAME=github)
+	@NS=$(NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh remove $(PROFILE_NAME)
+
+governance-create-profile: ## Create a new profile from YAML (PROFILE_NAME=jira PROFILE_FILE=jira.yaml)
+	@NS=$(NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh create $(PROFILE_NAME) $(PROFILE_FILE)
 
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)

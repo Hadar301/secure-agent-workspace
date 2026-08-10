@@ -24,14 +24,21 @@ usage() {
   echo "Usage: $0 {list|add|remove} [profile-name]"
   echo ""
   echo "Commands:"
-  echo "  list                 List active governance profiles"
-  echo "  add <name>           Enable a provider profile (git push + ArgoCD sync)"
-  echo "  remove <name>        Disable a provider profile (git push + ArgoCD sync)"
+  echo "  list                      List active governance profiles"
+  echo "  add <name>                Enable an existing profile (git push + ArgoCD sync)"
+  echo "  remove <name>             Disable a provider profile (git push + ArgoCD sync)"
+  echo "  create <name> <file>      Create a new profile from a YAML file and enable it"
   echo ""
   echo "Available profiles:"
   for f in "${PROFILES_DIR}"/*.yaml; do
     echo "  - $(basename "${f}" .yaml)"
   done
+  echo ""
+  echo "Examples:"
+  echo "  $0 list"
+  echo "  $0 remove github"
+  echo "  $0 add github"
+  echo "  $0 create jira /path/to/jira-profile.yaml"
   exit 1
 }
 
@@ -130,11 +137,54 @@ cmd_remove() {
   echo "Profile '${name}' disabled."
 }
 
+cmd_create() {
+  local name="${1:?Profile name is required}"
+  local file="${2:?Profile YAML file is required}"
+
+  if [[ ! -f "${file}" ]]; then
+    echo "Error: file '${file}' not found" >&2
+    exit 1
+  fi
+
+  local dest="${PROFILES_DIR}/${name}.yaml"
+
+  if [[ -f "${dest}" ]]; then
+    echo "Profile file profiles/${name}.yaml already exists."
+    echo "Use 'add ${name}' to enable it, or edit the file directly."
+    return 1
+  fi
+
+  echo "Creating profile '${name}' from ${file}..."
+  cp "${file}" "${dest}"
+  echo "  Created: profiles/${name}.yaml"
+
+  # Add to profiles list in values.yaml
+  if ! is_profile_enabled "${name}"; then
+    sed -i '' "/^  - slack$/a\\
+\\  - ${name}" "${VALUES_FILE}" 2>/dev/null \
+      || sed -i "/^  - slack$/a\\  - ${name}" "${VALUES_FILE}"
+
+    if ! is_profile_enabled "${name}"; then
+      echo "  - ${name}" >> "${VALUES_FILE}"
+    fi
+  fi
+
+  git -C "${REPO_DIR}" add "${dest}" "${VALUES_FILE}" > /dev/null 2>&1
+  git -C "${REPO_DIR}" commit -m "policy: add ${name} provider profile" --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+  echo "  Pushed: profiles/${name}.yaml + added to profiles list"
+
+  wait_for_sync
+  echo ""
+  echo "Profile '${name}' created and enabled."
+}
+
 [[ $# -ge 1 ]] || usage
 
 case "$1" in
   list)   cmd_list ;;
   add)    cmd_add "${2:-}" ;;
   remove) cmd_remove "${2:-}" ;;
+  create) cmd_create "${2:-}" "${3:-}" ;;
   *)      usage ;;
 esac
