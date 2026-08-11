@@ -1,0 +1,9 @@
+display_name: Slack
+description: Slack API integration
+provider_type: custom
+endpoints:
+  - host: slack.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only

@@ -97,7 +97,7 @@ class TestGetToken:
 class TestSaveToken:
     def test_saves_token_file(self, tmp_path):
         response = {
-            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMSIsInByZWZlcnJlZF91c2VybmFtZSI6ImFsaWNlIiwiZXhwIjoxOTk5OTk5OTk5fQ.sig",
+            "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMSIsInByZWZlcnJlZF91c2VybmFtZSI6ImFsaWNlIiwiZXhwIjoxOTk5OTk5OTk5fQ.sig",  # notsecret
             "expires_in": 300,
             "refresh_token": "refresh-abc",
         }
