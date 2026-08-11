@@ -1,0 +1,7 @@
+[allowlist]
+  description = "Global Allowlist"
+
+  paths = [
+    # Unit test files contain mock/fake tokens and credentials
+    '''cli/tests/''',
+  ]

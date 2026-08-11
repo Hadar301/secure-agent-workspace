@@ -1,0 +1,25 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: governance-interceptor-policy
+  labels:
+    app.kubernetes.io/name: governance-policy
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  policy.yaml: |
+{{ .Files.Get "policy.yaml" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: governance-interceptor-profiles
+  labels:
+    app.kubernetes.io/name: governance-policy
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+{{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}
