@@ -3,6 +3,7 @@
 {{- if .Values.inference.webSearchSecretName }}
 {{- include "openshell-sandbox.validateSecretName" .Values.inference.webSearchSecretName }}
 {{- end }}
+{{- include "openshell-sandbox.validateSandboxName" (.Values.sandboxName | default .Release.Name) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
