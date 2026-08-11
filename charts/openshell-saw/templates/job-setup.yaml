@@ -74,6 +74,25 @@ spec:
             - name: ssh-key
               mountPath: /ssh-key
               readOnly: true
+            {{- if (.Files.Glob "workspaces/**/*.yaml") }}
+            - name: workspaces
+              mountPath: /workspaces
+              readOnly: true
+            {{- end }}
+            {{- $wsSecrets := dict }}
+            {{- range $path, $_ := (.Files.Glob "workspaces/*/providers.yaml") }}
+              {{- $providers := ($.Files.Get $path | fromYaml) }}
+              {{- range ($providers.providers | default list) }}
+                {{- if .credentialSecret }}
+                  {{- $_ := set $wsSecrets .credentialSecret true }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+            {{- range $secretName, $_ := $wsSecrets }}
+            - name: ws-secret-{{ $secretName | replace "." "-" }}
+              mountPath: /ws-secrets/{{ $secretName }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: scripts
           configMap:
@@ -97,3 +116,23 @@ spec:
           secret:
             secretName: {{ .Values.sshSecret }}
             defaultMode: 0600
+        {{- if (.Files.Glob "workspaces/**/*.yaml") }}
+        - name: workspaces
+          configMap:
+            name: {{ include "openshell-sandbox.fullname" . }}-workspaces
+        {{- end }}
+        {{- $wsSecrets := dict }}
+        {{- range $path, $_ := (.Files.Glob "workspaces/*/providers.yaml") }}
+          {{- $providers := ($.Files.Get $path | fromYaml) }}
+          {{- range ($providers.providers | default list) }}
+            {{- if .credentialSecret }}
+              {{- $_ := set $wsSecrets .credentialSecret true }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+        {{- range $secretName, $_ := $wsSecrets }}
+        - name: ws-secret-{{ $secretName | replace "." "-" }}
+          secret:
+            secretName: {{ $secretName }}
+            optional: true
+        {{- end }}

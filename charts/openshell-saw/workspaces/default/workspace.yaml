@@ -1,0 +1,3 @@
+name: default
+description: "Default agent workspace"
+agent: openclaw
