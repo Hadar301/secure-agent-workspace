@@ -825,29 +825,30 @@ data:
     DASHBOARD_ROUTE="{{ include "openshell-sandbox.fullname" . }}-dashboard-{{ .Release.Namespace }}.{{ $clusterDomain }}"
     OPENCLAW_TOKEN=$(openssl rand -hex 16)
     echo "Starting openclaw gateway inside sandbox (token=${OPENCLAW_TOKEN:0:8}...)..."
-    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
-      const fs = require('fs');
-      const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
-      if (!cfg.gateway) cfg.gateway = {};
-      if (!cfg.gateway.auth) cfg.gateway.auth = {};
-      cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
-      if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
-      cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
-      // Persist web search API keys so the gateway process inherits them on every start
-      if (process.env.TAVILY_API_KEY || process.env.BRAVE_API_KEY) {
-        if (!cfg.env) cfg.env = {};
-        if (process.env.TAVILY_API_KEY) cfg.env.TAVILY_API_KEY = process.env.TAVILY_API_KEY;
-        if (process.env.BRAVE_API_KEY)  cfg.env.BRAVE_API_KEY  = process.env.BRAVE_API_KEY;
-      }
-      fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
-    " TAVILY_API_KEY="${TAVILY_API_KEY:-}" BRAVE_API_KEY="${BRAVE_API_KEY:-}" \
-      2>/dev/null || echo "WARN: could not write openclaw config"
-    # Pass search API keys into the gateway process environment
-    SEARCH_ENV=""
-    [[ -n "${TAVILY_API_KEY:-}" ]] && SEARCH_ENV="TAVILY_API_KEY=${TAVILY_API_KEY} "
-    [[ -n "${BRAVE_API_KEY:-}" ]]  && SEARCH_ENV="${SEARCH_ENV}BRAVE_API_KEY=${BRAVE_API_KEY} "
+    # Env vars must precede `node` to be visible as process.env (not positional args).
+    # Single invocation handles both gateway config and search key persistence.
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+      env \
+        TAVILY_API_KEY="${TAVILY_API_KEY:-}" \
+        BRAVE_API_KEY="${BRAVE_API_KEY:-}" \
+      node -e "
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
+        if (!cfg.gateway) cfg.gateway = {};
+        if (!cfg.gateway.auth) cfg.gateway.auth = {};
+        cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
+        if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
+        cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
+        if (process.env.TAVILY_API_KEY || process.env.BRAVE_API_KEY) {
+          if (!cfg.env) cfg.env = {};
+          if (process.env.TAVILY_API_KEY) cfg.env.TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+          if (process.env.BRAVE_API_KEY)  cfg.env.BRAVE_API_KEY  = process.env.BRAVE_API_KEY;
+        }
+        fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
+      " 2>/dev/null || echo "WARN: could not write openclaw config"
+    # openclaw gateway reads the env section from openclaw.json on startup
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c \
-      "${SEARCH_ENV}nohup openclaw gateway run --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &" \
+      'nohup openclaw gateway run --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &' \
       2>/dev/null || echo "WARN: could not start openclaw gateway"
     OPENCLAW_READY=0
     for i in $(seq 1 10); do
