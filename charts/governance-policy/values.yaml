@@ -1,0 +1,4 @@
+# Governance policy data — provider profiles and sandbox policy.
+# To add a new provider, drop a YAML file in profiles/ and push.
+# The interceptor picks up changes automatically via file watcher.
+enabled: true

@@ -1,0 +1,14 @@
+{{- $workspaceFiles := .Files.Glob "workspaces/**/*.yaml" }}
+{{- if $workspaceFiles }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-workspaces
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+data:
+  {{- range $path, $_ := $workspaceFiles }}
+  {{ $path | replace "/" "__" }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+{{- end }}

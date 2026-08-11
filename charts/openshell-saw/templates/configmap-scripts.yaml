@@ -344,16 +344,50 @@ data:
 
     # --- Restart gateway with new binaries ---
     echo "Restarting gateway service..."
-    if ! guest_ssh "systemctl --user restart openshell-gateway.service && sleep 3 && systemctl --user is-active openshell-gateway.service"; then
-      echo "ERROR: gateway failed to start after binary install" >&2; exit 1
+    guest_ssh "systemctl --user restart openshell-gateway.service" || true
+    GW_READY=0
+    for i in $(seq 1 10); do
+      if guest_ssh "systemctl --user is-active openshell-gateway.service" 2>/dev/null; then
+        GW_READY=1; break
+      fi
+      echo "  waiting for gateway... (attempt $i)"
+      sleep 3
+    done
+    if [[ "${GW_READY}" -ne 1 ]]; then
+      echo "ERROR: gateway failed to start after binary install" >&2
+      guest_ssh "journalctl --user -u openshell-gateway.service --no-pager 2>/dev/null | tail -5" || true
+      exit 1
     fi
+
+    {{- if .Values.governance.enabled }}
+    # --- Preflight: verify governance interceptor is reachable ---
+    GOVERNANCE_ENDPOINT="{{ .Values.governance.endpoint | default (printf "http://governance-interceptor.%s.svc.cluster.local:%v" .Release.Namespace (.Values.governance.port | default 18081)) }}"
+    echo "Checking governance interceptor at ${GOVERNANCE_ENDPOINT}..."
+    INTERCEPTOR_READY=0
+    for i in $(seq 1 12); do
+      if curl -sf --max-time 5 "${GOVERNANCE_ENDPOINT}" >/dev/null 2>&1 || \
+         guest_ssh "openshell-gateway --version" >/dev/null 2>&1 && \
+         guest_ssh "journalctl --user -u openshell-gateway.service --no-pager 2>/dev/null | grep -q 'interceptors initialized'"; then
+        INTERCEPTOR_READY=1
+        break
+      fi
+      echo "  waiting for interceptor... (attempt $i)"
+      sleep 5
+    done
+    if [[ "${INTERCEPTOR_READY}" -ne 1 ]]; then
+      echo "ERROR: governance interceptor is unreachable at ${GOVERNANCE_ENDPOINT}" >&2
+      echo "ERROR: governance.enabled=true requires a running interceptor. Deploy governance-interceptor chart first." >&2
+      exit 1
+    fi
+    echo "Governance interceptor is reachable."
+    {{- end }}
 
     # --- SCP SA JSON + scripts ---
     echo "Copying scripts to vm/${VM_NAME}..."
     {{- if .Values.vertexSaJson }}
     guest_scp "/gcp-sa/sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
     {{- end }}
-    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh setup-dashboard.sh run-create.sh; do
+    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh setup-dashboard.sh setup-workspaces.sh parse-bom.py run-create.sh; do
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
@@ -421,6 +455,52 @@ data:
     if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
       echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
+
+    # --- Transfer workspace BOMs to VM (if present) ---
+    if [[ -d /workspaces ]]; then
+      echo "Transferring workspace BOMs to VM..."
+      guest_ssh "mkdir -p /home/${SSH_USER}/workspaces"
+      for file in /workspaces/*; do
+        key="$(basename "$file")"
+        ws_name="$(echo "$key" | awk -F'__' '{print $2}')"
+        ws_file="$(echo "$key" | awk -F'__' '{print $3}')"
+        if [[ -n "${ws_name}" && -n "${ws_file}" ]]; then
+          guest_ssh "mkdir -p /home/${SSH_USER}/workspaces/${ws_name}"
+          guest_scp "$file" "/home/${SSH_USER}/workspaces/${ws_name}/${ws_file}"
+        fi
+      done
+      # Resolve provider credentials from mounted secrets
+      WS_CREDS="${WORK_DIR}/ws-credentials.env"
+      for file in /workspaces/*; do
+        key="$(basename "$file")"
+        ws_name="$(echo "$key" | awk -F'__' '{print $2}')"
+        ws_file="$(echo "$key" | awk -F'__' '{print $3}')"
+        if [[ "${ws_file}" == "providers.yaml" ]]; then
+          python3 << 'PYEOF' "$file" "$ws_name" >> "${WS_CREDS}" 2>/dev/null || true
+    import yaml, sys, os
+    raw = yaml.safe_load(open(sys.argv[1]))
+    spec = raw.get('spec', raw)
+    ws = sys.argv[2]
+    for p in spec.get('providers', []):
+        secret = p.get('credentialSecret', '')
+        secret_key = p.get('credentialSecretKey', 'api_key')
+        prov_name = p.get('name', '')
+        if secret and prov_name:
+            spath = os.path.join('/ws-secrets', secret, secret_key)
+            if os.path.exists(spath):
+                with open(spath) as f:
+                    val = f.read().strip()
+                env_var = ('WS_' + ws + '_PROV_' + prov_name + '_KEY').upper().replace('-','_')
+                print(env_var + '=' + val)
+    PYEOF
+        fi
+      done
+      if [[ -f "${WS_CREDS}" ]]; then
+        guest_scp "${WS_CREDS}" "/home/${SSH_USER}/ws-credentials.env"
+        echo "Workspace credentials transferred."
+      fi
+    fi
+
     {{- if .Values.dashboard.enabled }}
     # --- Resolve dashboard webui Route for oauth2-proxy redirect URL ---
     WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
@@ -914,6 +994,149 @@ data:
     fi
     echo "pubkey_installed sandbox=${SANDBOX_NAME}"
 
+  parse-bom.py: |
+    #!/usr/bin/env python3
+    """Parse BOM YAML files (saw.redhat.com/v1alpha1 format).
+    Usage: parse-bom.py <command> <file> [args...]
+    """
+    import sys, json
+    try:
+        import yaml
+    except ImportError:
+        import subprocess
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'pyyaml'])
+        import yaml
+
+    cmd, path = sys.argv[1], sys.argv[2]
+    raw = yaml.safe_load(open(path))
+    spec = raw.get('spec', raw)
+    meta = raw.get('metadata', raw)
+
+    if cmd == 'get':
+        key = sys.argv[3]
+        default = sys.argv[4] if len(sys.argv) > 4 else ''
+        val = meta.get(key, spec.get(key, raw.get(key, default)))
+        print(val)
+    elif cmd == 'providers':
+        for p in spec.get('providers', []):
+            print(json.dumps(p))
+    elif cmd == 'first-provider':
+        ps = spec.get('providers', [])
+        field = sys.argv[3] if len(sys.argv) > 3 else 'name'
+        print(ps[0].get(field, '') if ps else '')
+
+  setup-workspaces.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    WS_BASE="${HOME}/workspaces"
+    SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"
+    PARSE="${HOME}/parse-bom.py"
+
+    if [[ ! -d "${WS_BASE}" ]]; then
+      echo "No workspace BOMs found, skipping"
+      exit 0
+    fi
+
+    for WS_DIR in "${WS_BASE}"/*/; do
+      [[ -f "${WS_DIR}/workspace.yaml" ]] || continue
+      WS_BOM="$(basename "${WS_DIR}")"
+
+      WS_NAME=$(python3 "${PARSE}" get "${WS_DIR}/workspace.yaml" name "")
+      WS_AGENT=$(python3 "${PARSE}" get "${WS_DIR}/workspace.yaml" agent openclaw)
+
+      if [[ -z "${WS_NAME}" ]]; then
+        echo "ERROR: workspace.yaml missing 'name' in BOM '${WS_BOM}'" >&2
+        continue
+      fi
+
+      echo "=== Workspace: ${WS_NAME} (agent=${WS_AGENT}) ==="
+
+      if [[ "${WS_NAME}" != "default" ]]; then
+        openshell workspace create --name "${WS_NAME}" 2>&1 || \
+          echo "  WARN: workspace create failed (may already exist)"
+      fi
+
+      openshell workspace member add --workspace "${WS_NAME}" \
+        --subject openshell-client --role admin 2>&1 || \
+        echo "  WARN: could not grant workspace access (may already be a member)"
+
+      # --- Create providers ---
+      if [[ -f "${WS_DIR}/providers.yaml" ]]; then
+        while IFS= read -r prov_json; do
+          [[ -z "${prov_json}" ]] && continue
+          PROV_NAME=$(echo "${prov_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))")
+          PROV_TYPE=$(echo "${prov_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('type',''))")
+          PROV_MODEL=$(echo "${prov_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('model',''))")
+
+          FULL_PROV_NAME="${PROV_NAME}"
+          [[ "${WS_NAME}" != "default" ]] && FULL_PROV_NAME="${WS_NAME}-${PROV_NAME}"
+
+          CRED_VAR="WS_${WS_BOM}_PROV_${PROV_NAME}_KEY"
+          CRED_VAR=$(echo "${CRED_VAR}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
+          PROV_API_KEY="${!CRED_VAR:-}"
+
+          CRED_KEY=""
+          case "${PROV_TYPE}" in
+            google-vertex-ai) CRED_KEY="GOOGLE_API_KEY" ;;
+            claude-code)      CRED_KEY="ANTHROPIC_API_KEY" ;;
+            codex|openai)     CRED_KEY="OPENAI_API_KEY" ;;
+            nvidia)           CRED_KEY="NVIDIA_API_KEY" ;;
+            ollama)           CRED_KEY="" ;;
+            *)                CRED_KEY="API_KEY" ;;
+          esac
+
+          if [[ -n "${PROV_NAME}" && -n "${PROV_TYPE}" ]]; then
+            echo "  Provider: ${FULL_PROV_NAME} (type=${PROV_TYPE}, model=${PROV_MODEL})"
+            CREATE_ARGS=(--name "${FULL_PROV_NAME}" --type "${PROV_TYPE}")
+            [[ -n "${CRED_KEY}" && -n "${PROV_API_KEY}" ]] && CREATE_ARGS+=(--credential "${CRED_KEY}=${PROV_API_KEY}")
+            openshell provider create "${CREATE_ARGS[@]}" 2>&1 || \
+              echo "  WARN: provider create failed (may already exist)"
+          fi
+        done < <(python3 "${PARSE}" providers "${WS_DIR}/providers.yaml")
+
+        FIRST_PROV=$(python3 "${PARSE}" first-provider "${WS_DIR}/providers.yaml" name)
+        FIRST_MODEL=$(python3 "${PARSE}" first-provider "${WS_DIR}/providers.yaml" model)
+        FULL_FIRST="${FIRST_PROV}"
+        [[ "${WS_NAME}" != "default" ]] && FULL_FIRST="${WS_NAME}-${FIRST_PROV}"
+        if [[ -n "${FULL_FIRST}" ]]; then
+          openshell inference set --provider "${FULL_FIRST}" --model "${FIRST_MODEL}" --no-verify 2>&1 || true
+        fi
+      fi
+
+      # --- Create sandbox ---
+      SB_NAME="${WS_NAME}"
+      SB_IMAGE=""
+      if [[ -f "${WS_DIR}/sandbox.yaml" ]]; then
+        SB_NAME=$(python3 "${PARSE}" get "${WS_DIR}/sandbox.yaml" name "${WS_NAME}")
+        SB_IMAGE=$(python3 "${PARSE}" get "${WS_DIR}/sandbox.yaml" image "")
+        [[ -z "${SB_NAME}" ]] && SB_NAME="${WS_NAME}"
+      fi
+
+      CREATE_ARGS=(--name "${SB_NAME}")
+      if [[ -n "${SB_IMAGE}" ]]; then
+        CREATE_ARGS+=(--from "${SB_IMAGE}")
+        echo "  Pre-pulling sandbox image..."
+        sudo docker pull "${SB_IMAGE}" 2>&1 | tail -1 || true
+      elif [[ -n "${SANDBOX_IMAGE}" ]]; then
+        CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
+      fi
+
+      if ! openshell sandbox get "${SB_NAME}" >/dev/null 2>&1; then
+        echo "  Creating sandbox '${SB_NAME}'..."
+        openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready" || {
+          echo "  ERROR: sandbox creation failed for '${WS_NAME}'" >&2
+          continue
+        }
+      else
+        echo "  Sandbox '${SB_NAME}' already exists"
+      fi
+
+      echo "=== Workspace '${WS_NAME}' configured ==="
+    done
+
+    echo "setup-workspaces OK"
+
   run-create.sh: |
     #!/usr/bin/env bash
     set -euo pipefail
@@ -939,7 +1162,38 @@ data:
       "${HOME}/configure-vertex-user.sh" \
       "${HOME}/setup-nemoclaw.sh" \
       "${HOME}/inject-user-pubkey.sh" \
+      "${HOME}/setup-dashboard.sh" \
+      "${HOME}/setup-workspaces.sh" 2>/dev/null || true
+
+    # --- Multi-workspace BOM path ---
+    if [[ -d "${HOME}/workspaces" ]] && ls "${HOME}/workspaces"/*/workspace.yaml >/dev/null 2>&1; then
+      echo "Multi-workspace mode: BOMs detected"
+      if [[ -f "${HOME}/ws-credentials.env" ]]; then
+        set -a; source "${HOME}/ws-credentials.env"; set +a
+      fi
+      "${HOME}/setup-workspaces.sh"
+
+      SSH_PUBKEY="${SSH_PUBKEY}" SANDBOX_NAME="${SANDBOX_NAME}" "${HOME}/inject-user-pubkey.sh" || true
+
+      if [[ -n "${OIDC_TOKEN:-}" && "${OIDC_PASSTHROUGH:-}" == "true" ]]; then
+        echo "Writing OIDC token to sandbox for MCP server auth..."
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c "
+          mkdir -p /sandbox/.oidc
+          printf '{\"access_token\":\"%s\"}' '${OIDC_TOKEN}' > /sandbox/.oidc/token.json
+          chmod 600 /sandbox/.oidc/token.json
+        " || echo "WARN: could not write OIDC token to sandbox"
+      fi
+
+      export DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-false}" DASHBOARD_IMAGE="${DASHBOARD_IMAGE:-}"
+      export DASHBOARD_PROXY_IMAGE="${DASHBOARD_PROXY_IMAGE:-}" DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+      export DASHBOARD_COOKIE_SECRET="${DASHBOARD_COOKIE_SECRET:-}" DASHBOARD_REDIRECT_URL="${DASHBOARD_REDIRECT_URL:-}"
       "${HOME}/setup-dashboard.sh"
+
+      echo "run-create OK (multi-workspace mode)"
+      exit 0
+    fi
+
+    # --- Single-workspace path (original) ---
 
     # Vertex AI legacy path: configure provider via openshell commands
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
