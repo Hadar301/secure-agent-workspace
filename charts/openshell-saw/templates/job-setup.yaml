@@ -79,19 +79,9 @@ spec:
               mountPath: /workspaces
               readOnly: true
             {{- end }}
-            {{- $wsSecrets := dict }}
-            {{- range $path, $_ := (.Files.Glob "workspaces/*/providers.yaml") }}
-              {{- $raw := ($.Files.Get $path | fromYaml) }}
-              {{- $spec := ($raw.spec | default $raw) }}
-              {{- range ($spec.providers | default list) }}
-                {{- if .credentialSecret }}
-                  {{- $_ := set $wsSecrets .credentialSecret true }}
-                {{- end }}
-              {{- end }}
-            {{- end }}
-            {{- range $secretName, $_ := $wsSecrets }}
-            - name: ws-secret-{{ $secretName | replace "." "-" }}
-              mountPath: /ws-secrets/{{ $secretName }}
+            {{- if or .Values.inference.secretName .Values.inference.provider }}
+            - name: provider-secret-ws
+              mountPath: /ws-secrets/{{ .Values.inference.secretName | default .Values.inference.provider }}
               readOnly: true
             {{- end }}
       volumes:
@@ -122,19 +112,9 @@ spec:
           configMap:
             name: {{ include "openshell-sandbox.fullname" . }}-workspaces
         {{- end }}
-        {{- $wsSecrets := dict }}
-        {{- range $path, $_ := (.Files.Glob "workspaces/*/providers.yaml") }}
-          {{- $raw := ($.Files.Get $path | fromYaml) }}
-          {{- $spec := ($raw.spec | default $raw) }}
-          {{- range ($spec.providers | default list) }}
-            {{- if .credentialSecret }}
-              {{- $_ := set $wsSecrets .credentialSecret true }}
-            {{- end }}
-          {{- end }}
-        {{- end }}
-        {{- range $secretName, $_ := $wsSecrets }}
-        - name: ws-secret-{{ $secretName | replace "." "-" }}
+        {{- if or .Values.inference.secretName .Values.inference.provider }}
+        - name: provider-secret-ws
           secret:
-            secretName: {{ $secretName }}
+            secretName: {{ .Values.inference.secretName | default .Values.inference.provider }}
             optional: true
         {{- end }}
