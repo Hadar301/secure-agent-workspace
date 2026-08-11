@@ -27,7 +27,7 @@ run_test() {
 assert_contains() {
   local output="$1" pattern="$2" desc="$3"
   echo -n "  ${desc}... "
-  if echo "${output}" | grep -qE "${pattern}"; then
+  if grep -qE "${pattern}" <<< "${output}"; then
     echo "OK"
     PASS=$((PASS + 1))
   else
@@ -39,7 +39,7 @@ assert_contains() {
 assert_not_contains() {
   local output="$1" pattern="$2" desc="$3"
   echo -n "  ${desc}... "
-  if echo "${output}" | grep -qE "${pattern}"; then
+  if grep -qE "${pattern}" <<< "${output}"; then
     echo "FAILED (pattern '${pattern}' found but should not be)"
     FAIL=$((FAIL + 1))
   else
