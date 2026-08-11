@@ -826,11 +826,12 @@ data:
     OPENCLAW_TOKEN=$(openssl rand -hex 16)
     echo "Starting openclaw gateway inside sandbox (token=${OPENCLAW_TOKEN:0:8}...)..."
     # Env vars must precede `node` to be visible as process.env (not positional args).
-    # Single invocation handles both gateway config and search key persistence.
+    # Only pass search keys when set — deployment works without them.
+    _SEARCH_ENV=()
+    [[ -n "${TAVILY_API_KEY:-}" ]] && _SEARCH_ENV+=("TAVILY_API_KEY=${TAVILY_API_KEY}")
+    [[ -n "${BRAVE_API_KEY:-}" ]]  && _SEARCH_ENV+=("BRAVE_API_KEY=${BRAVE_API_KEY}")
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-      env \
-        TAVILY_API_KEY="${TAVILY_API_KEY:-}" \
-        BRAVE_API_KEY="${BRAVE_API_KEY:-}" \
+      env "${_SEARCH_ENV[@]}" \
       node -e "
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
