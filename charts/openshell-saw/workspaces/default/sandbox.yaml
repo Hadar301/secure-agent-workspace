@@ -1,2 +1,7 @@
-name: ""
-image: ""
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandbox
+metadata:
+  workspace: default
+spec:
+  name: ""
+  image: ""

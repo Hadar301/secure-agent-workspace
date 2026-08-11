@@ -478,9 +478,10 @@ data:
         if [[ "${ws_file}" == "providers.yaml" ]]; then
           python3 << 'PYEOF' "$file" "$ws_name" >> "${WS_CREDS}" 2>/dev/null || true
     import yaml, sys, os
-    d = yaml.safe_load(open(sys.argv[1]))
+    raw = yaml.safe_load(open(sys.argv[1]))
+    spec = raw.get('spec', raw)
     ws = sys.argv[2]
-    for p in d.get('providers', []):
+    for p in spec.get('providers', []):
         secret = p.get('credentialSecret', '')
         secret_key = p.get('credentialSecretKey', 'api_key')
         prov_name = p.get('name', '')
@@ -995,7 +996,9 @@ data:
 
   parse-bom.py: |
     #!/usr/bin/env python3
-    """Parse BOM YAML files. Usage: parse-bom.py <command> <file> [args...]"""
+    """Parse BOM YAML files (saw.redhat.com/v1alpha1 format).
+    Usage: parse-bom.py <command> <file> [args...]
+    """
     import sys, json
     try:
         import yaml
@@ -1005,17 +1008,20 @@ data:
         import yaml
 
     cmd, path = sys.argv[1], sys.argv[2]
-    data = yaml.safe_load(open(path))
+    raw = yaml.safe_load(open(path))
+    spec = raw.get('spec', raw)
+    meta = raw.get('metadata', raw)
 
     if cmd == 'get':
         key = sys.argv[3]
         default = sys.argv[4] if len(sys.argv) > 4 else ''
-        print(data.get(key, default))
+        val = meta.get(key, spec.get(key, raw.get(key, default)))
+        print(val)
     elif cmd == 'providers':
-        for p in data.get('providers', []):
+        for p in spec.get('providers', []):
             print(json.dumps(p))
     elif cmd == 'first-provider':
-        ps = data.get('providers', [])
+        ps = spec.get('providers', [])
         field = sys.argv[3] if len(sys.argv) > 3 else 'name'
         print(ps[0].get(field, '') if ps else '')
 

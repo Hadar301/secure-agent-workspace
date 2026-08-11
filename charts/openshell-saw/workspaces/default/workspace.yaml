@@ -1,3 +1,7 @@
-name: default
-description: "Default agent workspace"
-agent: openclaw
+apiVersion: saw.redhat.com/v1alpha1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  description: "Default agent workspace"
+  agent: openclaw
