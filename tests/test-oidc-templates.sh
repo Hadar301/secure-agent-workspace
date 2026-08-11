@@ -212,14 +212,18 @@ run_test_should_fail "rejects sshSecret starting with dash" \
     --set sshPublicKey="${SSH_KEY}" \
     --set sshSecret=-invalid
 
-run_test_should_fail "rejects release name longer than 19 characters" \
-  helm template this-name-is-20chars "${CHARTS_DIR}/openshell-saw" \
-    --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}"
-
-run_test_should_fail "rejects sandboxName value longer than 19 characters" \
+run_test_should_fail "rejects explicit sandboxName longer than 19 characters" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=this-name-is-20chars \
+    --set sshPublicKey="${SSH_KEY}"
+
+run_test_should_fail "rejects release name > 19 chars when sandboxName is unset (fallback)" \
+  helm template this-name-is-20chars "${CHARTS_DIR}/openshell-saw" \
+    --set sshPublicKey="${SSH_KEY}"
+
+run_test "accepts long release name when explicit sandboxName is short" \
+  helm template this-name-is-20chars "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
     --set sshPublicKey="${SSH_KEY}"
 
 run_test "accepts sandbox name exactly 19 characters" \
