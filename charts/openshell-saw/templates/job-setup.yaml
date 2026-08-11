@@ -124,8 +124,9 @@ spec:
         {{- end }}
         {{- $wsSecrets := dict }}
         {{- range $path, $_ := (.Files.Glob "workspaces/*/providers.yaml") }}
-          {{- $providers := ($.Files.Get $path | fromYaml) }}
-          {{- range ($providers.providers | default list) }}
+          {{- $raw := ($.Files.Get $path | fromYaml) }}
+          {{- $spec := ($raw.spec | default $raw) }}
+          {{- range ($spec.providers | default list) }}
             {{- if .credentialSecret }}
               {{- $_ := set $wsSecrets .credentialSecret true }}
             {{- end }}
