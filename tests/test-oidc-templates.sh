@@ -27,7 +27,7 @@ run_test() {
 assert_contains() {
   local output="$1" pattern="$2" desc="$3"
   echo -n "  ${desc}... "
-  if echo "${output}" | grep -qE "${pattern}"; then
+  if grep -qE "${pattern}" <<< "${output}"; then
     echo "OK"
     PASS=$((PASS + 1))
   else
@@ -39,7 +39,7 @@ assert_contains() {
 assert_not_contains() {
   local output="$1" pattern="$2" desc="$3"
   echo -n "  ${desc}... "
-  if echo "${output}" | grep -qE "${pattern}"; then
+  if grep -qE "${pattern}" <<< "${output}"; then
     echo "FAILED (pattern '${pattern}' found but should not be)"
     FAIL=$((FAIL + 1))
   else
@@ -98,6 +98,7 @@ assert_contains "${PS_OUTPUT}" "kind: ExternalSecret" "ExternalSecret resources 
 assert_contains "${PS_OUTPUT}" "name: inference" "unified inference secret defined"
 assert_contains "${PS_OUTPUT}" "name: openshell-ssh-pubkey" "SSH public key secret defined"
 assert_contains "${PS_OUTPUT}" "name: openshell-aap-ssh" "SSH private key secret defined"
+assert_contains "${PS_OUTPUT}" "name: web-search" "web-search ExternalSecret always rendered"
 assert_contains "${PS_OUTPUT}" "vault-backend" "vault backend referenced"
 
 # ============================================================
@@ -176,6 +177,40 @@ run_test "renders with ESO provider secret" \
 assert_contains "${SB_ESO}" "secretName: gemini" "provider secret mounted in job"
 assert_contains "${SB_ESO}" "/provider-secret" "provider secret mount path present"
 assert_contains "${SB_ESO}" "provider-secret/api_key" "API key read from provider secret"
+
+# ============================================================
+echo ""
+echo "=== Sandbox Chart (with web search secret) ==="
+# ============================================================
+
+SB_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+  --set sandboxName=my-sandbox \
+  --set sshPublicKey="${SSH_KEY}" \
+  --set inference.provider=gemini \
+  --set inference.model=flash \
+  --set inference.apiKey=test-key \
+  --set inference.webSearch=tavily 2>&1)"
+run_test "renders with web search secret" \
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+    --set sandboxName=my-sandbox \
+    --set sshPublicKey="${SSH_KEY}" \
+    --set inference.provider=gemini \
+    --set inference.model=flash \
+    --set inference.apiKey=test-key \
+    --set inference.webSearch=tavily
+
+assert_contains "${SB_SEARCH}" "secretName: web-search" "web-search secret mounted in job"
+assert_contains "${SB_SEARCH}" "/search-secret" "search secret mount path present"
+assert_contains "${SB_SEARCH}" "search-secret/provider" "search provider read from secret"
+
+# web-search secret always mounted (optional: true)
+SB_NO_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+  --set sandboxName=my-sandbox \
+  --set sshPublicKey="${SSH_KEY}" \
+  --set inference.provider=gemini \
+  --set inference.model=flash \
+  --set inference.apiKey=test-key 2>&1)"
+assert_contains "${SB_NO_SEARCH}" "name: search-secret" "web-search secret always mounted (optional)"
 
 # ============================================================
 echo ""

@@ -1,0 +1,9 @@
+display_name: Brave Search
+description: Brave Search API access
+provider_type: brave
+endpoints:
+  - host: api.search.brave.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
