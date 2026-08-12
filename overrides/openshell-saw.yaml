@@ -5,3 +5,7 @@ accessControl:
 
 job:
   waitForSecrets: true
+
+inference:
+  webSearch: tavily
+  webSearchSecretName: tavily
