@@ -1,0 +1,9 @@
+display_name: NVIDIA Endpoints
+description: NVIDIA API inference endpoints
+provider_type: nvidia
+endpoints:
+  - host: integrate.api.nvidia.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write

@@ -1,0 +1,9 @@
+display_name: Google Gemini
+description: Google Gemini AI via API key
+provider_type: gemini
+endpoints:
+  - host: generativelanguage.googleapis.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write

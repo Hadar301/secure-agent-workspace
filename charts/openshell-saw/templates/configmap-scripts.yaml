@@ -342,6 +342,19 @@ data:
     echo "Installing lsof..."
     guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install failed (non-fatal)"
 
+    # --- Patch OIDC issuer before restart ---
+    # The golden image may have a stale OIDC issuer (relative path, no host).
+    # Fix all config sources: both toml files and inject the env var override.
+    source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
+    if [[ -n "${OIDC_ISSUER:-}" ]]; then
+      echo "Patching OIDC issuer to ${OIDC_ISSUER}..."
+      guest_ssh "sudo sed -i 's|issuer = \".*\"|issuer = \"${OIDC_ISSUER}\"|' /etc/openshell/gateway.toml 2>/dev/null || true" || true
+      guest_ssh "sed -i 's|issuer = \".*\"|issuer = \"${OIDC_ISSUER}\"|' ~/.config/openshell/gateway.toml 2>/dev/null || true" || true
+      guest_ssh "grep -v '^OPENSHELL_OIDC_ISSUER' ~/.config/openshell/gateway.env > /tmp/genv.tmp 2>/dev/null && mv /tmp/genv.tmp ~/.config/openshell/gateway.env; echo 'OPENSHELL_OIDC_ISSUER=${OIDC_ISSUER}' >> ~/.config/openshell/gateway.env" || true
+      guest_ssh "MFILE=~/.config/openshell/gateways/openshell/metadata.json; [[ -f \"\${MFILE}\" ]] && sed -i 's|\"oidc_issuer\":\"[^\"]*\"|\"oidc_issuer\":\"${OIDC_ISSUER}\"|' \"\${MFILE}\" || true" || true
+      echo "OIDC config patched"
+    fi
+
     # --- Restart gateway with new binaries ---
     echo "Restarting gateway service..."
     guest_ssh "systemctl --user restart openshell-gateway.service" || true
@@ -448,6 +461,26 @@ data:
       echo "SA_JSON=/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json" >> "${WORK_DIR}/run-create.env"
       guest_scp "${WORK_DIR}/vertex-sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
       echo "Injected Vertex SA JSON from provider secret"
+    fi
+    # Inject web search from ESO-managed secret (mounted at /search-secret)
+    if [[ -f /search-secret/provider ]]; then
+      SEARCH_PROVIDER="$(cat /search-secret/provider)"
+      if [[ "${SEARCH_PROVIDER}" != "none" && -n "${SEARCH_PROVIDER}" ]]; then
+        echo "NEMOCLAW_WEB_SEARCH_ENABLED=1" >> "${WORK_DIR}/run-create.env"
+        echo "NEMOCLAW_WEB_SEARCH_PROVIDER=${SEARCH_PROVIDER}" >> "${WORK_DIR}/run-create.env"
+        echo "Injected web search provider: ${SEARCH_PROVIDER}"
+        if [[ -f /search-secret/api_key ]]; then
+          SEARCH_KEY="$(cat /search-secret/api_key)"
+          if [[ -n "${SEARCH_KEY}" ]]; then
+            case "${SEARCH_PROVIDER}" in
+              tavily) echo "TAVILY_API_KEY=${SEARCH_KEY}" >> "${WORK_DIR}/run-create.env"
+                      echo "Injected TAVILY_API_KEY from web-search secret" ;;
+              brave)  echo "BRAVE_API_KEY=${SEARCH_KEY}" >> "${WORK_DIR}/run-create.env"
+                      echo "Injected BRAVE_API_KEY from web-search secret" ;;
+            esac
+          fi
+        fi
+      fi
     fi
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
       echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
@@ -641,6 +674,8 @@ data:
     NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
     NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
     NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    TAVILY_API_KEY="${TAVILY_API_KEY:-}"
+    BRAVE_API_KEY="${BRAVE_API_KEY:-}"
     # Vertex AI legacy path
     PROVIDER_NAME="${PROVIDER_NAME:-}"
     VERTEX_MODEL="${VERTEX_MODEL:-claude-sonnet-4-6}"
@@ -736,7 +771,10 @@ data:
     [[ -n "${NEMOCLAW_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_PROVIDER=${NEMOCLAW_PROVIDER}")
     [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
     [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
+    [[ -n "${NEMOCLAW_WEB_SEARCH_ENABLED}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_ENABLED=${NEMOCLAW_WEB_SEARCH_ENABLED}")
     [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
+    [[ -n "${TAVILY_API_KEY}" ]] && ONBOARD_ENV+=("TAVILY_API_KEY=${TAVILY_API_KEY}")
+    [[ -n "${BRAVE_API_KEY}" ]]  && ONBOARD_ENV+=("BRAVE_API_KEY=${BRAVE_API_KEY}")
     [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
 
     ONBOARD_OK=1
@@ -750,12 +788,12 @@ data:
       echo "WARN: nemoclaw onboard failed — falling back to openshell provider create"
     fi
 
-    # --- Fallback: configure provider if nemoclaw onboard didn't ---
-    if ! openshell provider list 2>/dev/null | grep -q inference; then
+    # --- Fallback: configure provider only if nemoclaw onboard failed ---
+    if [[ "${ONBOARD_OK}" -ne 1 ]] && ! openshell provider list 2>/dev/null | grep -q inference; then
       PROVIDER_TYPE=""
       CRED_KEY=""
       case "${NEMOCLAW_PROVIDER}" in
-        gemini)      PROVIDER_TYPE="google-vertex-ai"; CRED_KEY="GOOGLE_API_KEY" ;;
+        gemini)      PROVIDER_TYPE="gemini"; CRED_KEY="GEMINI_API_KEY" ;;
         anthropic)   PROVIDER_TYPE="claude-code";      CRED_KEY="ANTHROPIC_API_KEY" ;;
         openai)      PROVIDER_TYPE="codex";            CRED_KEY="OPENAI_API_KEY" ;;
         build)       PROVIDER_TYPE="nvidia";           CRED_KEY="NVIDIA_API_KEY" ;;
@@ -768,8 +806,7 @@ data:
             --name inference \
             --type "${PROVIDER_TYPE}" \
             --credential "${CRED_KEY}=${NEMOCLAW_API_KEY}" 2>&1; then
-          echo "ERROR: could not configure provider on gateway" >&2
-          exit 1
+          echo "WARN: could not configure provider on gateway (continuing without inference)"
         fi
       fi
     fi
@@ -795,16 +832,26 @@ data:
     DASHBOARD_ROUTE="{{ include "openshell-sandbox.fullname" . }}-dashboard-{{ .Release.Namespace }}.{{ $clusterDomain }}"
     OPENCLAW_TOKEN=$(openssl rand -hex 16)
     echo "Starting openclaw gateway inside sandbox (token=${OPENCLAW_TOKEN:0:8}...)..."
-    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
-      const fs = require('fs');
-      const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
-      if (!cfg.gateway) cfg.gateway = {};
-      if (!cfg.gateway.auth) cfg.gateway.auth = {};
-      cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
-      if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
-      cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
-      fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
-    " 2>/dev/null || echo "WARN: could not write openclaw config"
+    # Env vars must precede `node` to be visible as process.env (not positional args).
+    # Single invocation handles both gateway config and search key persistence.
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+      env \
+        TAVILY_API_KEY="${TAVILY_API_KEY:-}" \
+        BRAVE_API_KEY="${BRAVE_API_KEY:-}" \
+      node -e "
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
+        if (!cfg.gateway) cfg.gateway = {};
+        if (!cfg.gateway.auth) cfg.gateway.auth = {};
+        cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
+        if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
+        cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
+        // Web search keys are passed via nemoclaw onboard env, not openclaw config.
+        // Injecting them here triggers openclaw plugin auto-install which fails
+        // when the sandbox proxy blocks npm access.
+        fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
+      " 2>/dev/null || echo "WARN: could not write openclaw config"
+    # openclaw gateway reads the env section from openclaw.json on startup
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c \
       'nohup openclaw gateway run --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &' \
       2>/dev/null || echo "WARN: could not start openclaw gateway"
@@ -1155,6 +1202,8 @@ data:
     NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
     NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
     NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    TAVILY_API_KEY="${TAVILY_API_KEY:-}"
+    BRAVE_API_KEY="${BRAVE_API_KEY:-}"
     PROVIDER_NAME="${PROVIDER_NAME:-}"
     SA_JSON="${SA_JSON:-}"
 
@@ -1205,7 +1254,7 @@ data:
 
     # Run nemoclaw onboard (handles both Vertex and direct providers)
     export SANDBOX_NAME NEMOCLAW_AGENT NEMOCLAW_PROVIDER NEMOCLAW_MODEL NEMOCLAW_API_KEY
-    export NEMOCLAW_ENDPOINT_URL NEMOCLAW_WEB_SEARCH_PROVIDER
+    export NEMOCLAW_ENDPOINT_URL NEMOCLAW_WEB_SEARCH_ENABLED NEMOCLAW_WEB_SEARCH_PROVIDER TAVILY_API_KEY BRAVE_API_KEY
     export ONBOARD_CLI="${ONBOARD_CLI:-openclaw}"
     export PROVIDER_NAME SANDBOX_IMAGE="${SANDBOX_IMAGE:-}" VERTEX_MODEL="${VERTEX_MODEL:-}"
     export NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"

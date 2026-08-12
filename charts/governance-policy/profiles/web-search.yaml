@@ -1,0 +1,19 @@
+display_name: Web Search
+description: Tavily and Brave Search API endpoints and plugin registry
+provider_type: custom
+endpoints:
+  - host: api.tavily.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+  - host: api.search.brave.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+  - host: registry.npmjs.org
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
