@@ -72,6 +72,9 @@ spec:
               mountPath: /provider-secret
               readOnly: true
             {{- end }}
+            - name: search-secret
+              mountPath: /search-secret
+              readOnly: true
             - name: ssh-key
               mountPath: /ssh-key
               readOnly: true
@@ -104,6 +107,10 @@ spec:
             secretName: {{ .Values.inference.secretName | default .Values.inference.provider }}
             optional: true
         {{- end }}
+        - name: search-secret
+          secret:
+            secretName: web-search
+            optional: true
         - name: ssh-key
           secret:
             secretName: {{ .Values.sshSecret }}
