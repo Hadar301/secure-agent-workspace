@@ -13,7 +13,7 @@ build:
   reasoning: "false"
   toolDisclosure: "progressive"
   agentTimeout: "600"
-  webSearchEnabled: "0"
+  webSearchEnabled: "1"
 
 output:
   imageStreamTag: "nemoclaw-sandbox:latest"
