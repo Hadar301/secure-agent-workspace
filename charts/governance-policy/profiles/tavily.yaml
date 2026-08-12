@@ -1,9 +1,23 @@
 display_name: Tavily Search
-description: Tavily Search API access
-provider_type: tavily
+description: Tavily Search API access for governed sandbox agents
+category: other
+credentials:
+  - name: api_key
+    description: Tavily Search API key
+    env_vars: [TAVILY_API_KEY]
+    required: true
+    auth_style: header
+    header_name: Authorization
+discovery:
+  credentials: [api_key]
 endpoints:
   - host: api.tavily.com
     port: 443
     protocol: rest
     enforcement: enforce
-    access: read-write
+    access: read-only
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  - /usr/bin/node
+  - /usr/local/bin/node
