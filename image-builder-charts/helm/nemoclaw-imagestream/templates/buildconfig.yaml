@@ -49,6 +49,8 @@ spec:
           value: {{ .Values.build.agentTimeout | quote }}
         - name: NEMOCLAW_WEB_SEARCH_ENABLED
           value: {{ .Values.build.webSearchEnabled | quote }}
+        - name: NEMOCLAW_OPENCLAW_OTEL
+          value: {{ .Values.build.otelEnabled | quote }}
   output:
     to:
       kind: ImageStreamTag
