@@ -811,6 +811,47 @@ data:
       fi
     fi
 
+    # --- Enable provider profile policy composition ---
+    # Requires platform admin (OIDC gateway), not mTLS client.
+    if [[ -n "${OIDC_TOKEN:-}" ]]; then
+      openshell gateway select "${GATEWAY_NAME}" >/dev/null 2>&1 || true
+      openshell settings set --global --key providers_v2_enabled --value true --yes 2>&1 || true
+      openshell gateway select "${MTLS_GW_NAME}" >/dev/null 2>&1 || true
+    else
+      openshell settings set --global --key providers_v2_enabled --value true --yes 2>&1 || true
+    fi
+
+    # --- Register web search provider on the gateway (must match profile ID) ---
+    if [[ "${NEMOCLAW_WEB_SEARCH_PROVIDER}" != "none" && -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]]; then
+      WS_CRED_KEY=""
+      WS_CRED_VAL=""
+      case "${NEMOCLAW_WEB_SEARCH_PROVIDER}" in
+        brave)
+          WS_CRED_KEY="BRAVE_API_KEY"
+          WS_CRED_VAL="${BRAVE_API_KEY:-}"
+          ;;
+        tavily)
+          WS_CRED_KEY="TAVILY_API_KEY"
+          WS_CRED_VAL="${TAVILY_API_KEY:-}"
+          ;;
+      esac
+      if [[ -n "${WS_CRED_VAL}" ]]; then
+        if openshell provider get "${NEMOCLAW_WEB_SEARCH_PROVIDER}" >/dev/null 2>&1; then
+          echo "Updating ${NEMOCLAW_WEB_SEARCH_PROVIDER} provider credential..."
+          openshell provider update "${NEMOCLAW_WEB_SEARCH_PROVIDER}" \
+              --credential "${WS_CRED_KEY}=${WS_CRED_VAL}" 2>&1 || true
+        else
+          echo "Registering ${NEMOCLAW_WEB_SEARCH_PROVIDER} provider on gateway..."
+          if ! openshell provider create \
+              --name "${NEMOCLAW_WEB_SEARCH_PROVIDER}" \
+              --type "${NEMOCLAW_WEB_SEARCH_PROVIDER}" \
+              --credential "${WS_CRED_KEY}=${WS_CRED_VAL}" 2>&1; then
+            echo "WARN: could not register ${NEMOCLAW_WEB_SEARCH_PROVIDER} provider on gateway"
+          fi
+        fi
+      fi
+    fi
+
     # --- Create sandbox from pre-built image ---
     CREATE_ARGS=(--name "${SANDBOX_NAME}")
     if [[ -n "${SANDBOX_IMAGE}" ]]; then
@@ -818,11 +859,20 @@ data:
       echo "Pre-pulling sandbox image..."
       sudo docker pull "${SANDBOX_IMAGE}" 2>&1 | tail -1 || true
     fi
+    if [[ "${NEMOCLAW_WEB_SEARCH_PROVIDER}" != "none" && -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]]; then
+      CREATE_ARGS+=(--provider "${NEMOCLAW_WEB_SEARCH_PROVIDER}")
+    fi
     if ! openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
       echo "Creating sandbox (image=${SANDBOX_IMAGE:-default}, agent=${NEMOCLAW_AGENT})..."
       if ! openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready"; then
         echo "ERROR: sandbox creation failed" >&2
         exit 1
+      fi
+    elif [[ "${NEMOCLAW_WEB_SEARCH_PROVIDER}" != "none" && -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]]; then
+      if ! openshell sandbox provider list "${SANDBOX_NAME}" 2>/dev/null | awk '{print $1}' | grep -qx "${NEMOCLAW_WEB_SEARCH_PROVIDER}"; then
+        echo "Adding ${NEMOCLAW_WEB_SEARCH_PROVIDER} provider to existing sandbox..."
+        openshell sandbox provider add "${SANDBOX_NAME}" --name "${NEMOCLAW_WEB_SEARCH_PROVIDER}" 2>&1 || \
+          echo "WARN: could not add ${NEMOCLAW_WEB_SEARCH_PROVIDER} provider to sandbox (may require sandbox recreation)"
       fi
     fi
 
@@ -832,12 +882,7 @@ data:
     DASHBOARD_ROUTE="{{ include "openshell-sandbox.fullname" . }}-dashboard-{{ .Release.Namespace }}.{{ $clusterDomain }}"
     OPENCLAW_TOKEN=$(openssl rand -hex 16)
     echo "Starting openclaw gateway inside sandbox (token=${OPENCLAW_TOKEN:0:8}...)..."
-    # Env vars must precede `node` to be visible as process.env (not positional args).
-    # Single invocation handles both gateway config and search key persistence.
     openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-      env \
-        TAVILY_API_KEY="${TAVILY_API_KEY:-}" \
-        BRAVE_API_KEY="${BRAVE_API_KEY:-}" \
       node -e "
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
@@ -846,9 +891,6 @@ data:
         cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
         if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
         cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
-        // Web search keys are passed via nemoclaw onboard env, not openclaw config.
-        // Injecting them here triggers openclaw plugin auto-install which fails
-        // when the sandbox proxy blocks npm access.
         fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
       " 2>/dev/null || echo "WARN: could not write openclaw config"
     # openclaw gateway reads the env section from openclaw.json on startup
