@@ -1,9 +1,0 @@
-display_name: Tavily Search
-description: Tavily Search API access
-provider_type: tavily
-endpoints:
-  - host: api.tavily.com
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    access: read-write

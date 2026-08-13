@@ -1,9 +1,0 @@
-display_name: Inference
-description: Managed inference provider
-provider_type: openai
-endpoints:
-  - host: inference.local
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    access: read-write

@@ -1,9 +1,0 @@
-display_name: Google Vertex AI
-description: Google Gemini API
-provider_type: google-vertex-ai
-endpoints:
-  - host: generativelanguage.googleapis.com
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    access: read-write

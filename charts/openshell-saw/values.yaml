@@ -60,12 +60,12 @@ openshell:
   # version: "0.0.96+rhaiv.0"
   # pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
-  gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.96"
-  supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.96"
-  version: "0.0.96"
+  gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.99"
+  supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.99"
+  version: "0.0.99"
   pipIndexUrl: ""
 # Inference provider configuration.
-# Provider keys: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom
+# Provider keys: gemini, brave, tavily (governed profiles required for each)
 inference:
   provider: ""
   model: ""

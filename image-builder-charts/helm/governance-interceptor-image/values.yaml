@@ -1,11 +1,12 @@
 source:
   git:
-    uri: "https://github.com/NVIDIA/OpenShell.git"
-    ref: "main"
+    uri: "https://github.com/sauagarwa/OpenShell.git"
+    ref: "fix/interceptor-submit-policy-principal"
 
 build:
   contextDir: "examples/governance-interceptor"
   builderImage: "rust:1.90-bookworm"
 
 output:
-  imageStreamTag: "governance-interceptor:latest"
+  externalImage: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
+  pushSecretName: "quay-push-secret"

@@ -1,9 +1,3 @@
-apiVersion: image.openshift.io/v1
-kind: ImageStream
-metadata:
-  name: governance-interceptor
-spec: {}
----
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
@@ -31,8 +25,10 @@ spec:
       forcePull: true
   output:
     to:
-      kind: ImageStreamTag
-      name: {{ .Values.output.imageStreamTag }}
+      kind: DockerImage
+      name: {{ .Values.output.externalImage }}
+    pushSecret:
+      name: {{ .Values.output.pushSecretName }}
   resources:
     limits:
       memory: 4Gi
