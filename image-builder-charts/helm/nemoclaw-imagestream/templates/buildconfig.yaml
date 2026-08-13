@@ -51,6 +51,8 @@ spec:
           value: {{ .Values.build.webSearchEnabled | quote }}
         - name: NEMOCLAW_WEB_SEARCH_PROVIDER
           value: {{ .Values.build.webSearchProvider | quote }}
+        - name: TARGETARCH
+          value: {{ .Values.build.targetArch | quote }}
         - name: NEMOCLAW_OPENCLAW_OTEL
           value: {{ .Values.build.otelEnabled | quote }}
   output:
@@ -70,6 +72,7 @@ spec:
     type: Dockerfile
     dockerfile: |
       FROM {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
+      USER root
       RUN chown -R sandbox:sandbox /sandbox
       USER sandbox
   strategy:
