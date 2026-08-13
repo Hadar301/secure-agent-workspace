@@ -14,6 +14,8 @@ build:
   toolDisclosure: "progressive"
   agentTimeout: "600"
   webSearchEnabled: "1"
+  webSearchProvider: "brave"
+  otelEnabled: "0"
 
 output:
   imageStreamTag: "nemoclaw-sandbox:latest"
