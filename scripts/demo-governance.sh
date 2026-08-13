@@ -60,17 +60,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILES_DIR="${REPO_DIR}/charts/governance-policy/profiles"
 
 # Clean up any stale state from previous runs
-for p in demo-gemini demo-github demo-gemini-ok demo-github-restored demo-github-blocked demo-jira demo-jira-blocked; do
+gw sandbox provider detach "${SAW_NAME}" github > /dev/null 2>&1 || true
+for p in demo-gemini demo-github demo-gemini-ok demo-github-restored demo-github-blocked github; do
   gw provider delete "${p}" > /dev/null 2>&1 || true
 done
-
-# Remove jira profile if left over from a previous run
-if [[ -f "${PROFILES_DIR}/jira.yaml" ]]; then
-  rm -f "${PROFILES_DIR}/jira.yaml"
-  git -C "${REPO_DIR}" add -A > /dev/null 2>&1
-  git -C "${REPO_DIR}" commit -m "demo: clean up stale jira profile" --no-verify > /dev/null 2>&1
-  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
-fi
 
 banner "Governance Interceptor Demo — Secure Agent Workspace"
 
@@ -203,129 +196,81 @@ echo ""
 
 press_enter
 
-# --- 8. Add a new provider profile ---
-banner "8. Adding a New Provider — Jira"
+# --- 8. GitHub API — Provider Not Attached ---
+banner "8. GitHub API — Profile Present, Provider Not Attached"
 
-step "A team needs Jira access from their sandbox."
-step "First, let's see that Jira is not currently allowed:"
+step "The GitHub profile is in governance — it defines allowed endpoints:"
 echo ""
-gw provider create --name demo-jira --type jira --credential JIRA_TOKEN=demo-token || true
-echo ""
-
-press_enter
-
-step "Admin creates a Jira profile YAML:"
-echo ""
-
-JIRA_PROFILE="/tmp/demo-jira-profile.yaml"
-cat > "${JIRA_PROFILE}" << 'PROFILE'
-display_name: Jira
-description: Atlassian Jira project tracking
-provider_type: custom
-endpoints:
-  - host: your-org.atlassian.net
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    access: read-write
-PROFILE
-
-echo -e "  ${BOLD}${JIRA_PROFILE}${RESET}"
-cat "${JIRA_PROFILE}" | sed 's/^/    /'
+cat "${PROFILES_DIR}/github.yaml" | sed 's/^/    /'
 echo ""
 
 press_enter
 
-step "Admin adds the profile via governance-profile.sh create:"
+step "The ${SAW_NAME} sandbox was created with --provider brave."
+step "GitHub is NOT attached — the proxy should block it."
 echo ""
-NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" \
-  "${SCRIPT_DIR}/governance-profile.sh" create jira "${JIRA_PROFILE}"
-rm -f "${JIRA_PROFILE}"
+echo -e "  ${YELLOW}Open a separate terminal and run:${RESET}"
 echo ""
-
-step "Active profiles now include Jira:"
+echo -e "    ${BOLD}export OPENSHELL_SAW_NAME=${SAW_NAME}${RESET}"
+echo -e "    ${BOLD}make openshell-saw-ssh${RESET}"
 echo ""
-NS="${NS}" SAW_NAME="${SAW_NAME}" "${SCRIPT_DIR}/governance-profile.sh" list
+echo -e "  Then inside the sandbox, run:"
 echo ""
-
-press_enter
-
-step "Creating a Jira provider (now allowed):"
+echo -e "    ${BOLD}curl -sv https://api.github.com${RESET}"
 echo ""
-gw provider create --name demo-jira --type jira --credential JIRA_TOKEN=demo-token || true
+echo -e "  ${RED}Expected: HTTP/1.1 403 Forbidden (proxy blocks the CONNECT)${RESET}"
 echo ""
 
 press_enter
 
-# --- 9. Remove the Jira profile ---
-banner "9. Removing Jira Profile"
+# --- 9. GitHub API — Attach Provider ---
+banner "9. GitHub API — Create Provider and Attach to Sandbox"
 
-step "Admin removes Jira access:"
+step "Step 1: Create a GitHub provider on the gateway:"
 echo ""
-NS="${NS}" SAW_NAME="${SAW_NAME}" SSH_KEY="${SSH_KEY}" \
-  "${SCRIPT_DIR}/governance-profile.sh" remove jira
-echo ""
-
-step "Jira provider creation blocked again:"
-echo ""
-gw provider create --name demo-jira-blocked --type jira --credential JIRA_TOKEN=demo-token || true
+gw provider create --name github --type github --credential GITHUB_TOKEN=demo-token || true
 echo ""
 
-press_enter
-
-# --- 10. Web Search Governance ---
-banner "10. Web Search — Governed Network Access"
-
-step "Brave Search profile defines the allowed endpoint and binaries:"
+step "Step 2: Attach the github provider to the running sandbox:"
 echo ""
-cat "${PROFILES_DIR}/brave.yaml" | sed 's/^/    /'
+gw sandbox provider attach "${SAW_NAME}" github || true
+echo ""
+
+step "Providers attached to ${SAW_NAME}:"
+echo ""
+gw sandbox provider list "${SAW_NAME}" || true
 echo ""
 
 press_enter
 
-step "The sandbox proxy blocks all outbound by default."
-step "To allow web search, we need three things:"
+step "Now try the GitHub API again from the same sandbox terminal:"
 echo ""
-echo -e "  1. ${BOLD}Provider profile${RESET} — brave.yaml defines api.search.brave.com"
-echo -e "  2. ${BOLD}Provider registration${RESET} — stores the API key on the gateway"
-echo -e "  3. ${BOLD}--provider flag${RESET} — merges profile endpoints into sandbox policy"
+echo -e "    ${BOLD}curl -sv https://api.github.com${RESET}"
 echo ""
-
-press_enter
-
-step "Enable provider profile policy composition:"
-echo ""
-gw settings set --global --key providers_v2_enabled --value true --yes || true
-echo ""
-
-step "Register a Brave Search provider (name must match profile ID):"
-echo ""
-gw provider create --name brave --type brave --credential BRAVE_API_KEY=demo-key || true
-echo ""
-
-step "Create a sandbox with --provider brave:"
-echo ""
-gw sandbox create --name demo-search --provider brave --no-tty -- sh -c "echo sandbox-ready" || true
+echo -e "  ${GREEN}Expected: HTTP/1.1 200 Connection Established (proxy allows the CONNECT)${RESET}"
 echo ""
 
 press_enter
 
-step "Sandbox effective policy now includes the brave endpoint:"
+# --- 10. GitHub API — Detach Provider ---
+banner "10. GitHub API — Detach Provider and Verify Access Revoked"
+
+step "Detach github from the sandbox:"
 echo ""
-gw policy get demo-search --full 2>&1 | grep -A 5 "brave\|api.search" || echo "  (check with: openshell policy get demo-search --full)"
+gw sandbox provider detach "${SAW_NAME}" github || true
 echo ""
 
-step "The proxy allows CONNECT to api.search.brave.com:"
+step "Delete the github provider:"
 echo ""
-run_on_vm "openshell sandbox exec -n demo-search --no-tty -- curl -s --max-time 5 -o /dev/null -w 'HTTP %{http_code}' https://api.search.brave.com/ 2>&1" || echo -e "  ${RED}(curl failed — sandbox may not be ready yet)${RESET}"
+gw provider delete github > /dev/null 2>&1 || true
+echo -e "${GREEN}  GitHub provider removed.${RESET}"
 echo ""
 
-press_enter
-
-step "Cleanup demo-search sandbox and brave provider:"
-gw sandbox delete demo-search > /dev/null 2>&1 || true
-gw provider delete brave > /dev/null 2>&1 || true
-echo -e "${GREEN}  Cleaned up.${RESET}"
+step "Try the GitHub API one more time from the same sandbox terminal:"
+echo ""
+echo -e "    ${BOLD}curl -sv https://api.github.com${RESET}"
+echo ""
+echo -e "  ${RED}Expected: HTTP/1.1 403 Forbidden (access revoked)${RESET}"
 echo ""
 
 press_enter
@@ -333,18 +278,10 @@ press_enter
 # --- 11. Cleanup ---
 banner "11. Cleanup"
 
-for p in demo-vertex demo-github demo-vertex-ok demo-github-restored demo-jira demo-jira-blocked; do
+for p in demo-gemini demo-github demo-gemini-ok demo-github-restored demo-github-blocked github; do
   gw provider delete "${p}" > /dev/null 2>&1 || true
 done
-
-# Remove jira profile file from git (step 9 only removes from values.yaml)
-if [[ -f "${PROFILES_DIR}/jira.yaml" ]]; then
-  rm -f "${PROFILES_DIR}/jira.yaml"
-  git -C "${REPO_DIR}" add -A > /dev/null 2>&1
-  git -C "${REPO_DIR}" commit -m "demo: remove jira profile file" --no-verify > /dev/null 2>&1
-  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
-fi
-echo -e "${GREEN}  Demo providers and jira profile cleaned up.${RESET}"
+echo -e "${GREEN}  Demo providers cleaned up.${RESET}"
 echo ""
 
 banner "Demo Complete"
@@ -355,8 +292,9 @@ echo -e "  ${GREEN}✓${RESET} VM gateway connects to interceptor over pod netwo
 echo -e "  ${GREEN}✓${RESET} Governed providers (github, gemini, brave) — ${GREEN}allowed${RESET}"
 echo -e "  ${RED}✗${RESET} Ungoverned providers (custom, claude-code) — ${RED}blocked${RESET}"
 echo -e "  ${YELLOW}!${RESET} Revoked profile (github removed) — ${RED}blocked until restored${RESET}"
-echo -e "  ${GREEN}✓${RESET} New profile added (jira) — ${GREEN}allowed after GitOps sync${RESET}"
-echo -e "  ${GREEN}✓${RESET} Web search (brave) — profile endpoints merged into sandbox policy"
+echo -e "  ${RED}✗${RESET} GitHub API without provider attached — ${RED}denied by proxy${RESET}"
+echo -e "  ${GREEN}✓${RESET} GitHub API after attach — ${GREEN}allowed through proxy${RESET}"
+echo -e "  ${RED}✗${RESET} GitHub API after detach — ${RED}denied again${RESET}"
 echo -e "  ${GREEN}✓${RESET} Sandbox proxy allows governed endpoints, blocks everything else"
 echo -e "  ${GREEN}✓${RESET} Policy separated from interceptor — just drop a profile YAML"
 echo -e "  ${GREEN}✓${RESET} Signed policy injected into sandbox creation (patch_count=2)"

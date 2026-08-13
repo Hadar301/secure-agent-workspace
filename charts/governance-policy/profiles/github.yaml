@@ -21,6 +21,11 @@ endpoints:
     enforcement: enforce
   - host: api.github.com
     port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: api.github.com
+    port: 443
     path: /graphql
     protocol: graphql
     access: read-only
@@ -30,4 +35,4 @@ endpoints:
     protocol: rest
     access: read-only
     enforcement: enforce
-binaries: [/usr/bin/gh, /usr/local/bin/gh, /usr/bin/git, /usr/local/bin/git]
+binaries: [/usr/bin/gh, /usr/local/bin/gh, /usr/bin/git, /usr/local/bin/git, /usr/bin/curl, /usr/local/bin/curl]
