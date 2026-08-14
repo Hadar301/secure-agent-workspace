@@ -1,8 +1,9 @@
 {{- if .Values.goldenImage.enabled }}
+{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-golden
+  name: {{ $imageName }}-golden
   labels:
     {{- include "openshell-gateway-image.labels" . | nindent 4 }}
   annotations:
@@ -10,7 +11,7 @@ metadata:
 spec:
   source:
     registry:
-      url: "docker://image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/{{ .Values.output.imageStreamTag }}"
+      url: "docker://image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/{{ $imageName }}:latest"
       pullMethod: node
   storage:
     accessModes:
@@ -25,7 +26,7 @@ spec:
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataSource
 metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  name: {{ $imageName }}
   labels:
     {{- include "openshell-gateway-image.labels" . | nindent 4 }}
     instancetype.kubevirt.io/default-instancetype: u1.medium
@@ -33,6 +34,6 @@ metadata:
 spec:
   source:
     pvc:
-      name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-golden
+      name: {{ $imageName }}-golden
       namespace: {{ .Release.Namespace }}
 {{- end }}
