@@ -11,6 +11,10 @@ SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Setting up image-mirror ServiceAccount..."
 oc apply -n "${BUILD_NS}" -f "${SCRIPTS_DIR}/mirror-images-rbac.yaml"
+# nonroot SCC (not anyuid) is sufficient: HOME and XDG_RUNTIME_DIR are redirected
+# to /tmp in the Job spec so skopeo never touches /run/containers (the root-only
+# path that previously forced anyuid). The namespace's restricted PodSecurity still
+# blocks root; nonroot overrides it for this SA without granting broader privileges.
 oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}" 2>/dev/null || true
 
 for IMAGE in ${IMAGES}; do
