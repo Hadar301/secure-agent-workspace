@@ -6,7 +6,7 @@ set -euo pipefail
 BUILD_NS="${BUILD_NS:-openshell-agents}"
 QUAY_REPO="${QUAY_REPO:-quay.io/rh-ai-quickstart}"
 VERSION="${OPENSHELL_VERSION:-v0.0.97-rhaiv.0}"
-IMAGES="${IMAGES:-openshell-gateway nemoclaw-sandbox nemoclaw-cli}"
+IMAGES="${IMAGES:-openshell-gateway openshell-gateway-docker nemoclaw-sandbox nemoclaw-cli}"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Setting up image-mirror ServiceAccount..."

@@ -1,0 +1,240 @@
+{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ $imageName }}
+  labels:
+    {{- include "openshell-gateway-image.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM {{ .Values.build.builderImage }} AS builder
+
+      ENV LIBGUESTFS_BACKEND=direct
+
+      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
+
+      WORKDIR /build
+      RUN curl -fL --retry 3 -o base.qcow2 "{{ .Values.build.fedoraCloud }}"
+
+      # Write the gateway systemd user service
+      RUN cat > /build/openshell-gateway.service <<'GWUNIT'
+      [Unit]
+      Description=OpenShell Gateway
+      After=default.target
+
+      [Service]
+      Type=simple
+      StateDirectory=openshell/gateway
+      Environment=OPENSHELL_LOCAL_TLS_DIR=%h/.local/state/openshell/tls
+      EnvironmentFile=-%E/openshell/gateway.env
+      ExecStartPre=/usr/local/bin/openshell-gateway generate-certs --output-dir ${OPENSHELL_LOCAL_TLS_DIR} --server-san host.openshell.internal
+      ExecStart=/usr/local/bin/openshell-gateway
+      Restart=on-failure
+      RestartSec=5s
+      PrivateTmp=true
+      UMask=0077
+
+      [Install]
+      WantedBy=default.target
+      GWUNIT
+
+      # Write the first-boot setup service
+      RUN cat > /build/openshell-gateway-setup.service <<'UNIT'
+      [Unit]
+      Description=OpenShell gateway user-service setup (first boot)
+      After=multi-user.target
+      ConditionPathExists=!/var/lib/openshell-gateway-setup.done
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/sbin/openshell-gateway-user-setup.sh
+      ExecStartPost=/usr/bin/touch /var/lib/openshell-gateway-setup.done
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+
+      # Write the user-setup script
+      RUN cat > /build/openshell-gateway-user-setup.sh <<'SETUP'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      USER_NAME="cloud-user"
+      USER_UID="$(id -u "${USER_NAME}")"
+      USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
+
+      # Ensure Docker is running before starting the gateway (Docker path only)
+      {{- if eq .Values.containerRuntime "docker" }}
+      if systemctl is-enabled docker.service &>/dev/null; then
+        systemctl start docker.service
+        systemctl is-active docker.service || { echo "Docker daemon failed to start" >&2; exit 1; }
+      fi
+      {{- end }}
+
+      systemctl start "user@${USER_UID}.service"
+      for _ in $(seq 1 90); do
+        if [[ -S "/run/user/${USER_UID}/bus" ]]; then break; fi
+        sleep 1
+      done
+      if [[ ! -S "/run/user/${USER_UID}/bus" ]]; then
+        echo "user systemd bus not ready for ${USER_NAME}" >&2
+        exit 1
+      fi
+
+      export XDG_RUNTIME_DIR="/run/user/${USER_UID}"
+      export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${USER_UID}/bus"
+
+      run_user() {
+        sudo -u "${USER_NAME}" \
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+          DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+          systemctl --user "$@"
+      }
+
+      run_user daemon-reload
+
+      {{- if ne .Values.containerRuntime "docker" }}
+      # Enable and start rootless Podman socket (user-level, persistent across reboots)
+      run_user enable podman.socket || true
+      run_user start podman.socket || true
+      for _ in $(seq 1 15); do
+        if [[ -S "/run/user/${USER_UID}/podman/podman.sock" ]]; then break; fi
+        sleep 1
+      done
+      if [[ ! -S "/run/user/${USER_UID}/podman/podman.sock" ]]; then
+        echo "WARNING: Podman socket not found after 15s — gateway may fail to start" >&2
+      fi
+      {{- end }}
+
+      # Enable gateway service; start only if the binary is already installed
+      # (it may be installed later by the setup Job)
+      if [[ -x /usr/local/bin/openshell-gateway ]]; then
+        for unit in openshell-gateway.service; do
+          ok=0
+          for _ in $(seq 1 15); do
+            if run_user enable --now "${unit}"; then ok=1; break; fi
+            sleep 2
+            run_user daemon-reload || true
+          done
+          if [[ "${ok}" -ne 1 ]]; then
+            echo "failed to enable --now ${unit} for ${USER_NAME}" >&2
+            exit 1
+          fi
+        done
+      else
+        run_user enable openshell-gateway.service || true
+        echo "Gateway binary not yet installed; service enabled but not started"
+      fi
+
+      sleep 3
+
+      install -d -m 0755 "${USER_HOME}/.config/openshell"
+      cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
+
+      # Derive runtime bridge gateway IP if GRPC_ENDPOINT is not already set
+      if ! grep -q 'OPENSHELL_GRPC_ENDPOINT' "${USER_HOME}/.config/openshell/gateway.env"; then
+        {{- if eq .Values.containerRuntime "docker" }}
+        RUNTIME_GW="$(docker network inspect bridge --format '{{ "{{" }}(index .IPAM.Config 0).Gateway{{ "}}" }}' 2>/dev/null || echo '172.17.0.1')"
+        {{- else }}
+        RUNTIME_GW="$(podman network inspect podman --format '{{ "{{" }}(index .Subnets 0).Gateway{{ "}}" }}' 2>/dev/null || echo '10.88.0.1')"
+        PODMAN_SOCK="/run/user/${USER_UID}/podman/podman.sock"
+        {{- end }}
+        cat >> "${USER_HOME}/.config/openshell/gateway.env" <<RUNTIMEEOF
+      OPENSHELL_GRPC_ENDPOINT=https://${RUNTIME_GW}:17670
+      OPENSHELL_SSH_GATEWAY_HOST=${RUNTIME_GW}
+      {{- if ne .Values.containerRuntime "docker" }}
+      OPENSHELL_PODMAN_SOCKET=${PODMAN_SOCK}
+      {{- end }}
+      RUNTIMEEOF
+      fi
+      if [[ -f /etc/openshell/gateway.toml ]]; then
+        cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
+      fi
+      chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
+
+      AUTH_MODE="mtls"
+      OIDC_FIELDS=""
+      if [[ -f /etc/openshell/gateway.toml ]]; then
+        AUTH_MODE="oidc"
+        OIDC_ISSUER="$(grep -oP 'issuer\s*=\s*"\K[^"]+' /etc/openshell/gateway.toml || true)"
+        OIDC_CLIENT="$(grep -oP 'audience\s*=\s*"\K[^"]+' /etc/openshell/gateway.toml || true)"
+        OIDC_FIELDS=",\"oidc_issuer\":\"${OIDC_ISSUER}\",\"oidc_client_id\":\"${OIDC_CLIENT}\",\"oidc_audience\":\"${OIDC_CLIENT}\""
+      fi
+
+      sudo -u "${USER_NAME}" \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+        bash -lc "
+          set -euo pipefail
+          TLS_DIR=\"\${HOME}/.local/state/openshell/tls\"
+          if [[ \"${AUTH_MODE}\" == \"mtls\" ]]; then
+            MTLS_DIR=\"\${HOME}/.config/openshell/gateways/openshell/mtls\"
+            mkdir -p \"\${MTLS_DIR}\"
+            if [[ -f \"\${TLS_DIR}/ca.crt\" ]]; then
+              cp -f \"\${TLS_DIR}/ca.crt\" \"\${MTLS_DIR}/ca.crt\"
+              cp -f \"\${TLS_DIR}/client/tls.crt\" \"\${MTLS_DIR}/tls.crt\"
+              cp -f \"\${TLS_DIR}/client/tls.key\" \"\${MTLS_DIR}/tls.key\"
+            fi
+          fi
+          mkdir -p \"\${HOME}/.config/openshell/gateways/openshell\"
+          printf '%s\n' '{\"name\":\"openshell\",\"gateway_endpoint\":\"https://127.0.0.1:17670\",\"is_remote\":false,\"gateway_port\":17670,\"auth_mode\":\"${AUTH_MODE}\"${OIDC_FIELDS}}' > \"\${HOME}/.config/openshell/gateways/openshell/metadata.json\"
+          echo openshell > \"\${HOME}/.config/openshell/active_gateway\"
+        "
+
+      SANDBOX_IMAGE="$(grep -oP 'OPENSHELL_SANDBOX_IMAGE=\K.*' /etc/openshell/gateway.env || true)"
+      if [[ -n "${SANDBOX_IMAGE}" ]]; then
+        echo "Pre-pulling sandbox image: ${SANDBOX_IMAGE}"
+        sudo -u "${USER_NAME}" \
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+          DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+          {{ .Values.containerRuntime }} pull "${SANDBOX_IMAGE}" || true
+      fi
+
+      echo "OpenShell gateway user setup complete."
+      SETUP
+
+      # Bake system packages + OpenShell binaries into the qcow2
+      RUN virt-customize -a base.qcow2 \
+            --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
+            --install nodejs,cloud-init,python3-pip \
+            {{- if eq .Values.containerRuntime "docker" }}
+            --run-command 'dnf remove -y podman podman-docker containers-common 2>/dev/null; dnf clean all' \
+            --run-command 'dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo' \
+            --install docker-ce,docker-ce-cli,containerd.io \
+            --run-command 'useradd -m -G wheel,docker cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
+            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
+            --run-command 'systemctl enable docker' \
+            {{- else }}
+            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
+            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
+            {{- end }}
+            --mkdir /usr/lib/systemd/user \
+            --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
+            --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
+            --run-command 'mkdir -p /usr/local/sbin' \
+            --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
+            --run-command 'systemctl enable openshell-gateway-setup.service' \
+            --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
+            --run-command 'cloud-init clean --logs --seed' \
+            --selinux-relabel && \
+          mkdir -p /output && \
+          qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2 && \
+          rm -f base.qcow2
+
+      FROM registry.access.redhat.com/ubi9-micro:latest
+      COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2
+  strategy:
+    type: Docker
+    dockerStrategy:
+      forcePull: true
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ $imageName }}:latest
+  resources:
+    limits:
+      memory: {{ .Values.build.memoryLimit }}
+  triggers: []

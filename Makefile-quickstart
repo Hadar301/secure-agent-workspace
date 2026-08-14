@@ -127,24 +127,41 @@ build-governance-interceptor: ## Build governance interceptor image on cluster a
 
 # --- Gateway VM image ---
 
-build-openshell-gateway: ## Build gateway VM image and push to quay (CONTAINER_RUNTIME=docker|podman)
-	@echo "Cleaning up old $(IMAGE_NAME) golden image..."
-	-@oc delete dv $(IMAGE_NAME)-golden -n $(BUILD_NS) 2>/dev/null
-	-@oc delete datasource $(IMAGE_NAME) -n $(BUILD_NS) 2>/dev/null
-	-@oc delete pvc $(IMAGE_NAME)-golden -n $(BUILD_NS) 2>/dev/null
-	-@oc delete builds -l buildconfig=$(IMAGE_NAME) -n $(BUILD_NS) 2>/dev/null
-	-@oc delete is $(IMAGE_NAME) -n $(BUILD_NS) 2>/dev/null
+build-gateway-docker: ## Build Docker gateway VM image and push to quay
+	@echo "Building Docker gateway image (openshell-gateway-docker)..."
+	-@oc delete dv openshell-gateway-docker-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete datasource openshell-gateway-docker -n $(BUILD_NS) 2>/dev/null
+	-@oc delete pvc openshell-gateway-docker-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete builds -l buildconfig=openshell-gateway-docker -n $(BUILD_NS) 2>/dev/null
+	-@oc delete is openshell-gateway-docker -n $(BUILD_NS) 2>/dev/null
 	@GOLDEN_FLAG=""; \
 	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
-		echo "WARNING: CDI CRDs not available, disabling golden image (build container image only)"; \
+		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
+	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-docker-image \
+		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
+	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
+	@echo "Pushing openshell-gateway-docker to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-gateway-podman: ## Build Podman gateway VM image and push to quay
+	@echo "Building Podman gateway image (openshell-gateway)..."
+	-@oc delete dv openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete datasource openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	-@oc delete pvc openshell-gateway-golden -n $(BUILD_NS) 2>/dev/null
+	-@oc delete builds -l buildconfig=openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	-@oc delete is openshell-gateway -n $(BUILD_NS) 2>/dev/null
+	@GOLDEN_FLAG=""; \
+	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
 	fi; \
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
-		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
-		--set containerRuntime=$(CONTAINER_RUNTIME)
-	oc start-build $(IMAGE_NAME) -n $(BUILD_NS) --follow
-	@echo "Pushing $(IMAGE_NAME) to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) $(IMAGE_NAME) $(QUAY_REPO) $(OPENSHELL_VERSION)
+		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
+	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-openshell-gateway: build-gateway-docker ## Alias: build Docker gateway (default)
 
 copy-images: ## Mirror pre-built images from quay to the internal registry
 	@echo "Ensuring namespace and image registry route..."
@@ -169,7 +186,7 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 		echo "Mirroring images from $(QUAY_REPO) to internal registry..."; \
 		REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
 		if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
-		for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
+		for image in openshell-gateway openshell-gateway-docker nemoclaw-sandbox nemoclaw-cli; do \
 			echo "  Mirroring $${image}:$(OPENSHELL_VERSION)..."; \
 			oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; \
 			oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
