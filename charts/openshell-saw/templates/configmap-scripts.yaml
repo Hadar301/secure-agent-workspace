@@ -904,6 +904,7 @@ data:
         if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
         cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
         if (!cfg.models) cfg.models = {};
+        cfg.models.mode = 'replace';
         fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
       " 2>/dev/null || echo "WARN: could not write openclaw config"
     # openclaw gateway reads the env section from openclaw.json on startup
