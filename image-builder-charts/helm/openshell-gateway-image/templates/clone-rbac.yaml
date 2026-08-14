@@ -1,7 +1,8 @@
+{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: cdi-clone-source
+  name: cdi-clone-source-{{ $imageName }}
   namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: [""]
@@ -14,12 +15,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: cdi-clone-source
+  name: cdi-clone-source-{{ $imageName }}
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: cdi-clone-source
+  name: cdi-clone-source-{{ $imageName }}
 subjects:
   - kind: Group
     name: system:serviceaccounts
@@ -28,7 +29,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: image-puller
+  name: image-puller-{{ $imageName }}
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io

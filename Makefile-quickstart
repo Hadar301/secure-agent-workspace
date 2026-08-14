@@ -82,7 +82,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 
 .PHONY: check-prereqs generate-keys \
         build-nemoclaw build-nemoclaw-cli \
-        build-openshell-gateway copy-images \
+        build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
@@ -138,8 +138,9 @@ build-gateway-docker: ## Build Docker gateway VM image and push to quay
 	if ! oc api-resources --api-group=cdi.kubevirt.io 2>/dev/null | grep datavolumes >/dev/null 2>&1; then \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
 	fi; \
-	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-docker-image \
-		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
+	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-image \
+		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
+		--set containerRuntime=docker
 	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
 	@echo "Pushing openshell-gateway-docker to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker $(QUAY_REPO) $(OPENSHELL_VERSION)
@@ -156,12 +157,12 @@ build-gateway-podman: ## Build Podman gateway VM image and push to quay
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
 	fi; \
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
-		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
+		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
+		--set containerRuntime=podman
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
 	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
 
-build-openshell-gateway: build-gateway-docker ## Alias: build Docker gateway (default)
 
 copy-images: ## Mirror pre-built images from quay to the internal registry
 	@echo "Ensuring namespace and image registry route..."
@@ -188,8 +189,12 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 		if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
 		for image in openshell-gateway openshell-gateway-docker nemoclaw-sandbox nemoclaw-cli; do \
 			echo "  Mirroring $${image}:$(OPENSHELL_VERSION)..."; \
-			oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; \
-			oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
+			if oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; then \
+				oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
+				echo "  $${image} done."; \
+			else \
+				echo "  $${image} not found on quay — skipping."; \
+			fi; \
 		done; \
 		echo "All images mirrored (tag: $(OPENSHELL_VERSION), also tagged as :latest)."; \
 	fi
