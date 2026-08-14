@@ -11,7 +11,7 @@ SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Setting up image-mirror ServiceAccount..."
 oc apply -n "${BUILD_NS}" -f "${SCRIPTS_DIR}/mirror-images-rbac.yaml"
-oc adm policy add-scc-to-user anyuid -z image-mirror -n "${BUILD_NS}" 2>/dev/null || true
+oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}" 2>/dev/null || true
 
 for IMAGE in ${IMAGES}; do
   export IMAGE BUILD_NS QUAY_REPO VERSION
