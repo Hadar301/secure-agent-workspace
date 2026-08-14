@@ -30,6 +30,8 @@ OIDC_TOKEN_DIR="${OIDC_TOKEN_DIR:-$HOME/.config/openshell/oidc}"
 OWNER="${OWNER:-}"
 NAMESPACE_MODE="${NAMESPACE_MODE:-shared}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
+GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
 
 # Validate provider
 if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
@@ -118,6 +120,8 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   ${OIDC_OPTS} \
   --set accessControl.owner="${OWNER}" \
   --set namespaceMode="${NAMESPACE_MODE}" \
+  --set containerRuntime="${CONTAINER_RUNTIME}" \
+  --set governance.enabled="${GOVERNANCE_ENABLED}" \
   --set route.enabled=true --set route.dashboard=true
 
 echo ""
