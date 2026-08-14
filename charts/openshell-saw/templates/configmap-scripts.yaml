@@ -946,11 +946,15 @@ data:
       exit 0
     fi
 
+    if [[ -z "${OIDC_ISSUER:-}" ]]; then
+      echo "Dashboard skipped: oidc.issuerUrl not configured (deploy Keycloak and set oidc.issuerUrl to enable)."
+      exit 0
+    fi
+
     : "${DASHBOARD_IMAGE:?}"
     : "${DASHBOARD_PROXY_IMAGE:?}"
     : "${DASHBOARD_COOKIE_SECRET:?}"
     : "${DASHBOARD_REDIRECT_URL:?DASHBOARD_REDIRECT_URL not set — was the *-webui route created?}"
-    : "${OIDC_ISSUER:?dashboard requires an OIDC-configured gateway (oidc.issuerUrl)}"
     DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
 
     mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.config/openshell"
