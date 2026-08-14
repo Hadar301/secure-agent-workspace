@@ -89,6 +89,68 @@ helm upgrade <release> charts/openshell-saw --set containerRuntime=podman
 # Then delete and recreate the VM by uninstalling and reinstalling the release.
 ```
 
+## Connecting to the TUI
+
+The gateway uses mTLS. The self-signed server certificate is only valid for `127.0.0.1`, so
+external route access (e.g. opening the gateway URL in a browser) won't work for the CLI.
+Use a port-forward instead.
+
+### Step 1 — Copy the mTLS client certs from the VM (once per sandbox)
+
+```bash
+SANDBOX=<your-sandbox-name>   # e.g. test-docker
+NS=openshell-agents
+
+mkdir -p ~/.config/openshell/gateways/${SANDBOX}/mtls
+
+for f in ca.crt tls.crt tls.key; do
+  [[ "$f" == "ca.crt" ]] \
+    && src="/home/cloud-user/.local/state/openshell/tls/ca.crt" \
+    || src="/home/cloud-user/.local/state/openshell/tls/client/${f}"
+  virtctl -n ${NS} scp \
+    cloud-user@vm/${SANDBOX}:${src} \
+    ~/.config/openshell/gateways/${SANDBOX}/mtls/${f} \
+    --identity-file=~/.generated-ssh-keys/sandbox-ssh \
+    --local-ssh-opts=-oStrictHostKeyChecking=no \
+    --local-ssh-opts=-oUserKnownHostsFile=/dev/null
+done
+
+chmod 600 ~/.config/openshell/gateways/${SANDBOX}/mtls/*
+
+cat > ~/.config/openshell/gateways/${SANDBOX}/metadata.json <<EOF
+{"name":"${SANDBOX}","gateway_endpoint":"https://127.0.0.1:17670","is_remote":false,"gateway_port":17670,"auth_mode":"mtls"}
+EOF
+```
+
+### Step 2 — Start port-forward (keep this terminal open)
+
+```bash
+oc port-forward svc/${SANDBOX}-gateway 17670:17670 -n openshell-agents
+```
+
+### Step 3 — Verify gateway and sandbox are reachable
+
+```bash
+openshell gateway select ${SANDBOX}
+openshell sandbox list
+# Should show the sandbox in Ready or Unspecified phase
+```
+
+### Step 4 — Open the TUI
+
+```bash
+ssh \
+  -o "ProxyCommand=openshell --gateway ${SANDBOX} ssh-proxy --gateway-name ${SANDBOX} --name ${SANDBOX}" \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o LogLevel=ERROR \
+  -tt sandbox@openshell-${SANDBOX}.default openclaw
+```
+
+> **Note:** The cert-copy step (Step 1) requires `virtctl`. A follow-up improvement is to
+> have the setup Job publish the mTLS client cert as a k8s Secret so the local setup can be
+> done with `oc extract secret/...` instead.
+
 ## Known limitations
 
 **NemoClaw and Podman are incompatible.** NemoClaw's preflight check (`nemoclaw onboard`) requires Docker and will exit at step 1 with `Docker is not reachable` on a Podman image. This is expected. Use `onboardCli: openclaw` with `containerRuntime: podman`.
