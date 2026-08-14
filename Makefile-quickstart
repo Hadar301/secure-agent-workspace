@@ -151,25 +151,31 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 	@oc create namespace $(BUILD_NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null
 	@oc patch configs.imageregistry.operator.openshift.io/cluster \
 		--patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1 || true
-	@for i in $$(seq 1 30); do \
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		echo "macOS detected — using in-cluster skopeo Jobs (avoids podman-machine upload drops)."; \
+		BUILD_NS=$(BUILD_NS) QUAY_REPO=$(QUAY_REPO) OPENSHELL_VERSION=$(OPENSHELL_VERSION) \
+			$(SCRIPTS_DIR)/mirror-images-incluster.sh; \
+	else \
+		for i in $$(seq 1 30); do \
+			REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+			if [ -n "$$REGISTRY" ]; then break; fi; \
+			sleep 5; \
+		done; \
+		echo "Authenticating to internal registry..."; \
 		REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-		if [ -n "$$REGISTRY" ]; then break; fi; \
-		sleep 5; \
-	done
-	@echo "Authenticating to internal registry..."
-	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-	TOKEN=$$(oc whoami -t); \
-	podman login --tls-verify=false -u unused -p $${TOKEN} $${REGISTRY} >/dev/null 2>&1 || \
-	docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || echo "WARN: Container runtime login failed — oc image mirror will use oc credentials"
-	@echo "Mirroring images from $(QUAY_REPO) to internal registry..."
-	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
-	if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
-	for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
-		echo "  Mirroring $${image}:$(OPENSHELL_VERSION)..."; \
-		oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; \
-		oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
-	done; \
-	echo "All images mirrored (tag: $(OPENSHELL_VERSION), also tagged as :latest)."
+		TOKEN=$$(oc whoami -t); \
+		podman login --tls-verify=false -u unused -p $${TOKEN} $${REGISTRY} >/dev/null 2>&1 || \
+		docker login $${REGISTRY} -u unused -p $${TOKEN} >/dev/null 2>&1 || echo "WARN: Container runtime login failed — oc image mirror will use oc credentials"; \
+		echo "Mirroring images from $(QUAY_REPO) to internal registry..."; \
+		REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
+		if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
+		for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
+			echo "  Mirroring $${image}:$(OPENSHELL_VERSION)..."; \
+			oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; \
+			oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
+		done; \
+		echo "All images mirrored (tag: $(OPENSHELL_VERSION), also tagged as :latest)."; \
+	fi
 
 # Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
 # (openshell-gateway-image app). For manual flow, run: make copy-images
