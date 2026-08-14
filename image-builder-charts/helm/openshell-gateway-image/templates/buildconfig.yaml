@@ -103,6 +103,9 @@ spec:
         if [[ -S "/run/user/${USER_UID}/podman/podman.sock" ]]; then break; fi
         sleep 1
       done
+      if [[ ! -S "/run/user/${USER_UID}/podman/podman.sock" ]]; then
+        echo "WARNING: Podman socket not found after 15s — gateway may fail to start" >&2
+      fi
       {{- end }}
 
       # Enable gateway service; start only if the binary is already installed
