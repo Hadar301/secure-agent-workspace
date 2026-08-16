@@ -68,7 +68,7 @@ The `openshell-gateway-image` BuildConfig creates a Fedora 44 qcow2 image with:
 
 The image is pushed to an internal ImageStream (`openshell-gateway:latest`) and used as a DataSource for cloning VM disks.
 
-Build trigger: `make build-openshell-gateway` or automatically via ArgoCD.
+Build trigger: `make build-gateway-docker` (Docker variant) or `make build-gateway-podman` (Podman variant), or automatically via ArgoCD.
 
 ### Phase 2: Keycloak + OIDC
 
@@ -171,7 +171,7 @@ make check-prereqs          # Verify operators and CLI tools
 ```bash
 make generate-keys           # Create SSH keypair
 make ssh-secret              # Create Kubernetes secrets from keys
-make build-openshell-gateway # Build golden VM image (or: make copy-images)
+make build-gateway-docker    # Build Docker golden VM image (or: make copy-images)
 make keycloak                # Deploy Keycloak (if not via ArgoCD)
 ```
 
