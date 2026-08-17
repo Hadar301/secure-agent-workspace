@@ -78,11 +78,6 @@ spec:
             - name: ssh-key
               mountPath: /ssh-key
               readOnly: true
-            {{- if (.Files.Glob "workspaces/**/*.yaml") }}
-            - name: workspaces
-              mountPath: /workspaces
-              readOnly: true
-            {{- end }}
             {{- if or .Values.inference.secretName .Values.inference.provider }}
             - name: provider-secret-ws
               mountPath: /ws-secrets/{{ .Values.inference.secretName | default .Values.inference.provider }}
@@ -115,11 +110,6 @@ spec:
           secret:
             secretName: {{ .Values.sshSecret }}
             defaultMode: 0600
-        {{- if (.Files.Glob "workspaces/**/*.yaml") }}
-        - name: workspaces
-          configMap:
-            name: {{ include "openshell-sandbox.fullname" . }}-workspaces
-        {{- end }}
         {{- if or .Values.inference.secretName .Values.inference.provider }}
         - name: provider-secret-ws
           secret:
