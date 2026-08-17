@@ -254,10 +254,19 @@ oc get vmi -n openshell-agents
 make openshell-saw-configure-gateway
 
 # 14. Authenticate CLI with the gateway
-openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure
+openshell gateway add https://$(oc get route openshell-saw-gateway -n openshell-agents -o jsonpath='{.spec.host}') --name saw
+# Log in as alice / alice in the browser
 
-# 15. Verify
+# 15. Verify sandboxes
 openshell --gateway-insecure sandbox list
+
+# 16. Launch TUI (pick one)
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=cuda-sandbox make nemoclaw-tui   # NemoClaw
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=notebook make openclaw-tui       # OpenClaw
+
+# 17. Launch GUI (pick one)
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=cuda-sandbox GUI_PORT=18789 make nemoclaw-gui
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=notebook GUI_PORT=18790 make openclaw-gui
 ```
 
 > **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true`.
@@ -283,15 +292,20 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 ### Validating the deployment
 
 ```bash
-# SSH into the sandbox
-make openshell-saw-ssh
+# List sandboxes
+openshell --gateway-insecure sandbox list
 
-# Launch the OpenClaw TUI
+# NemoClaw sandbox (TUI and GUI)
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=cuda-sandbox make nemoclaw-tui
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=cuda-sandbox GUI_PORT=18789 make nemoclaw-gui
+
+# OpenClaw sandbox (TUI and GUI)
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=notebook make openclaw-tui
+OPENSHELL_SAW_NAME=openshell-saw SANDBOX_NAME=notebook GUI_PORT=18790 make openclaw-gui
+
+# Legacy aliases (default to nemoclaw)
 make openshell-saw-tui
-
-# Open the web UI (port-forward via openshell ssh-proxy)
 make openshell-saw-gui
-# Opens: http://localhost:18789/#token=<token>
 
 # Or access the dashboard directly via the route
 oc get route ${OPENSHELL_SAW_NAME}-dashboard -n openshell-agents -o jsonpath='https://{.spec.host}'
