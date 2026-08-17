@@ -1,0 +1,5 @@
+apiVersion: v2
+name: saw-bom
+description: BOM-driven agent configuration for SAW workspaces
+type: application
+version: 0.1.0

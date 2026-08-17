@@ -1,0 +1,10 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata: {}
+spec:
+  providers:
+    - name: nvidia
+      type: nvidia
+      nemoclawProvider: build
+      credentialSecret: inference
+      credentialSecretKey: api_key

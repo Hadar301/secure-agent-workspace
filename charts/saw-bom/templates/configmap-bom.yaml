@@ -1,0 +1,23 @@
+{{- $profileFiles := dict }}
+{{- range $profile := .Values.profiles }}
+{{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
+{{- range $path, $_ := $files }}
+{{- $_ := set $profileFiles $path ($.Files.Get $path) }}
+{{- end }}
+{{- end }}
+{{- if $profileFiles }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-bom-profiles
+  labels:
+    app.kubernetes.io/name: saw-bom
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  {{- range $path, $content := $profileFiles }}
+  {{ $path | replace "/" "__" }}: |
+{{ $content | indent 4 }}
+  {{- end }}
+  apply_bom.py: |
+{{ .Files.Get "scripts/apply_bom.py" | indent 4 }}
+{{- end }}

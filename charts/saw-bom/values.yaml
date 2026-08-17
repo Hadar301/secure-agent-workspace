@@ -1,0 +1,3 @@
+# Active profiles to deploy on this SAW instance.
+profiles:
+  - data-science

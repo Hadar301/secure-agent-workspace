@@ -1,0 +1,18 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandboxes
+metadata: {}
+spec:
+  sandboxes:
+    - name: cuda-sandbox
+      type: nemoclaw
+      enabled: true
+      agent: openclaw
+      image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
+      providers:
+        - nvidia
+    - name: toolbox
+      type: generic
+      enabled: false
+      image: base
+      providers:
+        - nvidia
