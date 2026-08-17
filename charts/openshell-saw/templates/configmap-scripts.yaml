@@ -28,7 +28,7 @@ data:
 
     # --- Install dependencies (in the Job Pod, not the VM) ---
     echo "Installing openssh-clients..."
-    dnf install -y --setopt=install_weak_deps=False openssh-clients {{ if .Values.dashboard.enabled }}jq{{ end }}
+    dnf install -y --setopt=install_weak_deps=False openssh-clients {{ if .Values.dashboard.enabled }}jq openssl{{ end }}
 
     echo "Installing kubectl..."
     K8S_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
@@ -275,6 +275,243 @@ data:
     # --- Post-clone hygiene ---
     echo "Post-clone hygiene (hostname)..."
     guest_ssh "sudo hostnamectl set-hostname '${VM_NAME}' || true; openshell gateway select openshell >/dev/null 2>&1 || true" || true
+
+    # --- BOM path: if saw-bom-profiles ConfigMap exists, use BOM-driven setup ---
+    BOM_CM="saw-bom-profiles"
+    BOM_MOUNT="/tmp/bom-profiles"
+    if kubectl get configmap "${BOM_CM}" -n "${NS}" >/dev/null 2>&1; then
+      echo "BOM profiles detected (ConfigMap ${BOM_CM}) — using BOM-driven setup"
+
+      # --- Upgrade OpenShell binaries on the VM (same as legacy path) ---
+      RUNTIME="{{ .Values.containerRuntime }}"
+      GATEWAY_IMAGE="{{ .Values.openshell.gatewayImage }}"
+      SUPERVISOR_IMAGE="{{ .Values.openshell.supervisorImage }}"
+      OPENSHELL_PIP_VERSION="{{ .Values.openshell.version }}"
+      if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_VERSION}" ]]; then
+        echo "Upgrading OpenShell binaries (gateway=${GATEWAY_IMAGE}, supervisor=${SUPERVISOR_IMAGE}, cli=${OPENSHELL_PIP_VERSION})..."
+        guest_ssh "
+          ${RUNTIME} pull '${GATEWAY_IMAGE}' && \
+          CID=\$(${RUNTIME} create '${GATEWAY_IMAGE}') && \
+          ${RUNTIME} cp \${CID}:/usr/local/bin/openshell-gateway /tmp/openshell-gateway && \
+          ${RUNTIME} rm \${CID} && \
+          sudo mv /tmp/openshell-gateway /usr/local/bin/openshell-gateway && \
+          sudo chmod 755 /usr/local/bin/openshell-gateway && \
+          echo 'gateway upgraded'
+        " || echo "WARN: gateway binary upgrade failed (continuing with existing version)"
+        guest_ssh "
+          ${RUNTIME} pull '${SUPERVISOR_IMAGE}' && \
+          CID=\$(${RUNTIME} create '${SUPERVISOR_IMAGE}') && \
+          ${RUNTIME} cp \${CID}:/openshell-sandbox /tmp/openshell-supervisor && \
+          ${RUNTIME} rm \${CID} && \
+          sudo mv /tmp/openshell-supervisor /usr/local/bin/openshell-supervisor && \
+          sudo chmod 755 /usr/local/bin/openshell-supervisor && \
+          echo 'supervisor upgraded'
+        " || echo "WARN: supervisor binary upgrade failed (continuing with existing version)"
+        guest_ssh "
+          pip3 install openshell==${OPENSHELL_PIP_VERSION} \
+          {{- if .Values.openshell.pipIndexUrl }}
+          --extra-index-url {{ .Values.openshell.pipIndexUrl }} \
+          {{- end }}
+          && echo 'openshell CLI upgraded'
+        " || echo "WARN: openshell CLI upgrade failed (continuing with existing version)"
+        guest_ssh "openshell-gateway --version; openshell-supervisor --version; openshell --version" || true
+        # Patch OIDC issuer before restart (golden image may have stale value)
+        source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
+        if [[ -n "${OIDC_ISSUER:-}" ]]; then
+          echo "Patching OIDC issuer to ${OIDC_ISSUER}..."
+          guest_ssh "sudo sed -i 's|issuer = \".*\"|issuer = \"${OIDC_ISSUER}\"|' /etc/openshell/gateway.toml 2>/dev/null || true" || true
+          guest_ssh "sed -i 's|issuer = \".*\"|issuer = \"${OIDC_ISSUER}\"|' ~/.config/openshell/gateway.toml 2>/dev/null || true" || true
+          guest_ssh "grep -v '^OPENSHELL_OIDC_ISSUER' ~/.config/openshell/gateway.env > /tmp/genv.tmp 2>/dev/null && mv /tmp/genv.tmp ~/.config/openshell/gateway.env; echo 'OPENSHELL_OIDC_ISSUER=${OIDC_ISSUER}' >> ~/.config/openshell/gateway.env" || true
+          guest_ssh "MFILE=~/.config/openshell/gateways/openshell/metadata.json; [[ -f \"\${MFILE}\" ]] && sed -i 's|\"oidc_issuer\":\"[^\"]*\"|\"oidc_issuer\":\"${OIDC_ISSUER}\"|' \"\${MFILE}\" || true" || true
+        fi
+        # Restart gateway to pick up new binaries
+        guest_ssh "systemctl --user restart openshell-gateway.service" || true
+        GW_READY=0
+        for i in $(seq 1 10); do
+          if guest_ssh "systemctl --user is-active openshell-gateway.service" 2>/dev/null; then
+            GW_READY=1; break
+          fi
+          echo "  waiting for gateway... (attempt $i)"
+          sleep 3
+        done
+        if [[ "${GW_READY}" -ne 1 ]]; then
+          echo "WARN: gateway did not restart after upgrade"
+        fi
+      fi
+
+      # --- Install lsof (needed by nemoclaw for gateway listener identification) ---
+      guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install failed (non-fatal)"
+
+      mkdir -p "${BOM_MOUNT}"
+
+      # Extract ConfigMap data to files
+      for key in $(kubectl get configmap "${BOM_CM}" -n "${NS}" -o json | jq -r '.data | keys[]'); do
+        kubectl get configmap "${BOM_CM}" -n "${NS}" -o json | jq -r --arg k "${key}" '.data[$k]' > "${BOM_MOUNT}/${key}"
+      done
+
+      source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
+      cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
+      source "${WORK_DIR}/run-create.env" 2>/dev/null || true
+
+      # Transfer BOM app + profiles to VM
+      BOM_DIR="/home/${SSH_USER}/bom-profiles"
+      guest_ssh "mkdir -p ${BOM_DIR}"
+      for file in ${BOM_MOUNT}/*; do
+        key="$(basename "$file")"
+        if [[ "${key}" == "apply_bom.py" ]]; then
+          guest_scp "$file" "/home/${SSH_USER}/apply_bom.py"
+          continue
+        fi
+        IFS_OLD="${IFS}"; IFS='|'
+        read -ra parts <<< "$(echo "${key}" | sed 's/__/|/g')"
+        IFS="${IFS_OLD}"
+        if [[ ${#parts[@]} -ge 4 ]]; then
+          profile="${parts[1]}"
+          ws="${parts[2]}"
+          ws_file="${parts[3]}"
+          guest_ssh "mkdir -p ${BOM_DIR}/${profile}/${ws}"
+          guest_scp "$file" "${BOM_DIR}/${profile}/${ws}/${ws_file}"
+        fi
+      done
+
+      # Resolve credentials from mounted secrets
+      BOM_ENV="${WORK_DIR}/bom.env"
+      for file in ${BOM_MOUNT}/*; do
+        key="$(basename "$file")"
+        IFS_OLD="${IFS}"; IFS='|'
+        read -ra p <<< "$(echo "${key}" | sed 's/__/|/g')"
+        IFS="${IFS_OLD}"
+        if [[ ${#p[@]} -ge 4 && "${p[3]}" == "providers.yaml" ]]; then
+          _flush_prov() {
+            if [[ -n "${cur_name:-}" && -n "${cur_secret:-}" ]]; then
+              skey="${cur_key:-api_key}"
+              for spath in "/ws-secrets/${cur_secret}/${skey}" "/search-secret/${skey}"; do
+                if [[ -f "${spath}" ]]; then
+                  env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+                  echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
+                  echo "  Resolved: ${cur_name}"
+                  break
+                fi
+              done
+            fi
+          }
+          cur_name="" ; cur_secret="" ; cur_key=""
+          while IFS= read -r line; do
+            if echo "${line}" | grep -q '^\s*- name:'; then
+              _flush_prov
+              cur_name="$(echo "${line}" | sed 's/.*name: *//' | tr -d '"' | tr -d "'")"
+              cur_secret="" ; cur_key=""
+            elif echo "${line}" | grep -q 'credentialSecretKey:'; then
+              cur_key="$(echo "${line}" | sed 's/.*credentialSecretKey: *//' | tr -d '"' | tr -d "'")"
+            elif echo "${line}" | grep -q 'credentialSecret:'; then
+              cur_secret="$(echo "${line}" | sed 's/.*credentialSecret: *//' | tr -d '"' | tr -d "'")"
+            fi
+          done < "$file"
+          _flush_prov
+        fi
+      done
+
+      # Fetch OIDC token from Keycloak
+      if [[ -z "${OIDC_TOKEN:-}" ]]; then
+        OIDC_ISSUER="{{ include "openshell-sandbox.oidcIssuerUrl" . }}"
+        OWNER="{{ .Values.accessControl.owner | default "alice" }}"
+        if [[ -n "${OIDC_ISSUER}" && -n "${OWNER}" ]]; then
+          KEYCLOAK_SECRET="$(kubectl get secret {{ .Values.dashboard.keycloakName | default "openshell-keycloak" }}-initial-admin \
+            -n {{ .Values.dashboard.keycloakNamespace | default .Release.Namespace }} \
+            -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+          if [[ -n "${KEYCLOAK_SECRET}" ]]; then
+            TOKEN_RESPONSE=$(curl -sk -X POST \
+              "${OIDC_ISSUER}/protocol/openid-connect/token" \
+              -d "grant_type=password" \
+              -d "client_id=openshell-cli" \
+              -d "username=${OWNER}" \
+              -d "password=${OWNER}" \
+              -d "scope=openid" 2>/dev/null || true)
+            OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+            [[ -n "${OIDC_TOKEN}" ]] && echo "OIDC token obtained for ${OWNER}"
+          fi
+        fi
+      fi
+      [[ -n "${OIDC_TOKEN:-}" ]] && echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "${BOM_ENV}"
+      echo "OIDC_ISSUER=${OIDC_ISSUER:-}" >> "${BOM_ENV}"
+      echo "OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-openshell-cli}" >> "${BOM_ENV}"
+      echo "OPENSHELL_GATEWAY=${OPENSHELL_GATEWAY:-openshell}" >> "${BOM_ENV}"
+
+      # Nemoclaw CLI image
+      REGISTRY_ROUTE="$(kubectl get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+      if [[ -n "${REGISTRY_ROUTE}" ]]; then
+        {{- if .Values.nemoclawCliImage }}
+        echo "NEMOCLAW_CLI_IMAGE={{ .Values.nemoclawCliImage }}" >> "${BOM_ENV}"
+        {{- end }}
+      fi
+
+      guest_scp "${BOM_ENV}" "/home/${SSH_USER}/bom.env"
+
+      # Compute dashboard route for openclaw gateway inside sandboxes
+      DASHBOARD_ROUTE_HOST="$(kubectl get route "${VM_NAME}-dashboard" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+
+      # Run apply_bom.py on the VM
+      echo "Running BOM setup on vm/${VM_NAME}..."
+      guest_ssh "
+        set -a; source /home/${SSH_USER}/bom.env 2>/dev/null; set +a
+        python3 /home/${SSH_USER}/apply_bom.py \
+          --profiles-dir ${BOM_DIR} \
+          --oidc-gateway \${OPENSHELL_GATEWAY:-openshell} \
+          --mtls-gateway openshell-local \
+          --nemoclaw-cli-image \${NEMOCLAW_CLI_IMAGE:-} \
+          --dashboard-route '${DASHBOARD_ROUTE_HOST}'
+      " 2>&1
+
+      # --- Dashboard setup ---
+      {{- if .Values.dashboard.enabled }}
+      guest_scp "${SCRIPTS_DIR}/setup-dashboard.sh" "/home/${SSH_USER}/setup-dashboard.sh"
+      WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+      DASHBOARD_COOKIE_SECRET="$(openssl rand -hex 16)"
+      {{- $keycloakNS := .Values.dashboard.keycloakNamespace | default .Release.Namespace }}
+      KEYCLOAK_ADMIN_PASS="$(kubectl get secret {{ .Values.dashboard.keycloakName | default "openshell-keycloak" }}-initial-admin \
+        -n {{ $keycloakNS }} -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+      if [[ -n "${WEBUI_ROUTE_HOST}" && -n "${KEYCLOAK_ADMIN_PASS}" ]]; then
+        DASHBOARD_REDIRECT_URL="https://${WEBUI_ROUTE_HOST}/oauth2/callback"
+        echo "Registering redirect URI on Keycloak client '{{ .Values.dashboard.clientId }}'..."
+        KEYCLOAK_URL="{{ include "openshell-sandbox.oidcIssuerUrl" . | replace "/realms/openshell" "" }}"
+        ADMIN_TOKEN=$(curl -sk -X POST "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
+          -d "grant_type=password&client_id=admin-cli&username=temp-admin&password=${KEYCLOAK_ADMIN_PASS}" 2>/dev/null \
+          | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+        if [[ -n "${ADMIN_TOKEN}" ]]; then
+          curl -sk -X POST "${KEYCLOAK_URL}/admin/realms/{{ .Values.oidc.realm | default "openshell" }}/clients" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Content-Type: application/json" \
+            -d "{}" >/dev/null 2>&1 || true
+          CLIENTS=$(curl -sk "${KEYCLOAK_URL}/admin/realms/{{ .Values.oidc.realm | default "openshell" }}/clients?clientId={{ .Values.dashboard.clientId }}" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" 2>/dev/null)
+          CLIENT_UUID=$(echo "${CLIENTS}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+          if [[ -n "${CLIENT_UUID}" ]]; then
+            EXISTING=$(curl -sk "${KEYCLOAK_URL}/admin/realms/{{ .Values.oidc.realm | default "openshell" }}/clients/${CLIENT_UUID}" \
+              -H "Authorization: Bearer ${ADMIN_TOKEN}" 2>/dev/null)
+            REDIRECTS=$(echo "${EXISTING}" | sed -n 's/.*"redirectUris":\[\([^]]*\)\].*/\1/p')
+            if ! echo "${REDIRECTS}" | grep -q "${DASHBOARD_REDIRECT_URL}"; then
+              curl -sk -X PUT "${KEYCLOAK_URL}/admin/realms/{{ .Values.oidc.realm | default "openshell" }}/clients/${CLIENT_UUID}" \
+                -H "Authorization: Bearer ${ADMIN_TOKEN}" -H "Content-Type: application/json" \
+                -d "{\"redirectUris\":[${REDIRECTS},\"${DASHBOARD_REDIRECT_URL}\"]}" >/dev/null 2>&1 || true
+              echo "Redirect URI registered: ${DASHBOARD_REDIRECT_URL}"
+            fi
+          fi
+        fi
+        guest_ssh "
+          set -a; source /home/${SSH_USER}/bom.env 2>/dev/null; set +a
+          export DASHBOARD_ENABLED=true
+          export DASHBOARD_IMAGE={{ .Values.dashboard.image | quote }}
+          export DASHBOARD_PROXY_IMAGE={{ .Values.dashboard.proxyImage | quote }}
+          export DASHBOARD_CLIENT_ID={{ .Values.dashboard.clientId | quote }}
+          export DASHBOARD_COOKIE_SECRET=${DASHBOARD_COOKIE_SECRET}
+          export DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
+          bash /home/${SSH_USER}/setup-dashboard.sh
+        " 2>&1 || echo "WARN: dashboard setup failed"
+      fi
+      {{- end }}
+
+      echo "Setup complete: BOM profile mode on vm/${VM_NAME}"
+      exit 0
+    fi
 
     # --- Resolve sandbox image ---
     # Read from env (set via values.yaml sandboxImage), or auto-detect from internal registry
@@ -542,6 +779,87 @@ data:
         guest_scp "${WS_CREDS}" "/home/${SSH_USER}/ws-credentials.env"
         echo "Workspace credentials transferred."
       fi
+    fi
+
+    # --- Transfer BOM profiles to VM (if present) ---
+    if [[ -d /bom-profiles ]]; then
+      echo "Transferring BOM profiles to VM..."
+      BOM_DIR="/home/${SSH_USER}/bom-profiles"
+      guest_ssh "mkdir -p ${BOM_DIR}"
+      for file in ${BOM_MOUNT}/*; do
+        key="$(basename "$file")"
+        if [[ "${key}" == "apply-bom.py" ]]; then
+          guest_scp "$file" "/home/${SSH_USER}/apply-bom.py"
+          continue
+        fi
+        # Keys use __ as separator: profiles__<profile>__<workspace>__<file>.yaml
+        IFS_OLD="${IFS}"; IFS='|'
+        read -ra parts <<< "$(echo "${key}" | sed 's/__/|/g')"
+        IFS="${IFS_OLD}"
+        if [[ ${#parts[@]} -ge 4 ]]; then
+          profile="${parts[1]}"
+          ws="${parts[2]}"
+          ws_file="${parts[3]}"
+          guest_ssh "mkdir -p ${BOM_DIR}/${profile}/${ws}"
+          guest_scp "$file" "${BOM_DIR}/${profile}/${ws}/${ws_file}"
+        fi
+      done
+      echo "BOM_ENABLED=true" >> "${WORK_DIR}/run-create.env"
+      echo "BOM_PROFILES_DIR=${BOM_DIR}" >> "${WORK_DIR}/run-create.env"
+      # Resolve BOM provider credentials from mounted secrets (pure bash, no python)
+      BOM_CREDS="${WORK_DIR}/bom-credentials.env"
+      for file in ${BOM_MOUNT}/*; do
+        key="$(basename "$file")"
+        IFS_OLD="${IFS}"; IFS='|'
+        read -ra p <<< "$(echo "${key}" | sed 's/__/|/g')"
+        IFS="${IFS_OLD}"
+        if [[ ${#p[@]} -ge 4 && "${p[3]}" == "providers.yaml" ]]; then
+          # Parse credentialSecret and name from providers.yaml using grep/sed
+          while IFS= read -r line; do
+            case "${line}" in
+              *"name:"*) cur_name="$(echo "${line}" | sed 's/.*name: *//' | tr -d '"' | tr -d "'")" ;;
+              *"credentialSecret:"*) cur_secret="$(echo "${line}" | sed 's/.*credentialSecret: *//' | tr -d '"' | tr -d "'")" ;;
+              *"credentialSecretKey:"*) cur_key="$(echo "${line}" | sed 's/.*credentialSecretKey: *//' | tr -d '"' | tr -d "'")" ;;
+            esac
+            # When we hit a new provider entry or EOF, resolve the previous one
+            if [[ "${line}" == *"- name:"* && -n "${cur_name:-}" && -n "${cur_secret:-}" ]]; then
+              skey="${cur_key:-api_key}"
+              for spath in "/ws-secrets/${cur_secret}/${skey}" "/ws-secrets/${cur_secret}/api_key" "/search-secret/${skey}"; do
+                if [[ -f "${spath}" ]]; then
+                  val="$(cat "${spath}")"
+                  env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+                  echo "${env_var}=${val}" >> "${BOM_CREDS}"
+                  echo "  Resolved credential for provider '${cur_name}' from ${spath}"
+                  break
+                fi
+              done
+              cur_name="$(echo "${line}" | sed 's/.*name: *//' | tr -d '"' | tr -d "'")"
+              cur_secret="" ; cur_key=""
+            fi
+          done < "$file"
+          # Handle the last provider in the file
+          if [[ -n "${cur_name:-}" && -n "${cur_secret:-}" ]]; then
+            skey="${cur_key:-api_key}"
+            for spath in "/ws-secrets/${cur_secret}/${skey}" "/ws-secrets/${cur_secret}/api_key" "/search-secret/${skey}"; do
+              if [[ -f "${spath}" ]]; then
+                val="$(cat "${spath}")"
+                env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+                echo "${env_var}=${val}" >> "${BOM_CREDS}"
+                echo "  Resolved credential for provider '${cur_name}' from ${spath}"
+                break
+              fi
+            done
+          fi
+        fi
+      done
+      if [[ -f "${BOM_CREDS}" && -s "${BOM_CREDS}" ]]; then
+        guest_scp "${BOM_CREDS}" "/home/${SSH_USER}/bom-credentials.env"
+        echo "BOM_CREDS_FILE=/home/${SSH_USER}/bom-credentials.env" >> "${WORK_DIR}/run-create.env"
+        echo "BOM credentials resolved."
+      else
+        echo "No BOM credentials found in mounted secrets."
+      fi
+      echo "BOM profiles transferred."
     fi
 
     {{- if .Values.dashboard.enabled }}
@@ -1276,7 +1594,83 @@ data:
       "${HOME}/setup-dashboard.sh" \
       "${HOME}/setup-workspaces.sh" 2>/dev/null || true
 
-    # --- Multi-workspace BOM path ---
+    # --- BOM profile path (replaces main setup when profiles are present) ---
+    if [[ "${BOM_ENABLED:-}" == "true" && -d "${BOM_PROFILES_DIR:-}" && -f "${HOME}/apply-bom.py" ]]; then
+      echo "BOM profile mode: applying profiles from ${BOM_PROFILES_DIR}"
+
+      GATEWAY_NAME="${OPENSHELL_GATEWAY:-openshell}"
+      NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"
+
+      # Install nemoclaw CLI if needed
+      if ! command -v nemoclaw &>/dev/null && [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
+        echo "Installing nemoclaw CLI from ${NEMOCLAW_CLI_IMAGE}..."
+        CID="$(docker create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
+        if [[ -n "${CID}" ]]; then
+          docker cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
+          docker rm "${CID}" >/dev/null
+          sudo mv /tmp/nemoclaw-cli /opt/nemoclaw
+          printf '#!/usr/bin/env bash\nexec node /opt/nemoclaw/bin/nemoclaw.js "$@"\n' | sudo tee /usr/local/bin/nemoclaw >/dev/null
+          sudo chmod 755 /usr/local/bin/nemoclaw
+          echo "nemoclaw CLI installed"
+        fi
+      fi
+
+      # Set up OIDC token for gateway auth
+      if [[ -n "${OIDC_TOKEN:-}" ]]; then
+        OIDC_TOKEN_PATH="${HOME}/.config/openshell/gateways/${GATEWAY_NAME}/oidc_token.json"
+        mkdir -p "$(dirname "${OIDC_TOKEN_PATH}")"
+        chmod 700 "$(dirname "${OIDC_TOKEN_PATH}")"
+        printf '{"access_token":"%s","issuer":"%s","client_id":"%s"}' \
+          "${OIDC_TOKEN}" "${OIDC_ISSUER:-}" "${OIDC_CLIENT_ID:-openshell-cli}" > "${OIDC_TOKEN_PATH}"
+        chmod 600 "${OIDC_TOKEN_PATH}"
+        echo "OIDC token configured for gateway auth"
+      fi
+
+      # Register mTLS gateway
+      MTLS_GW_NAME="openshell-local"
+      openshell gateway remove "${MTLS_GW_NAME}" 2>/dev/null || true
+      openshell gateway add https://127.0.0.1:17670 --name "${MTLS_GW_NAME}" --local 2>&1 || true
+      openshell gateway select "${MTLS_GW_NAME}" 2>&1 || true
+      echo "mTLS gateway '${MTLS_GW_NAME}' registered"
+
+      # Grant mTLS client access to default workspace and enable provider composition
+      if [[ -n "${OIDC_TOKEN:-}" ]]; then
+        openshell gateway select "${GATEWAY_NAME}" >/dev/null 2>&1 || true
+        openshell workspace member add --workspace default --subject openshell-client --role admin 2>&1 || true
+        openshell settings set --global --key providers_v2_enabled --value true --yes 2>&1 || true
+        openshell gateway select "${MTLS_GW_NAME}" >/dev/null 2>&1 || true
+      else
+        openshell workspace member add --workspace default --subject openshell-client --role admin 2>&1 || true
+        openshell settings set --global --key providers_v2_enabled --value true --yes 2>&1 || true
+      fi
+
+      if [[ -f "${BOM_CREDS_FILE:-}" ]]; then
+        set -a; source "${BOM_CREDS_FILE}"; set +a
+        echo "BOM credentials loaded"
+      fi
+
+      BOM_ARGS=(
+        --profiles-dir "${BOM_PROFILES_DIR}"
+        --dashboard-route "${DASHBOARD_REDIRECT_URL:-}"
+        --mtls-gateway "openshell-local"
+      )
+      OIDC_GW="${OPENSHELL_GATEWAY:-openshell}"
+      if [[ -n "${OIDC_TOKEN:-}" ]]; then
+        BOM_ARGS+=(--oidc-gateway "${OIDC_GW}")
+      fi
+      python3 "${HOME}/apply-bom.py" "${BOM_ARGS[@]}" 2>&1 || \
+        echo "WARN: BOM apply failed"
+
+      export DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-false}" DASHBOARD_IMAGE="${DASHBOARD_IMAGE:-}"
+      export DASHBOARD_PROXY_IMAGE="${DASHBOARD_PROXY_IMAGE:-}" DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+      export DASHBOARD_COOKIE_SECRET="${DASHBOARD_COOKIE_SECRET:-}" DASHBOARD_REDIRECT_URL="${DASHBOARD_REDIRECT_URL:-}"
+      "${HOME}/setup-dashboard.sh"
+
+      echo "run-create OK (BOM profile mode)"
+      exit 0
+    fi
+
+    # --- Multi-workspace BOM path (legacy) ---
     if [[ -d "${HOME}/workspaces" ]] && ls "${HOME}/workspaces"/*/workspace.yaml >/dev/null 2>&1; then
       echo "Multi-workspace mode: BOMs detected"
       if [[ -f "${HOME}/ws-credentials.env" ]]; then
@@ -1342,4 +1736,7 @@ data:
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
       shred -u "${SA_JSON}" 2>/dev/null || rm -f "${SA_JSON}"
     fi
+
+    # (BOM profile path runs above and exits — this point is single-workspace only)
+
     echo "run-create OK sandbox=${SANDBOX_NAME} provider=${NEMOCLAW_PROVIDER:-${PROVIDER_NAME:-none}}"
