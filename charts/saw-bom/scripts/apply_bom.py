@@ -445,15 +445,18 @@ class WorkspaceDeployer:
         rc, _, _ = self.sh.run(cmd, env=env, check=False)
         return rc == 0
 
-    def start_openclaw_gateway(self, sandbox_name, dashboard_route):
+    def start_openclaw_gateway(self, sandbox_name, dashboard_route,
+                               workspace_name="default"):
         import secrets as secrets_mod
+
+        ws_args = ["--workspace", workspace_name] if workspace_name else []
 
         # Wait for sandbox to reach Ready
         if not self.sh.dry_run:
             for i in range(20):
                 rc, out, _ = self.sh.run([
                     "openshell", "sandbox", "get", sandbox_name
-                ], check=False)
+                ] + ws_args, check=False)
                 clean = re.sub(r'\x1b\[[0-9;]*m', '', out or "")
                 if "Ready" in clean and "Error" not in clean:
                     log(f"Sandbox '{sandbox_name}' is Ready")
@@ -463,7 +466,7 @@ class WorkspaceDeployer:
 
         token = secrets_mod.token_hex(16)
         exec_cmd = ["openshell", "sandbox", "exec", "-n",
-                     sandbox_name, "--no-tty", "--"]
+                     sandbox_name] + ws_args + ["--no-tty", "--"]
 
         # Configure openclaw: model, agent, gateway token
         oc_env = ("OPENCLAW_HOME=/sandbox "
@@ -517,9 +520,8 @@ class WorkspaceDeployer:
 
         if not self.sh.dry_run:
             for i in range(10):
-                rc, out, _ = self.sh.run([
-                    "openshell", "sandbox", "exec", "-n", sandbox_name,
-                    "--no-tty", "--",
+                rc, out, _ = self.sh.run(
+                    exec_cmd + [
                     "curl", "-sf", "http://127.0.0.1:18789/health"
                 ], check=False)
                 if rc == 0 and "ok" in out:
@@ -699,6 +701,13 @@ def main():
                             deployer.install_nemoclaw_cli(cli_img)
                             nemoclaw_cli_installed = True
 
+                    is_full_ref = sb.image and ("/" in sb.image
+                                                or ":" in sb.image)
+                    if is_full_ref:
+                        deployer.sh.run(
+                            ["sudo", "docker", "pull", sb.image],
+                            check=False)
+
                     prov = ws.providers[0] if ws.providers else None
                     cred = resolve_credential(prov) if prov else None
                     if prov and cred:
@@ -713,12 +722,14 @@ def main():
 
                     deployer.create_sandbox_generic(sb, ws.name)
                     deployer.start_openclaw_gateway(
-                        sb.name, args.dashboard_route or "")
+                        sb.name, args.dashboard_route or "",
+                        workspace_name=ws.name)
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
                     deployer.start_openclaw_gateway(
-                        sb.name, args.dashboard_route or "")
+                        sb.name, args.dashboard_route or "",
+                        workspace_name=ws.name)
 
                 else:
                     # Generic: just create the sandbox
