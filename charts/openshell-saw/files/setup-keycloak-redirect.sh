@@ -66,5 +66,6 @@ guest_ssh "
   export DASHBOARD_CLIENT_ID='${DASHBOARD_CLIENT_ID}'
   export DASHBOARD_COOKIE_SECRET=${DASHBOARD_COOKIE_SECRET}
   export DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
+  export DASHBOARD_INSECURE_SKIP_TLS='${DASHBOARD_INSECURE_SKIP_TLS}'
   bash /home/${SSH_USER}/setup-dashboard.sh
 " 2>&1 || echo "WARN: dashboard setup failed"

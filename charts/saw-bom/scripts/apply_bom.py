@@ -446,7 +446,9 @@ class WorkspaceDeployer:
         return rc == 0
 
     def start_openclaw_gateway(self, sandbox_name, dashboard_route,
-                               workspace_name="default"):
+                               workspace_name="default",
+                               provider_id="nvidia",
+                               model_id="nvidia/nemotron-3-super-120b-a12b"):
         import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
@@ -474,7 +476,6 @@ class WorkspaceDeployer:
                   "TMPDIR=/sandbox/.openclaw/state "
                   "OPENCLAW_NIX_MODE=0")
 
-        # Run non-interactive onboarding with NVIDIA via inference proxy
         log("Running openclaw onboard...")
         self.sh.run(
             exec_cmd + ["sh", "-c",
@@ -484,8 +485,8 @@ class WorkspaceDeployer:
                         f"--mode local "
                         f"--auth-choice custom-api-key "
                         f'--custom-base-url "https://inference.local/v1" '
-                        f"--custom-provider-id nvidia "
-                        f'--custom-model-id "nvidia/nemotron-3-super-120b-a12b" '
+                        f"--custom-provider-id {provider_id} "
+                        f'--custom-model-id "{model_id}" '
                         f"--custom-compatibility openai "
                         f"--skip-channels --skip-health"],
             check=False)
@@ -568,9 +569,13 @@ class Verifier:
                 log(f"\n  Workspace: {ws.name}")
 
                 if ws.name != "default":
-                    self.check(
+                    ok, out = self.check(
                         f"workspace '{ws.name}'",
                         ["openshell", "workspace", "list"])
+                    if ok and ws.name not in (out or ""):
+                        log(f"FAIL  workspace '{ws.name}' not in output")
+                        self.passed -= 1
+                        self.failed += 1
 
                 for prov in ws.providers:
                     if not prov.enabled:
@@ -721,15 +726,24 @@ def main():
                             deployer.create_provider(prov, cred, ws.name)
 
                     deployer.create_sandbox_generic(sb, ws.name)
+                    prov_id = prov.type if prov else "nvidia"
+                    model = sb.model or (prov.model if prov else "")
                     deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
-                        workspace_name=ws.name)
+                        workspace_name=ws.name,
+                        provider_id=prov_id,
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
+                    prov = ws.providers[0] if ws.providers else None
+                    prov_id = prov.type if prov else "nvidia"
+                    model = sb.model or (prov.model if prov else "")
                     deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
-                        workspace_name=ws.name)
+                        workspace_name=ws.name,
+                        provider_id=prov_id,
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
 
                 else:
                     # Generic: just create the sandbox

@@ -58,7 +58,7 @@ OAUTH2_PROXY_CODE_CHALLENGE_METHOD=S256
 OAUTH2_PROXY_EMAIL_DOMAINS=*
 OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
 OAUTH2_PROXY_COOKIE_SECURE=true
-OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=${DASHBOARD_INSECURE_SKIP_TLS:-false}
 # oauth2-proxy rejects the id_token by default if the OIDC provider's
 # email_verified claim is false — true for real SSO-federated Keycloak
 # accounts.

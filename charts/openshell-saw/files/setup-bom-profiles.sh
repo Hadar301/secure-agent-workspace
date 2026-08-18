@@ -7,8 +7,9 @@
 BOM_CM="saw-bom-profiles"
 BOM_MOUNT="/tmp/bom-profiles"
 if ! kubectl get configmap "${BOM_CM}" -n "${NS}" >/dev/null 2>&1; then
-  echo "No BOM profiles ConfigMap (${BOM_CM}) found — skipping profile setup."
-  echo "Deploy the saw-bom chart to configure workspaces and providers."
+  echo "WARNING: No BOM profiles ConfigMap (${BOM_CM}) found — no workspaces or sandboxes will be provisioned."
+  echo "WARNING: Deploy the saw-bom chart to configure workspaces and providers."
+  echo "WARNING: The VM is running but has no agent sandboxes configured."
   return 0 2>/dev/null || true
 fi
 
