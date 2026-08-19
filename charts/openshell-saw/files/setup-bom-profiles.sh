@@ -68,6 +68,14 @@ for file in ${BOM_MOUNT}/*; do
           env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
           echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
           echo "  Resolved: ${cur_name}"
+          # Also surface the secret's own "provider" field (e.g. "gemini",
+          # "build") if present, so apply_bom.py can validate it against
+          # the BOM profile's declared type before creating the provider.
+          ppath="/ws-secrets/${cur_secret}/provider"
+          if [[ -f "${ppath}" ]]; then
+            type_env_var="$(echo "PROV_${cur_name}_TYPE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+            echo "${type_env_var}=$(cat "${ppath}")" >> "${BOM_ENV}"
+          fi
         else
           echo "  WARNING: credential for provider '${cur_name}' not found at ${spath} — is '${cur_secret}' listed in additionalProviderSecrets (openshell-saw values) or is it the primary inference.secretName?"
         fi

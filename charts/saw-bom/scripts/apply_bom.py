@@ -227,6 +227,42 @@ def resolve_credential(provider):
     return None
 
 
+def resolve_configured_type(provider):
+    """The credential secret's own `provider:` field (if setup-bom-profiles.sh
+    found one alongside the API key), e.g. "gemini" or "build" (NVIDIA
+    Build's own provider identifier — distinct from the OpenShell provider
+    *type* "nvidia"). Returns None if not present, e.g. for secrets that
+    don't carry a provider field at all.
+    """
+    env_var = f"PROV_{provider.name}_TYPE".replace("-", "_").upper()
+    return os.environ.get(env_var) or None
+
+
+def check_provider_type_mismatch(provider):
+    """Validate that the credential secret's own declared provider matches
+    what this BOM profile expects, before we create a provider using a
+    credential that may belong to an entirely different service. Returns
+    an error string if there's a mismatch, or None if it's fine / unknown.
+
+    A profile's `type` (the OpenShell provider type, e.g. "nvidia") and
+    `nemoclaw_provider` (a NemoClaw-specific alias, e.g. "build" for NVIDIA
+    Build) are both accepted as valid matches, since values-secret.yaml's
+    documented provider identifiers ("gemini, anthropic, openai, build
+    (NVIDIA), openrouter, ...") use the nemoclaw-style alias, not the
+    OpenShell type, for NVIDIA specifically.
+    """
+    configured = resolve_configured_type(provider)
+    if not configured:
+        return None
+    valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
+    if configured not in valid:
+        expected = " or ".join(sorted(valid)) if valid else provider.type
+        return (f"BOM profile expects provider type '{expected}' for "
+                f"'{provider.name}', but the credential secret is "
+                f"configured for provider '{configured}'")
+    return None
+
+
 def find_provider(ws, names):
     """Look up a provider by name from a sandbox's own declared providers list.
 
@@ -343,6 +379,12 @@ class WorkspaceDeployer:
 
     def create_provider(self, provider, credential,
                         workspace_name="default"):
+        mismatch = check_provider_type_mismatch(provider)
+        if mismatch:
+            log(f"ERROR: {mismatch} — skipping provider "
+                f"'{provider.name}' creation. Fix values-secret.yaml or "
+                f"the BOM profile's declared type/nemoclawProvider.")
+            return
         args = ["openshell", "provider", "create",
                 "--name", provider.name, "--type", provider.type]
         if workspace_name != "default":
@@ -739,7 +781,11 @@ def main():
 
                     prov = find_provider(ws, sb.providers)
                     cred = resolve_credential(prov) if prov else None
-                    if prov and cred:
+                    mismatch = check_provider_type_mismatch(prov) if prov else None
+                    if mismatch:
+                        log(f"ERROR: {mismatch} — skipping nemoclaw "
+                            f"onboard for '{sb.name}'.")
+                    elif prov and cred:
                         nc_prov = prov.nemoclaw_provider or prov.type
                         log(f"nemoclaw onboard --agent {sb.agent or 'openclaw'}"
                             f" (provider={nc_prov})")
