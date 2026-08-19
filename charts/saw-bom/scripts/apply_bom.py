@@ -83,6 +83,13 @@ class Shell:
             r'(API_KEY=|api_key=|TOKEN=|token=)\S+',
             r'\1***',
             display)
+        # openclaw's own "config set gateway.auth.token '<value>'" call style has
+        # no '=' at all, so the regex above never touches it — this leaked the
+        # raw gateway auth token to Job logs in plaintext. Catch it explicitly.
+        display = re.sub(
+            r"(gateway\.auth\.token\s+')[^']+(')",
+            r'\1***\2',
+            display)
         if self.dry_run:
             log(f"[dry-run] {display}")
             return 0, "", ""
