@@ -57,14 +57,28 @@ for file in ${BOM_MOUNT}/*; do
     _flush_prov() {
       if [[ -n "${cur_name:-}" && -n "${cur_secret:-}" ]]; then
         skey="${cur_key:-api_key}"
-        for spath in "/ws-secrets/${cur_secret}/${skey}" "/search-secret/${skey}"; do
-          if [[ -f "${spath}" ]]; then
-            env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
-            echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
-            echo "  Resolved: ${cur_name}"
-            break
+        # Every credentialSecret a BOM profile declares is mounted dynamically
+        # at /ws-secrets/<name> (see job-setup.yaml's additionalProviderSecrets
+        # loop) — this used to also fall back to a hardcoded /search-secret
+        # path regardless of the declared name, which silently broke if a
+        # tenant renamed their secret; that path is gone now, the declared
+        # name is what actually controls resolution.
+        spath="/ws-secrets/${cur_secret}/${skey}"
+        if [[ -f "${spath}" ]]; then
+          env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+          echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
+          echo "  Resolved: ${cur_name}"
+          # Also surface the secret's own "provider" field (e.g. "gemini",
+          # "build") if present, so apply_bom.py can validate it against
+          # the BOM profile's declared type before creating the provider.
+          ppath="/ws-secrets/${cur_secret}/provider"
+          if [[ -f "${ppath}" ]]; then
+            type_env_var="$(echo "PROV_${cur_name}_TYPE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+            echo "${type_env_var}=$(cat "${ppath}")" >> "${BOM_ENV}"
           fi
-        done
+        else
+          echo "  WARNING: credential for provider '${cur_name}' not found at ${spath} — is '${cur_secret}' listed in additionalProviderSecrets (openshell-saw values) or is it the primary inference.secretName?"
+        fi
       fi
     }
     cur_name="" ; cur_secret="" ; cur_key=""
@@ -97,8 +111,14 @@ if [[ -z "${OIDC_TOKEN:-}" ]]; then
         -d "username=${OWNER}" \
         -d "password=${OWNER}" \
         -d "scope=openid" 2>/dev/null || true)
-      OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-      [[ -n "${OIDC_TOKEN}" ]] && echo "OIDC token obtained for ${OWNER}"
+      OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | jq -r '.access_token // empty')
+      if [[ -n "${OIDC_TOKEN}" ]]; then
+        echo "OIDC token obtained for ${OWNER}"
+      else
+        echo "WARNING: OIDC token fetch failed for '${OWNER}': $(echo "${TOKEN_RESPONSE}" | jq -r '.error_description // .error // "no response / unparseable response"')"
+      fi
+    else
+      echo "WARNING: could not read secret ${KEYCLOAK_NAME}-initial-admin in namespace ${KEYCLOAK_NS} — skipping OIDC token fetch. Check dashboard.keycloakNamespace if Keycloak isn't co-located with this sandbox."
     fi
   fi
 fi

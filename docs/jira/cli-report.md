@@ -81,6 +81,22 @@ The check in `dist/lib/onboard/openshell-feature-gate.js` (NemoClaw commit `1506
 
 The `NEMOCLAW_OPENSHELL_GATEWAY_BIN` and `NEMOCLAW_OPENSHELL_SANDBOX_BIN` env vars (set by `apply_bom.py`) enable `allowExternalGatewayBin`/`allowExternalSandboxBin`, which skip the directory co-location check. But they do not skip the version coherence check.
 
+**Update (during PR review):** the claim above that "the native Go gateway and supervisor
+binaries contain these markers" — which would imply the binary-marker-scan bypass patch in
+`image-builder-charts/helm/nemoclaw-cli-imagestream/templates/buildconfig.yaml` isn't even
+needed — could not be verified either way. Tried reverting that bypass and running
+`nemoclaw onboard` directly against a live VM: it never reached the feature-gate check at
+all, in this environment. Onboarding fails earlier, at `[1/8] Preflight checks`, with an
+unrelated blocking finding (`host.docker.storage_incompatible`: "The Docker storage
+configuration cannot support nested overlay mounts"). The same failure occurs identically
+with the bypass *present* — confirmed against the already-deployed `cuda-sandbox`'s own
+onboarding log, which failed at the exact same preflight step, with `apply_bom.py`'s
+`openshell provider create` fallback being what actually made that sandbox work, not real
+NemoClaw onboarding. So neither this doc's "binaries already have the markers" claim nor the
+buildconfig's "OpenShell builds do not embed the hyphen-form capability strings" claim has
+actually been exercised — genuine `nemoclaw onboard` has never successfully completed in this
+environment at all. The nested-overlay preflight is worth its own separate investigation.
+
 ## Files changed
 
 - `charts/openshell-saw/files/upgrade-openshell.sh` — added wrapper installation after pip CLI install

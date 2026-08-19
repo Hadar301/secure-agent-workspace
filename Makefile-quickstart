@@ -81,12 +81,12 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build-nemoclaw build-nemoclaw-cli \
+        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
-        openshell-saw-delete delete-all status \
+        openshell-saw-delete sandbox-pre-delete delete-all status \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
         .check-saw-name .check-ssh-key .check-prereqs
 
@@ -114,6 +114,14 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-openclaw-openshell: ## Build the openclaw-openshell sandbox image and push to quay
+	-@oc delete is openclaw-openshell -n $(BUILD_NS) 2>/dev/null
+	helm upgrade --install openclaw-openshell-image $(HELM_DIR)openclaw-openshell-image \
+		--namespace $(BUILD_NS) --create-namespace
+	oc start-build openclaw-openshell -n $(BUILD_NS) --follow
+	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 # --- Governance interceptor image ---
 
@@ -203,16 +211,22 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 # (openshell-gateway-image app). For manual flow, run: make copy-images
 pattern-install: generate-keys
 
-# Clean up heavy resources before uninstall to prevent finalizer hangs.
-# VMs and DataVolumes take time to terminate and block ArgoCD app deletion.
-uninstall: pre-uninstall
-pre-uninstall:
-	@echo "Cleaning up heavy resources before uninstall..."
-	-@oc delete vm --all -n $(NS) --wait=false 2>/dev/null
-	-@oc delete dv --all -n $(NS) --wait=false 2>/dev/null
-	-@oc delete pvc -l app.kubernetes.io/part-of=openshell-cnv-fedora -n $(NS) --wait=false 2>/dev/null
-	-@oc delete jobs --all -n $(NS) --wait=false 2>/dev/null
-	@echo "Heavy resources scheduled for deletion."
+# Clean up a single sandbox's heavy resources before uninstall to prevent
+# finalizer hangs. VMs and DataVolumes take time to terminate and block
+# ArgoCD app deletion. Scoped to OPENSHELL_SAW_NAME only — NOT named
+# "uninstall"/"pre-uninstall", since those names collide with the
+# pre-existing `uninstall` target in Makefile-common (the one
+# `./pattern.sh make uninstall` calls). Make merges prerequisite lists
+# across repeated target definitions, so reusing that name here would
+# silently attach this namespace-wide cleanup to every future call of the
+# framework's own uninstall target, deleting every sandbox VM/DataVolume in
+# a shared namespace instead of just this one.
+sandbox-pre-delete: .check-saw-name
+	@echo "Cleaning up heavy resources for '$(OPENSHELL_SAW_NAME)' before uninstall..."
+	-@oc delete vm $(OPENSHELL_SAW_NAME) -n $(NS) --wait=false 2>/dev/null
+	-@oc delete dv $(OPENSHELL_SAW_NAME)-root -n $(NS) --wait=false 2>/dev/null
+	-@oc delete job $(OPENSHELL_SAW_NAME)-setup -n $(NS) --wait=false 2>/dev/null
+	@echo "Heavy resources for '$(OPENSHELL_SAW_NAME)' scheduled for deletion."
 
 # --- Keycloak / OIDC ---
 
@@ -429,7 +443,7 @@ test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
 
 # --- Teardown ---
 
-openshell-saw-delete: .check-saw-name ## Uninstall a sandbox
+openshell-saw-delete: sandbox-pre-delete ## Uninstall a sandbox
 	helm uninstall $(OPENSHELL_SAW_NAME) --namespace $(NS)
 
 delete-all: ## Uninstall everything (keycloak + imagestreams + gateway image)

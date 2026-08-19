@@ -117,27 +117,33 @@ fi
 
 DETECTED=$(python3 -c "
 import yaml, sys
-PROVIDERS = ['gemini', 'anthropic', 'openai', 'nvidia', 'openrouter']
 with open('${VALUES_SECRET}') as f:
     data = yaml.safe_load(f)
 for s in data.get('secrets', []):
-    if s['name'] in PROVIDERS:
-        for field in s.get('fields', []):
-            if field['name'] == 'api_key' and field.get('value') and str(field['value']) != 'null':
-                print(f\"{s['name']}={field['value']}\")
-                sys.exit(0)
+    if s['name'] == 'inference':
+        fields = {f['name']: f.get('value') for f in s.get('fields', [])}
+        provider = fields.get('provider')
+        model = fields.get('model') or ''
+        api_key = fields.get('api_key')
+        if provider and api_key and str(api_key) != 'null':
+            print(f'{provider}|{model}|{api_key}')
+            sys.exit(0)
 sys.exit(1)
 " 2>/dev/null) || true
 
 if [[ -z "${DETECTED}" ]]; then
   echo -e "${RED}Error: No provider API key found in ${VALUES_SECRET}.${NC}"
-  echo "  Set at least one provider key (gemini, anthropic, openai, nvidia, openrouter)"
+  echo "  Set the 'inference' secret's provider/model/api_key fields"
   exit 1
 fi
 
-PROV="${DETECTED%%=*}"
-PKEY="${DETECTED#*=}"
-PMOD=$(default_model_for "${PROV}")
+PROV="${DETECTED%%|*}"
+_REST="${DETECTED#*|}"
+PMOD="${_REST%%|*}"
+PKEY="${_REST#*|}"
+if [[ -z "${PMOD}" ]]; then
+  PMOD=$(default_model_for "${PROV}")
+fi
 
 echo "============================================="
 echo " Headless E2E Test"
@@ -301,7 +307,7 @@ check "SSH reachable (up to 3 min)" \
 step "Verify VM health"
 
 check "openshell CLI installed"        guest_ssh "openshell --version"
-RUNTIME="$(helm get values "${SANDBOX_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.containerRuntime // "docker"')"
+RUNTIME="$(helm get values "${TEST_SANDBOX}" -n "${NS}" -a -o json 2>/dev/null | jq -r '.containerRuntime // "docker"')"
 check "${RUNTIME} installed"           guest_ssh "${RUNTIME} --version"
 check "nodejs installed"               guest_ssh "node --version"
 check "/etc/openshell exists"          guest_ssh "test -d /etc/openshell"

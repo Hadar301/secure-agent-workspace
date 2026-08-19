@@ -83,6 +83,13 @@ class Shell:
             r'(API_KEY=|api_key=|TOKEN=|token=)\S+',
             r'\1***',
             display)
+        # openclaw's own "config set gateway.auth.token '<value>'" call style has
+        # no '=' at all, so the regex above never touches it — this leaked the
+        # raw gateway auth token to Job logs in plaintext. Catch it explicitly.
+        display = re.sub(
+            r"(gateway\.auth\.token\s+')[^']+(')",
+            r'\1***\2',
+            display)
         if self.dry_run:
             log(f"[dry-run] {display}")
             return 0, "", ""
@@ -220,6 +227,59 @@ def resolve_credential(provider):
     return None
 
 
+def resolve_configured_type(provider):
+    """The credential secret's own `provider:` field (if setup-bom-profiles.sh
+    found one alongside the API key), e.g. "gemini" or "build" (NVIDIA
+    Build's own provider identifier — distinct from the OpenShell provider
+    *type* "nvidia"). Returns None if not present, e.g. for secrets that
+    don't carry a provider field at all.
+    """
+    env_var = f"PROV_{provider.name}_TYPE".replace("-", "_").upper()
+    return os.environ.get(env_var) or None
+
+
+def check_provider_type_mismatch(provider):
+    """Validate that the credential secret's own declared provider matches
+    what this BOM profile expects, before we create a provider using a
+    credential that may belong to an entirely different service. Returns
+    an error string if there's a mismatch, or None if it's fine / unknown.
+
+    A profile's `type` (the OpenShell provider type, e.g. "nvidia") and
+    `nemoclaw_provider` (a NemoClaw-specific alias, e.g. "build" for NVIDIA
+    Build) are both accepted as valid matches, since values-secret.yaml's
+    documented provider identifiers ("gemini, anthropic, openai, build
+    (NVIDIA), openrouter, ...") use the nemoclaw-style alias, not the
+    OpenShell type, for NVIDIA specifically.
+    """
+    configured = resolve_configured_type(provider)
+    if not configured:
+        return None
+    valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
+    if configured not in valid:
+        expected = " or ".join(sorted(valid)) if valid else provider.type
+        return (f"BOM profile expects provider type '{expected}' for "
+                f"'{provider.name}', but the credential secret is "
+                f"configured for provider '{configured}'")
+    return None
+
+
+def find_provider(ws, names):
+    """Look up a provider by name from a sandbox's own declared providers list.
+
+    Falls back to the first workspace provider only if the sandbox didn't
+    declare any (or none of its declared names match) — previously this
+    fallback was the *only* behavior, silently ignoring `sandbox.providers`
+    entirely and wiring up whatever happened to be first in the workspace's
+    provider list (e.g. attaching a web-search credential as if it were an
+    LLM provider, if that provider happened to be declared first).
+    """
+    for name in names or []:
+        for p in ws.providers:
+            if p.name == name:
+                return p
+    return ws.providers[0] if ws.providers else None
+
+
 # ---------------------------------------------------------------------------
 # Gateway setup
 # ---------------------------------------------------------------------------
@@ -319,6 +379,12 @@ class WorkspaceDeployer:
 
     def create_provider(self, provider, credential,
                         workspace_name="default"):
+        mismatch = check_provider_type_mismatch(provider)
+        if mismatch:
+            log(f"ERROR: {mismatch} — skipping provider "
+                f"'{provider.name}' creation. Fix values-secret.yaml or "
+                f"the BOM profile's declared type/nemoclawProvider.")
+            return
         args = ["openshell", "provider", "create",
                 "--name", provider.name, "--type", provider.type]
         if workspace_name != "default":
@@ -713,9 +779,13 @@ def main():
                             ["sudo", "docker", "pull", sb.image],
                             check=False)
 
-                    prov = ws.providers[0] if ws.providers else None
+                    prov = find_provider(ws, sb.providers)
                     cred = resolve_credential(prov) if prov else None
-                    if prov and cred:
+                    mismatch = check_provider_type_mismatch(prov) if prov else None
+                    if mismatch:
+                        log(f"ERROR: {mismatch} — skipping nemoclaw "
+                            f"onboard for '{sb.name}'.")
+                    elif prov and cred:
                         nc_prov = prov.nemoclaw_provider or prov.type
                         log(f"nemoclaw onboard --agent {sb.agent or 'openclaw'}"
                             f" (provider={nc_prov})")
@@ -736,7 +806,7 @@ def main():
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
-                    prov = ws.providers[0] if ws.providers else None
+                    prov = find_provider(ws, sb.providers)
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
                     deployer.start_openclaw_gateway(
@@ -752,7 +822,13 @@ def main():
     # --- Phase 4: Verify ---
     if not args.dry_run:
         verifier = Verifier(sh)
-        verifier.verify_profiles(profiles)
+        ok = verifier.verify_profiles(profiles)
+        if not ok:
+            # Without this, the setup Job reports "Complete" even when the
+            # BOM apply only partially succeeded — verified live: a run with
+            # 9 passed / 1 failed still showed Job status Complete, with the
+            # only signal being "STATUS: INCOMPLETE" buried in the full log.
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

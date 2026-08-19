@@ -6,8 +6,17 @@ if [[ "${GOVERNANCE_ENABLED}" == "true" ]]; then
   echo "Checking governance interceptor at ${GOVERNANCE_ENDPOINT}..."
   INTERCEPTOR_READY=0
   for i in $(seq 1 12); do
-    if curl -sf --max-time 5 "${GOVERNANCE_ENDPOINT}" >/dev/null 2>&1 || \
-       guest_ssh "openshell-gateway --version" >/dev/null 2>&1 && \
+    # NOTE: this used to be a single `A || B && C` condition. In bash, &&/||
+    # have equal precedence and evaluate left-to-right, so that actually
+    # meant (A || B) && C — even a directly-successful curl check (A) still
+    # required the journalctl grep (C) to pass, or the whole setup Job would
+    # exit 1 despite the interceptor being genuinely reachable. Split into
+    # explicit branches instead.
+    if curl -sf --max-time 5 "${GOVERNANCE_ENDPOINT}" >/dev/null 2>&1; then
+      INTERCEPTOR_READY=1
+      break
+    fi
+    if guest_ssh "openshell-gateway --version" >/dev/null 2>&1 && \
        guest_ssh "journalctl --user -u openshell-gateway.service --no-pager 2>/dev/null | grep -q 'interceptors initialized'"; then
       INTERCEPTOR_READY=1
       break
