@@ -14,3 +14,4 @@ local-docs/
 # graphify output
 graphify-out/
 ssh-keys/
+charts/saw-bom/scripts/__pycache__/

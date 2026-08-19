@@ -1,0 +1,13 @@
+apiVersion: v2
+name: openclaw-openshell-image
+description: Builds the openclaw-openshell sandbox image via OpenShift BuildConfig and stores it in an ImageStream
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - openclaw
+  - openshell
+  - sandbox
+  - openshift
+  - imagestream
+  - buildconfig

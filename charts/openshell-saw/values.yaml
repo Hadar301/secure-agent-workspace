@@ -44,6 +44,9 @@ vm:
 # Sandbox container image. When empty, auto-detects from the internal registry.
 sandboxImage: ""
 
+# NemoClaw CLI container image. Used to install the nemoclaw CLI on the gateway VM.
+nemoclawCliImage: ""
+
 # Agent to run inside the sandbox: openclaw, hermes, or langchain-deepagents-code
 agent: openclaw
 
@@ -62,14 +65,14 @@ openshell:
   # to restrict access to local VM context only.
   bindAddress: "0.0.0.0"
   # OpenShell binaries installed at provisioning time (not baked into golden image).
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.99-rhaiv.0"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.99-rhaiv.0"
-  version: "0.0.99+rhaiv.0"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.103-rhaiv.0"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.103-rhaiv.0"
+  version: "0.0.103+rhaiv.0"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
-  # gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.99"
-  # supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.99"
-  # version: "0.0.99"
+  # gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.103"
+  # supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.103"
+  # version: "0.0.103"
   # pipIndexUrl: ""
 # Inference provider configuration.
 # Provider keys: gemini, brave, tavily (governed profiles required for each)
@@ -83,6 +86,17 @@ inference:
   # Defaults to "inference" (created by ESO from Vault via values-secret.yaml).
   # The Job reads provider/model/api_key from this secret automatically.
   secretName: "inference"
+
+# Additional per-provider credential secrets to mount for the BOM path
+# (charts/saw-bom), beyond the primary `inference` secret above. Each name
+# here must exactly match a `credentialSecret:` value declared in a BOM
+# profile's providers.yaml — the Job mounts each one dynamically at
+# /ws-secrets/<name>, the same mechanism already used for the inference
+# secret, so a BOM profile's declared secret name is what actually controls
+# resolution (previously this was a single secret hardcoded to the literal
+# name "web-search", ignoring whatever a profile actually declared).
+additionalProviderSecrets:
+  - web-search
 
 # Vertex AI via GCP service account (legacy — optional).
 # When set, the Vertex provider is configured via openshell provider commands
@@ -139,6 +153,9 @@ dashboard:
   # is deployed. Empty = same namespace as this sandbox (the VP-path default,
   # where openshell-keycloak and openshell-saw are co-located).
   keycloakNamespace: ""
+  # Skip TLS verification for the OIDC issuer in oauth2-proxy.
+  # Only enable for dev/lab clusters with self-signed Keycloak certs.
+  insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
 # Deployed as a Kubernetes pod, accessed from VM over the pod network.

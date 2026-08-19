@@ -181,10 +181,16 @@ make keycloak                # Deploy Keycloak (if not via ArgoCD)
 # Create
 make openshell-saw-create OPENSHELL_SAW_NAME=my-saw
 
-# Access
+# Access — NemoClaw sandbox
+OPENSHELL_SAW_NAME=my-saw SANDBOX_NAME=cuda-sandbox make nemoclaw-tui
+OPENSHELL_SAW_NAME=my-saw SANDBOX_NAME=cuda-sandbox GUI_PORT=18789 make nemoclaw-gui
+
+# Access — OpenClaw sandbox
+OPENSHELL_SAW_NAME=my-saw SANDBOX_NAME=notebook make openclaw-tui
+OPENSHELL_SAW_NAME=my-saw SANDBOX_NAME=notebook GUI_PORT=18790 make openclaw-gui
+
+# SSH into a sandbox
 make openshell-saw-ssh OPENSHELL_SAW_NAME=my-saw
-make openshell-saw-tui OPENSHELL_SAW_NAME=my-saw
-make openshell-saw-gui OPENSHELL_SAW_NAME=my-saw
 make login OPENSHELL_SAW_NAME=my-saw
 
 # Monitor

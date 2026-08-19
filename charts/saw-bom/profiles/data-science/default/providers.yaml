@@ -1,0 +1,15 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: data-science
+spec:
+  providers:
+    - name: nvidia
+      type: nvidia
+      nemoclawProvider: build
+      credentialSecret: inference
+      credentialSecretKey: api_key
+    - name: brave
+      type: brave
+      credentialSecret: web-search
+      credentialSecretKey: api_key

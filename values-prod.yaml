@@ -79,6 +79,10 @@ clusterGroup:
       name: governance-interceptor
       namespace: openshell-agents
       path: charts/governance-interceptor
+    saw-bom:
+      name: saw-bom
+      namespace: openshell-agents
+      path: charts/saw-bom
     openshell-saw:
       name: openshell-saw
       namespace: openshell-agents

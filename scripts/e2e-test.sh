@@ -8,7 +8,7 @@
 # Prerequisites:
 #   - oc logged in to the cluster
 #   - OpenShift Virtualization + RHBK operators installed
-#   - Bootc gateway image built (make build-gateway-docker or make build-gateway-podman)
+#   - Bootc gateway image built (make build-openshell-gateway)
 #   - ~/values-secret.yaml with at least one provider API key
 #
 # Usage:
@@ -300,36 +300,6 @@ check "SSH reachable (up to 3 min)" \
       --local-ssh-opts=-oStrictHostKeyChecking=no \
       --local-ssh-opts=-oUserKnownHostsFile=/dev/null \
       --command="echo ssh-ok"
-
-# =============================================================================
-# Wait for setup Job
-# =============================================================================
-step "Wait for setup Job"
-
-# SSH becomes reachable as soon as cloud-init finishes — the setup Job (which
-# installs the openshell CLI, onboards the agent, and starts the dashboard)
-# is a separate, asynchronous Job that can still be running well after that.
-# Wait for it to actually finish before checking anything it's responsible for.
-echo "  Waiting for job/${TEST_SANDBOX}-setup to complete..."
-JOB_DEADLINE=$((SECONDS + 900))
-while true; do
-  JOB_DONE=$(oc get job "${TEST_SANDBOX}-setup" -n "${NS}" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
-  JOB_FAILED=$(oc get job "${TEST_SANDBOX}-setup" -n "${NS}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
-  if [[ "${JOB_DONE}" == "True" ]]; then
-    echo "  Setup Job complete."
-    break
-  fi
-  if [[ "${JOB_FAILED}" == "True" ]]; then
-    echo -e "${RED}FAIL: setup Job failed${NC}"
-    oc logs -n "${NS}" "job/${TEST_SANDBOX}-setup" --tail=50 || true
-    exit 1
-  fi
-  if (( SECONDS > JOB_DEADLINE )); then
-    echo -e "${RED}FAIL: setup Job did not complete within 900s${NC}"
-    exit 1
-  fi
-  sleep 10
-done
 
 # =============================================================================
 # VM health checks
