@@ -97,8 +97,14 @@ if [[ -z "${OIDC_TOKEN:-}" ]]; then
         -d "username=${OWNER}" \
         -d "password=${OWNER}" \
         -d "scope=openid" 2>/dev/null || true)
-      OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-      [[ -n "${OIDC_TOKEN}" ]] && echo "OIDC token obtained for ${OWNER}"
+      OIDC_TOKEN=$(echo "${TOKEN_RESPONSE}" | jq -r '.access_token // empty')
+      if [[ -n "${OIDC_TOKEN}" ]]; then
+        echo "OIDC token obtained for ${OWNER}"
+      else
+        echo "WARNING: OIDC token fetch failed for '${OWNER}': $(echo "${TOKEN_RESPONSE}" | jq -r '.error_description // .error // "no response / unparseable response"')"
+      fi
+    else
+      echo "WARNING: could not read secret ${KEYCLOAK_NAME}-initial-admin in namespace ${KEYCLOAK_NS} — skipping OIDC token fetch. Check dashboard.keycloakNamespace if Keycloak isn't co-located with this sandbox."
     fi
   fi
 fi

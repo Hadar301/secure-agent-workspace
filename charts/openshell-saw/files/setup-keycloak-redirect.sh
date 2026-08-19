@@ -21,10 +21,13 @@ KC_ADMIN_PASS="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KEYCLOAK_NS}" -o 
 KC_BASE="$(echo "${OIDC_ISSUER:-${OIDC_ISSUER_URL}}" | sed 's#/realms/.*##')"
 if [[ -n "${KC_ADMIN_USER}" && -n "${KC_BASE}" ]]; then
   echo "Registering redirect URI on Keycloak client '${DASHBOARD_CLIENT_ID}'..."
-  KC_ADMIN_TOKEN="$(curl -sk -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
+  KC_TOKEN_RESPONSE="$(curl -sk -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
     -d "grant_type=password" -d "client_id=admin-cli" \
-    -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASS}" \
-    | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+    -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASS}")"
+  KC_ADMIN_TOKEN="$(echo "${KC_TOKEN_RESPONSE}" | jq -r '.access_token // empty')"
+  if [[ -z "${KC_ADMIN_TOKEN}" ]]; then
+    echo "WARNING: Keycloak admin token fetch failed: $(echo "${KC_TOKEN_RESPONSE}" | jq -r '.error_description // .error // "no response / unparseable response"')"
+  fi
   if [[ -n "${KC_ADMIN_TOKEN}" ]]; then
     CLIENT_UUID="$(curl -sk -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
       "${KC_BASE}/admin/realms/${OIDC_REALM}/clients?clientId=${DASHBOARD_CLIENT_ID}" \
