@@ -87,6 +87,17 @@ inference:
   # The Job reads provider/model/api_key from this secret automatically.
   secretName: "inference"
 
+# Additional per-provider credential secrets to mount for the BOM path
+# (charts/saw-bom), beyond the primary `inference` secret above. Each name
+# here must exactly match a `credentialSecret:` value declared in a BOM
+# profile's providers.yaml — the Job mounts each one dynamically at
+# /ws-secrets/<name>, the same mechanism already used for the inference
+# secret, so a BOM profile's declared secret name is what actually controls
+# resolution (previously this was a single secret hardcoded to the literal
+# name "web-search", ignoring whatever a profile actually declared).
+additionalProviderSecrets:
+  - web-search
+
 # Vertex AI via GCP service account (legacy — optional).
 # When set, the Vertex provider is configured via openshell provider commands
 # before nemoclaw onboard runs.

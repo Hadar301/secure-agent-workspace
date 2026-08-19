@@ -57,14 +57,20 @@ for file in ${BOM_MOUNT}/*; do
     _flush_prov() {
       if [[ -n "${cur_name:-}" && -n "${cur_secret:-}" ]]; then
         skey="${cur_key:-api_key}"
-        for spath in "/ws-secrets/${cur_secret}/${skey}" "/search-secret/${skey}"; do
-          if [[ -f "${spath}" ]]; then
-            env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
-            echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
-            echo "  Resolved: ${cur_name}"
-            break
-          fi
-        done
+        # Every credentialSecret a BOM profile declares is mounted dynamically
+        # at /ws-secrets/<name> (see job-setup.yaml's additionalProviderSecrets
+        # loop) — this used to also fall back to a hardcoded /search-secret
+        # path regardless of the declared name, which silently broke if a
+        # tenant renamed their secret; that path is gone now, the declared
+        # name is what actually controls resolution.
+        spath="/ws-secrets/${cur_secret}/${skey}"
+        if [[ -f "${spath}" ]]; then
+          env_var="$(echo "PROV_${cur_name}_KEY" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+          echo "${env_var}=$(cat "${spath}")" >> "${BOM_ENV}"
+          echo "  Resolved: ${cur_name}"
+        else
+          echo "  WARNING: credential for provider '${cur_name}' not found at ${spath} — is '${cur_secret}' listed in additionalProviderSecrets (openshell-saw values) or is it the primary inference.secretName?"
+        fi
       fi
     }
     cur_name="" ; cur_secret="" ; cur_key=""
