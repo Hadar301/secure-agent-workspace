@@ -81,7 +81,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell \
+        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
@@ -115,13 +115,18 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
 
-build-openclaw-openshell: ## Build the openclaw-openshell sandbox image and push to quay
+build-openclaw-openshell: build-openclaw-openshell-local ## Build the openclaw-openshell sandbox image and push to quay
+	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-openclaw-openshell-local: ## Build the openclaw-openshell sandbox image into this cluster's internal registry only (no quay push access needed)
 	-@oc delete is openclaw-openshell -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install openclaw-openshell-image $(HELM_DIR)openclaw-openshell-image \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build openclaw-openshell -n $(BUILD_NS) --follow
-	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
+	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/openclaw-openshell:latest"
+	@echo "Point a BOM profile's sandbox image at that path and enable internalRegistry.allowAnonymousPull"
+	@echo "(see charts/openshell-saw/values.yaml) if you don't have quay push access."
 
 # --- Governance interceptor image ---
 

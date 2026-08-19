@@ -44,6 +44,26 @@ vm:
 # Sandbox container image. When empty, auto-detects from the internal registry.
 sandboxImage: ""
 
+# If you don't have push access to the quay.io registry referenced by a BOM
+# profile's sandbox image (e.g. the default openclaw profile points at
+# quay.io/rh-ai-quickstart/openclaw-openshell:latest), build it yourself
+# into this cluster's own internal registry instead:
+#   make build-openclaw-openshell-local
+# then point the BOM profile's sandbox image at:
+#   image-registry.openshift-image-registry.svc.cluster.local:5000/<namespace>/openclaw-openshell:latest
+# (must be the fully-qualified "...svc.cluster.local" form — the sandbox
+# VM's systemd-resolved doesn't apply search-domain suffixing to
+# multi-label hostnames the way a pod's glibc resolver does, so the short
+# "...svc:5000" form used elsewhere in this chart won't resolve there).
+# The sandbox VM's Docker daemon is external to the cluster (no
+# ServiceAccount pull secret), so also enable anonymous pull below.
+internalRegistry:
+  # Grants system:image-puller to system:unauthenticated, scoped to this
+  # namespace only, so the sandbox VM's Docker daemon can pull
+  # internally-built images without credentials. Off by default since it's
+  # only needed for the internal-registry fallback above.
+  allowAnonymousPull: false
+
 # NemoClaw CLI container image. Used to install the nemoclaw CLI on the gateway VM.
 nemoclawCliImage: ""
 
