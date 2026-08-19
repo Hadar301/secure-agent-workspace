@@ -39,26 +39,6 @@ spec:
       COPY --from=builder /opt/nemoclaw/tsconfig.runtime-preloads.json ./tsconfig.runtime-preloads.json
       # Patch inference route parser to match both "Gateway inference:" and "Inference:" output formats
       RUN sed -i 's|/\^Gateway inference:\\\\s\*\$/i|/^(Gateway )?[Ii]nference:\\s*$/i|' ./dist/lib/inference/config.js
-      # Skip binary marker scan — OpenShell builds do not embed the hyphen-form
-      # capability strings (request-body-credential-rewrite etc.) that this gate
-      # looks for. The actual MCP policy enforcement runs in the supervisor at
-      # runtime regardless of this preflight check.
-      #
-      # NOTE (verified during PR review): attempted to empirically confirm this
-      # by temporarily reverting this patch and running `nemoclaw onboard`
-      # directly. It never reached this check either way — onboarding fails
-      # earlier, at "[1/8] Preflight checks", with a *different*, blocking
-      # finding: "The Docker storage configuration cannot support nested
-      # overlay mounts" (host.docker.storage_incompatible in nemoclaw's
-      # readiness/host.js). This happened identically in the WORKING deploy
-      # too — the "nemoclaw onboard" step for cuda-sandbox failed at the same
-      # spot, and apply_bom.py's fallback (manual `openshell provider create`)
-      # is what actually made that sandbox work. So: this bypass's own
-      # justification remains unverified either way in this environment —
-      # nemoclaw's real onboarding path has never actually been exercised
-      # here at all. Worth investigating the nested-overlay preflight
-      # separately; it may be blocking more than just this specific check.
-      RUN sed -i 's/function hasRequiredOpenshellMessagingFeatures(options)/function hasRequiredOpenshellMessagingFeatures(options) { return true; } function _unused_hasRequiredOpenshellMessagingFeatures(options)/' ./dist/lib/onboard/openshell-feature-gate.js
       ENTRYPOINT ["node", "/opt/nemoclaw/bin/nemoclaw.js"]
   strategy:
     type: Docker
