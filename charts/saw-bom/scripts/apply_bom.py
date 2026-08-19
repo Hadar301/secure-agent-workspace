@@ -776,7 +776,13 @@ def main():
     # --- Phase 4: Verify ---
     if not args.dry_run:
         verifier = Verifier(sh)
-        verifier.verify_profiles(profiles)
+        ok = verifier.verify_profiles(profiles)
+        if not ok:
+            # Without this, the setup Job reports "Complete" even when the
+            # BOM apply only partially succeeded — verified live: a run with
+            # 9 passed / 1 failed still showed Job status Complete, with the
+            # only signal being "STATUS: INCOMPLETE" buried in the full log.
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
