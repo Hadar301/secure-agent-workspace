@@ -128,8 +128,7 @@ echo "OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-openshell-cli}" >> "${BOM_ENV}"
 echo "OPENSHELL_GATEWAY=${OPENSHELL_GATEWAY:-openshell}" >> "${BOM_ENV}"
 
 # Nemoclaw CLI image
-REGISTRY_ROUTE="$(kubectl get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || true)"
-if [[ -n "${REGISTRY_ROUTE}" && -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
+if [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
   echo "NEMOCLAW_CLI_IMAGE=${NEMOCLAW_CLI_IMAGE}" >> "${BOM_ENV}"
 fi
 
@@ -146,7 +145,7 @@ guest_ssh "
     --profiles-dir ${BOM_DIR} \
     --oidc-gateway \${OPENSHELL_GATEWAY:-openshell} \
     --mtls-gateway openshell-local \
-    --nemoclaw-cli-image \${NEMOCLAW_CLI_IMAGE:-} \
+    --nemoclaw-cli-image \"\${NEMOCLAW_CLI_IMAGE:-}\" \
     --dashboard-route '${DASHBOARD_ROUTE_HOST}'
 " 2>&1
 
