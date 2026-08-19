@@ -81,7 +81,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs generate-keys \
-        build-nemoclaw build-nemoclaw-cli \
+        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
@@ -114,6 +114,14 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-openclaw-openshell: ## Build the openclaw-openshell sandbox image and push to quay
+	-@oc delete is openclaw-openshell -n $(BUILD_NS) 2>/dev/null
+	helm upgrade --install openclaw-openshell-image $(HELM_DIR)openclaw-openshell-image \
+		--namespace $(BUILD_NS) --create-namespace
+	oc start-build openclaw-openshell -n $(BUILD_NS) --follow
+	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 # --- Governance interceptor image ---
 
