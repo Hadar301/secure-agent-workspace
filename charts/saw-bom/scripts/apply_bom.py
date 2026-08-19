@@ -227,6 +227,23 @@ def resolve_credential(provider):
     return None
 
 
+def find_provider(ws, names):
+    """Look up a provider by name from a sandbox's own declared providers list.
+
+    Falls back to the first workspace provider only if the sandbox didn't
+    declare any (or none of its declared names match) — previously this
+    fallback was the *only* behavior, silently ignoring `sandbox.providers`
+    entirely and wiring up whatever happened to be first in the workspace's
+    provider list (e.g. attaching a web-search credential as if it were an
+    LLM provider, if that provider happened to be declared first).
+    """
+    for name in names or []:
+        for p in ws.providers:
+            if p.name == name:
+                return p
+    return ws.providers[0] if ws.providers else None
+
+
 # ---------------------------------------------------------------------------
 # Gateway setup
 # ---------------------------------------------------------------------------
@@ -720,7 +737,7 @@ def main():
                             ["sudo", "docker", "pull", sb.image],
                             check=False)
 
-                    prov = ws.providers[0] if ws.providers else None
+                    prov = find_provider(ws, sb.providers)
                     cred = resolve_credential(prov) if prov else None
                     if prov and cred:
                         nc_prov = prov.nemoclaw_provider or prov.type
@@ -743,7 +760,7 @@ def main():
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
-                    prov = ws.providers[0] if ws.providers else None
+                    prov = find_provider(ws, sb.providers)
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
                     deployer.start_openclaw_gateway(
