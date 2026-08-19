@@ -207,9 +207,43 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 		echo "All images mirrored (tag: $(OPENSHELL_VERSION), also tagged as :latest)."; \
 	fi
 
-# Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
-# (openshell-gateway-image app). For manual flow, run: make copy-images
+# Clean stale operator CRDs from a previous install that block reinstallation.
+# CNV leaves CRDs with broken conversion webhooks; RHBK CSV races the OperatorGroup.
+# Safe to run on a clean cluster (no-ops if nothing stale exists).
+clean-stale-operators:
+	@echo "Cleaning stale operator CRDs (if any)..."
+	@for crd in $$(oc get crd 2>/dev/null | grep -E 'kubevirt|hco|cdi|aaq|hpp|ssp|cnao' | awk '{print $$1}'); do \
+		oc patch crd "$$crd" --type json -p '[{"op":"replace","path":"/spec/conversion","value":{"strategy":"None"}}]' 2>/dev/null || true; \
+		oc delete crd "$$crd" 2>/dev/null || true; \
+	done
+	@for app in $$(oc get application -n vp-gitops -o name 2>/dev/null); do \
+		oc patch $$app -n vp-gitops --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	done
+	@echo "Stale operator cleanup done."
+
+# Delete VMs, HyperConverged CR, and operator CRDs before uninstall so
+# ArgoCD doesn't get stuck on webhook finalizers. Then clean stale state.
+pre-uninstall:
+	@echo "Pre-uninstall: deleting VMs and CNV resources..."
+	-@oc delete vm --all -n $(NS) --wait=false 2>/dev/null
+	-@oc delete dv --all -n $(NS) --wait=false 2>/dev/null
+	-@oc delete job --all -n $(NS) --wait=false 2>/dev/null
+	-@oc delete hyperconverged --all -n openshift-cnv --wait=false 2>/dev/null
+	@echo "Waiting for VMs to terminate..."
+	-@sleep 15
+	$(MAKE) clean-stale-operators
+
+# Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
+
+# Override Makefile-common's uninstall to handle missing pattern CR gracefully.
+uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
+	@if oc get patterns secure-agent-workspace -n patterns-operator >/dev/null 2>&1; then \
+		$(ANSIBLE_RUN) rhvp.cluster_utils.uninstall; \
+	else \
+		echo "Pattern CR not found — already uninstalled. Cleaning up namespace..."; \
+		oc delete ns $(NS) --wait=false 2>/dev/null || true; \
+	fi
 
 # Clean up a single sandbox's heavy resources before uninstall to prevent
 # finalizer hangs. VMs and DataVolumes take time to terminate and block
