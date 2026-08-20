@@ -746,9 +746,18 @@ def main():
             if enabled_provs:
                 section(f"Providers ({len(enabled_provs)}) "
                         f"in workspace '{ws.name}'")
+                inference_set = False
                 for prov in enabled_provs:
                     cred = resolve_credential(prov)
                     deployer.create_provider(prov, cred, ws.name)
+                    if not inference_set and prov.model:
+                        log(f"  Setting inference route: "
+                            f"provider={prov.name} model={prov.model}")
+                        sh.run(["openshell", "inference", "set",
+                                "--provider", prov.name,
+                                "--model", prov.model,
+                                "--no-verify"], check=False)
+                        inference_set = True
 
             # Create sandboxes
             nemoclaw_cli_installed = False
