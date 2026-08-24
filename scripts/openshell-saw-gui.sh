@@ -6,6 +6,7 @@ set -euo pipefail
 
 GATEWAY_NAME="${GATEWAY_NAME:?GATEWAY_NAME is required}"
 SANDBOX_NAME="${SANDBOX_NAME:-${OPENSHELL_SAW_NAME:-${GATEWAY_NAME}}}"
+WORKSPACE="${WORKSPACE:-default}"
 GUI_PORT="${GUI_PORT:-18789}"
 SSH_USER="${SSH_USER:-sandbox}"
 
@@ -23,13 +24,13 @@ fi
 
 # Fetch dashboard token via openshell sandbox exec
 echo "Fetching dashboard token..."
-TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --workspace "${WORKSPACE}" --no-tty -- \
   cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
   | grep -v 'TLS certificate verification is disabled' \
   | python3 -c "import sys,json; c=json.load(sys.stdin); print((c.get('gateway',{}).get('auth',{}).get('token','')))" 2>/dev/null | grep -oE '^[a-f0-9]+$' || true)
 
 if [[ -z "${TOKEN}" ]]; then
-  TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+  TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --workspace "${WORKSPACE}" --no-tty -- \
     cat /tmp/auth-token 2>/dev/null | grep -oE '[a-f0-9]{32,}' || true)
 fi
 
@@ -47,9 +48,9 @@ echo "Press Ctrl-C to stop."
 echo ""
 
 # Port-forward via openshell ssh-proxy — uses local OIDC token
-ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME}" \
+ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME} --workspace ${WORKSPACE}" \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   -o LogLevel=ERROR \
   -L "${GUI_PORT}:127.0.0.1:18789" \
-  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.default"
+  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.${WORKSPACE}"
