@@ -419,7 +419,7 @@ nemoclaw-tui: .check-saw-name ## Launch NemoClaw TUI (e.g. make nemoclaw-tui SAN
 	fi; \
 	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)' workspace '$(WORKSPACE)'."; exit 1; fi; \
 	echo "Connecting to sandbox '$$SANDBOX' workspace '$(WORKSPACE)' (nemoclaw)..."; \
-	ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $$SANDBOX " \
+	ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $$SANDBOX --workspace $(WORKSPACE) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
@@ -447,7 +447,7 @@ nemoclaw-gui: .check-saw-name ## Open NemoClaw web UI (e.g. make nemoclaw-gui SA
 	fi; \
 	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found."; exit 1; fi; \
 	SANDBOX_NAME=$$SANDBOX GATEWAY_NAME=$(OPENSHELL_SAW_NAME) \
-	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/openshell-saw-gui.sh
+	WORKSPACE=$(WORKSPACE) GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/openshell-saw-gui.sh
 
 openclaw-gui: .check-saw-name ## Open OpenClaw web UI (e.g. make openclaw-gui SANDBOX_NAME=notebook GUI_PORT=28789)
 	@if [ -n "$(SANDBOX_NAME)" ]; then \
