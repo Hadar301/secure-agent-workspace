@@ -44,7 +44,10 @@ jobs:
         id: params
         run: |
           VALUES="image-builder-charts/helm/openshell-gateway-image/values.yaml"
-          echo "fedora_cloud=$(yq '.build.fedoraCloud' "$VALUES")" \
+          FEDORA_CLOUD="$(yq -r '.build.fedoraCloud' "$VALUES")"
+          echo "fedora_cloud=${FEDORA_CLOUD}" \
+            >> "$GITHUB_OUTPUT"
+          echo "fedora_cache_key=$(printf '%s' "${FEDORA_CLOUD}" | sha256sum | cut -c1-16)" \
             >> "$GITHUB_OUTPUT"
 
       # Runner requirement: GitHub-hosted ubuntu-latest with KVM enabled.
@@ -69,7 +72,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: fedora-base.qcow2
-          key: fedora-cloud-44-1.7-x86_64
+          key: fedora-cloud-${{ steps.params.outputs.fedora_cache_key }}
 
       - name: Download Fedora Cloud base image
         if: steps.fedora-cache.outputs.cache-hit != 'true'
@@ -422,7 +425,7 @@ jobs:
         with:
           context: .
           file: image-builder-charts/helm/openshell-gateway-image/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner }}/${{ matrix.image_name }}:latest
             ghcr.io/${{ steps.meta.outputs.owner }}/${{ matrix.image_name }}:sha-${{ github.sha }}

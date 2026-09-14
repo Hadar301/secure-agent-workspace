@@ -23,7 +23,8 @@ COPY --from=builder /opt/nemoclaw/nemoclaw/dist/ ./nemoclaw/dist/
 COPY --from=builder /opt/nemoclaw/agents/ ./agents/
 COPY --from=builder /opt/nemoclaw/scripts/ ./scripts/
 COPY --from=builder /opt/nemoclaw/nemoclaw-blueprint/ ./nemoclaw-blueprint/
-RUN sed -i "s/max_openshell_version: \"0.0.85\"/max_openshell_version: \"${MAX_OPENSHELL_VERSION}\"/" ./nemoclaw-blueprint/blueprint.yaml
+RUN sed -i "s/max_openshell_version: \"[^\"]*\"/max_openshell_version: \"${MAX_OPENSHELL_VERSION}\"/" ./nemoclaw-blueprint/blueprint.yaml \
+    && grep -Fq "max_openshell_version: \"${MAX_OPENSHELL_VERSION}\"" ./nemoclaw-blueprint/blueprint.yaml
 COPY --from=builder /opt/nemoclaw/schemas/ ./schemas/
 COPY --from=builder /opt/nemoclaw/Dockerfile ./Dockerfile
 COPY --from=builder /opt/nemoclaw/tsconfig.runtime-preloads.json ./tsconfig.runtime-preloads.json

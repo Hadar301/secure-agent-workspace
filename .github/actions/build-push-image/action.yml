@@ -52,7 +52,7 @@ runs:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         build-args: ${{ inputs.build_args }}
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         tags: |
           ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:latest
           ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}
