@@ -150,3 +150,16 @@ guest_ssh "
 " 2>&1
 
 echo "BOM profiles applied."
+
+# Keep sandbox sessions alive so they remain in Ready phase after the
+# setup job pod exits. The nohup exec on the VM is SIGHUP-immune and
+# outlives the setup job container.
+echo "Starting persistent sandbox sessions on vm/${VM_NAME}..."
+ws_list="$(guest_ssh "openshell workspace list" | awk 'NR>1 && NF {print $1}')"
+for ws in ${ws_list}; do
+  sb_list="$(guest_ssh "openshell sandbox list --workspace ${ws}" | awk 'NR>1 && NF {print $1}')"
+  for sb in ${sb_list}; do
+    echo "  Keeping sandbox '${sb}' (workspace: ${ws}) alive..."
+    guest_ssh "nohup openshell sandbox exec -n ${sb} --workspace ${ws} --no-tty -- sleep infinity >/dev/null 2>&1 &"
+  done
+done

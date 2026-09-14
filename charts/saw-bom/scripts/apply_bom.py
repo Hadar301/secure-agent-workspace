@@ -616,17 +616,6 @@ class WorkspaceDeployer:
                 ], check=False)
                 if rc == 0 and "ok" in out:
                     log("openclaw gateway ready")
-                    # Keep sandbox in Ready phase after apply_bom.py exits.
-                    # Runs on the VM so it outlives the setup job pod.
-                    # Follows the gateway log — exits naturally when gateway stops.
-                    self.sh.run(
-                        ["bash", "-c",
-                         f"nohup openshell sandbox exec -n {sandbox_name}"
-                         + (f" --workspace {workspace_name}"
-                            if workspace_name != "default" else "")
-                         + " --no-tty -- tail -f /tmp/openclaw-gateway.log"
-                           " >/dev/null 2>&1 &"],
-                        check=False)
                     return
                 log(f"  waiting for openclaw gateway... (attempt {i+1})")
                 time.sleep(3)
