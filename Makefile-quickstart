@@ -265,6 +265,10 @@ pre-uninstall:
 	-@oc delete dv --all -n $(NS) --wait=false 2>/dev/null
 	-@oc delete job --all -n $(NS) --wait=false 2>/dev/null
 	-@oc delete hyperconverged --all -n openshift-cnv --wait=false 2>/dev/null
+	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
+	-@oc delete subscription kubevirt-hyperconverged -n openshift-cnv --wait=false 2>/dev/null
+	-@oc delete csv --all -n openshift-cnv --wait=false 2>/dev/null
+	-@oc delete installplan --all -n openshift-cnv --wait=false 2>/dev/null
 	@echo "Waiting for VMs to terminate..."
 	-@sleep 15
 	$(MAKE) clean-stale-operators
