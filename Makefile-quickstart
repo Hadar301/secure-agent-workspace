@@ -264,12 +264,10 @@ clean-stale-operators:
 # immediately recreates the Subscription we just deleted.
 pre-uninstall:
 	@echo "Pre-uninstall: deleting VMs and CNV resources..."
-	-@oc delete vm --all -n $(NS) --wait=false 2>/dev/null
-	-@oc delete dv --all -n $(NS) --wait=false 2>/dev/null
-	-@oc delete job --all -n $(NS) --wait=false 2>/dev/null
-	-@oc delete hyperconverged --all -n openshift-cnv --wait=false 2>/dev/null
-	@echo "Waiting for VMs and HyperConverged finalizers to clear..."
-	-@sleep 15
+	oc delete vm,dv,job --all -n $(NS) --wait=false --ignore-not-found=true
+	@echo "Waiting for VMIs to terminate..."
+	oc wait --for=delete vmi --all -n $(NS) --timeout=120s
+	oc delete hyperconverged --all -n openshift-cnv --wait=false --ignore-not-found=true
 	$(MAKE) clean-stale-operators
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
@@ -284,12 +282,10 @@ uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
 		$(ANSIBLE_RUN) rhvp.cluster_utils.uninstall; \
 	else \
 		echo "Pattern CR not found — already uninstalled. Cleaning up namespace..."; \
-		oc delete ns $(NS) --wait=false 2>/dev/null || true; \
+		oc delete ns $(NS) --wait=false --ignore-not-found=true; \
 	fi
 	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
-	-@oc delete subscription kubevirt-hyperconverged -n openshift-cnv --wait=false
-	-@oc delete csv --all -n openshift-cnv --wait=false
-	-@oc delete installplan --all -n openshift-cnv --wait=false
+	oc delete subscription,csv,installplan --all -n openshift-cnv --wait=false --ignore-not-found=true
 
 # Clean up a single sandbox's heavy resources before uninstall to prevent
 # finalizer hangs. VMs and DataVolumes take time to terminate and block
