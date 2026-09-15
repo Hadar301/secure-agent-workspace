@@ -625,27 +625,26 @@ class WorkspaceDeployer:
                     service = f"openshell-sandbox-{sandbox_name}"
                     ws_flag = (f"--workspace {workspace_name}"
                                if workspace_name != "default" else "")
+                    user = "cloud-user"
                     svc = (
                         f"[Unit]\n"
                         f"Description=OpenShell sandbox keep-alive "
                         f"for {sandbox_name}\n\n"
-                        f"[Service]\nType=simple\n"
-                        f"ExecStart=/bin/bash -c 'PATH=$PATH:$HOME/.local/bin"
+                        f"[Service]\nType=simple\nUser={user}\n"
+                        f"ExecStart=/bin/bash -c 'PATH=$PATH:/home/{user}/.local/bin"
                         f" openshell sandbox exec -n {sandbox_name}"
                         f" {ws_flag} --no-tty -- sleep infinity'\n"
                         f"Restart=always\nRestartSec=5\n\n"
-                        f"[Install]\nWantedBy=default.target\n"
+                        f"[Install]\nWantedBy=multi-user.target\n"
                     )
                     encoded = base64.b64encode(svc.encode()).decode()
                     self.sh.run([
                         "bash", "-c",
-                        f"sudo loginctl enable-linger $(whoami) && "
-                        f"mkdir -p ~/.config/systemd/user && "
                         f"echo '{encoded}' | base64 -d"
-                        f" > ~/.config/systemd/user/{service}.service && "
-                        f"systemctl --user daemon-reload && "
-                        f"systemctl --user enable {service} && "
-                        f"systemctl --user start {service}"
+                        f" | sudo tee /etc/systemd/system/{service}.service && "
+                        f"sudo systemctl daemon-reload && "
+                        f"sudo systemctl enable {service} && "
+                        f"sudo systemctl start {service}"
                     ], check=False)
                     return
                 log(f"  waiting for openclaw gateway... (attempt {i+1})")
