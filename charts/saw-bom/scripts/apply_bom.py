@@ -639,7 +639,7 @@ class WorkspaceDeployer:
                     encoded = base64.b64encode(svc.encode()).decode()
                     self.sh.run([
                         "bash", "-c",
-                        f"loginctl enable-linger $(whoami) && "
+                        f"sudo loginctl enable-linger $(whoami) && "
                         f"mkdir -p ~/.config/systemd/user && "
                         f"echo '{encoded}' | base64 -d"
                         f" > ~/.config/systemd/user/{service}.service && "
