@@ -3,5 +3,4 @@ kind: HyperConverged
 metadata:
   name: kubevirt-hyperconverged
   namespace: openshift-cnv
-spec:
-  featureGates: []
+spec: {}
