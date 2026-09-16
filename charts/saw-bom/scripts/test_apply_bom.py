@@ -239,18 +239,35 @@ def test_parse_profiles_reads_url_from_yaml(tmp_path):
     assert p.url == "https://vllm.example.com/v1"
 
 
-def test_parse_profiles_reads_url_from_env(monkeypatch, tmp_path):
+def test_parse_profiles_reads_url_from_env_when_urlsecretkey_declared(monkeypatch, tmp_path):
     monkeypatch.setenv("PROV_CUSTOM_URL", "https://env-vllm.example.com/v1")
     _write_profile(
         tmp_path,
         providers_yaml={"spec": {"providers": [
             {"name": "custom", "type": "custom",
-             "credentialSecret": "inference", "credentialSecretKey": "api_key"},
+             "credentialSecret": "inference", "credentialSecretKey": "api_key",
+             "urlSecretKey": "url"},
         ]}},
     )
     profiles = parse_profiles(tmp_path)
     p = profiles[0].workspaces[0].providers[0]
     assert p.url == "https://env-vllm.example.com/v1"
+
+
+def test_parse_profiles_no_url_from_env_without_urlsecretkey(monkeypatch, tmp_path):
+    # Providers without urlSecretKey must NOT pick up PROV_{name}_URL even if
+    # the env var is set — prevents the vLLM URL leaking onto nvidia providers.
+    monkeypatch.setenv("PROV_NVIDIA_URL", "https://should-not-apply.example.com/v1")
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "nvidia", "type": "nvidia",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key"},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    p = profiles[0].workspaces[0].providers[0]
+    assert p.url == ""
 
 
 def test_parse_profiles_yaml_url_takes_precedence_over_env(monkeypatch, tmp_path):
@@ -260,6 +277,7 @@ def test_parse_profiles_yaml_url_takes_precedence_over_env(monkeypatch, tmp_path
         providers_yaml={"spec": {"providers": [
             {"name": "custom", "type": "custom",
              "credentialSecret": "inference", "credentialSecretKey": "api_key",
+             "urlSecretKey": "url",
              "url": "https://yaml-vllm.example.com/v1"},
         ]}},
     )

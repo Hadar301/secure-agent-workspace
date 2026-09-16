@@ -9,5 +9,4 @@ spec:
       nemoclawProvider: openrouter
       credentialSecret: inference
       credentialSecretKey: api_key
-      # url is resolved at runtime from PROV_CUSTOM_URL env var,
-      # which setup-bom-profiles.sh populates from /ws-secrets/inference/url.
+      urlSecretKey: url

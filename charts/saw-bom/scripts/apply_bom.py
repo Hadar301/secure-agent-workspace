@@ -171,8 +171,14 @@ def parse_profiles(profiles_dir):
                 prov_data = load_yaml_file(prov_file)
                 for p in prov_data.get("spec", {}).get("providers", []):
                     pname = p["name"]
+                    # URL comes from the env var only when urlSecretKey was
+                    # declared in providers.yaml — setup-bom-profiles.sh sets
+                    # PROV_{NAME}_URL only for providers with urlSecretKey,
+                    # preventing the URL from leaking to unrelated providers.
                     url_env = f"PROV_{pname}_URL".replace("-", "_").upper()
-                    url = p.get("url", "") or os.environ.get(url_env, "")
+                    url = (p.get("url", "") or
+                           (os.environ.get(url_env, "")
+                            if p.get("urlSecretKey") else ""))
                     ws.providers.append(Provider(
                         name=pname,
                         type=p["type"],

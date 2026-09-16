@@ -76,14 +76,17 @@ for file in ${BOM_MOUNT}/*; do
             type_env_var="$(echo "PROV_${cur_name}_TYPE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
             echo "${type_env_var}=$(cat "${ppath}")" >> "${BOM_ENV}"
           fi
-          # Surface the secret's own "url" field if present, so apply_bom.py
-          # can pass a custom base URL to openshell provider create.
-          upath="/ws-secrets/${cur_secret}/url"
-          if [[ -f "${upath}" ]]; then
-            url_val="$(cat "${upath}")"
-            if [[ -n "${url_val}" ]]; then
-              url_env_var="$(echo "PROV_${cur_name}_URL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
-              echo "${url_env_var}=${url_val}" >> "${BOM_ENV}"
+          # Only write PROV_{name}_URL when the provider explicitly declares
+          # urlSecretKey — prevents propagating vLLM URLs to unrelated providers
+          # (e.g. nvidia) that happen to share the same credential secret.
+          if [[ -n "${cur_url_key:-}" ]]; then
+            upath="/ws-secrets/${cur_secret}/${cur_url_key}"
+            if [[ -f "${upath}" ]]; then
+              url_val="$(cat "${upath}")"
+              if [[ -n "${url_val}" ]]; then
+                url_env_var="$(echo "PROV_${cur_name}_URL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+                echo "${url_env_var}=${url_val}" >> "${BOM_ENV}"
+              fi
             fi
           fi
         else
@@ -91,16 +94,18 @@ for file in ${BOM_MOUNT}/*; do
         fi
       fi
     }
-    cur_name="" ; cur_secret="" ; cur_key=""
+    cur_name="" ; cur_secret="" ; cur_key="" ; cur_url_key=""
     while IFS= read -r line; do
       if echo "${line}" | grep -q '^\s*- name:'; then
         _flush_prov
         cur_name="$(echo "${line}" | sed 's/.*name: *//' | tr -d '"' | tr -d "'")"
-        cur_secret="" ; cur_key=""
+        cur_secret="" ; cur_key="" ; cur_url_key=""
       elif echo "${line}" | grep -q 'credentialSecretKey:'; then
         cur_key="$(echo "${line}" | sed 's/.*credentialSecretKey: *//' | tr -d '"' | tr -d "'")"
       elif echo "${line}" | grep -q 'credentialSecret:'; then
         cur_secret="$(echo "${line}" | sed 's/.*credentialSecret: *//' | tr -d '"' | tr -d "'")"
+      elif echo "${line}" | grep -q 'urlSecretKey:'; then
+        cur_url_key="$(echo "${line}" | sed 's/.*urlSecretKey: *//' | tr -d '"' | tr -d "'")"
       fi
     done < "$file"
     _flush_prov
