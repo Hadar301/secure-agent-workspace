@@ -275,6 +275,9 @@ pre-uninstall:
 			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
 	done
 	-oc delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
+	@echo "Pre-uninstall: removing ESO webhook configs to prevent namespace termination deadlock..."
+	-oc delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	-oc delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
