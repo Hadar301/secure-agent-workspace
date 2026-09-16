@@ -76,6 +76,16 @@ for file in ${BOM_MOUNT}/*; do
             type_env_var="$(echo "PROV_${cur_name}_TYPE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
             echo "${type_env_var}=$(cat "${ppath}")" >> "${BOM_ENV}"
           fi
+          # Surface the secret's own "url" field if present, so apply_bom.py
+          # can pass a custom base URL to openshell provider create.
+          upath="/ws-secrets/${cur_secret}/url"
+          if [[ -f "${upath}" ]]; then
+            url_val="$(cat "${upath}")"
+            if [[ -n "${url_val}" ]]; then
+              url_env_var="$(echo "PROV_${cur_name}_URL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+              echo "${url_env_var}=${url_val}" >> "${BOM_ENV}"
+            fi
+          fi
         else
           echo "  WARNING: credential for provider '${cur_name}' not found at ${spath} — is '${cur_secret}' listed in additionalProviderSecrets (openshell-saw values) or is it the primary inference.secretName?"
         fi

@@ -1,0 +1,13 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: data-science
+spec:
+  providers:
+    - name: custom
+      type: custom
+      nemoclawProvider: openrouter
+      credentialSecret: inference
+      credentialSecretKey: api_key
+      # url is resolved at runtime from PROV_CUSTOM_URL env var,
+      # which setup-bom-profiles.sh populates from /ws-secrets/inference/url.
