@@ -75,6 +75,9 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+      helmOverrides:
+        - name: customEndpointHost
+          value: "vllm-tinyllama-vllm-test.apps.cluster-mw7rz.dyn.redhatworkshops.io"
     governance-interceptor:
       name: governance-interceptor
       namespace: openshell-agents
