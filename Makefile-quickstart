@@ -269,6 +269,12 @@ pre-uninstall:
 	oc wait --for=delete vmi --all -n $(NS) --timeout=120s
 	oc delete hyperconverged --all -n openshift-cnv --wait=false --ignore-not-found=true
 	$(MAKE) clean-stale-operators
+	@echo "Pre-uninstall: removing ArgoCD app finalizers to prevent hub-deletion deadlock..."
+	@for app in $$(oc get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
+		oc patch $$app -n vp-gitops --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	done
+	-oc delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
