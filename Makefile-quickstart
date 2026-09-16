@@ -267,7 +267,13 @@ pre-uninstall:
 	oc delete vm,dv,job --all -n $(NS) --wait=false --ignore-not-found=true
 	@echo "Waiting for VMIs to terminate..."
 	oc wait --for=delete vmi --all -n $(NS) --timeout=120s
-	oc delete hyperconverged --all -n openshift-cnv --wait=false --ignore-not-found=true
+	@echo "Removing HyperConverged CR (must be fully gone before OLM reinstall to avoid schema conflicts)..."
+	-oc delete hyperconverged --all -n openshift-cnv --ignore-not-found=true --wait=false 2>/dev/null
+	@for hc in $$(oc get hyperconverged -n openshift-cnv -o name 2>/dev/null); do \
+		oc patch $$hc -n openshift-cnv --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	done
+	-oc wait --for=delete hyperconverged --all -n openshift-cnv --timeout=60s 2>/dev/null || true
 	$(MAKE) clean-stale-operators
 	@echo "Pre-uninstall: removing ArgoCD app finalizers to prevent hub-deletion deadlock..."
 	@for app in $$(oc get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
