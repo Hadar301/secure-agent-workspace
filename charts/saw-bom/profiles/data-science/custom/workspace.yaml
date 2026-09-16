@@ -1,5 +1,5 @@
 apiVersion: saw.redhat.com/v1alpha1
 kind: Workspace
 metadata:
-  name: default
+  name: vllm
   description: "Data science workspace with a custom vLLM / OpenAI-compatible inference endpoint"
