@@ -24,6 +24,23 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
     sudo chmod 755 /usr/local/bin/openshell-supervisor && \
     echo 'supervisor upgraded'
   " || echo "WARN: supervisor binary upgrade failed (continuing with existing version)"
+  # The gateway refreshes its supervisor binary at startup from the upstream
+  # Docker image (ghcr.io/nvidia/openshell/supervisor:dev), which may not have
+  # the binary at /openshell-sandbox on all tag variants. Pre-populate the
+  # gateway's content-addressed cache with the ODH supervisor binary so the
+  # extraction step is a cache hit and the gateway starts successfully.
+  UPSTREAM_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
+  guest_ssh "
+    UPSTREAM_DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' 2>/dev/null | sed 's|sha256:||' || true)
+    if [[ -n \"\${UPSTREAM_DIGEST}\" ]]; then
+      CACHE_DIR=\"\${HOME}/.local/share/openshell/docker-supervisor/sha256-\${UPSTREAM_DIGEST}\"
+      mkdir -p \"\${CACHE_DIR}\"
+      if [[ ! -f \"\${CACHE_DIR}/openshell-sandbox\" ]]; then
+        cp /usr/local/bin/openshell-supervisor \"\${CACHE_DIR}/openshell-sandbox\"
+        echo \"pre-populated supervisor cache for digest sha256:\${UPSTREAM_DIGEST}\"
+      fi
+    fi
+  " || echo "WARN: supervisor cache pre-population failed (non-fatal)"
   PIP_EXTRA=""
   [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
   guest_ssh "
