@@ -275,12 +275,16 @@ pre-uninstall:
 	done
 	-oc wait --for=delete hyperconverged --all -n openshift-cnv --timeout=60s 2>/dev/null || true
 	$(MAKE) clean-stale-operators
-	@echo "Pre-uninstall: removing ArgoCD app finalizers to prevent hub-deletion deadlock..."
+	@echo "Pre-uninstall: removing ArgoCD app finalizers and disabling auto-sync to prevent hub-deletion deadlock..."
 	@for app in $$(oc get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
+		oc patch $$app -n vp-gitops --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"},{"op":"remove","path":"/spec/syncPolicy"}]' \
+			2>/dev/null || \
 		oc patch $$app -n vp-gitops --type=json \
 			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
 	done
-	-oc delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
+	-oc delete applications.argoproj.io --all -n vp-gitops --wait=true --timeout=30s --ignore-not-found=true 2>/dev/null || \
+		oc delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
 	@echo "Pre-uninstall: removing ESO webhook configs to prevent namespace termination deadlock..."
 	-oc delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
 	-oc delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
