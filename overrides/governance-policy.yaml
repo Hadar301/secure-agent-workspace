@@ -1,6 +1,1 @@
-# Set this to the hostname of the custom vLLM / OpenAI-compatible endpoint.
-# The governance-policy chart uses this to render the openai.yaml profile
-# that allows sandboxes using the openai provider to reach the endpoint.
-#
-# Example: vllm-tinyllama-vllm-test.apps.cluster-mw7rz.dyn.redhatworkshops.io
-customEndpointHost: ""
+customEndpointHost: "vllm-tinyllama-vllm-test.apps.cluster-xgrmq.dyn.redhatworkshops.io"
