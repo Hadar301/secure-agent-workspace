@@ -651,7 +651,8 @@ class WorkspaceDeployer:
                         f"ExecStart=/bin/bash -c 'PATH=$PATH:/home/{user}/.local/bin"
                         f" openshell sandbox exec -n {sandbox_name}"
                         f" {ws_flag} --no-tty -- sleep infinity'\n"
-                        f"Restart=always\nRestartSec=5\n\n"
+                        f"Restart=always\nRestartSec=5\n"
+                        f"StartLimitIntervalSec=300\nStartLimitBurst=10\n\n"
                         f"[Install]\nWantedBy=multi-user.target\n"
                     )
                     encoded = base64.b64encode(svc.encode()).decode()
