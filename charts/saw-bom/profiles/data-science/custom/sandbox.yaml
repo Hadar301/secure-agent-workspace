@@ -8,4 +8,4 @@ spec:
       enabled: true
       image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
       providers:
-        - custom
+        - openai
