@@ -305,6 +305,18 @@ uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
 	fi
 	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
 	oc delete subscription,csv,installplan --all -n openshift-cnv --wait=false --ignore-not-found=true
+	@echo "Ensuring $(NS) namespace is fully gone (ESO webhook can block termination)..."
+	-oc delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	-oc delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	@if oc get namespace $(NS) >/dev/null 2>&1; then \
+		kubectl proxy --port=8099 >/dev/null 2>&1 & PROXY_PID=$$!; sleep 3; \
+		curl -sk -H "Content-Type: application/json" -X PUT \
+		  http://localhost:8099/api/v1/namespaces/$(NS)/finalize \
+		  -d "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"$(NS)\"},\"spec\":{\"finalizers\":[]}}" \
+		  >/dev/null 2>&1 || true; \
+		sleep 2; kill $$PROXY_PID 2>/dev/null || true; \
+		oc wait --for=delete namespace/$(NS) --timeout=60s 2>/dev/null || true; \
+	fi
 
 # Clean up a single sandbox's heavy resources before uninstall to prevent
 # finalizer hangs. VMs and DataVolumes take time to terminate and block
