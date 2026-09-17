@@ -4,8 +4,8 @@ metadata:
   profile: data-science
 spec:
   providers:
-    - name: custom
-      type: custom
+    - name: openai
+      type: openai
       nemoclawProvider: openrouter
       credentialSecret: inference
       credentialSecretKey: api_key
