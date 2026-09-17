@@ -97,6 +97,19 @@ if [[ "${ALLOW_ANONYMOUS_PULL:-false}" == "true" ]]; then
   fi
 fi
 
+# --- Systemd override: pre-populate supervisor cache before gateway starts ---
+# This ensures the correct ODH binary is in the content-addressed cache
+# on every gateway start, even if the upstream image digest changes.
+guest_ssh "
+  OVERRIDE_DIR=\"\$HOME/.config/systemd/user/openshell-gateway.service.d\"
+  mkdir -p \"\$OVERRIDE_DIR\"
+  cat > \"\$OVERRIDE_DIR/prepopulate-cache.conf\" << 'UNITEOF'
+[Service]
+ExecStartPre=/bin/bash -c 'D=\$(docker inspect ghcr.io/nvidia/openshell/supervisor:dev --format \"{{.Id}}\" 2>/dev/null | sed \"s|sha256:||\" || true); [ -n \"\$D\" ] && mkdir -p \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D && cp /usr/local/bin/openshell-supervisor \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null && chmod 755 \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null || true'
+UNITEOF
+  systemctl --user daemon-reload && echo 'gateway override installed'
+" || echo "WARN: gateway systemd override failed (non-fatal)"
+
 # --- Patch OIDC issuer ---
 source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
 if [[ -n "${OIDC_ISSUER:-}" ]]; then
