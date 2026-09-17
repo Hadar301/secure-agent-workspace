@@ -33,7 +33,10 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
   # Falls back to the ODH binary if extraction fails.
   UPSTREAM_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
   # Single-line to avoid quoting/continuation issues inside guest_ssh.
-  guest_ssh "${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true; DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' | sed 's|sha256:||'); CACHE_DIR=\"\$HOME/.local/share/openshell/docker-supervisor/sha256-\$DIGEST\"; mkdir -p \"\$CACHE_DIR\"; if [[ ! -f \"\$CACHE_DIR/openshell-sandbox\" ]]; then CID=\$(${RUNTIME} create '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null); ${RUNTIME} cp \"\$CID:/openshell-supervisor\" \"\$CACHE_DIR/openshell-sandbox\" 2>/dev/null || cp /usr/local/bin/openshell-supervisor \"\$CACHE_DIR/openshell-sandbox\"; ${RUNTIME} rm \"\$CID\" >/dev/null 2>&1 || true; echo \"pre-populated supervisor cache sha256:\$DIGEST\"; fi" || echo "WARN: supervisor cache pre-population failed (non-fatal)"
+  # Use the ODH supervisor binary (at /usr/local/bin/openshell-supervisor, copied from
+  # the ODH image's /openshell-sandbox) — NOT the upstream /openshell-supervisor binary,
+  # which is a different component and crashes with --backend-descriptor-file missing.
+  guest_ssh "${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true; DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' | sed 's|sha256:||'); CACHE_DIR=\"\$HOME/.local/share/openshell/docker-supervisor/sha256-\$DIGEST\"; mkdir -p \"\$CACHE_DIR\"; chmod 644 \"\$CACHE_DIR/openshell-sandbox\" 2>/dev/null || true; cp /usr/local/bin/openshell-supervisor \"\$CACHE_DIR/openshell-sandbox\" && echo \"pre-populated supervisor cache sha256:\$DIGEST (ODH binary)\"" || echo "WARN: supervisor cache pre-population failed (non-fatal)"
   PIP_EXTRA=""
   [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
   guest_ssh "
