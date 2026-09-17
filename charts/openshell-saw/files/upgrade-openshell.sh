@@ -25,18 +25,24 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
     echo 'supervisor upgraded'
   " || echo "WARN: supervisor binary upgrade failed (continuing with existing version)"
   # The gateway refreshes its supervisor binary at startup from the upstream
-  # Docker image (ghcr.io/nvidia/openshell/supervisor:dev), which may not have
-  # the binary at /openshell-sandbox on all tag variants. Pre-populate the
-  # gateway's content-addressed cache with the ODH supervisor binary so the
-  # extraction step is a cache hit and the gateway starts successfully.
+  # Docker image (ghcr.io/nvidia/openshell/supervisor:dev). The gateway looks
+  # for /openshell-sandbox inside the container, but the upstream :dev image
+  # ships the binary as /openshell-supervisor (different path). Pre-populate
+  # the content-addressed cache by pulling the upstream image fresh (to get
+  # the current digest), then extracting /openshell-supervisor → /openshell-sandbox.
+  # Falls back to the ODH binary if extraction fails.
   UPSTREAM_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
   guest_ssh "
+    ${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true
     UPSTREAM_DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' 2>/dev/null | sed 's|sha256:||' || true)
     if [[ -n \"\${UPSTREAM_DIGEST}\" ]]; then
       CACHE_DIR=\"\${HOME}/.local/share/openshell/docker-supervisor/sha256-\${UPSTREAM_DIGEST}\"
       mkdir -p \"\${CACHE_DIR}\"
       if [[ ! -f \"\${CACHE_DIR}/openshell-sandbox\" ]]; then
-        cp /usr/local/bin/openshell-supervisor \"\${CACHE_DIR}/openshell-sandbox\"
+        CID=\$(${RUNTIME} create '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null)
+        ${RUNTIME} cp \"\${CID}:/openshell-supervisor\" \"\${CACHE_DIR}/openshell-sandbox\" 2>/dev/null || \
+          cp /usr/local/bin/openshell-supervisor \"\${CACHE_DIR}/openshell-sandbox\"
+        ${RUNTIME} rm \"\${CID}\" 2>/dev/null || true
         echo \"pre-populated supervisor cache for digest sha256:\${UPSTREAM_DIGEST}\"
       fi
     fi
