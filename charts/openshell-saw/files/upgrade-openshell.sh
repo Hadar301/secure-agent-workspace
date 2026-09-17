@@ -32,21 +32,8 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
   # the current digest), then extracting /openshell-supervisor → /openshell-sandbox.
   # Falls back to the ODH binary if extraction fails.
   UPSTREAM_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
-  guest_ssh "
-    ${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true
-    UPSTREAM_DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' 2>/dev/null | sed 's|sha256:||' || true)
-    if [[ -n \"\${UPSTREAM_DIGEST}\" ]]; then
-      CACHE_DIR=\"\${HOME}/.local/share/openshell/docker-supervisor/sha256-\${UPSTREAM_DIGEST}\"
-      mkdir -p \"\${CACHE_DIR}\"
-      if [[ ! -f \"\${CACHE_DIR}/openshell-sandbox\" ]]; then
-        CID=\$(${RUNTIME} create '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null)
-        ${RUNTIME} cp \"\${CID}:/openshell-supervisor\" \"\${CACHE_DIR}/openshell-sandbox\" 2>/dev/null || \
-          cp /usr/local/bin/openshell-supervisor \"\${CACHE_DIR}/openshell-sandbox\"
-        ${RUNTIME} rm \"\${CID}\" 2>/dev/null || true
-        echo \"pre-populated supervisor cache for digest sha256:\${UPSTREAM_DIGEST}\"
-      fi
-    fi
-  " || echo "WARN: supervisor cache pre-population failed (non-fatal)"
+  # Single-line to avoid quoting/continuation issues inside guest_ssh.
+  guest_ssh "${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true; DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' | sed 's|sha256:||'); CACHE_DIR=\"\$HOME/.local/share/openshell/docker-supervisor/sha256-\$DIGEST\"; mkdir -p \"\$CACHE_DIR\"; if [[ ! -f \"\$CACHE_DIR/openshell-sandbox\" ]]; then CID=\$(${RUNTIME} create '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null); ${RUNTIME} cp \"\$CID:/openshell-supervisor\" \"\$CACHE_DIR/openshell-sandbox\" 2>/dev/null || cp /usr/local/bin/openshell-supervisor \"\$CACHE_DIR/openshell-sandbox\"; ${RUNTIME} rm \"\$CID\" >/dev/null 2>&1 || true; echo \"pre-populated supervisor cache sha256:\$DIGEST\"; fi" || echo "WARN: supervisor cache pre-population failed (non-fatal)"
   PIP_EXTRA=""
   [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
   guest_ssh "
