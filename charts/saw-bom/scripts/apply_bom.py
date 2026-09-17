@@ -713,8 +713,15 @@ class Verifier:
                         self.passed -= 1
                         self.failed += 1
 
+                skipped_providers = set()
                 for prov in ws.providers:
                     if not prov.enabled:
+                        continue
+                    mismatch = check_provider_type_mismatch(prov)
+                    if mismatch:
+                        log(f"SKIP  provider '{prov.name}' in '{ws.name}' "
+                            f"(type mismatch — was not created)")
+                        skipped_providers.add(prov.name)
                         continue
                     self.check(
                         f"provider '{prov.name}' in '{ws.name}'",
@@ -723,6 +730,13 @@ class Verifier:
 
                 for sb in ws.sandboxes:
                     if not sb.enabled:
+                        continue
+                    # Skip sandboxes whose only providers were type-mismatch
+                    # skipped — the sandbox couldn't be created without them.
+                    if sb.providers and all(
+                            p in skipped_providers for p in sb.providers):
+                        log(f"SKIP  sandbox '{sb.name}' in '{ws.name}' "
+                            f"(all providers were skipped)")
                         continue
                     self.check(
                         f"sandbox '{sb.name}' in '{ws.name}'",
@@ -734,6 +748,8 @@ class Verifier:
                             ["openshell", "sandbox", "provider",
                              "list", sb.name] + ws_flag)
                         for prov_name in sb.providers:
+                            if prov_name in skipped_providers:
+                                continue
                             if prov_name in (out or ""):
                                 log(f"  PASS  '{sb.name}' "
                                     f"has provider '{prov_name}'")
