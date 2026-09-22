@@ -6,7 +6,7 @@ spec:
   providers:
     - name: openai
       type: openai
-      nemoclawProvider: openrouter
+      nemoclawProvider: custom
       credentialSecret: inference
       credentialSecretKey: api_key
       urlSecretKey: url
