@@ -105,7 +105,7 @@ guest_ssh "
   mkdir -p \"\$OVERRIDE_DIR\"
   cat > \"\$OVERRIDE_DIR/prepopulate-cache.conf\" << 'UNITEOF'
 [Service]
-ExecStartPre=/bin/bash -c 'docker pull ghcr.io/nvidia/openshell/supervisor:dev 2>/dev/null || true; D=\$(docker inspect ghcr.io/nvidia/openshell/supervisor:dev --format \"{{.Id}}\" 2>/dev/null | sed \"s|sha256:||\" || true); [ -n \"\$D\" ] && mkdir -p \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D && cp /usr/local/bin/openshell-supervisor \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null && chmod 755 \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'docker pull ghcr.io/nvidia/openshell/supervisor:dev 2>/dev/null || true; D=$(docker images --no-trunc -q ghcr.io/nvidia/openshell/supervisor:dev 2>/dev/null | sed "s|sha256:||" | head -1); [ -n "$D" ] && mkdir -p $HOME/.local/share/openshell/docker-supervisor/sha256-$D && cp /usr/local/bin/openshell-supervisor $HOME/.local/share/openshell/docker-supervisor/sha256-$D/openshell-sandbox 2>/dev/null && chmod 755 $HOME/.local/share/openshell/docker-supervisor/sha256-$D/openshell-sandbox 2>/dev/null || true'
 UNITEOF
   systemctl --user daemon-reload && echo 'gateway override installed'
 " || echo "WARN: gateway systemd override failed (non-fatal)"
