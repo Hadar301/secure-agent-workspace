@@ -307,6 +307,8 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 | Ollama (local) | `ollama` | `llama3` |
 | Custom endpoint | `custom` | any (set `ENDPOINT_URL`) |
 
+For detailed instructions on using a self-hosted vLLM or Ollama model as the inference backend, see **[Custom vLLM / OpenAI-compatible Endpoint](docs/custom-inference-provider.md)**.
+
 ### Validating the deployment
 
 ```bash
