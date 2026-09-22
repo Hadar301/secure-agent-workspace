@@ -263,6 +263,8 @@ clean-stale-operators:
 # after the Ansible framework removes ArgoCD apps — otherwise ArgoCD
 # immediately recreates the Subscription we just deleted.
 pre-uninstall:
+	@echo "Pre-uninstall: deleting Keycloak PVC to prevent stale DB on reinstall..."
+	-oc delete pvc keycloak-db -n $(NS) --wait=false --ignore-not-found=true 2>/dev/null
 	@echo "Pre-uninstall: deleting VMs and CNV resources..."
 	oc delete vm,dv,job --all -n $(NS) --wait=false --ignore-not-found=true
 	@echo "Waiting for VMIs to terminate..."
