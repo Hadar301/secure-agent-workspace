@@ -302,7 +302,17 @@ pattern-install: generate-keys
 # ArgoCD from fighting the cleanup by immediately recreating deleted resources.
 uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
 	@if oc get patterns secure-agent-workspace -n patterns-operator >/dev/null 2>&1; then \
-		$(ANSIBLE_RUN) rhvp.cluster_utils.uninstall; \
+		$(ANSIBLE_RUN) rhvp.cluster_utils.uninstall & UNINSTALL_PID=$$!; \
+		echo "Watching for recreated ArgoCD apps (hub deadlock prevention)..."; \
+		while kill -0 $$UNINSTALL_PID 2>/dev/null || oc get patterns secure-agent-workspace -n patterns-operator >/dev/null 2>&1; do \
+			for app in $$(oc get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
+				oc patch $$app -n vp-gitops --type=json \
+					-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+				oc delete $$app -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null || true; \
+			done; \
+			sleep 5; \
+		done; \
+		wait $$UNINSTALL_PID || true; \
 	else \
 		echo "Pattern CR not found — already uninstalled. Cleaning up namespace..."; \
 		oc delete ns $(NS) --wait=false --ignore-not-found=true; \
