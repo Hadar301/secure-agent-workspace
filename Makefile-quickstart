@@ -297,10 +297,11 @@ pre-uninstall:
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
+	@$(ANSIBLE_RUN) rhvp.cluster_utils.install
 	@echo "Force-syncing ExternalSecrets after install (ESO may need a nudge on first sync)..."
 	@for i in 1 2 3; do \
 		sleep 30; \
-		FAILED=$$(oc get externalsecrets -n $(NS) --no-headers 2>/dev/null | grep -v SecretSynced | awk '{print $$1}'); \
+		FAILED=$$(oc get externalsecrets -n $(NS) --no-headers 2>/dev/null | grep -v '[[:space:]]SecretSynced[[:space:]]' | awk '{print $$1}'); \
 		if [[ -n "$$FAILED" ]]; then \
 			echo "  Nudging: $$FAILED"; \
 			for es in $$FAILED; do \

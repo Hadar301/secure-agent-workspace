@@ -86,14 +86,15 @@ fi
 
 # --- Pre-populate the supervisor cache on every gateway start ---
 # Transfer files instead of embedding shell code in a systemd command over SSH.
+# Load after route-san.conf, whose ExecStartPre= resets earlier startup commands.
 guest_scp "${SCRIPTS_DIR}/prepopulate-supervisor-cache.sh" "/tmp/prepopulate-supervisor-cache.sh"
 guest_ssh "sudo install -m 755 /tmp/prepopulate-supervisor-cache.sh /usr/local/bin/openshell-prepopulate-cache"
-cat > "${WORK_DIR}/prepopulate-cache.conf" <<UNITEOF
+cat > "${WORK_DIR}/zz-prepopulate-cache.conf" <<UNITEOF
 [Service]
 ExecStartPre=/usr/local/bin/openshell-prepopulate-cache ${RUNTIME}
 UNITEOF
-guest_scp "${WORK_DIR}/prepopulate-cache.conf" "/tmp/prepopulate-cache.conf"
-guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
+guest_scp "${WORK_DIR}/zz-prepopulate-cache.conf" "/tmp/zz-prepopulate-cache.conf"
+guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/zz-prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-prepopulate-cache.conf" && rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
 
 # --- Patch OIDC issuer ---
 source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true

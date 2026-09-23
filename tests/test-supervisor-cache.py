@@ -55,11 +55,16 @@ def test_rendered_dropin_transfer(rendered_scripts, tmp_path):
     # Execute the local heredoc and parse every remote command without running it.
     stubs = '''set -euo pipefail
 guest_scp() { test -f "$1"; }
-guest_ssh() { printf '%s\\n' "$1" | bash -n; }
+guest_ssh() { printf '%s\\n' "$1" >> "$WORK_DIR/remote-commands"; printf '%s\\n' "$1" | bash -n; }
 '''
     (tmp_path / "prepopulate-supervisor-cache.sh").write_text(rendered_scripts["prepopulate-supervisor-cache.sh"])
     result = subprocess.run(["bash"], input=stubs + block, text=True, capture_output=True,
                             env=dict(os.environ, WORK_DIR=str(tmp_path), SCRIPTS_DIR=str(tmp_path), RUNTIME="docker"))
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "prepopulate-cache.conf").read_text() == (
+    assert (tmp_path / "zz-prepopulate-cache.conf").read_text() == (
         "[Service]\nExecStartPre=/usr/local/bin/openshell-prepopulate-cache docker\n")
+    commands = (tmp_path / "remote-commands").read_text()
+    assert 'install -m 644 /tmp/zz-prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-prepopulate-cache.conf"' in commands
+    assert 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf"' in commands
+    # systemd applies drop-ins lexically; route-san.conf resets ExecStartPre.
+    assert "zz-prepopulate-cache.conf" > "route-san.conf"
