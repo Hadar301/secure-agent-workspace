@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -280,6 +281,15 @@ def check_provider_type_mismatch(provider):
     return None
 
 
+def skipped_provider_names(ws):
+    return {p.name for p in ws.providers
+            if not p.enabled or check_provider_type_mismatch(p)}
+
+
+def sandbox_skipped(ws, sandbox):
+    return bool(set(sandbox.providers) & skipped_provider_names(ws))
+
+
 def find_provider(ws, names):
     """Look up a provider by name from a sandbox's own declared providers list.
 
@@ -432,7 +442,7 @@ class WorkspaceDeployer:
                     check=False)
             else:
                 log(f"Sandbox '{sandbox.name}' already exists")
-                return
+                return True
         is_full_ref = sandbox.image and ("/" in sandbox.image or ":" in sandbox.image)
         if is_full_ref:
             self.sh.run(["sudo", "docker", "pull", sandbox.image], check=False)
@@ -447,23 +457,12 @@ class WorkspaceDeployer:
         rc, out, err = self.sh.run(args, check=False)
         combined = re.sub(r'\x1b\[[0-9;]*m', '',
                           (out or "") + " " + (err or ""))
-        if "Error" in combined or "Restarting" in combined:
-            log("Sandbox entered Error state, waiting 10s for logs...")
-            if not self.sh.dry_run:
-                time.sleep(10)
-            self.sh.run([
-                "bash", "-c",
-                "CNAME=$(sudo docker ps -a "
-                f"--filter 'name=openshell.*{sandbox.name}' "
-                "--format '{{.Names}}' | head -1) && "
-                "echo \"Container: $CNAME\" && "
-                "echo \"Status: $(sudo docker inspect $CNAME "
-                "--format '{{.State.Status}} ExitCode={{.State.ExitCode}}')"
-                "\" && echo '--- logs ---' && "
-                "sudo docker logs $CNAME 2>&1 | tail -30"
-            ], check=False)
+        if rc != 0 or "Error" in combined or "Restarting" in combined:
+            log(f"ERROR: sandbox creation failed in '{workspace_name}': {sandbox.name}")
+            return False
+        return True
 
-    def chown_sandbox_home(self, sandbox_name):
+    def chown_sandbox_home(self, sandbox_name, workspace_name="default"):
         """Chown /sandbox to the supervisor's sandbox uid.
 
         The image bakes UID 65532. The supervisor rewrites passwd to
@@ -472,11 +471,13 @@ class WorkspaceDeployer:
         exec -u 0 can. After passwd rewrite, name 'sandbox' is the
         runtime uid, so this works on any cluster.
         """
+        prefix = "(default--)?" if workspace_name == "default" else re.escape(workspace_name) + "--"
+        container_pattern = "^/openshell-" + prefix + re.escape(sandbox_name) + "-"
         log(f"Chowning /sandbox to sandbox user in '{sandbox_name}'")
         self.sh.run([
             "bash", "-c",
             "CNAME=$(sudo docker ps -a "
-            f"--filter 'name=openshell.*{sandbox_name}' "
+            f"--filter 'name={container_pattern}' "
             "--format '{{.Names}}' | head -1) && "
             "[ -n \"$CNAME\" ] && "
             "sudo docker exec -u 0 \"$CNAME\" "
@@ -573,9 +574,12 @@ class WorkspaceDeployer:
                     break
                 log(f"  waiting for sandbox ready... (attempt {i+1})")
                 time.sleep(5)
+            else:
+                log("ERROR: sandbox readiness timed out")
+                return False
 
         # Supervisor has rewritten passwd by Ready; match /sandbox to that uid.
-        self.chown_sandbox_home(sandbox_name)
+        self.chown_sandbox_home(sandbox_name, workspace_name)
 
         token = secrets_mod.token_hex(16)
         exec_cmd = ["openshell", "sandbox", "exec", "-n",
@@ -588,19 +592,21 @@ class WorkspaceDeployer:
                   "OPENCLAW_NIX_MODE=0")
 
         log("Running openclaw onboard...")
-        self.sh.run(
+        onboard_rc, _, _ = self.sh.run(
             exec_cmd + ["sh", "-c",
                         f"{oc_env} CUSTOM_API_KEY=proxy-managed "
                         f"openclaw onboard "
                         f"--non-interactive --accept-risk "
                         f"--mode local "
                         f"--auth-choice custom-api-key "
-                        f'--custom-base-url "{provider_base_url}" '
-                        f"--custom-provider-id {provider_id} "
-                        f'--custom-model-id "{model_id}" '
+                        f"--custom-base-url {shlex.quote(provider_base_url)} "
+                        f"--custom-provider-id {shlex.quote(provider_id)} "
+                        f"--custom-model-id {shlex.quote(model_id)} "
                         f"--custom-compatibility openai "
                         f"--skip-channels --skip-health"],
             check=False)
+        if onboard_rc != 0:
+            return False
         # Set gateway token
         self.sh.run(
             exec_cmd + ["sh", "-c",
@@ -643,7 +649,7 @@ class WorkspaceDeployer:
                     # Runs while the sandbox is still active so the first
                     # exec connects immediately; Restart=always revives it
                     # if the session ever drops.
-                    service = f"openshell-sandbox-{sandbox_name}"
+                    service = f"openshell-sandbox-{workspace_name}-{sandbox_name}"
                     ws_flag = (f"--workspace {workspace_name}"
                                if workspace_name != "default" else "")
                     user = "cloud-user"
@@ -668,10 +674,12 @@ class WorkspaceDeployer:
                         f"sudo systemctl enable {service} && "
                         f"sudo systemctl start {service}"
                     ], check=False)
-                    return
+                    return True
                 log(f"  waiting for openclaw gateway... (attempt {i+1})")
                 time.sleep(3)
-            log("WARN: openclaw gateway health check failed")
+            log("ERROR: openclaw gateway health check failed")
+            return False
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +726,7 @@ class Verifier:
                         self.passed -= 1
                         self.failed += 1
 
-                skipped_providers = set()
+                skipped_providers = skipped_provider_names(ws)
                 for prov in ws.providers:
                     if not prov.enabled:
                         continue
@@ -736,12 +744,10 @@ class Verifier:
                 for sb in ws.sandboxes:
                     if not sb.enabled:
                         continue
-                    # Skip sandboxes whose only providers were type-mismatch
-                    # skipped — the sandbox couldn't be created without them.
-                    if sb.providers and all(
-                            p in skipped_providers for p in sb.providers):
+                    # Every declared provider is required for sandbox creation.
+                    if sandbox_skipped(ws, sb):
                         log(f"SKIP  sandbox '{sb.name}' in '{ws.name}' "
-                            f"(all providers were skipped)")
+                            f"(required provider unavailable)")
                         continue
                     self.check(
                         f"sandbox '{sb.name}' in '{ws.name}'",
@@ -793,6 +799,16 @@ def main():
         log("No profiles found, nothing to do")
         return
 
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if not ws.enabled:
+                continue
+            skipped = skipped_provider_names(ws)
+            for prov in ws.providers:
+                if (prov.name not in skipped and prov.nemoclaw_provider == "custom"
+                        and (not prov.url.strip() or not prov.model.strip())):
+                    raise SystemExit(f"Custom provider '{prov.name}' requires endpoint URL and model")
+
     total_ws = sum(len(p.workspaces) for p in profiles)
     total_sb = sum(len(sb) for p in profiles for ws in p.workspaces
                    for sb in [ws.sandboxes])
@@ -816,6 +832,7 @@ def main():
     gw.grant_default_workspace_access()
     gw.enable_providers_v2()
 
+    deployment_failed = False
     # --- Phase 2: Deploy profiles ---
     deployer = WorkspaceDeployer(sh, gw)
     for profile in profiles:
@@ -833,7 +850,10 @@ def main():
             deployer.create_workspace(ws)
 
             # Create providers in the workspace
-            enabled_provs = [p for p in ws.providers if p.enabled]
+            skipped = skipped_provider_names(ws)
+            enabled_provs = [p for p in ws.providers if p.name not in skipped]
+            for name in sorted(skipped):
+                log(f"SKIP provider '{name}' in '{ws.name}' (disabled or incompatible)")
             if enabled_provs:
                 section(f"Providers ({len(enabled_provs)}) "
                         f"in workspace '{ws.name}'")
@@ -863,6 +883,9 @@ def main():
             for sb in ws.sandboxes:
                 if not sb.enabled:
                     log(f"  Sandbox '{sb.name}' disabled, skipping")
+                    continue
+                if sandbox_skipped(ws, sb):
+                    log(f"SKIP sandbox '{sb.name}' in '{ws.name}' (required provider unavailable)")
                     continue
                 section(f"Sandbox '{sb.name}' (type={sb.type})")
 
@@ -903,39 +926,50 @@ def main():
                                 "configuring provider manually")
                             deployer.create_provider(prov, cred, ws.name)
 
-                    deployer.create_sandbox_generic(sb, ws.name)
+                    if not deployer.create_sandbox_generic(sb, ws.name):
+                        deployment_failed = True
+                        continue
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
                     base_url = prov.url if prov else ""
-                    deployer.start_openclaw_gateway(
+                    gateway_ok = deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
                         model_id=model or "nvidia/nemotron-3-super-120b-a12b",
                         provider_base_url=base_url or "https://inference.local/v1")
+                    deployment_failed |= not gateway_ok
 
                 elif sb.type == "openclaw":
-                    deployer.create_sandbox_generic(sb, ws.name)
+                    if not deployer.create_sandbox_generic(sb, ws.name):
+                        deployment_failed = True
+                        continue
                     prov = find_provider(ws, sb.providers)
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
                     base_url = prov.url if prov else ""
-                    deployer.start_openclaw_gateway(
+                    gateway_ok = deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
                         model_id=model or "nvidia/nemotron-3-super-120b-a12b",
                         provider_base_url=base_url or "https://inference.local/v1")
+                    deployment_failed |= not gateway_ok
 
                 else:
                     # Generic: just create the sandbox
-                    deployer.create_sandbox_generic(sb, ws.name)
+                    if not deployer.create_sandbox_generic(sb, ws.name):
+                        deployment_failed = True
+                        continue
 
     # --- Phase 4: Verify ---
     if not args.dry_run:
         verifier = Verifier(sh)
+        if deployment_failed:
+            verifier.failed += 1
+            log("FAIL provisioning (sandbox creation or readiness failed)")
         ok = verifier.verify_profiles(profiles)
-        if not ok:
+        if not ok or deployment_failed:
             # Without this, the setup Job reports "Complete" even when the
             # BOM apply only partially succeeded — verified live: a run with
             # 9 passed / 1 failed still showed Job status Complete, with the

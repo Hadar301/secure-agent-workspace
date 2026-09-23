@@ -8,6 +8,7 @@ Run with:
 """
 import os
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
@@ -358,7 +359,8 @@ def test_create_provider_omits_config_when_url_empty():
     assert "--config" not in cmd
 
 
-def test_onboard_nemoclaw_sets_inference_base_url_when_url_set():
+def test_onboard_nemoclaw_sets_inference_base_url_when_url_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     envs_captured = []
 
     class FakeShell:
@@ -384,7 +386,8 @@ def test_onboard_nemoclaw_sets_inference_base_url_when_url_set():
             assert e["NEMOCLAW_INFERENCE_BASE_URL"] == "https://vllm.example.com/v1"
 
 
-def test_onboard_nemoclaw_omits_inference_base_url_when_url_empty():
+def test_onboard_nemoclaw_omits_inference_base_url_when_url_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     envs_captured = []
 
     class FakeShell:

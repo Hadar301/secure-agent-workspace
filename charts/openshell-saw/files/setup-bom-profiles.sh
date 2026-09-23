@@ -85,7 +85,7 @@ for file in ${BOM_MOUNT}/*; do
               url_val="$(cat "${upath}")"
               if [[ -n "${url_val}" ]]; then
                 url_env_var="$(echo "PROV_${cur_name}_URL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
-                echo "${url_env_var}=${url_val}" >> "${BOM_ENV}"
+                printf '%s=%q\n' "${url_env_var}" "${url_val}" >> "${BOM_ENV}"
               fi
             fi
           fi

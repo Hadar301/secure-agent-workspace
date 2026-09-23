@@ -40,7 +40,7 @@ Add the `url` field to your local `~/values-secret.yaml` under the `inference` b
     value: "https://<your-vllm-route>/v1"
 ```
 
-> **Note:** Setting `provider: custom` causes the BOM to skip the default NVIDIA workspace and use the `vllm` workspace instead. Sandboxes in the `vllm` workspace connect directly to your endpoint through the OpenShell governance proxy.
+> **Note:** Setting `provider: custom` automatically creates the compatible provider in `vllm`. NVIDIA providers and sandboxes requiring them are skipped before image pulls or readiness polling. Workspace records and independent providers such as Brave may still be created. Sandboxes in `vllm` connect to your endpoint through the OpenShell governance proxy.
 
 ## Step 3: Set the Governance Profile Host
 
@@ -159,6 +159,47 @@ Then reinstall.
 
 ## Known Limitations
 
-- **Profile selection**: when `provider: custom` is set, the default NVIDIA workspace is skipped. Both provider configurations cannot be active simultaneously in a single deployment. A follow-up will add provider-aware profile selection so users only get the workspace they need.
+- **Profile selection**: workspace directories are still processed. Disabled or incompatible providers and sandboxes requiring any of them are skipped consistently during deployment and verification. Independent compatible providers remain enabled. Selection of entire workspaces remains future work.
 
 - The `vllm` provider accepts `inference.provider=custom` through its `nemoclawProvider: custom` alias. Its `urlSecretKey: url` and `modelSecretKey: model` fields read the endpoint and model from the inference secret. Set `model` to the exact name served by the endpoint; the setup fails if that required secret field is missing.
+
+## Compatibility and deployment checks
+
+Existing cloud-provider Vault records do not need `url`: missing or empty URLs
+become an empty string in the inference Secret. `provider`, `model`, and `api_key`
+remain required fields. Custom inference requires a nonempty URL and model.
+No manual provider creation is needed. URLs and models in `bom.env` are shell-quoted.
+
+Check each layer separately on the gateway VM:
+
+```bash
+systemctl --user status openshell-gateway.service --no-pager
+systemctl --user show openshell-gateway.service -p ExecStartPre -p NRestarts
+openshell sandbox get notebook --workspace vllm
+openshell sandbox provider list notebook --workspace vllm
+# OpenClaw readiness does not prove successful inference
+openshell sandbox exec -n notebook --workspace vllm -- curl -sf http://127.0.0.1:18789/health
+# Dashboard and authentication proxy, when enabled
+systemctl --user is-active openshell-dashboard.service openshell-dashboard-proxy.service
+curl -f http://127.0.0.1:8090/api/v1/healthz
+curl -f http://127.0.0.1:8080/ping
+```
+
+Then run the chat-completion request in the verification section and confirm a
+valid response. Open the web UI route and complete OIDC login separately.
+
+## Troubleshooting and upgrades
+
+- The cache hook uses `zz-prepopulate-cache.conf` to run after `route-san.conf`,
+  which resets `ExecStartPre`. Upgrades remove the old `prepopulate-cache.conf`.
+  Certificate generation and cache preparation must both succeed.
+- Dashboard setup replaces its two managed unit entries, including baked-in
+  symlinks or read-only files, with VM-user-owned files. It does not recursively
+  change home-directory ownership. Enabled dashboard installation, restart, or
+  120-second readiness failures now fail the setup Job.
+- Intentional provider/sandbox skips appear as `SKIP`. Actual creation failures
+  or readiness timeouts fail setup and stop OpenClaw onboarding for that sandbox.
+- Uninstall watching defaults to 600 seconds; override with
+  `./pattern.sh make uninstall UNINSTALL_TIMEOUT_SECONDS=900`. A failed playbook
+  or timeout returns nonzero and prevents subsequent forced cleanup. Inspect the
+  Pattern in `patterns-operator` and Applications in `vp-gitops` before retrying.
