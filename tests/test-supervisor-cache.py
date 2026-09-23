@@ -58,6 +58,7 @@ guest_scp() { test -f "$1"; }
 guest_ssh() { printf '%s\\n' "$1" >> "$WORK_DIR/remote-commands"; printf '%s\\n' "$1" | bash -n; }
 '''
     (tmp_path / "prepopulate-supervisor-cache.sh").write_text(rendered_scripts["prepopulate-supervisor-cache.sh"])
+    (tmp_path / "configure-docker-mtu.sh").write_text(rendered_scripts["configure-docker-mtu.sh"])
     result = subprocess.run(["bash"], input=stubs + block, text=True, capture_output=True,
                             env=dict(os.environ, WORK_DIR=str(tmp_path), SCRIPTS_DIR=str(tmp_path), RUNTIME="docker"))
     assert result.returncode == 0, result.stderr

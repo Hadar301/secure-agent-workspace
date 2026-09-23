@@ -96,6 +96,21 @@ UNITEOF
 guest_scp "${WORK_DIR}/zz-prepopulate-cache.conf" "/tmp/zz-prepopulate-cache.conf"
 guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/zz-prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-prepopulate-cache.conf" && rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
 
+# Docker's 1500-byte default exceeds some OpenShift VM uplinks (e.g. 1400).
+# Keep this after route-san.conf, which clears earlier ExecStartPre entries.
+if [[ "${RUNTIME}" == "docker" ]]; then
+  guest_scp "${SCRIPTS_DIR}/configure-docker-mtu.sh" "/tmp/configure-docker-mtu.sh"
+  guest_ssh "sudo install -m 755 /tmp/configure-docker-mtu.sh /usr/local/bin/openshell-configure-docker-mtu"
+  cat > "${WORK_DIR}/zz-docker-mtu.conf" <<'UNITEOF'
+[Service]
+ExecStartPre=/usr/bin/sudo -n /usr/local/bin/openshell-configure-docker-mtu
+UNITEOF
+  guest_scp "${WORK_DIR}/zz-docker-mtu.conf" "/tmp/zz-docker-mtu.conf"
+  guest_ssh 'install -m 644 /tmp/zz-docker-mtu.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
+else
+  guest_ssh 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
+fi
+
 # --- Patch OIDC issuer ---
 source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
 if [[ -n "${OIDC_ISSUER:-}" ]]; then

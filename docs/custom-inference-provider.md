@@ -79,7 +79,8 @@ The installation:
 
 ## Step 5: Verify
 
-SSH into the gateway VM and check:
+After logging in and configuring the gateway on your workstation (or from the
+configured gateway VM), check:
 
 ```bash
 # List provider profiles — should show your endpoint
@@ -90,12 +91,22 @@ openshell provider list --workspace vllm
 
 # Check sandbox is Ready
 openshell sandbox list --workspace vllm
+openshell sandbox get notebook --workspace vllm
 ```
+
+The list should include `notebook` with phase `Ready`.
+
+**If `openshell sandbox list` reports `No sandboxes found` after a successful
+login:** the command without `--workspace` lists the default workspace. The
+custom inference notebook lives in `vllm`, so use `--workspace vllm` when listing,
+inspecting, or executing commands in it. An empty default workspace is expected
+when its NVIDIA-dependent notebook was skipped for the custom provider; it does
+not mean authentication or notebook provisioning failed.
 
 Test inference from inside the sandbox:
 
 ```bash
-openshell sandbox exec -n notebook --workspace vllm -- curl -sk \
+openshell sandbox exec -n notebook --workspace vllm --no-tty --timeout 150 -- curl -sS --fail-with-body --connect-timeout 10 --max-time 120 \
   https://<your-vllm-route>/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer any-string' \
@@ -190,6 +201,19 @@ valid response. Open the web UI route and complete OIDC login separately.
 
 ## Troubleshooting and upgrades
 
+- If sandbox requests hang after CONNECT/TLS while the same route works from
+  the VM, check Docker MTU. OpenShift VM uplinks can use 1400 while Docker defaults
+  to 1500, causing the proxy's upstream TLS handshake to stall. Docker setup runs
+  `configure-docker-mtu.sh` before gateway startup: it derives the uplink MTU,
+  creates new `openshell-docker` networks with that MTU, and reconciles the existing
+  bridge and attached container interfaces. Existing Docker network options are
+  immutable, so an IPv4 TCP MSS rule scoped to that bridge/uplink also protects
+  future containers on older networks. No network deletion, policy bypass, or TLS
+  verification disablement is needed. This helper applies to Docker, not Podman.
+- After updating scripts on an existing VM, run
+  `sudo /usr/local/bin/openshell-configure-docker-mtu` to reconcile immediately.
+  The `zz-docker-mtu.conf` gateway startup hook reapplies the settings on restart.
+  Retry with a new connection; existing stalled requests should be cancelled.
 - The cache hook uses `zz-prepopulate-cache.conf` to run after `route-san.conf`,
   which resets `ExecStartPre`. Upgrades remove the old `prepopulate-cache.conf`.
   Certificate generation and cache preparation must both succeed.
