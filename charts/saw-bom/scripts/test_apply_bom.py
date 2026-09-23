@@ -218,6 +218,33 @@ def test_resolve_configured_type_none_when_unset(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Provider.url — custom endpoint URL propagation
+# Model propagation uses an explicit secret key, just like URL propagation.
+
+@pytest.mark.parametrize("declared,explicit,expected", [
+    (True, "", "tinyllama:latest"),
+    (True, "explicit-model", "explicit-model"),
+    (False, "", ""),
+])
+def test_parse_provider_model_from_secret(monkeypatch, tmp_path, declared, explicit, expected):
+    monkeypatch.setenv("PROV_OPENAI_MODEL", "tinyllama:latest")
+    provider = {"name": "openai", "type": "openai", "model": explicit}
+    if declared:
+        provider["modelSecretKey"] = "model"
+    _write_profile(tmp_path, providers_yaml={"spec": {"providers": [provider]}})
+    assert parse_profiles(tmp_path)[0].workspaces[0].providers[0].model == expected
+
+
+def test_custom_profile_accepts_secret_provider_and_model(monkeypatch):
+    from pathlib import Path
+    monkeypatch.setenv("PROV_OPENAI_TYPE", "custom")
+    monkeypatch.setenv("PROV_OPENAI_MODEL", "tinyllama:latest")
+    monkeypatch.setenv("PROV_OPENAI_URL", "https://model.example.com/v1")
+    profiles = parse_profiles(Path(__file__).resolve().parents[1] / "profiles")
+    ws = next(ws for p in profiles for ws in p.workspaces if ws.name == "vllm")
+    provider = find_provider(ws, ws.sandboxes[0].providers)
+    assert check_provider_type_mismatch(provider) is None
+    assert provider.model == "tinyllama:latest"
+    assert provider.url == "https://model.example.com/v1"
 # ---------------------------------------------------------------------------
 
 def test_provider_url_defaults_to_empty():

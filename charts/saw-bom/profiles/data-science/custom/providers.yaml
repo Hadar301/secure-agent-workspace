@@ -10,3 +10,4 @@ spec:
       credentialSecret: inference
       credentialSecretKey: api_key
       urlSecretKey: url
+      modelSecretKey: model

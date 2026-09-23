@@ -24,19 +24,6 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
     sudo chmod 755 /usr/local/bin/openshell-supervisor && \
     echo 'supervisor upgraded'
   " || echo "WARN: supervisor binary upgrade failed (continuing with existing version)"
-  # The gateway refreshes its supervisor binary at startup from the upstream
-  # Docker image (ghcr.io/nvidia/openshell/supervisor:dev). The gateway looks
-  # for /openshell-sandbox inside the container, but the upstream :dev image
-  # ships the binary as /openshell-supervisor (different path). Pre-populate
-  # the content-addressed cache by pulling the upstream image fresh (to get
-  # the current digest), then extracting /openshell-supervisor → /openshell-sandbox.
-  # Falls back to the ODH binary if extraction fails.
-  UPSTREAM_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
-  # Single-line to avoid quoting/continuation issues inside guest_ssh.
-  # Use the ODH supervisor binary (at /usr/local/bin/openshell-supervisor, copied from
-  # the ODH image's /openshell-sandbox) — NOT the upstream /openshell-supervisor binary,
-  # which is a different component and crashes with --backend-descriptor-file missing.
-  guest_ssh "${RUNTIME} pull '${UPSTREAM_SUPERVISOR_IMAGE}' 2>/dev/null || true; DIGEST=\$(${RUNTIME} inspect '${UPSTREAM_SUPERVISOR_IMAGE}' --format '{{.Id}}' | sed 's|sha256:||'); CACHE_DIR=\"\$HOME/.local/share/openshell/docker-supervisor/sha256-\$DIGEST\"; mkdir -p \"\$CACHE_DIR\"; chmod 755 \"\$CACHE_DIR/openshell-sandbox\" 2>/dev/null || true; cp /usr/local/bin/openshell-supervisor \"\$CACHE_DIR/openshell-sandbox\" && chmod 755 \"\$CACHE_DIR/openshell-sandbox\" && echo \"pre-populated supervisor cache sha256:\$DIGEST (ODH binary)\"" || echo "WARN: supervisor cache pre-population failed (non-fatal)"
   PIP_EXTRA=""
   [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
   guest_ssh "
@@ -97,18 +84,16 @@ if [[ "${ALLOW_ANONYMOUS_PULL:-false}" == "true" ]]; then
   fi
 fi
 
-# --- Systemd override: pre-populate supervisor cache before gateway starts ---
-# This ensures the correct ODH binary is in the content-addressed cache
-# on every gateway start, even if the upstream image digest changes.
-guest_ssh "
-  OVERRIDE_DIR=\"\$HOME/.config/systemd/user/openshell-gateway.service.d\"
-  mkdir -p \"\$OVERRIDE_DIR\"
-  cat > \"\$OVERRIDE_DIR/prepopulate-cache.conf\" << 'UNITEOF'
+# --- Pre-populate the supervisor cache on every gateway start ---
+# Transfer files instead of embedding shell code in a systemd command over SSH.
+guest_scp "${SCRIPTS_DIR}/prepopulate-supervisor-cache.sh" "/tmp/prepopulate-supervisor-cache.sh"
+guest_ssh "sudo install -m 755 /tmp/prepopulate-supervisor-cache.sh /usr/local/bin/openshell-prepopulate-cache"
+cat > "${WORK_DIR}/prepopulate-cache.conf" <<UNITEOF
 [Service]
-ExecStartPre=/bin/bash -c 'docker pull ghcr.io/nvidia/openshell/supervisor:dev 2>/dev/null || true; D=\$(docker images --no-trunc -q ghcr.io/nvidia/openshell/supervisor:dev 2>/dev/null | sed "s|sha256:||" | head -1); [ -n "\$D" ] && mkdir -p \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D && cp /usr/local/bin/openshell-supervisor \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null && chmod 755 \$HOME/.local/share/openshell/docker-supervisor/sha256-\$D/openshell-sandbox 2>/dev/null || true'
+ExecStartPre=/usr/local/bin/openshell-prepopulate-cache ${RUNTIME}
 UNITEOF
-  systemctl --user daemon-reload && echo 'gateway override installed'
-" || echo "WARN: gateway systemd override failed (non-fatal)"
+guest_scp "${WORK_DIR}/prepopulate-cache.conf" "/tmp/prepopulate-cache.conf"
+guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
 
 # --- Patch OIDC issuer ---
 source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true

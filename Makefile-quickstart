@@ -297,6 +297,17 @@ pre-uninstall:
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
+	@echo "Force-syncing ExternalSecrets after install (ESO may need a nudge on first sync)..."
+	@for i in 1 2 3; do \
+		sleep 30; \
+		FAILED=$$(oc get externalsecrets -n $(NS) --no-headers 2>/dev/null | grep -v SecretSynced | awk '{print $$1}'); \
+		if [[ -n "$$FAILED" ]]; then \
+			echo "  Nudging: $$FAILED"; \
+			for es in $$FAILED; do \
+				oc annotate externalsecret $$es -n $(NS) force-sync=$$(date +%s) --overwrite 2>/dev/null || true; \
+			done; \
+		fi; \
+	done || true
 
 # Override Makefile-common's uninstall to handle missing pattern CR gracefully.
 # OLM cleanup runs AFTER rhvp.cluster_utils.uninstall removes the ArgoCD apps

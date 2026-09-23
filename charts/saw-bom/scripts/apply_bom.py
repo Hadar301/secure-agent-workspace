@@ -179,6 +179,10 @@ def parse_profiles(profiles_dir):
                     url = (p.get("url", "") or
                            (os.environ.get(url_env, "")
                             if p.get("urlSecretKey") else ""))
+                    model_env = f"PROV_{pname}_MODEL".replace("-", "_").upper()
+                    model = (p.get("model", "") or
+                             (os.environ.get(model_env, "")
+                              if p.get("modelSecretKey") else ""))
                     ws.providers.append(Provider(
                         name=pname,
                         type=p["type"],
@@ -186,7 +190,7 @@ def parse_profiles(profiles_dir):
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
-                        model=p.get("model", ""),
+                        model=model,
                         url=url,
                     ))
             sb_file = ws_entry / "sandbox.yaml"
@@ -837,7 +841,8 @@ def main():
                 for prov in enabled_provs:
                     cred = resolve_credential(prov)
                     deployer.create_provider(prov, cred, ws.name)
-                    if not inference_set and prov.model:
+                    # Custom endpoints use direct governed egress, not inference.local.
+                    if not inference_set and prov.model and not prov.url:
                         log(f"  Setting inference routes: "
                             f"provider={prov.name} model={prov.model}"
                             f" workspace={ws.name}")

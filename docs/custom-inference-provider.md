@@ -161,4 +161,4 @@ Then reinstall.
 
 - **Profile selection**: when `provider: custom` is set, the default NVIDIA workspace is skipped. Both provider configurations cannot be active simultaneously in a single deployment. A follow-up will add provider-aware profile selection so users only get the workspace they need.
 
-- **The `vllm` workspace provider is not fully auto-provisioned** in the current release: a type mismatch between `inference.provider=custom` and the BOM's `openai` provider type causes the BOM to skip provider creation. The workspace and sandbox are set up correctly, but the `openai` provider must be manually created on the gateway if the automatic step is skipped. This will be resolved with the profile selection improvement.
+- The `vllm` provider accepts `inference.provider=custom` through its `nemoclawProvider: custom` alias. Its `urlSecretKey: url` and `modelSecretKey: model` fields read the endpoint and model from the inference secret. Set `model` to the exact name served by the endpoint; the setup fails if that required secret field is missing.
