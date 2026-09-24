@@ -27,10 +27,18 @@ data:
     display_name: Custom vLLM / OpenAI-compatible Endpoint
     description: Self-hosted vLLM or any OpenAI-compatible inference endpoint
     provider_type: openai
+    credentials:
+      - name: api_key
+        description: Custom endpoint API key
+        env_vars: [OPENAI_API_KEY]
+        required: true
+        auth_style: bearer
+        header_name: authorization
     endpoints:
       - host: {{ .Values.customEndpointHost }}
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
         access: read-write
     binaries:

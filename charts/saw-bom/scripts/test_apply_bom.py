@@ -6,14 +6,20 @@ Run with:
     pip install pytest pyyaml
     pytest charts/saw-bom/scripts/test_apply_bom.py -v
 """
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import yaml
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+import apply_bom as bom
 
 from apply_bom import (  # noqa: E402
     Provider,
@@ -410,3 +416,168 @@ def test_onboard_nemoclaw_omits_inference_base_url_when_url_empty(tmp_path, monk
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+
+@pytest.mark.parametrize('configured,eligible', [
+    ('custom', True), ('openai', False), ('build', False),
+    ('nvidia', False), ('gemini', False), ('', False), (None, False),
+])
+def test_custom_eligibility_matches_verifier(monkeypatch, configured, eligible):
+    monkeypatch.delenv('PROV_OPENAI_TYPE', raising=False)
+    if configured is not None:
+        monkeypatch.setenv('PROV_OPENAI_TYPE', configured)
+    provider = bom.Provider('openai', 'openai', nemoclaw_provider='custom')
+    sb = bom.Sandbox('notebook', providers=['openai'])
+    ws = bom.Workspace('default', providers=[provider], sandboxes=[sb])
+    assert bom.sandbox_skipped(ws, sb) is not eligible
+    shell = SimpleNamespace(run=Mock(return_value=(0, 'openai', '')))
+    bom.Verifier(shell).verify_profiles([bom.Profile('test', [ws])])
+    assert bool(shell.run.call_count) is eligible
+
+
+@pytest.mark.parametrize('kind,alias,configured', [
+    ('nvidia', 'build', 'build'), ('nvidia', 'build', 'nvidia'),
+    ('gemini', '', 'gemini'), ('openai', '', 'openai'), ('nvidia', 'build', None),
+])
+def test_cloud_aliases_remain_compatible(monkeypatch, kind, alias, configured):
+    monkeypatch.delenv('PROV_CLOUD_TYPE', raising=False)
+    if configured:
+        monkeypatch.setenv('PROV_CLOUD_TYPE', configured)
+    assert bom.check_provider_type_mismatch(
+        bom.Provider('cloud', kind, nemoclaw_provider=alias)) is None
+
+
+@pytest.mark.parametrize('scenario,ok', [
+    ('created', True), ('create-fails', False), ('existing', True),
+    ('wrong-workspace', False), ('wrong-type', False), ('missing', False),
+    ('list-fails', False), ('bad-json', False), ('update-fails', False),
+    ('stale-cloud-url', False), ('legacy-key', True),
+])
+def test_provider_reconciliation(monkeypatch, scenario, ok):
+    monkeypatch.setenv('PROV_OPENAI_TYPE', 'custom')
+    provider = bom.Provider('openai', 'openai', nemoclaw_provider='custom',
+                            url='https://desired.example/v1')
+    record = {'name': 'openai', 'workspace': 'vllm', 'type': 'openai',
+              'credential_keys': ['OPENAI_API_KEY'], 'config_keys': ['base_url']}
+    if scenario == 'wrong-workspace': record['workspace'] = 'other'
+    if scenario == 'wrong-type': record['type'] = 'nvidia'
+    if scenario == 'stale-cloud-url': provider.url = ''
+    if scenario == 'legacy-key': record['credential_keys'] = ['API_KEY']
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[2] == 'create':
+            return ((0, '', '') if scenario == 'created' else
+                    (1, '', 'denied' if scenario == 'create-fails' else 'already exists'))
+        if cmd[2] == 'list':
+            return (1 if scenario == 'list-fails' else 0,
+                    'invalid' if scenario == 'bad-json' else
+                    json.dumps([] if scenario == 'missing' else [record]), '')
+        assert cmd[2] == 'update'
+        return (1 if scenario == 'update-fails' else 0, '', '')
+    shell = SimpleNamespace(run=run, dry_run=False)
+    assert bom.WorkspaceDeployer(shell, None).create_provider(provider, 'test-secret', 'vllm') is ok
+    for cmd, kwargs in calls:
+        assert cmd[cmd.index('--workspace') + 1] == 'vllm'
+        assert kwargs['allow_existing'] is False
+        assert 'test-secret' not in ' '.join(cmd)
+        if cmd[2] in ['create', 'update']:
+            assert kwargs['env']['OPENAI_API_KEY'] == 'test-secret'
+    updates = [c for c, _ in calls if c[2] == 'update']
+    if scenario in ('existing', 'update-fails', 'legacy-key'):
+        assert 'base_url=https://desired.example/v1' in updates[0]
+        if scenario == 'legacy-key': assert 'API_KEY=' in updates[0]
+    elif scenario != 'created':
+        assert not updates
+
+
+def test_shell_does_not_hide_provider_duplicates(monkeypatch):
+    monkeypatch.setattr(bom.subprocess, 'run', Mock(return_value=SimpleNamespace(
+        returncode=1, stdout='', stderr='already exists')))
+    assert bom.Shell().run(['openshell', 'provider', 'create'], allow_existing=False)[0] == 1
+
+
+@pytest.mark.parametrize('mode', ['success', 'absent', 'start-failure', 'inactive', 'disable-failure'])
+def test_keep_alive_migration(tmp_path, monkeypatch, mode):
+    commands = []
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:3] == ['openshell', 'sandbox', 'get']: return 0, 'Ready', ''
+        return 0, 'ok', ''
+    deployer = bom.WorkspaceDeployer(SimpleNamespace(run=run, dry_run=False), None)
+    monkeypatch.setattr(deployer, 'chown_sandbox_home', lambda *a: None)
+    assert deployer.start_openclaw_gateway('notebook', '', 'vllm')
+    script = next(cmd[2] for cmd in commands if cmd[:2] == ['bash', '-c'])
+    units = tmp_path / 'units'
+    units.mkdir()
+    legacy = units / 'openshell-sandbox-notebook.service'
+    if mode != 'absent': legacy.touch()
+    script = script.replace('/etc/systemd/system', str(units))
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    (bindir / 'sudo').write_text('#!/bin/sh\nexec "$@"\n')
+    (bindir / 'systemctl').write_text('''#!/bin/sh
+echo "$*" >> "$CALLS"
+case "$MODE:$1" in start-failure:start|inactive:is-active|disable-failure:disable) exit 1;; esac
+''')
+    for path in bindir.iterdir(): path.chmod(0o755)
+    env = dict(os.environ, PATH=f'{bindir}:{os.environ["PATH"]}',
+               MODE=mode, CALLS=str(tmp_path / 'calls'))
+    for _ in range(2):
+        result = subprocess.run(['bash', '-c', script], env=env, capture_output=True)
+        assert (result.returncode == 0) == (mode in ['success', 'absent'])
+    calls = (tmp_path / 'calls').read_text()
+    assert ('disable --now openshell-sandbox-notebook.service' in calls) == (mode in ['success', 'disable-failure'])
+    unit = (units / 'openshell-sandbox-vllm-notebook.service').read_text()
+    assert '--workspace vllm' in unit
+    assert 'openshell-sandbox-default-notebook' not in calls
+
+
+@pytest.mark.parametrize('key,ok', [
+    ('openshell:resolve:env:v1_OPENAI_API_KEY', True),
+    ('', False), ('real-key-must-not-be-copied', False), ('proxy-managed', False),
+])
+def test_direct_onboard_requires_managed_placeholder(tmp_path, monkeypatch, key, ok):
+    commands = []
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        return 0, '', ''
+    deployer = bom.WorkspaceDeployer(SimpleNamespace(run=run, dry_run=True), None)
+    monkeypatch.setattr(deployer, 'chown_sandbox_home', lambda *a: None)
+    deployer.start_openclaw_gateway('notebook', '', 'vllm',
+                                    provider_base_url='https://custom.example/v1')
+    command = next(c[-1] for c in commands if 'openclaw onboard' in c[-1])
+    stub = tmp_path / 'openclaw'
+    stub.write_text('#!/bin/sh\nprintf "%s" "$CUSTOM_API_KEY" > "$RESULT"\n')
+    stub.chmod(0o755)
+    result_path = tmp_path / 'result'
+    result = subprocess.run(['sh', '-c', command], capture_output=True, text=True,
+                            env=dict(os.environ, PATH=f'{tmp_path}:{os.environ["PATH"]}',
+                                     OPENAI_API_KEY=key, RESULT=str(result_path)))
+    assert (result.returncode == 0) is ok
+    assert result_path.exists() is ok
+    if ok: assert result_path.read_text() == key
+    assert 'real-key-must-not-be-copied' not in command + result.stdout + result.stderr
+
+
+def test_inference_router_keeps_its_sentinel(monkeypatch):
+    commands = []
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        return 0, '', ''
+    deployer = bom.WorkspaceDeployer(SimpleNamespace(run=run, dry_run=True), None)
+    monkeypatch.setattr(deployer, 'chown_sandbox_home', lambda *a: None)
+    deployer.start_openclaw_gateway('notebook', '')
+    command = next(c[-1] for c in commands if 'openclaw onboard' in c[-1])
+    assert 'CUSTOM_API_KEY=proxy-managed' in command
+    assert '$OPENAI_API_KEY' not in command
+
+
+def test_openai_legacy_credential_environment(monkeypatch):
+    monkeypatch.delenv('PROV_OPENAI_KEY', raising=False)
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.setenv('API_KEY', 'legacy-test-key')
+    assert bom.resolve_credential(bom.Provider('openai', 'openai')) == 'legacy-test-key'
+    monkeypatch.setenv('OPENAI_API_KEY', 'canonical-test-key')
+    assert bom.resolve_credential(bom.Provider('openai', 'openai')) == 'canonical-test-key'

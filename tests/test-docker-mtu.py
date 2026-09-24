@@ -33,8 +33,10 @@ elif name=='nsenter' and '-j' in args:
  print('[{"ifname":"eth0","addr_info":[{"local":"172.18.0.2"}]}]')
 elif name=='iptables':
  p=Path(os.environ['RULE'])
- if '-C' in args: sys.exit(0 if p.exists() else 1)
- if '-A' in args: p.touch()
+ key=json.dumps(args[args.index('FORWARD')+1:])
+ rules=p.read_text().splitlines() if p.exists() else []
+ if '-C' in args: sys.exit(0 if key in rules else 1)
+ if '-A' in args: p.write_text('\\n'.join([*rules,key])+'\\n')
 '''
     for name in ['ip', 'docker', 'nsenter', 'iptables']:
         path = bindir / name
@@ -51,8 +53,11 @@ elif name=='iptables':
     assert ['ip','link','set','dev','br-abcdef123456','mtu',str(mtu)] in calls
     assert ['nsenter','-t','42','-n','ip','link','set','dev','eth0','mtu',str(mtu)] in calls
     rules = [c for c in calls if c[0]=='iptables' and '-A' in c]
-    assert len(rules) == 1
-    assert rules[0][-2:] == ['--set-mss', str(mtu - 40)]
+    assert len(rules) == 2
+    assert {(r[r.index('-i')+1], r[r.index('-o')+1]) for r in rules} == {
+        ('br-abcdef123456', 'enp1s0'), ('enp1s0', 'br-abcdef123456')}
+    for rule in rules:
+        assert rule[-2:] == ['--set-mss', str(mtu - 40)]
     creates = [c for c in calls if c[:3]==['docker','network','create']]
     assert len(creates) == (0 if existing else 1)
     if creates: assert f'com.docker.network.driver.mtu={mtu}' in creates[0]

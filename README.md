@@ -366,6 +366,12 @@ make delete-all
 ./pattern.sh make uninstall
 ```
 
+`UNINSTALL_TIMEOUT_SECONDS` (default `600`) bounds the uninstall playbook/watcher,
+with up to seven additional seconds for process cleanup. Pre/post-cleanup use
+separate bounded resource waits. Namespace and HyperConverged finalizers are
+preserved; a stuck deletion fails with diagnostics instead of forcing completion.
+See [deployment recovery notes](docs/custom-inference-provider.md#troubleshooting-and-upgrades).
+
 ## Repository structure
 
 ```

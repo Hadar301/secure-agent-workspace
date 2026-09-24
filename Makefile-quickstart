@@ -258,43 +258,36 @@ clean-stale-operators:
 	done
 	@echo "Stale operator cleanup done."
 
-# Delete VMs, HyperConverged CR, and operator CRDs before uninstall so
-# ArgoCD doesn't get stuck on webhook finalizers. OLM cleanup (Subscription/
-# CSV/InstallPlan) is intentionally deferred to the uninstall target below,
-# after the Ansible framework removes ArgoCD apps — otherwise ArgoCD
-# immediately recreates the Subscription we just deleted.
+# Detach Argo apps before deleting managed workloads so they cannot be recreated.
+# Keep CNV controllers/CRDs installed until HyperConverged cleanup has completed.
 pre-uninstall:
+	@echo "Pre-uninstall: removing ArgoCD app finalizers and disabling auto-sync to prevent hub-deletion deadlock..."
+	@# Delete the App-of-Apps first so it can't recreate child apps during cleanup
+	@ROOT_APP=$$(oc --request-timeout=10s get applications.argoproj.io secure-agent-workspace-prod -n vp-gitops --ignore-not-found=true -o name) || exit $$?; \
+	if [ -n "$$ROOT_APP" ]; then \
+		oc --request-timeout=10s patch $$ROOT_APP -n vp-gitops --type=merge \
+			-p='{"metadata":{"finalizers":[]},"spec":{"syncPolicy":null}}' || exit $$?; \
+		oc --request-timeout=10s delete $$ROOT_APP -n vp-gitops --wait=true --timeout=60s --ignore-not-found=true || exit $$?; \
+	fi
+	@# Now remove remaining child apps (App-of-Apps is gone — can't recreate them)
+	@APPS=$$(oc --request-timeout=10s get applications.argoproj.io -n vp-gitops -o name) || exit $$?; \
+	for app in $$APPS; do \
+		oc --request-timeout=10s patch $$app -n vp-gitops --type=merge \
+			-p='{"metadata":{"finalizers":[]},"spec":{"syncPolicy":null}}' || exit $$?; \
+		oc --request-timeout=10s delete $$app -n vp-gitops --wait=true --timeout=60s --ignore-not-found=true || exit $$?; \
+	done
 	@echo "Pre-uninstall: deleting Keycloak PVC to prevent stale DB on reinstall..."
-	-oc --request-timeout=10s delete pvc keycloak-db -n $(NS) --wait=false --ignore-not-found=true 2>/dev/null
+	oc --request-timeout=10s delete pvc keycloak-db -n $(NS) --wait=false --ignore-not-found=true
 	@echo "Pre-uninstall: deleting VMs and CNV resources..."
 	oc --request-timeout=10s delete vm,dv,job --all -n $(NS) --wait=false --ignore-not-found=true
 	@echo "Waiting for VMIs to terminate..."
 	oc --request-timeout=10s wait --for=delete vmi --all -n $(NS) --timeout=120s
-	@echo "Removing HyperConverged CR (must be fully gone before OLM reinstall to avoid schema conflicts)..."
-	-oc --request-timeout=10s delete hyperconverged --all -n openshift-cnv --ignore-not-found=true --wait=false 2>/dev/null
-	@for hc in $$(oc --request-timeout=10s get hyperconverged -n openshift-cnv -o name 2>/dev/null); do \
-		oc --request-timeout=10s patch $$hc -n openshift-cnv --type=json \
-			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
-	done
-	-oc --request-timeout=10s wait --for=delete hyperconverged --all -n openshift-cnv --timeout=60s 2>/dev/null || true
-	$(MAKE) clean-stale-operators
-	@echo "Pre-uninstall: removing ArgoCD app finalizers and disabling auto-sync to prevent hub-deletion deadlock..."
-	@# Delete the App-of-Apps first so it can't recreate child apps during cleanup
-	-oc --request-timeout=10s patch applications.argoproj.io/secure-agent-workspace-prod -n vp-gitops --type=json \
-		-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
-	-oc --request-timeout=10s delete applications.argoproj.io secure-agent-workspace-prod -n vp-gitops \
-		--wait=true --timeout=60s --ignore-not-found=true 2>/dev/null || true
-	@sleep 5
-	@# Now remove remaining child apps (App-of-Apps is gone — can't recreate them)
-	@for app in $$(oc --request-timeout=10s get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
-		oc --request-timeout=10s patch $$app -n vp-gitops --type=json \
-			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
-	done
-	-oc --request-timeout=10s delete applications.argoproj.io --all -n vp-gitops --wait=true --timeout=60s --ignore-not-found=true 2>/dev/null || \
-		oc --request-timeout=10s delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
+	@echo "Waiting for the pattern's HyperConverged controller cleanup..."
+	python3 scripts/delete-and-wait.py hyperconvergeds.hco.kubevirt.io/kubevirt-hyperconverged \
+		--namespace openshift-cnv --optional-api-group hco.kubevirt.io --timeout 120
 	@echo "Pre-uninstall: removing ESO webhook configs to prevent namespace termination deadlock..."
-	-oc --request-timeout=10s delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
-	-oc --request-timeout=10s delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	oc --request-timeout=10s delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true
+	oc --request-timeout=10s delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
@@ -316,27 +309,24 @@ pattern-install: generate-keys
 # (including the openshift-cnv app that manages the Subscription). This prevents
 # ArgoCD from fighting the cleanup by immediately recreating deleted resources.
 uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
-	@if oc --request-timeout=10s get patterns secure-agent-workspace -n patterns-operator >/dev/null 2>&1; then \
+	@PATTERN=$$(oc --request-timeout=10s get patterns secure-agent-workspace -n patterns-operator --ignore-not-found=true -o name) || exit $$?; \
+	if [ -n "$$PATTERN" ]; then \
 		UNINSTALL_TIMEOUT_SECONDS=$(UNINSTALL_TIMEOUT_SECONDS) python3 scripts/watch-uninstall.py \
 			env $(ANSIBLE_RUN) rhvp.cluster_utils.uninstall || exit $$?; \
 	else \
 		echo "Pattern CR not found — already uninstalled. Cleaning up namespace..."; \
 		oc --request-timeout=10s delete ns $(NS) --wait=false --ignore-not-found=true; \
 	fi
-	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
-	oc --request-timeout=10s delete subscription,csv,installplan --all -n openshift-cnv --wait=false --ignore-not-found=true
+	@echo "Cleaning the pattern's CNV subscription and its referenced OLM resources..."
+	@CNV_CSV=$$(oc --request-timeout=10s get subscription kubevirt-hyperconverged -n openshift-cnv --ignore-not-found=true -o jsonpath='{.status.installedCSV}') || exit $$?; \
+	CNV_PLAN=$$(oc --request-timeout=10s get subscription kubevirt-hyperconverged -n openshift-cnv --ignore-not-found=true -o jsonpath='{.status.installPlanRef.name}') || exit $$?; \
+	oc --request-timeout=10s delete subscription kubevirt-hyperconverged -n openshift-cnv --wait=false --ignore-not-found=true || exit $$?; \
+	if [ -n "$$CNV_CSV" ]; then oc --request-timeout=10s delete csv "$$CNV_CSV" -n openshift-cnv --wait=false --ignore-not-found=true || exit $$?; fi; \
+	if [ -n "$$CNV_PLAN" ]; then oc --request-timeout=10s delete installplan "$$CNV_PLAN" -n openshift-cnv --wait=false --ignore-not-found=true || exit $$?; fi
 	@echo "Ensuring $(NS) namespace is fully gone (ESO webhook can block termination)..."
-	-oc --request-timeout=10s delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
-	-oc --request-timeout=10s delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
-	@if oc --request-timeout=10s get namespace $(NS) >/dev/null 2>&1; then \
-		kubectl proxy --port=8099 >/dev/null 2>&1 & PROXY_PID=$$!; sleep 3; \
-		curl -sk --max-time 10 -H "Content-Type: application/json" -X PUT \
-		  http://localhost:8099/api/v1/namespaces/$(NS)/finalize \
-		  -d "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"$(NS)\"},\"spec\":{\"finalizers\":[]}}" \
-		  >/dev/null 2>&1 || true; \
-		sleep 2; kill $$PROXY_PID 2>/dev/null || true; \
-		oc --request-timeout=10s wait --for=delete namespace/$(NS) --timeout=60s 2>/dev/null || true; \
-	fi
+	oc --request-timeout=10s delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true
+	oc --request-timeout=10s delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true
+	python3 scripts/delete-and-wait.py namespace/$(NS) --timeout 120
 
 # Clean up a single sandbox's heavy resources before uninstall to prevent
 # finalizer hangs. VMs and DataVolumes take time to terminate and block

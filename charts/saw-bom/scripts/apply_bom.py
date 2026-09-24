@@ -77,7 +77,7 @@ class Shell:
     def __init__(self, dry_run=False):
         self.dry_run = dry_run
 
-    def run(self, cmd, env=None, check=True):
+    def run(self, cmd, env=None, check=True, allow_existing=True):
         display = re.sub(
             r'(--credential\s+\S+=)\S+',
             r'\1***',
@@ -111,7 +111,7 @@ class Shell:
             for line in stdout.split("\n"):
                 log(f"  {line}")
         if result.returncode != 0:
-            if "already exists" in (stdout + stderr):
+            if allow_existing and "already exists" in (stdout + stderr):
                 log("  (already exists)")
                 return 0, stdout, stderr
             if stderr:
@@ -228,7 +228,7 @@ PROVIDER_CRED_MAP = {
     "build": "NVIDIA_INFERENCE_API_KEY",
     "brave": "BRAVE_API_KEY",
     "tavily": "TAVILY_API_KEY",
-    "openai": "API_KEY",
+    "openai": "OPENAI_API_KEY",
 }
 
 
@@ -242,6 +242,10 @@ def resolve_credential(provider):
         val = os.environ.get(cred_key)
         if val:
             return val
+    if provider.type == "openai":
+        # Keep accepting older provisioning environments while storing the
+        # credential under the key declared by the managed provider profile.
+        return os.environ.get("API_KEY") or None
     return None
 
 
@@ -267,9 +271,15 @@ def check_provider_type_mismatch(provider):
     Build) are both accepted as valid matches, since values-secret.yaml's
     documented provider identifiers ("gemini, anthropic, openai, build
     (NVIDIA), openrouter, ...") use the nemoclaw-style alias, not the
-    OpenShell type, for NVIDIA specifically.
+    OpenShell type, for NVIDIA specifically. Custom profiles are an exception:
+    they require the explicit custom alias, never an unset or cloud OpenAI type.
     """
     configured = resolve_configured_type(provider)
+    if provider.nemoclaw_provider == "custom":
+        if configured != "custom":
+            return (f"Custom profile '{provider.name}' requires provider 'custom'; "
+                    f"configured provider is '{configured or 'unset'}'")
+        return None
     if not configured:
         return None
     valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
@@ -411,19 +421,59 @@ class WorkspaceDeployer:
             log(f"ERROR: {mismatch} — skipping provider "
                 f"'{provider.name}' creation. Fix values-secret.yaml or "
                 f"the BOM profile's declared type/nemoclawProvider.")
-            return
+            return False
         args = ["openshell", "provider", "create",
                 "--name", provider.name, "--type", provider.type]
-        if workspace_name != "default":
-            args += ["--workspace", workspace_name]
+        ws_args = ["--workspace", workspace_name]
+        args += ws_args
         cred_key = PROVIDER_CRED_MAP.get(provider.type, "API_KEY")
+        options = []
+        env = {}
         if credential and cred_key:
-            args += ["--credential", f"{cred_key}={credential}"]
+            options += ["--credential", cred_key]
+            env[cred_key] = credential
         else:
-            args += ["--from-existing"]
+            options += ["--from-existing"]
         if provider.url:
-            args += ["--config", f"base_url={provider.url}"]
-        self.sh.run(args, check=False)
+            options += ["--config", f"base_url={provider.url}"]
+        rc, out, err = self.sh.run(args + options, env=env, check=False,
+                                   allow_existing=False)
+        if rc == 0:
+            return True
+        if "already exists" not in (out + err).lower():
+            return False
+        # `get` exposes keys only in 0.0.103. List provides structured identity,
+        # including workspace; never infer identity from a duplicate-name error.
+        rc, out, _ = self.sh.run(
+            ["openshell", "provider", "list", "-o", "json"] + ws_args,
+            check=False, allow_existing=False)
+        if rc:
+            return False
+        try:
+            records = json.loads(out)
+            matches = [p for p in records if p.get("name") == provider.name
+                       and p.get("workspace") == workspace_name]
+            if len(matches) != 1 or matches[0].get("type") != provider.type:
+                raise ValueError("provider identity/type mismatch")
+            if not provider.url and "base_url" in matches[0].get("config_keys", []):
+                raise ValueError("unexpected existing endpoint configuration")
+        except (ValueError, TypeError, AttributeError):
+            log(f"ERROR: cannot validate existing provider '{provider.name}' "
+                f"in '{workspace_name}'; inspect or recreate it before retrying")
+            return False
+        if (provider.type == "openai" and credential
+                and "API_KEY" in matches[0].get("credential_keys", [])):
+            # The earlier custom profile stored this generic key. The CLI's
+            # update API removes entries with empty values; retain only the
+            # canonical key used by the managed credential binding.
+            options += ["--credential", "API_KEY="]
+        # Values are intentionally not returned by the CLI. Reconcile the
+        # desired credential/config and require an acknowledged update instead
+        # of silently reusing a potentially stale key or endpoint.
+        rc, _, _ = self.sh.run(
+            ["openshell", "provider", "update", provider.name] + ws_args + options,
+            env=env, check=False, allow_existing=False)
+        return rc == 0
 
     def create_sandbox_generic(self, sandbox, workspace_name="default"):
         ws_args = (["--workspace", workspace_name]
@@ -592,9 +642,19 @@ class WorkspaceDeployer:
                   "OPENCLAW_NIX_MODE=0")
 
         log("Running openclaw onboard...")
+        credential_setup = ""
+        onboard_key = "proxy-managed"
+        if provider_base_url != "https://inference.local/v1":
+            # Custom egress uses the provider-injected, endpoint-bound token.
+            # Never copy the Vault key into exec arguments or agent config.
+            credential_setup = (
+                'case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*) ;; '
+                '*) echo "ERROR: custom endpoint requires an OpenShell-managed '
+                'OPENAI_API_KEY placeholder" >&2; exit 1;; esac; ')
+            onboard_key = '"$OPENAI_API_KEY"'
         onboard_rc, _, _ = self.sh.run(
             exec_cmd + ["sh", "-c",
-                        f"{oc_env} CUSTOM_API_KEY=proxy-managed "
+                        f"{credential_setup}{oc_env} CUSTOM_API_KEY={onboard_key} "
                         f"openclaw onboard "
                         f"--non-interactive --accept-risk "
                         f"--mode local "
@@ -666,15 +726,18 @@ class WorkspaceDeployer:
                         f"[Install]\nWantedBy=multi-user.target\n"
                     )
                     encoded = base64.b64encode(svc.encode()).decode()
-                    self.sh.run([
+                    service_rc, _, _ = self.sh.run([
                         "bash", "-c",
                         f"echo '{encoded}' | base64 -d"
                         f" | sudo tee /etc/systemd/system/{service}.service && "
                         f"sudo systemctl daemon-reload && "
                         f"sudo systemctl enable {service} && "
-                        f"sudo systemctl start {service}"
+                        f"sudo systemctl start {service} && "
+                        f"sudo systemctl is-active --quiet {service} && "
+                        f"if test -f /etc/systemd/system/openshell-sandbox-{sandbox_name}.service; then "
+                        f"sudo systemctl disable --now openshell-sandbox-{sandbox_name}.service; fi"
                     ], check=False)
-                    return True
+                    return service_rc == 0
                 log(f"  waiting for openclaw gateway... (attempt {i+1})")
                 time.sleep(3)
             log("ERROR: openclaw gateway health check failed")
@@ -851,6 +914,7 @@ def main():
 
             # Create providers in the workspace
             skipped = skipped_provider_names(ws)
+            failed_providers = set()
             enabled_provs = [p for p in ws.providers if p.name not in skipped]
             for name in sorted(skipped):
                 log(f"SKIP provider '{name}' in '{ws.name}' (disabled or incompatible)")
@@ -860,7 +924,11 @@ def main():
                 inference_set = False
                 for prov in enabled_provs:
                     cred = resolve_credential(prov)
-                    deployer.create_provider(prov, cred, ws.name)
+                    if not deployer.create_provider(prov, cred, ws.name):
+                        failed_providers.add(prov.name)
+                        deployment_failed = True
+                        log(f"FAIL provider '{prov.name}' in '{ws.name}'")
+                        continue
                     # Custom endpoints use direct governed egress, not inference.local.
                     if not inference_set and prov.model and not prov.url:
                         log(f"  Setting inference routes: "
@@ -886,6 +954,10 @@ def main():
                     continue
                 if sandbox_skipped(ws, sb):
                     log(f"SKIP sandbox '{sb.name}' in '{ws.name}' (required provider unavailable)")
+                    continue
+                if set(sb.providers) & failed_providers:
+                    log(f"FAIL sandbox '{sb.name}' in '{ws.name}' "
+                        "(required provider provisioning failed)")
                     continue
                 section(f"Sandbox '{sb.name}' (type={sb.type})")
 
@@ -924,7 +996,9 @@ def main():
                         if not ok:
                             log("nemoclaw onboard failed, "
                                 "configuring provider manually")
-                            deployer.create_provider(prov, cred, ws.name)
+                            if not deployer.create_provider(prov, cred, ws.name):
+                                deployment_failed = True
+                                continue
 
                     if not deployer.create_sandbox_generic(sb, ws.name):
                         deployment_failed = True
@@ -967,7 +1041,7 @@ def main():
         verifier = Verifier(sh)
         if deployment_failed:
             verifier.failed += 1
-            log("FAIL provisioning (sandbox creation or readiness failed)")
+            log("FAIL provisioning (provider, sandbox, or readiness failed)")
         ok = verifier.verify_profiles(profiles)
         if not ok or deployment_failed:
             # Without this, the setup Job reports "Complete" even when the

@@ -15,11 +15,15 @@ bridge="$(printf '%s' "${network_json}" | python3 -c 'import json,sys; n=json.lo
 ip link set dev "${bridge}" mtu "${mtu}"
 
 # Docker network options are immutable. Existing networks may still assign
-# MTU 1500 to future container interfaces. Limit their advertised TCP segment
-# size on this bridge/uplink only; no policy or TLS verification is bypassed.
+# MTU 1500 to future container interfaces. Clamp SYN and SYN-ACK MSS in both
+# directions so both peers send segments that fit this bridge/uplink.
 mss=$((mtu - 40))
-rule=(-i "${bridge}" -o "${uplink}" -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss "$((mss + 1)):65535" -j TCPMSS --set-mss "${mss}")
-iptables -w 5 -t mangle -C FORWARD "${rule[@]}" 2>/dev/null || iptables -w 5 -t mangle -A FORWARD "${rule[@]}"
+for direction in outbound inbound; do
+  in_dev="${bridge}"; out_dev="${uplink}"
+  if [[ "${direction}" == inbound ]]; then in_dev="${uplink}"; out_dev="${bridge}"; fi
+  rule=(-i "${in_dev}" -o "${out_dev}" -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss "$((mss + 1)):65535" -j TCPMSS --set-mss "${mss}")
+  iptables -w 5 -t mangle -C FORWARD "${rule[@]}" 2>/dev/null || iptables -w 5 -t mangle -A FORWARD "${rule[@]}"
+done
 
 while IFS= read -r container; do
   [[ -n "${container}" ]] || continue

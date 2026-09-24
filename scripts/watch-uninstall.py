@@ -7,6 +7,33 @@ import sys
 import time
 
 
+def stop_process_group(child):
+    """Bound cleanup even if a killed process cannot be reaped yet.
+
+    A reaped leader may have live descendants, so still signal its process group.
+    """
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    if child.poll() is None:
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if child.poll() is None:
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            print('Uninstall process did not reap after SIGKILL; '
+                  'cleanup wait stopped. Inspect the host process group '
+                  f'{child.pid}.', file=sys.stderr)
+
+
 def main():
     timeout = int(os.environ.get('UNINSTALL_TIMEOUT_SECONDS', '600'))
     if timeout <= 0 or len(sys.argv) < 2:
@@ -36,11 +63,19 @@ def main():
                 if not result.stdout.strip():
                     return 0
             result = oc('get', 'applications.argoproj.io', '-n', 'vp-gitops', '-o', 'name')
-            if result.returncode == 0:
-                for app in result.stdout.split():
-                    oc('patch', app, '-n', 'vp-gitops', '--type=json',
-                       '-p=[{"op":"remove","path":"/metadata/finalizers"}]')
-                    oc('delete', app, '-n', 'vp-gitops', '--wait=false', '--ignore-not-found')
+            if result.returncode:
+                print(result.stderr, file=sys.stderr)
+                return 1
+            for app in result.stdout.split():
+                for command in [
+                    ('patch', app, '-n', 'vp-gitops', '--type=merge',
+                     '-p={"metadata":{"finalizers":[]}}'),
+                    ('delete', app, '-n', 'vp-gitops', '--wait=false', '--ignore-not-found'),
+                ]:
+                    result = oc(*command)
+                    if result.returncode:
+                        print(result.stderr, file=sys.stderr)
+                        return 1
             time.sleep(min(5, max(0, deadline - time.monotonic())))
         raise TimeoutError
     except (TimeoutError, subprocess.TimeoutExpired):
@@ -48,17 +83,7 @@ def main():
               'patterns-operator and Applications in vp-gitops. Further cleanup stopped.', file=sys.stderr)
         return 124
     finally:
-        # Also terminate descendants if the playbook exited but left helpers behind.
-        try:
-            os.killpg(child.pid, signal.SIGTERM)
-            try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        child.wait()
+        stop_process_group(child)
 
 
 if __name__ == '__main__':
