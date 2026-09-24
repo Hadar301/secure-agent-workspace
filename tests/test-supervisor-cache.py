@@ -55,7 +55,7 @@ def test_rendered_dropin_transfer(rendered_scripts, tmp_path):
     # Execute the local heredoc and parse every remote command without running it.
     stubs = '''set -euo pipefail
 guest_scp() { test -f "$1"; }
-guest_ssh() { printf '%s\\n' "$1" >> "$WORK_DIR/remote-commands"; printf '%s\\n' "$1" | bash -n; }
+guest_ssh() { printf '%s\\n' "$1" >> "$WORK_DIR/remote-commands"; printf '%s\\n' "$1" | bash -n; if [[ "$1" == 'id -u' ]]; then echo 1000; fi; }
 '''
     (tmp_path / "prepopulate-supervisor-cache.sh").write_text(rendered_scripts["prepopulate-supervisor-cache.sh"])
     (tmp_path / "configure-docker-mtu.sh").write_text(rendered_scripts["configure-docker-mtu.sh"])
@@ -69,3 +69,11 @@ guest_ssh() { printf '%s\\n' "$1" >> "$WORK_DIR/remote-commands"; printf '%s\\n'
     assert 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf"' in commands
     # systemd applies drop-ins lexically; route-san.conf resets ExecStartPre.
     assert "zz-prepopulate-cache.conf" > "route-san.conf"
+    unit = (tmp_path / "openshell-docker-mtu.service").read_text()
+    assert "Before=user@1000.service" in unit
+    assert "Requires=docker.service" in unit
+    assert "PartOf=docker.service" in unit
+    assert "ExecStart=/usr/local/bin/openshell-configure-docker-mtu" in unit
+    assert "sudo" not in unit
+    assert 'sudo systemctl restart openshell-docker-mtu.service' in commands
+    assert 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"' in commands

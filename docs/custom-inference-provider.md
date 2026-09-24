@@ -212,7 +212,11 @@ valid response. Open the web UI route and complete OIDC login separately.
   verification disablement is needed. This helper applies to Docker, not Podman.
 - After updating scripts on an existing VM, run
   `sudo /usr/local/bin/openshell-configure-docker-mtu` to reconcile immediately.
-  The `zz-docker-mtu.conf` gateway startup hook reapplies the settings on restart.
+  The root `openshell-docker-mtu.service` applies settings after Docker starts
+  and before the gateway user manager starts; it also restarts with Docker.
+  Setup removes the obsolete `zz-docker-mtu.conf` user-service hook so network
+  configuration runs directly in the system manager without relying on `sudo`
+  during user-service startup.
   Retry with a new connection; existing stalled requests should be cancelled.
 - The cache hook uses `zz-prepopulate-cache.conf` to run after `route-san.conf`,
   which resets `ExecStartPre`. Upgrades remove the old `prepopulate-cache.conf`.

@@ -97,18 +97,34 @@ guest_scp "${WORK_DIR}/zz-prepopulate-cache.conf" "/tmp/zz-prepopulate-cache.con
 guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/zz-prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-prepopulate-cache.conf" && rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
 
 # Docker's 1500-byte default exceeds some OpenShift VM uplinks (e.g. 1400).
-# Keep this after route-san.conf, which clears earlier ExecStartPre entries.
+# Network administration belongs in the system manager, not a sudo command
+# inside the gateway's user manager (which may run in a user namespace).
+guest_ssh 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
 if [[ "${RUNTIME}" == "docker" ]]; then
   guest_scp "${SCRIPTS_DIR}/configure-docker-mtu.sh" "/tmp/configure-docker-mtu.sh"
   guest_ssh "sudo install -m 755 /tmp/configure-docker-mtu.sh /usr/local/bin/openshell-configure-docker-mtu"
-  cat > "${WORK_DIR}/zz-docker-mtu.conf" <<'UNITEOF'
+  MTU_USER_UID="$(guest_ssh 'id -u')"
+  [[ "${MTU_USER_UID}" =~ ^[0-9]+$ ]] || { echo "ERROR: could not determine gateway user UID"; exit 1; }
+  cat > "${WORK_DIR}/openshell-docker-mtu.service" <<UNITEOF
+[Unit]
+Description=Configure OpenShell Docker network MTU
+Requires=docker.service
+After=docker.service network-online.target
+Before=user@${MTU_USER_UID}.service
+PartOf=docker.service
+
 [Service]
-ExecStartPre=/usr/bin/sudo -n /usr/local/bin/openshell-configure-docker-mtu
+Type=oneshot
+ExecStart=/usr/local/bin/openshell-configure-docker-mtu
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 UNITEOF
-  guest_scp "${WORK_DIR}/zz-docker-mtu.conf" "/tmp/zz-docker-mtu.conf"
-  guest_ssh 'install -m 644 /tmp/zz-docker-mtu.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
+  guest_scp "${WORK_DIR}/openshell-docker-mtu.service" "/tmp/openshell-docker-mtu.service"
+  guest_ssh 'sudo install -m 644 /tmp/openshell-docker-mtu.service /etc/systemd/system/openshell-docker-mtu.service && sudo systemctl daemon-reload && sudo systemctl enable openshell-docker-mtu.service && sudo systemctl restart openshell-docker-mtu.service'
 else
-  guest_ssh 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
+  guest_ssh 'if test -f /etc/systemd/system/openshell-docker-mtu.service; then sudo systemctl disable --now openshell-docker-mtu.service; fi'
 fi
 
 # --- Patch OIDC issuer ---
