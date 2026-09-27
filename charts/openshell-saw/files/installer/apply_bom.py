@@ -1115,12 +1115,14 @@ class ProfileApplier:
     # -- sandboxes -------------------------------------------------------
 
     def find_provider(self, ws, names):
-        enabled = self.usable(ws)
-        for name in names or []:
-            for p in enabled:
-                if p.name == name:
-                    return p
-        return enabled[0] if enabled else None
+        """The provider an agent sandbox is onboarded with: one of the
+        sandbox's own providers, preferring one with a model. Never another
+        provider of the workspace: found live, a skipped `custom` provider
+        made OpenClaw onboard with `brave` and a default NVIDIA model."""
+        usable = self.usable(ws)
+        if names:
+            usable = [p for n in names for p in usable if p.name == n]
+        return next((p for p in usable if p.model), usable[0] if usable else None)
 
     def sandbox_state(self, ws, sb):
         """'running', 'broken' (Error/Completed) or 'missing'."""
@@ -1317,6 +1319,14 @@ class ProfileApplier:
                     if not ran.ok:
                         detail = (ran.err or ran.out).strip().splitlines()[-1:] or [f"exit {ran.rc}"]
                         failures.append(f"openclaw cannot run in sandbox '{sb.name}': {detail[0]}")
+                if sb.type in ("openclaw", "nemoclaw") and sb.providers and \
+                        self.find_provider(ws, sb.providers) is None:
+                    # All of the agent's providers were skipped (e.g. no
+                    # provider profile for their type): it has no model.
+                    skipped = ", ".join(f"{p.name} ({p.type})" for p in ws.providers
+                                        if p.name in sb.providers)
+                    failures.append(f"{sb.type} sandbox '{sb.name}' in '{ws.name}' has no usable "
+                                    f"provider: skipped {skipped}; the gateway has no profile for that type")
                 if sb.providers:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out
