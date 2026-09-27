@@ -80,7 +80,8 @@ WORKSPACE      ?= default
 	elif oc get csv --all-namespaces 2>/dev/null | grep -q rhbk; then \
 		RHBK_NS=$$(oc get csv --all-namespaces 2>/dev/null | grep rhbk | awk '{print $$1}' | head -1); \
 		echo "Error: RHBK operator found in namespace '$${RHBK_NS}', but KEYCLOAK_NS is '$(KEYCLOAK_NS)'."; \
-		echo "  Keycloak can live in any namespace. Re-run with: KEYCLOAK_NS=$${RHBK_NS}"; \
+		echo "  Either use the Keycloak there:    KEYCLOAK_NS=$${RHBK_NS}"; \
+		echo "  or install RHBK in '$(KEYCLOAK_NS)' as well (OperatorHub, 'A specific namespace')."; \
 		exit 1; \
 	else \
 		echo "Error: RHBK operator not installed. Install it in '$(KEYCLOAK_NS)':"; \
