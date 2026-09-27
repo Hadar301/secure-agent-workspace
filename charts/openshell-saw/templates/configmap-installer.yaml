@@ -21,7 +21,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "vmName" (include "openshell-sandbox.fullname" .)
       "namespace" .Release.Namespace
       "runtimeUser" "cloud-user"
-      "mtlsGateway" "openshell"
+      "mtlsGateway" "saw-installer"
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "oidcIssuer" $oidcIssuer
       "routeHost" (include "openshell-sandbox.routeHost" .)

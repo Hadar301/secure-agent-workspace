@@ -354,7 +354,7 @@ def test_installer_configmap_ships_the_real_files(default_docs, ab):
     bom = yaml.safe_load(data["installer-bom.yaml"])
     assert ab.validate_bom(bom)
     config = json.loads(data["config.json"])
-    assert config["vmName"] == "saw-test" and config["mtlsGateway"] == "openshell"
+    assert config["vmName"] == "saw-test" and config["mtlsGateway"] == "saw-installer"
     assert config["runtimeUser"] == "cloud-user" and config["secrets"] == ["inference", "web-search"]
 
 
@@ -584,3 +584,20 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     for key, value in data.items():
         (tmp_path / key).write_text(value)
     assert set(ab.provider_profiles(tmp_path)) == {"brave"}
+
+
+def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
+    """Found live with an existing Keycloak CR named `keycloak`: the Job
+    looked for openshell-keycloak-initial-admin and could not register the
+    dashboard redirect. openshell-saw-create.sh passes the CR it finds."""
+    docs = render("--set", "oidc.issuerUrl=https://sso.example.com/realms/openshell",
+                  "--set", "oidc.keycloakName=keycloak", "--set", "oidc.realm=openshell")
+    role = next(d for (kind, name), d in docs.items() if kind == "Role" and d["metadata"].get("namespace") == "keycloak")
+    assert role["rules"][0]["resourceNames"] == ["keycloak-initial-admin"]
+    scripts = next(d for (kind, name), d in docs.items() if kind == "ConfigMap" and name.endswith("-prepare-scripts"))
+    assert 'OIDC_KEYCLOAK_NAME="keycloak"' in scripts["data"]["prepare.sh"]
+
+
+def test_create_script_passes_the_keycloak_it_finds():
+    text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
+    assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text

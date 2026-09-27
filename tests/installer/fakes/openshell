@@ -57,11 +57,31 @@ else:
 op = " ".join(head[:2])
 if op in deny:
     fail("Error: permission denied (requires platform admin)")
+if op == "workspace create" and (state_dir / "rbac").exists():
+    # OIDC RBAC: platform-admin methods need the admin role; an mTLS caller's
+    # roles come from its certificate's OU.
+    selected = next((g for g in state["gateways"] if g["name"] == state["selected"]), {})
+    if "openshell-admin" not in selected.get("roles", []):
+        fail("Error: permission denied (requires platform admin)")
 ws = opt("--workspace", "default")
+
+def cert_roles(tls_dir):
+    """OUs of the client certificate `gateway add --local` would import."""
+    import subprocess
+    subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-nameopt", "sep_multiline",
+                              "-in", str(Path(tls_dir) / "client" / "tls.crt")],
+                             capture_output=True, text=True, check=True).stdout
+    return [line.split("=", 1)[1] for line in subject.splitlines() if line.strip().startswith("OU=")]
+
 
 if head[0] == "gateway":
     if head[1] == "add":
-        state["gateways"].append({"name": opt("--name"), "endpoint": head[2], "local": "--local" in head})
+        tls_dir = os.environ.get("OPENSHELL_LOCAL_TLS_DIR")
+        # Without an override, --local imports the gateway's own client
+        # certificate, which carries OU=openshell-user.
+        roles = cert_roles(tls_dir) if tls_dir else ["openshell-user"]
+        state["gateways"].append({"name": opt("--name"), "endpoint": head[2], "local": "--local" in head,
+                                  "roles": roles})
     elif head[1] == "remove":
         state["gateways"] = [g for g in state["gateways"] if g["name"] != head[2]]
     elif head[1] == "select":

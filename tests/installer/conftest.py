@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,14 +82,33 @@ def fake_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_STATE", str(state))
     monkeypatch.setenv("FAKE_PYTHON", sys.executable)
-    return FakeWorld(state)
+    # The runtime user's home with the gateway's CA, as the golden image's
+    # first-boot setup leaves it (a real throwaway CA: the installer signs
+    # its admin client certificate with it).
+    home = tmp_path / "home"
+    ca_dir = home / ".local" / "state" / "openshell" / "tls"
+    ca_dir.mkdir(parents=True)
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                    "-nodes", "-keyout", str(ca_dir / "ca.key"), "-out", str(ca_dir / "ca.crt"),
+                    "-subj", "/O=openshell/CN=openshell-ca", "-days", "30"],
+                   check=True, capture_output=True)
+    monkeypatch.setenv("HOME", str(home))
+    return FakeWorld(state, home)
 
 
 class FakeWorld:
     """Helpers to configure and inspect the fakes."""
 
-    def __init__(self, state):
+    def __init__(self, state, home=None):
         self.state = state
+        self.home = home
+
+    def rbac(self):
+        """Gateway with OIDC RBAC: platform-admin calls need OU=openshell-admin."""
+        (self.state / "rbac").write_text("on")
+
+    def admin_cert(self):
+        return self.home / ".local" / "state" / "saw-installer" / "tls" / "client" / "tls.crt"
 
     # podman -------------------------------------------------------------
     def set_images(self, images):
@@ -154,7 +174,7 @@ def secrets_dir(tmp_path):
 @pytest.fixture
 def config():
     return {"vmName": "saw-test", "namespace": "openshell-agents",
-            "runtimeUser": "cloud-user", "mtlsGateway": "openshell",
+            "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
             "ownerSubject": "", "oidcIssuer": "", "sandboxDashboardRoute": "",
             "dashboard": {"enabled": False}}
 

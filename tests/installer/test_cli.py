@@ -7,6 +7,7 @@ in for runuser and the user systemd manager, which need a real VM.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -36,7 +37,10 @@ def world(tmp_path, inputs_dir, fake_env):
     opt_dir = tmp_path / "opt"
     etc_dir = tmp_path / "etc-openshell"
     home = tmp_path / "home-cloud-user"
-    home.mkdir()
+    # The gateway's CA as the golden image leaves it; the installer signs its
+    # admin client certificate with it.
+    (home / ".local" / "state").mkdir(parents=True)
+    shutil.copytree(fake_env.home / ".local" / "state" / "openshell", home / ".local" / "state" / "openshell")
 
     class World:
         pass
@@ -157,19 +161,21 @@ def test_no_profiles_disk_still_configures_gateway(world):
     result = world.run("apply")
     assert result.returncode == 0, result.stdout
     assert "No enabled workspaces" in result.stdout
-    assert world.fake.openshell_state()["selected"] == "openshell"
+    assert world.fake.openshell_state()["selected"] == "saw-installer"
 
 
 def test_dry_run_changes_nothing(world):
+    home_before = sorted(p.relative_to(world.home) for p in world.home.rglob("*"))
     result = world.run("install", "--dry-run")
     assert result.returncode == 0, result.stdout + result.stderr
     assert not world.state.exists() and not world.bin.exists() and not world.etc.exists()
-    assert list(world.home.iterdir()) == []
+    assert sorted(p.relative_to(world.home) for p in world.home.rglob("*")) == home_before
     assert world.fake.podman_calls() == []
     result = world.run("apply", "--dry-run")
     assert result.returncode == 0, result.stdout + result.stderr
     assert not world.state.exists()
     assert world.fake.openshell_calls() == []
+    assert sorted(p.relative_to(world.home) for p in world.home.rglob("*")) == home_before
 
 
 def test_bad_config_is_reported(world):

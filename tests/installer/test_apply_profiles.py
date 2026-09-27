@@ -1,6 +1,7 @@
 """Applying SAW-BOM profiles through the (fake) OpenShell CLI over mTLS."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,11 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     applier.apply(profiles)
     state = fake_env.openshell_state()
 
-    # Local mTLS gateway only: no OIDC login, no token files.
-    assert state["gateways"] == [{"name": "openshell", "endpoint": "https://127.0.0.1:17670", "local": True}]
-    assert state["selected"] == "openshell"
+    # Local mTLS gateway only (the installer's admin identity): no OIDC login,
+    # no token files, and the default `openshell` entry is not touched.
+    assert state["gateways"] == [{"name": "saw-installer", "endpoint": "https://127.0.0.1:17670",
+                                  "local": True, "roles": ["openshell-admin"]}]
+    assert state["selected"] == "saw-installer"
     assert all("oidc" not in " ".join(c).lower() for c in fake_env.openshell_calls())
 
     assert state["workspaces"] == ["default", "cuda-dev"]
@@ -315,3 +318,72 @@ def test_verify_runs_openclaw_in_agent_sandboxes_only(ab, fake_env, config, prof
     checks = [c for c in fake_env.openshell_calls()[before:]
               if c[:2] == ["sandbox", "exec"] and c[-1] == "openclaw --version"]
     assert sorted(c[c.index("-n") + 1] for c in checks) == ["cuda-sandbox", "notebook"]
+
+
+# -- the installer's mTLS identity is platform admin --------------------------
+
+def cert_field(path, *args):
+    return subprocess.run(["openssl", "x509", "-noout", *args, "-in", str(path)],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_installer_uses_an_admin_client_certificate_under_rbac(ab, fake_env, config, profiles, creds):
+    """Live: with OIDC on, the gateway's own local client certificate
+    (OU=openshell-user) could not create workspaces. The installer issues
+    CN=saw-installer, OU=openshell-admin from the gateway's CA."""
+    fake_env.rbac()
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    assert state["gateways"] == [{"name": "saw-installer", "endpoint": "https://127.0.0.1:17670",
+                                  "local": True, "roles": ["openshell-admin"]}]
+    assert state["selected"] == "saw-installer"
+    assert "cuda-dev" in state["workspaces"]
+    crt = fake_env.admin_cert()
+    subject = cert_field(crt, "-subject", "-nameopt", "sep_multiline")
+    assert "OU=openshell-admin" in subject and "CN=saw-installer" in subject
+    ca = fake_env.home / ".local/state/openshell/tls/ca.crt"
+    assert subprocess.run(["openssl", "verify", "-CAfile", str(ca), str(crt)], capture_output=True).returncode == 0
+    assert "TLS Web Client Authentication" in cert_field(crt, "-ext", "extendedKeyUsage")
+    assert oct((crt.parent / "tls.key").stat().st_mode & 0o777) == "0o600"
+    assert oct(crt.parent.parent.stat().st_mode & 0o777) == "0o700"
+
+
+def test_gateways_own_user_certificate_is_refused_under_rbac(ab, fake_env, config, profiles, creds):
+    """The fake enforces the rule: without the override the gateway's own
+    client certificate (OU=openshell-user) cannot create workspaces."""
+    fake_env.rbac()
+    fake_env.set_openshell_state({"gateways": [{"name": "saw-installer", "roles": ["openshell-user"]}],
+                                  "selected": "saw-installer", "workspaces": ["default"], "members": [],
+                                  "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None})
+    applier = make_applier(ab, config, creds)
+    with pytest.raises(ab.InstallerError, match="openshell-admin"):
+        applier.apply_workspace(next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "cuda-dev"))
+
+
+def test_admin_certificate_is_kept_while_valid_and_reissued_for_a_new_ca(ab, fake_env, config, profiles, creds):
+    make_applier(ab, config, creds).register_gateway()
+    crt = fake_env.admin_cert()
+    first = cert_field(crt, "-serial")
+    make_applier(ab, config, creds).register_gateway()
+    assert cert_field(crt, "-serial") == first                       # reused on every boot
+    ca_dir = fake_env.home / ".local/state/openshell/tls"          # gateway CA rotated
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                    "-nodes", "-keyout", str(ca_dir / "ca.key"), "-out", str(ca_dir / "ca.crt"),
+                    "-subj", "/O=openshell/CN=openshell-ca", "-days", "30"], check=True, capture_output=True)
+    make_applier(ab, config, creds).register_gateway()
+    assert cert_field(crt, "-serial") != first
+    assert subprocess.run(["openssl", "verify", "-CAfile", str(ca_dir / "ca.crt"), str(crt)],
+                          capture_output=True).returncode == 0
+
+
+def test_missing_gateway_ca_is_a_clear_error(ab, fake_env, config, profiles, creds):
+    (fake_env.home / ".local/state/openshell/tls/ca.key").unlink()
+    with pytest.raises(ab.InstallerError, match="gateway CA not found"):
+        make_applier(ab, config, creds).register_gateway()
+
+
+def test_key_never_appears_in_argv_or_logs(ab, fake_env, config, profiles, creds, capsys):
+    make_applier(ab, config, creds).register_gateway()
+    key = (fake_env.admin_cert().parent / "tls.key").read_text()
+    body = "".join(l for l in key.splitlines() if not l.startswith("-----"))
+    assert body[:40] not in capsys.readouterr().err

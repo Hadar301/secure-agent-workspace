@@ -73,6 +73,8 @@ NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 SECRET_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 SECRET_KEY_RE = re.compile(r"^[-._a-zA-Z0-9]+$")
 OPENSHELL_NAME_LIMIT = 19
+# The installer's own mTLS identity; the gateway reads roles from the OU.
+ADMIN_CERT_SUBJECT = "/O=openshell/OU=openshell-admin/CN=saw-installer"
 # The gateway resolves the system inference route's provider in this workspace.
 SYSTEM_WORKSPACE = "default"
 ALREADY_RE = re.compile(r"already (exists|a member)", re.IGNORECASE)
@@ -275,7 +277,7 @@ def reported_version(output):
 
 CONFIG_DEFAULTS = {
     "runtimeUser": "cloud-user",
-    "mtlsGateway": "openshell",
+    "mtlsGateway": "saw-installer",
     "ownerSubject": "",
     "sandboxDashboardRoute": "",
     "dashboard": {"enabled": False},
@@ -899,13 +901,63 @@ class ProfileApplier:
 
     # -- gateway access ------------------------------------------------------
 
+    def ensure_admin_client_cert(self):
+        """The installer's own mTLS client certificate, CN=saw-installer,
+        OU=openshell-admin, signed by the gateway's CA.
+
+        The gateway takes an mTLS caller's roles from the certificate's OU.
+        The client certificate the gateway generates for local use carries
+        OU=openshell-user, which is enough while no RBAC applies but not once
+        OIDC is on (found live: workspace create was refused). Kept in its own
+        directory, in the layout `gateway add --local` imports via
+        OPENSHELL_LOCAL_TLS_DIR; re-issued when missing, not signed by the
+        current CA, or expiring within 30 days."""
+        home = Path(os.environ.get("HOME", "/home/cloud-user"))
+        gateway_tls = home / ".local" / "state" / "openshell" / "tls"
+        out = home / ".local" / "state" / "saw-installer" / "tls"
+        if self.sh.dry_run:
+            log(f"[dry-run] admin client certificate in {out}")
+            return out
+        ca_crt, ca_key = gateway_tls / "ca.crt", gateway_tls / "ca.key"
+        if not (ca_crt.is_file() and ca_key.is_file()):
+            raise InstallerError(f"gateway CA not found in {gateway_tls}; the installer signs its "
+                                 "admin client certificate with it (is the gateway set up?)")
+        client = out / "client"
+        client.mkdir(parents=True, exist_ok=True)
+        for d in (out.parent, out, client):
+            os.chmod(d, 0o700)
+        shutil.copyfile(ca_crt, out / "ca.crt")
+        crt, key = client / "tls.crt", client / "tls.key"
+        current = (crt.is_file() and key.is_file()
+                   and self.sh.run(["openssl", "verify", "-CAfile", str(ca_crt), str(crt)],
+                                   check=False, quiet=True).ok
+                   and self.sh.run(["openssl", "x509", "-checkend", str(30 * 86400), "-noout",
+                                    "-in", str(crt)], check=False, quiet=True).ok)
+        if current:
+            return out
+        log(f"Issuing the installer's admin client certificate ({ADMIN_CERT_SUBJECT})")
+        with tempfile.TemporaryDirectory(prefix="saw-cert-") as tmp:
+            csr, ext = Path(tmp) / "req.csr", Path(tmp) / "ext.cnf"
+            ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                           "extendedKeyUsage=clientAuth\n", encoding="utf-8")
+            self.sh.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt",
+                         "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(key),
+                         "-subj", ADMIN_CERT_SUBJECT, "-out", str(csr)], quiet=True)
+            os.chmod(key, 0o600)
+            self.sh.run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_crt),
+                         "-CAkey", str(ca_key), "-set_serial", "0x" + secrets.token_hex(16),
+                         "-days", "365", "-extfile", str(ext), "-out", str(crt)], quiet=True)
+        return out
+
     def register_gateway(self):
-        """Point the CLI at the local gateway over mTLS. The entry is
-        replaced on every run so a stale OIDC entry never wins."""
-        log(f"Registering local mTLS gateway '{self.gateway}'")
+        """Point the CLI at the local gateway over mTLS as the installer's
+        admin identity. The entry is replaced on every run so a stale entry
+        never wins; the default `openshell` entry is left alone."""
+        tls_dir = self.ensure_admin_client_cert()
+        log(f"Registering local mTLS gateway '{self.gateway}' (OU=openshell-admin)")
         self.cli("gateway", "remove", self.gateway, check=False, quiet=True)
         self.cli("gateway", "add", f"https://127.0.0.1:{GATEWAY_PORT}",
-                 "--name", self.gateway, "--local")
+                 "--name", self.gateway, "--local", env={"OPENSHELL_LOCAL_TLS_DIR": str(tls_dir)})
         self.cli("gateway", "select", self.gateway)
         result = self.cli("workspace", "list", check=False)
         if not result.ok:

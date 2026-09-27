@@ -86,7 +86,7 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
 
 | Who | How | Role |
 | --- | --- | --- |
-| In-VM installer (`apply_bom.py`) | local mTLS client certificate, gateway entry `openshell` | must act as platform admin (`openshell-admin`) |
+| In-VM installer (`apply_bom.py`) | its own mTLS client certificate `CN=saw-installer, OU=openshell-admin`, gateway entry `saw-installer` | platform admin (`openshell-admin`) |
 | Users (laptop CLI, dashboard) | their own OIDC token from Keycloak | from `realm_access.roles`: `openshell-admin` / `openshell-user` |
 
 The installer never logs in to Keycloak and never configures the CLI for
@@ -98,10 +98,14 @@ your local OpenShell CLI and log in with your Keycloak account. You need the
 gateway CA (`scripts/extract-gateway-ca.sh`); the Route hostname is added to
 the gateway certificate by cloud-init.
 
-> **Verify on a cluster:** OpenShell's docs don't state which role an mTLS
-> caller gets when OIDC is also enabled. The installer checks this up front
-> and fails with "check the mTLS identity has the openshell-admin role" if
-> workspace creation is refused.
+The gateway takes an mTLS caller's roles from the client certificate's OU.
+The certificate the gateway generates for local use carries
+`OU=openshell-user`, which is not enough once OIDC RBAC is on, so the
+installer issues its own `CN=saw-installer, OU=openshell-admin` certificate
+with the gateway's CA (`~/.local/state/openshell/tls`), keeps it in
+`~/.local/state/saw-installer/tls` (re-issued when missing, signed by a
+different CA, or within 30 days of expiry) and registers it as the
+`saw-installer` gateway entry. The default `openshell` entry is left alone.
 
 ## SSH into the VM
 
