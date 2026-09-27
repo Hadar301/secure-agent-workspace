@@ -1,0 +1,97 @@
+"""A custom OpenAI-compatible endpoint (vLLM, Ollama, ...) through OpenShell's
+inference router: an `openai` provider with OPENAI_BASE_URL, the workspace
+inference route, and sandboxes on https://inference.local/v1."""
+
+import pytest
+
+from conftest import profile_files
+
+URL = "https://vllm.models.svc.cluster.local:8443/v1"
+MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
+
+@pytest.fixture
+def custom_secrets(secrets_dir):
+    inference = secrets_dir / "inference"
+    for key, value in {"provider": "custom", "api_key": "sk-CUSTOM-TEST-KEY",
+                       "url": URL + "/", "model": MODEL}.items():
+        (inference / key).write_text(value + "\n")
+    return secrets_dir
+
+
+@pytest.fixture
+def profiles(ab):
+    return ab.parse_profiles(profile_files("custom-inference"))
+
+
+def test_profile_is_valid_and_reads_url_and_model_from_the_secret(ab, profiles, custom_secrets):
+    ab.validate_profiles(profiles)
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    custom = next(p for p in profiles[0].workspaces[0].providers if p.name == "custom")
+    assert (custom.type, custom.base_url, custom.model) == ("openai", URL, MODEL)
+    assert creds["default"]["custom"] == "sk-CUSTOM-TEST-KEY"
+
+
+def test_apply_creates_an_openai_provider_and_the_inference_route(ab, fake_env, config, profiles,
+                                                                  custom_secrets):
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    assert state["providers"]["default/custom"] == {
+        "type": "openai", "credential": "OPENAI_API_KEY=sk-CUSTOM-TEST-KEY",
+        "config": [f"OPENAI_BASE_URL={URL}"]}
+    assert state["inference"]["default"] == ["custom", MODEL]
+    assert state["system_inference"] == ["custom", MODEL]
+    sets = [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]
+    assert sets and all(c[c.index("--timeout") + 1] == "300" for c in sets)
+    # The key only ever travels in the environment.
+    assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
+    # OpenClaw is onboarded against inference.local, not the endpoint itself.
+    onboard = next(" ".join(c) for c in fake_env.openshell_calls() if "onboard" in " ".join(c))
+    assert "https://inference.local/v1" in onboard and URL not in onboard
+    assert f'--custom-model-id "{MODEL}"' in onboard
+
+
+def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secrets):
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    (custom_secrets / "inference" / "url").write_text("http://ollama.models.svc:11434/v1\n")
+    profiles2 = ab.parse_profiles(profile_files("custom-inference"))
+    creds = ab.resolve_credentials(profiles2, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles2)
+    assert fake_env.openshell_state()["providers"]["default/custom"]["config"] == [
+        "OPENAI_BASE_URL=http://ollama.models.svc:11434/v1"]
+
+
+@pytest.mark.parametrize("url", ["ftp://host/v1", "https://user:pw@host/v1", "https://host/v1?key=x",
+                                 "https://host/v1#f", "http://localhost:8000/v1", "https://host:99999/v1",
+                                 "not a url"])
+def test_bad_base_urls_are_refused_without_echoing_them(ab, profiles, custom_secrets, url):
+    (custom_secrets / "inference" / "url").write_text(url)
+    with pytest.raises(ab.InstallerError) as err:
+        ab.resolve_credentials(profiles, custom_secrets)
+    assert url not in str(err.value) and "base URL" in str(err.value)
+
+
+def test_a_secret_for_another_provider_still_fails(ab, profiles, custom_secrets):
+    """Selecting a profile is explicit (saw-bom `profiles`); a mismatched
+    Secret is still an error, never a silent skip."""
+    (custom_secrets / "inference" / "provider").write_text("gemini\n")
+    with pytest.raises(ab.InstallerError, match="is for 'gemini'"):
+        ab.resolve_credentials(profiles, custom_secrets)
+
+
+def test_base_url_only_for_types_the_router_supports(ab):
+    files = profile_files("custom-inference")
+    key = next(k for k in files if k.endswith("providers.yaml"))
+    files[key] = files[key].replace("type: openai", "type: gemini")
+    with pytest.raises(ab.InstallerError, match="does not take a base URL"):
+        ab.validate_profiles(ab.parse_profiles(files))
+
+
+def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_dir):
+    """No url/model keys in the Secret: providers keep their profile model."""
+    profiles = ab.parse_profiles(shipped_profile_files)
+    ab.resolve_credentials(profiles, secrets_dir)
+    nvidia = next(p for p in profiles[0].workspaces[0].providers if p.name == "nvidia")
+    assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3-super-120b-a12b")

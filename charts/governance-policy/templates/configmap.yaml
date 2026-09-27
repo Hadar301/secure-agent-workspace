@@ -19,10 +19,7 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
 {{- range $path, $_ := .Files.Glob "profiles/*.yaml" }}
-{{- $content := tpl ($.Files.Get $path) $ | trim }}
-{{- if $content }}
   {{ base $path }}: |
-{{ $content | indent 4 }}
-{{- end }}
+{{ $.Files.Get $path | indent 4 }}
 {{- end }}
 {{- end }}

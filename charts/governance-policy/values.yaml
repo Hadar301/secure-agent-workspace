@@ -2,10 +2,3 @@
 # To add a new provider, drop a YAML file in profiles/ and push.
 # The interceptor picks up changes automatically via file watcher.
 enabled: true
-
-# Explicit policy approval; the inference secret URL must match this endpoint.
-customInference:
-  enabled: false
-  host: ""
-  port: 443
-  scheme: https

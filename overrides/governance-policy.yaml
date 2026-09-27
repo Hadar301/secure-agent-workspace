@@ -1,6 +1,0 @@
-# Explicit endpoint approval. Enable and configure for provider: custom.
-customInference:
-  enabled: false
-  host: ""
-  port: 443
-  scheme: https

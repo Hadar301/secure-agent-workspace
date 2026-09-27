@@ -176,17 +176,8 @@ make test-installer        # installer + chart tests; chart tests need helm
 
 ## Custom inference
 
-See [Custom inference](custom-inference-provider.md) for the dedicated
-`custom-inference` catalog profile and `vllm/notebook` example. Its endpoint
-requires explicit governance approval as well as provider/model/URL/key Secret
-fields. The installer resolves these from mounted inputs and passes its plan
-through stdin; credentials never belong in command arguments.
-
-Examples whose configured provider type is incompatible are skipped before
-provisioning, including their dependent sandboxes and otherwise empty workspaces.
-A custom profile missing from the authoritative interceptor catalog is a setup
-failure; the installer does not import a local replacement. Existing cloud
-catalog fallback behavior is unchanged.
-
-Custom sandbox readiness, OpenClaw local health, dashboard access, and successful
-agent inference are separate checks. A successful apply does not prove inference.
+A self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...) is an `openai`
+provider with `OPENAI_BASE_URL` plus the workspace inference route, as in
+OpenShell's inference routing docs. Select the `custom-inference` SAW-BOM
+profile and put `provider: custom`, `model`, `url` and `api_key` in the
+`inference` Secret; see [Custom inference](custom-inference.md).

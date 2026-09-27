@@ -120,11 +120,17 @@ elif op == "provider create":
     if key in state["providers"]:
         fail(f"Error: provider {opt('--name')} already exists")
     state["providers"][key] = {"type": opt("--type"), "credential": credential()}
+    configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
+    if configs:
+        state["providers"][key]["config"] = configs
 elif op == "provider update":
     key = f"{ws}/{head[2]}"
     if key not in state["providers"]:
         fail("Error: provider not found")
     state["providers"][key]["credential"] = credential()
+    configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
+    if configs:
+        state["providers"][key]["config"] = configs
 elif op == "provider get":
     if f"{ws}/{head[2]}" not in state["providers"]:
         fail("Error: provider not found")

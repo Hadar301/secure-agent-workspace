@@ -46,7 +46,7 @@ This quickstart implements NVIDIA's [Secure Agent Workspace reference architectu
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
-For a governed OpenAI-compatible endpoint, see the [custom inference guide](docs/custom-inference-provider.md).
+For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see the [custom inference guide](docs/custom-inference.md).
 
 ### Architecture diagrams
 

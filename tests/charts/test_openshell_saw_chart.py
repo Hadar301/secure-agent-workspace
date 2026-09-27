@@ -568,17 +568,10 @@ def test_governance_profiles_carry_their_id():
     """OpenShell's profile parser requires `id` (missing field `id` otherwise),
     so the files are only importable with it. The interceptor derives the id
     from the filename and overwrites the field, so it must match."""
-    result = helm_template(GOVERNANCE_PROFILES.parent,
-                           "--set", "customInference.enabled=true",
-                           "--set", "customInference.host=inference.example.com")
-    assert result.returncode == 0, result.stderr
-    data = next(d["data"] for d in yaml.safe_load_all(result.stdout)
-                if d and d["metadata"]["name"] == "governance-interceptor-profiles")
-    assert set(data) == {p.name for p in GOVERNANCE_PROFILES.glob("*.yaml")}
-    for name, content in data.items():
-        doc = yaml.safe_load(content)
-        assert doc.get("id") == Path(name).stem, name
-        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), name
+    for path in sorted(GOVERNANCE_PROFILES.glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        assert doc.get("id") == path.stem, path.name
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
 
 
 def test_installer_profile_copies_match_governance_policy():
@@ -613,21 +606,58 @@ def test_create_script_passes_the_keycloak_it_finds():
     assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
 
 
-def test_secret_template_matches_the_default_profile(ab, tmp_path):
-    """The default cloud Secret provisions cloud examples and skips custom."""
+def test_secret_template_matches_the_default_profile():
+    """The pattern's values-secret template must give the default profile's
+    providers keys of the right type, or the installer refuses them."""
     template = yaml.safe_load((ROOT / "values-secret.yaml.template").read_text())
-    for secret in template["secrets"]:
-        base = tmp_path / secret["name"]
-        base.mkdir()
-        for field in secret["fields"]:
-            (base / field["name"]).write_text(str(field.get("value", "test-placeholder-key")))
-    files = {str(p.relative_to(BOM_CHART)).replace("/", "__"): p.read_text()
-             for p in (BOM_CHART / "profiles/data-science").rglob("*.yaml")}
-    profiles = ab.parse_profiles(files)
-    creds = ab.resolve_credentials(profiles, tmp_path)
-    assert {ws: set(providers) for ws, providers in creds.items()} == {
-        "default": {"nvidia", "brave"}, "cuda-dev": {"nvidia"}}
-    assert {ws.name for _, ws in ab.selected_workspaces(profiles)} == {"default", "cuda-dev"}
-    custom = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "vllm")
-    assert all(p.skip_reason for p in custom.providers)
-    assert not any(ab.eligible_sandbox(custom, sb) for sb in custom.sandboxes)
+    secrets = {s["name"]: {f["name"]: f for f in s["fields"]} for s in template["secrets"]}
+    providers = []
+    for f in (ROOT / "charts/saw-bom/profiles/data-science").glob("*/providers.yaml"):
+        providers += yaml.safe_load(f.read_text())["spec"]["providers"]
+    for p in providers:
+        fields = secrets[p["credentialSecret"]]
+        assert p["credentialSecretKey"] in fields, p["name"]
+        configured = fields.get("provider", {}).get("value")
+        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+
+
+def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
+    """saw-bom `profiles: [custom-inference]` with an `inference` Secret for a
+    custom OpenAI-compatible endpoint (provider/model/url/api_key)."""
+    values = tmp_path / "saw-bom.yaml"
+    values.write_text("profiles: [custom-inference]\n")
+    result = helm_template(BOM_CHART, "-f", str(values))
+    assert result.returncode == 0, result.stderr
+    [cm] = [d for d in yaml.safe_load_all(result.stdout) if d]
+    assert all("__custom-inference__" in k for k in cm["data"])
+    docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
+    run_saw = tmp_path / "run-saw"
+    for key, value in installer_data(docs).items():
+        (run_saw / "installer").mkdir(parents=True, exist_ok=True)
+        (run_saw / "installer" / key).write_text(value)
+    for key, value in cm["data"].items():
+        (run_saw / "profiles").mkdir(exist_ok=True)
+        (run_saw / "profiles" / key).write_text(value)
+    for secret, data in {"inference": {"api_key": "k1", "provider": "custom", "model": "m",
+                                       "url": "https://vllm.models.svc:8443/v1"},
+                         "web-search": {"api_key": "k2"}}.items():
+        (run_saw / "secrets" / secret).mkdir(parents=True)
+        for key, value in data.items():
+            (run_saw / "secrets" / secret / key).write_text(value)
+    result = subprocess.run([sys.executable, str(run_saw / "installer" / "apply_bom.py"),
+                             "validate", "--inputs", str(run_saw)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 workspace(s) ['default']" in result.stdout
+
+
+def test_inference_secret_carries_an_optional_url():
+    """The ExternalSecret reads every key of the Vault entry; `url` is
+    optional so cloud-provider entries without it keep working."""
+    result = helm_template(ROOT / "charts" / "pattern-secrets")
+    assert result.returncode == 0, result.stderr
+    es = next(d for d in yaml.safe_load_all(result.stdout) if d and d["metadata"]["name"] == "inference")
+    assert es["spec"]["dataFrom"] == [{"extract": {"key": "secret/data/hub/inference"}}]
+    assert "data" not in es["spec"]
+    tmpl = es["spec"]["target"]["template"]["data"]
+    assert set(tmpl) == {"provider", "model", "api_key", "url"}
+    assert tmpl["url"] == '{{ index . "url" | default "" }}'
