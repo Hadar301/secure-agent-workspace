@@ -197,7 +197,9 @@ its running gateway:
 openshell sandbox exec -n notebook --workspace vllm --no-tty -- \
   /usr/bin/node-26 -e 'fetch("http://127.0.0.1:18789/health", {signal: AbortSignal.timeout(5000)}).then(r => { console.log(r.status); process.exitCode = r.ok ? 0 : 1; }).catch(() => { process.exitCode = 1; });'
 openshell sandbox exec -n notebook --workspace vllm --no-tty -- \
-  env OPENCLAW_HOME=/sandbox openclaw agent --agent main \
+  env OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state \
+    TMPDIR=/sandbox/.openclaw/state openclaw agent --agent main \
+    --session-id custom-inference-validation \
     --message 'Reply with a short greeting. Do not use tools.' --timeout 120 --json
 ```
 
@@ -205,6 +207,20 @@ Require an actual agent reply and verify the reported provider/model. An HTTP
 health response, a successful `saw-apply.service` run, or a direct HTTP completion does not prove
 the OpenClaw agent path. Very small models may support basic completions while
 failing agent context-size or tool requirements; record that distinction.
+
+Do not add `--local` while the managed gateway is running for this state directory.
+Use a fresh session ID for an independent test. Asking the model not to use tools
+does not remove tool definitions from the request. For a text-only smoke test
+with a model that rejects tools, explicitly disable them in this sandbox:
+
+```bash
+openshell sandbox exec -n notebook --workspace vllm --no-tty -- \
+  env OPENCLAW_HOME=/sandbox openclaw config set tools.deny '["*"]' --strict-json
+```
+
+This is a persistent sandbox configuration change, not a default imposed on all
+custom providers. Restore the previous tool policy when testing a tool-capable
+model. The running gateway hot-reloaded this setting in the tested deployment.
 
 In a separately approved test workspace, repeat the request with an invalid
 provider credential, then restore the valid key securely:
@@ -242,17 +258,27 @@ use local fixtures, not a deployed gateway or inference server.
 Live troubleshooting confirmed that the deployed OpenClaw process resolves to
 `/usr/bin/node-26`, which the previous custom profile denied. The corrected
 allowlist, Node-based health checks, replacement-credential activation, and
-gateway token preservation have local regression coverage. End-to-end inference
-must be retested after these fixes are deployed.
+gateway token preservation have local regression coverage.
+
+Live validation on 2026-09-27 after deploying commit `8a33917`: installer
+verification passed and reported `apply: Done`. OpenClaw selected
+`custom-inference/tinyllama:latest` and received generated responses through the
+running gateway after tools were disabled. This fixture uses Ollama behind an
+API-key-enforcing proxy, not vLLM. Responses were incoherent; backend logs showed
+a 7,210-token prompt truncated to 1,026 tokens, slow CPU generation, and a request
+that received HTTP 504 before retrying successfully. This establishes transport
+and response generation, not useful agent behavior or reliable latency.
 
 | Check | Current evidence |
 | --- | --- |
 | Secret compatibility, profile rendering, provisioning failure handling | Local regression tests |
 | Gemini profile preservation and missing-URL compatibility | Local regression tests; live Gemini needs credentials |
-| Catalog validation by the running interceptor and gateway linter | Pending authorized deployment |
-| Authenticated sandbox completion and invalid-key rejection | Pending authorized deployment |
-| OpenClaw agent-generated inference and secret-free logs | Pending authorized deployment |
-| Actual vLLM-hosted model | Pending authorized deployment |
+| Catalog publication and installer endpoint checks | Deployed profile consumed; installer verification passed; separate canonical linter validation not recorded |
+| Custom-provider response through the authentication-enforcing fixture | OpenClaw received HTTP 200 and generated responses; managed credential observed during setup |
+| Incorrect-key rejection through the custom provider and endpoint isolation | Still pending; endpoint-only authentication tests do not close these checks |
+| OpenClaw agent-generated inference | Responses received with tools disabled; meaningful instruction following failed with this TinyLlama fixture |
+| Credentials absent from generated configuration and logs | Full comparison against the real key still pending |
+| Actual vLLM-hosted model | Still pending; current fixture uses Ollama |
 | Dashboard readiness/access | Outside this feature; not implied by OpenClaw health |
 
 References: [OpenShell v0.0.116 providers](https://docs.nvidia.com/openshell/v0.0.116/sandboxes/manage-providers),
