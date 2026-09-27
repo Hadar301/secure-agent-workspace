@@ -333,9 +333,9 @@ def test_governance_endpoint_is_the_shared_namespace(default_docs):
 def test_cluster_domain_fills_routes_issuer_and_dashboard():
     docs = render("--set", "global.clusterDomain=example.com")
     config = json.loads(installer_data(docs)["config.json"])
-    # Keycloak lives in its own namespace (default "keycloak").
+    # Keycloak lives in its own namespace (default "saw-keycloak").
     assert config["oidcIssuer"] == \
-        "https://openshell-keycloak-ingress-keycloak.apps.example.com/realms/openshell"
+        "https://openshell-keycloak-ingress-saw-keycloak.apps.example.com/realms/openshell"
     assert config["dashboard"]["redirectUrl"] == \
         "https://saw-test-webui-saw-alice.apps.example.com/oauth2/callback"
     assert config["sandboxDashboardRoute"] == "saw-test-dashboard-saw-alice.apps.example.com"
@@ -465,7 +465,7 @@ def test_no_cross_namespace_role_when_sharing_the_golden_namespace():
 def test_keycloak_admin_access_is_granted_in_the_keycloak_namespace():
     docs = all_docs()
     kc = [d for d in docs if "keycloak-admin-read" in d["metadata"]["name"]]
-    assert {d["metadata"]["namespace"] for d in kc} == {"keycloak"}
+    assert {d["metadata"]["namespace"] for d in kc} == {"saw-keycloak"}
     assert all(d["metadata"]["name"] == "saw-test-saw-alice-keycloak-admin-read" for d in kc)
     docs = all_docs("--set", "oidc.keycloakNamespace=sso")
     assert {d["metadata"]["namespace"] for d in docs if "keycloak-admin-read" in d["metadata"]["name"]} == {"sso"}
@@ -499,9 +499,12 @@ def test_governance_interceptor_admits_labelled_saw_namespaces():
 def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     values = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]
     namespaces, apps, subs = values["namespaces"], values["applications"], values["subscriptions"]
-    assert namespaces["keycloak"]["targetNamespaces"] == ["keycloak"]
-    assert subs["rhbk"]["namespace"] == "keycloak"
-    assert apps["openshell-keycloak"]["namespace"] == "keycloak"
+    assert "keycloak" not in namespaces   # left to a platform Keycloak, if any
+    assert namespaces["saw-keycloak"]["targetNamespaces"] == ["saw-keycloak"]
+    assert subs["rhbk"]["namespace"] == "saw-keycloak"
+    assert apps["openshell-keycloak"]["namespace"] == "saw-keycloak"
+    saw = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+    assert saw["oidc"]["keycloakNamespace"] == "saw-keycloak"
     assert namespaces["saw-alice"]["labels"]["openshell.pattern/saw"] == "true"
     for app in ("openshell-saw", "saw-bom", "pattern-secrets"):
         assert apps[app]["namespace"] == "saw-alice", app
@@ -592,7 +595,7 @@ def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
     dashboard redirect. openshell-saw-create.sh passes the CR it finds."""
     docs = render("--set", "oidc.issuerUrl=https://sso.example.com/realms/openshell",
                   "--set", "oidc.keycloakName=keycloak", "--set", "oidc.realm=openshell")
-    role = next(d for (kind, name), d in docs.items() if kind == "Role" and d["metadata"].get("namespace") == "keycloak")
+    role = next(d for (kind, name), d in docs.items() if kind == "Role" and d["metadata"].get("namespace") == "saw-keycloak")
     assert role["rules"][0]["resourceNames"] == ["keycloak-initial-admin"]
     scripts = next(d for (kind, name), d in docs.items() if kind == "ConfigMap" and name.endswith("-prepare-scripts"))
     assert 'OIDC_KEYCLOAK_NAME="keycloak"' in scripts["data"]["prepare.sh"]

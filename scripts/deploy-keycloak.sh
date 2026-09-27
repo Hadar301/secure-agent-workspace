@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-NS="${KEYCLOAK_NS:-keycloak}"
+NS="${KEYCLOAK_NS:-saw-keycloak}"
 CHART="${KEYCLOAK_CHART:-charts/openshell-keycloak}"
 REALM="${KEYCLOAK_REALM:-openshell}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

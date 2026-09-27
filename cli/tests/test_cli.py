@@ -117,7 +117,7 @@ class TestSandboxCreate:
         assert kwargs["chart_path"] == "/charts/openshell-saw"
         assert kwargs["sets"]["governance.namespace"] == "openshell-agents"
         assert kwargs["sets"]["source.dataSourceNamespace"] == "openshell-agents"
-        assert kwargs["sets"]["oidc.keycloakNamespace"] == "keycloak"
+        assert kwargs["sets"]["oidc.keycloakNamespace"] == "saw-keycloak"
 
     def test_api_key_goes_to_a_secret_not_helm_values(self, _):
         result, calls = self._create()

@@ -2,7 +2,7 @@
 # Print the host name of the Keycloak in a namespace (no scheme, no slash).
 # Exits 1 if none is found.
 #
-# Usage: keycloak-host.sh [namespace]   (default: $KEYCLOAK_NS or keycloak)
+# Usage: keycloak-host.sh [namespace]   (default: $KEYCLOAK_NS or saw-keycloak)
 #
 # Works for the Keycloak `make keycloak` deploys and for an existing RHBK
 # instance, which may report its URL in status.externalURL, only set
@@ -10,7 +10,7 @@
 # label.
 set -uo pipefail
 
-NS="${1:-${KEYCLOAK_NS:-keycloak}}"
+NS="${1:-${KEYCLOAK_NS:-saw-keycloak}}"
 
 clean() { sed -e 's|^https\{0,1\}://||' -e 's|/.*$||'; }
 

@@ -14,7 +14,7 @@ set -euo pipefail
 NS="${NS:-openshell-agents}"
 OPENSHELL_SAW_NAME="${OPENSHELL_SAW_NAME:?OPENSHELL_SAW_NAME is required}"
 SAW_NS="${SAW_NS:-saw-${OPENSHELL_SAW_NAME}}"
-KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
+KEYCLOAK_NS="${KEYCLOAK_NS:-saw-keycloak}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-openshell}"
 SAW_BOM_CHART="${SAW_BOM_CHART:-charts/saw-bom}"
 WEB_SEARCH_API_KEY="${WEB_SEARCH_API_KEY:-}"

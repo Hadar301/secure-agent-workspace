@@ -27,7 +27,7 @@ HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
-KEYCLOAK_NS    ?= keycloak
+KEYCLOAK_NS    ?= saw-keycloak
 KEYCLOAK_REALM ?= openshell
 # yes/no: let `make keycloak` import the realm into a Keycloak already in KEYCLOAK_NS
 USE_EXISTING_KEYCLOAK ?=

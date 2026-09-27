@@ -110,7 +110,7 @@ oidc:
   keycloakName: "openshell-keycloak"
   # Namespace Keycloak runs in (any namespace works). Used to compute the
   # issuer URL from global.clusterDomain and to find its admin Secret.
-  keycloakNamespace: "keycloak"
+  keycloakNamespace: "saw-keycloak"
   realm: "openshell"
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"

@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 SHARED_NAMESPACE = "openshell-agents"
-KEYCLOAK_NAMESPACE = "keycloak"
+KEYCLOAK_NAMESPACE = "saw-keycloak"
 USER_NS_PREFIX = "saw-"
 
 DEFAULTS = {

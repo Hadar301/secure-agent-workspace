@@ -15,7 +15,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NS="${KEYCLOAK_NS:-keycloak}"
+NS="${KEYCLOAK_NS:-saw-keycloak}"
 REALM="${KEYCLOAK_REALM:-openshell}"
 CLIENT="${OIDC_CLIENT_ID:-openshell-cli}"
 failed=0

@@ -61,7 +61,7 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
 | --- | --- |
 | `saw-<name>` (one per SAW) | the SAW's VM, its installer/profile ConfigMaps, its provider Secrets, prepare Job. Labelled `openshell.pattern/saw=true`. |
 | `openshell-agents` (shared, `NS`) | golden image DataSource, image builds, governance interceptor + policy |
-| `keycloak` (`KEYCLOAK_NS`, any name) | Keycloak and the RHBK operator |
+| `saw-keycloak` (`KEYCLOAK_NS`, any name) | Keycloak and the RHBK operator |
 
 - A VM can only attach ConfigMaps/Secrets from its own namespace, so each
   SAW's `inference`/`web-search` Secrets and `saw-bom-profiles` ConfigMap
@@ -76,9 +76,10 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
   DataSource there on first use.
 - Quickstart: `make openshell-saw-create OPENSHELL_SAW_NAME=alice` deploys
   into `saw-alice`; override with `SAW_NS=...`. Keycloak is looked up in
-  `KEYCLOAK_NS` (default `keycloak`). `make openshell-saw-delete` also
+  `KEYCLOAK_NS` (default `saw-keycloak`; `KEYCLOAK_NS=keycloak` to use a Keycloak the cluster already runs there). `make openshell-saw-delete` also
   deletes the namespace if it carries the SAW label.
-- Pattern: `values-prod.yaml` puts Keycloak/RHBK in `keycloak` and the
+- Pattern: `values-prod.yaml` puts Keycloak/RHBK in `saw-keycloak` (so it never
+  collides with a platform Keycloak in `keycloak`, as on many demo clusters) and the
   default user's SAW (`openshell-saw`, `saw-bom`, `pattern-secrets`) in
   `saw-alice`. Add a namespace + those three applications per user.
 
@@ -167,7 +168,7 @@ make test-installer        # installer + chart tests; chart tests need helm
   (`vm.readinessProbe: true`, needs guest-agent exec).
 - Docker as the VM container runtime.
 - Moving an existing pattern install's Keycloak from `openshell-agents` to
-  `keycloak`: the new instance starts with a fresh database (realm, test
+  `saw-keycloak`: the new instance starts with a fresh database (realm, test
   users and clients come from the chart; other data is not migrated).
 - Migrating VMs created by the old SSH-based chart in place: cloud-init has
   already run on them, so the installer units are never written. Recreate
