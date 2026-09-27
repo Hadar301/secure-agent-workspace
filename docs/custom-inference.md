@@ -22,8 +22,15 @@ OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.11
    ```
 
 2. Put the endpoint in the `inference` Secret (pattern: `~/values-secret-*.yaml`,
-   see `values-secret.yaml.template`; quickstart: `oc create secret generic
-   inference --from-literal=provider=openai --from-literal=model=... --from-literal=url=... --from-file=api_key=...`):
+   see `values-secret.yaml.template`). With the quickstart, one command does
+   steps 1 and 2:
+
+   ```bash
+   make openshell-saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \
+     PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 API_KEY=<key>
+   ```
+
+   The Secret's keys:
 
    | Key | Value |
    |---|---|
