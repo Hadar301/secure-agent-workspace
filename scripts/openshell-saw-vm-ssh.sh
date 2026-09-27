@@ -8,6 +8,8 @@
 #
 # Usage: openshell-saw-vm-ssh.sh [--add-key-only] [command...]
 # Env:   SAW_NS, VM_NAME (required), SSH_KEY_PATH (private key; .pub next to it),
+#        CMD (command to run when none is given as arguments; make passes it
+#        through the environment so it is never re-parsed by the local shell),
 #        KEY_NAME (Secret key for your entry, default: your login name),
 #        SYNC_TIMEOUT (seconds, default 120)
 set -euo pipefail
@@ -21,6 +23,7 @@ KEY_NAME="${KEY_NAME:-$(id -un | tr -c -- '-._a-zA-Z0-9\n' '-')}"
 
 add_only=false
 if [[ "${1:-}" == "--add-key-only" ]]; then add_only=true; shift; fi
+if (( $# == 0 )) && [[ -n "${CMD:-}" ]]; then set -- "${CMD}"; fi
 
 if [[ ! -f "${SSH_KEY_PATH}.pub" ]]; then
   echo "Error: no public key at ${SSH_KEY_PATH}.pub (make generate-keys, or set SSH_KEY_PATH)" >&2

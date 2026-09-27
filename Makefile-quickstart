@@ -428,7 +428,7 @@ openshell-saw-status: .check-saw-name .check-ssh-key ## Show the in-VM installer
 
 openshell-saw-vm-ssh: .check-saw-name .check-ssh-key ## Shell on the gateway VM: adds your key to its accessCredentials Secret (CMD= to run one command)
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
-	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh $(CMD)
+	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh
 
 openshell-saw-restart: .check-saw-name ## Restart the VM so it applies a changed BOM/profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)

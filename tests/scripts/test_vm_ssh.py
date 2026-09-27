@@ -69,6 +69,21 @@ def test_runs_a_command(env):
     assert ssh[-2:] == ["--command", "sudo cat /var/lib/saw/status.json"]
 
 
+def test_command_from_environment_is_passed_as_one_remote_command(env):
+    """make passes CMD= via the environment; pipes must run in the VM."""
+    set_state(env, secret="alice-ssh-pubkey")
+    env["CMD"] = "cat ~/.ssh/authorized_keys | cut -c1-40; getsebool virt_qemu_ga_manage_ssh"
+    assert run(env).returncode == 0
+    (ssh,) = log(env, "virtctl")
+    assert ssh[-2:] == ["--command", env["CMD"]]
+
+
+def test_make_target_passes_cmd_through_the_environment():
+    text = (ROOT / "Makefile-quickstart").read_text()
+    recipe = text.split("openshell-saw-vm-ssh:", 1)[1].split("\n\n", 1)[0]
+    assert "openshell-saw-vm-ssh.sh" in recipe and "$(CMD)" not in recipe
+
+
 def test_existing_key_is_not_patched_again(env):
     set_state(env, secret="alice-ssh-pubkey",
               data={"saurabh": base64.b64encode(PUBKEY.encode()).decode()})
