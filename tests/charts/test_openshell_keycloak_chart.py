@@ -35,3 +35,30 @@ def test_existing_mode_imports_only_the_realm_into_that_keycloak():
     clients = {c["clientId"]: c for c in spec["realm"]["clients"]}
     assert clients["openshell-cli"]["publicClient"] is True
     assert {"openshell-admin", "openshell-user"} <= {r["name"] for r in spec["realm"]["roles"]["realm"]}
+
+
+def test_client_lists_are_never_null(tmp_path):
+    """Found live (Helm 4, server-side apply): the dashboard client's empty
+    redirectUris/webOrigins rendered as null and the CRD rejected the import."""
+    with_uri = tmp_path / "with-uri.yaml"
+    with_uri.write_text("keycloak:\n  existing: keycloak\n  clients:\n    dashboard:\n"
+                        "      redirectUris: [https://a.example.com/oauth2/callback]\n")
+    for args in ((), ("--set", "keycloak.existing=keycloak"), ("-f", str(with_uri))):
+        (realm,) = [d for d in render(*args) if d["kind"] == "KeycloakRealmImport"]
+        for client in realm["spec"]["realm"]["clients"]:
+            for key in ("redirectUris", "webOrigins"):
+                assert isinstance(client.get(key), list), (args, client["clientId"], key)
+    (realm,) = render("-f", str(with_uri))
+    dash = next(c for c in realm["spec"]["realm"]["clients"] if c["clientId"] == "openshell-dashboard")
+    assert dash["redirectUris"] == ["https://a.example.com/oauth2/callback"]
+
+
+def test_no_test_users_and_users_without_roles_render_valid_lists(tmp_path):
+    values = tmp_path / "users.yaml"
+    values.write_text("keycloak:\n  testUsers:\n    - username: nobody\n      password: x\n")
+    (realm,) = [d for d in render("-f", str(values)) if d["kind"] == "KeycloakRealmImport"]
+    assert realm["spec"]["realm"]["users"][0]["realmRoles"] == []
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("keycloak:\n  testUsers: []\n")
+    (realm,) = [d for d in render("-f", str(empty)) if d["kind"] == "KeycloakRealmImport"]
+    assert realm["spec"]["realm"]["users"] == []
