@@ -1,3 +1,7 @@
+{{- /* Deleting the release (helm uninstall, or deleting the Argo CD app: Argo CD
+     runs Helm pre-delete hooks as PreDelete hooks) deletes the VM and its disks.
+     cleanupOnDelete: false keeps them. */ -}}
+{{- if .Values.cleanupOnDelete }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -97,3 +101,4 @@ spec:
           done
 
           echo "Cleanup complete."
+{{- end }}

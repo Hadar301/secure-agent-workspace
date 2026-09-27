@@ -30,6 +30,26 @@ def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice")
                           capture_output=True, text=True)
 
 
+def _pattern_saw_settings():
+    """The openshell-saw values the saw-users chart gives every user
+    (defaults.openshellSaw) plus alice as owner, as --set flags, so these
+    tests follow the chart instead of a copy of it."""
+    defaults = yaml.safe_load((ROOT / "charts/saw-users/values.yaml").read_text())["defaults"]["openshellSaw"]
+
+    def flatten(prefix, value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        else:
+            yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
+
+    flags = [f for pair in flatten("", defaults) for f in pair]
+    return (*flags, "--set", "accessControl.owner=alice")
+
+
+PATTERN_SAW_SETTINGS = _pattern_saw_settings()
+
+
 def render(*args, **kwargs):
     result = helm_template(CHART, "--set", "sandboxName=saw-test", *args, **kwargs)
     assert result.returncode == 0, result.stderr
@@ -364,7 +384,7 @@ def test_owner_subject_is_passed_to_installer():
 
 
 def test_pattern_override_renders_with_nemoclaw(ab):
-    docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
+    docs = render(*PATTERN_SAW_SETTINGS)
     bom = yaml.safe_load(installer_data(docs)["installer-bom.yaml"])
     assert bom["spec"]["nemoclaw"]["cliImage"].startswith("quay.io/rh-ai-quickstart/nemoclaw-cli")
     assert ab.validate_bom(bom)["spec"]["openshell"]["gateway"]
@@ -409,7 +429,7 @@ def test_saw_bom_chart_ships_profiles_only():
 def test_rendered_inputs_validate_in_the_shipped_installer(tmp_path, default_docs):
     """Lay out /run/saw exactly as saw-mount-inputs would from the two charts,
     then run the installer that the chart ships: `validate` must pass."""
-    docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
+    docs = render(*PATTERN_SAW_SETTINGS)
     run_saw = tmp_path / "run-saw"
     for key, value in installer_data(docs).items():
         (run_saw / "installer").mkdir(parents=True, exist_ok=True)
@@ -505,9 +525,17 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     assert apps["openshell-keycloak"]["namespace"] == "saw-keycloak"
     saw = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
     assert saw["oidc"]["keycloakNamespace"] == "saw-keycloak"
-    assert namespaces["saw-alice"]["labels"]["openshell.pattern/saw"] == "true"
-    for app in ("openshell-saw", "saw-bom", "pattern-secrets"):
-        assert apps[app]["namespace"] == "saw-alice", app
+    # Per-user namespaces and apps come from the saw-users chart, not this file.
+    assert "saw-alice" not in namespaces
+    for gone in ("openshell-saw", "saw-bom", "pattern-secrets"):
+        assert gone not in apps, gone
+    users_app = apps["saw-users"]
+    assert users_app["namespace"] == "openshell-agents"
+    assert users_app["path"] == "charts/saw-users"
+    assert users_app["extraValueFiles"] == ["/overrides/saw-users.yaml"]
+    assert users_app["syncPolicy"]["automated"]["prune"] is True
+    listed = yaml.safe_load((ROOT / "overrides/saw-users.yaml").read_text())["users"]
+    assert [user["name"] for user in listed] == ["alice"]
     for app in ("governance-interceptor", "governance-policy"):
         assert apps[app]["namespace"] == "openshell-agents", app
 
@@ -553,7 +581,7 @@ def test_existing_ssh_key_secret_takes_precedence():
 
 
 def test_pattern_uses_the_on_demand_ssh_key_secret():
-    docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
+    docs = render(*PATTERN_SAW_SETTINGS)
     assert access_credentials(docs)[0]["sshPublicKey"]["source"]["secret"]["secretName"] == "saw-test-ssh-pubkey"
     assert "data" not in docs[("Secret", "saw-test-ssh-pubkey")]
 
@@ -661,3 +689,12 @@ def test_inference_secret_carries_an_optional_url():
     tmpl = es["spec"]["target"]["template"]["data"]
     assert set(tmpl) == {"provider", "model", "api_key", "url"}
     assert tmpl["url"] == '{{ index . "url" | default "" }}'
+
+
+def test_cleanup_hook_can_be_turned_off():
+    """helm uninstall (and deleting the Argo CD app) deletes the VM through a
+    pre-delete hook unless cleanupOnDelete is false."""
+    hooks = lambda docs: [k for k, d in docs.items()
+                          if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
+    assert ("Pod", "saw-test-cleanup") in hooks(render())
+    assert hooks(render("--set", "cleanupOnDelete=false")) == []
