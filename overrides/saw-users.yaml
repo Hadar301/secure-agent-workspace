@@ -8,4 +8,3 @@ users:
   - name: alice
     profiles:
       - data-science
-  - name: bob
