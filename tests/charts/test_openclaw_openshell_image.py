@@ -51,7 +51,7 @@ def test_supervisor_tools_are_bundled_and_checked_at_build_time():
     # Same Hummingbird builder the aipcc base is built with, pinned.
     assert re.fullmatch(r"registry\.access\.redhat\.com/hi/nodejs:26-builder@sha256:[0-9a-f]{64}", tools)
     assert "util-linux-core nftables" in text
-    assert "COPY --from=tools /out /opt/openshell-tools" in text
+    assert "COPY --from=tools /out /usr/local/lib/openshell-tools" in text
     assert "nsenter:/usr/bin/nsenter nft:/usr/sbin/nft" in text
     assert "nsenter --version && nft --version && command -v ip" in text
     assert "|| true" not in text
@@ -71,3 +71,20 @@ def test_buildconfig_inline_dockerfile_matches_the_dockerfile():
     final = re.findall(r"^FROM (\S+)$", text, re.M)[0]
     expected = text.replace(f"FROM {final}\n", f"FROM {base}\n", 1)
     assert inline.strip() == expected.strip()
+
+
+def test_everything_the_sandbox_runs_is_on_a_path_the_policy_allows():
+    """Found live: OpenClaw under /opt/openclaw was 'Permission denied' inside
+    the sandbox. Only these paths are readable there (OpenShell default policy
+    and charts/governance-policy/policy.yaml)."""
+    policy = yaml.safe_load((ROOT / "charts" / "governance-policy" / "policy.yaml").read_text())
+    allowed = policy["filesystem_policy"]["read_only"] + policy["filesystem_policy"]["read_write"]
+    assert "/opt" not in allowed and "/usr" in allowed
+    text = dockerfile()
+    assert "mv /opt/openclaw /usr/local/lib/openclaw" in text
+    assert "ln -sfn /usr/local/lib/openclaw/node_modules/.bin/openclaw /usr/local/bin/openclaw" in text
+    # anything this image adds lives under /usr
+    for path in re.findall(r"(?:COPY --from=\S+ \S+|ln -sfn \S+) (/\S+)", text):
+        assert path.startswith("/usr/"), path
+    # the move happens before the plugin install, which writes into OpenClaw's tree
+    assert text.index("mv /opt/openclaw") < text.index("openclaw plugins install")

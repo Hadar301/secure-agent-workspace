@@ -36,16 +36,25 @@ spec:
       # so they come from the tools stage with their own libraries and dynamic
       # loader (independent of the base image's glibc). Launchers sit where the
       # supervisor looks for them. The build fails if they do not run.
-      COPY --from=tools /out /opt/openshell-tools
+      COPY --from=tools /out /usr/local/lib/openshell-tools
       RUN set -e; \
-          LD=$(ls /opt/openshell-tools/lib/ld-linux-*.so.*); \
+          LD=$(ls /usr/local/lib/openshell-tools/lib/ld-linux-*.so.*); \
           for tool in nsenter:/usr/bin/nsenter nft:/usr/sbin/nft; do \
             name=${tool%%:*}; target=${tool#*:}; \
-            printf '#!/bin/sh\nexec %s --library-path /opt/openshell-tools/lib /opt/openshell-tools/bin/%s "$@"\n' \
+            printf '#!/bin/sh\nexec %s --library-path /usr/local/lib/openshell-tools/lib /usr/local/lib/openshell-tools/bin/%s "$@"\n' \
               "$LD" "$name" > "$target"; \
             chmod 755 "$target"; \
           done; \
           nsenter --version && nft --version && command -v ip
+
+      # OpenShell's sandbox filesystem policy (its default and this repo's
+      # governance-policy) allows /usr, /lib, /app, /etc and /sandbox but not /opt,
+      # where the base image installs OpenClaw; inside a sandbox `openclaw` failed
+      # with "Permission denied". Move it under /usr and re-point the CLI.
+      RUN mv /opt/openclaw /usr/local/lib/openclaw && \
+          ln -sfn /usr/local/lib/openclaw/node_modules/.bin/openclaw /usr/local/bin/openclaw && \
+          case "$(readlink -f "$(command -v openclaw)")" in /usr/*) ;; *) echo "openclaw resolves outside /usr" >&2; exit 1;; esac && \
+          openclaw --version
 
       # The base image's sandbox user owns /sandbox, its home. Referenced by name:
       # its UID differs between base image builds (1000, 1001).
