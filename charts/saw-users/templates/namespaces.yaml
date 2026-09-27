@@ -11,7 +11,7 @@ metadata:
     argocd.argoproj.io/managed-by: {{ include "saw-users.argoNamespace" $ | quote }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ $.Values.syncWave.namespace | quote }}
-    {{- if not $.Values.pruneOnRemove }}
+    {{- if not (include "saw-users.prune" (dict "root" $ "user" $user)) }}
     argocd.argoproj.io/sync-options: Prune=false
     {{- end }}
 {{- end }}

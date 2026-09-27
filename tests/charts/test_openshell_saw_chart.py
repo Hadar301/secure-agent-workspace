@@ -30,14 +30,24 @@ def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice")
                           capture_output=True, text=True)
 
 
-# Settings that used to live in overrides/openshell-saw.yaml. The saw-users
-# chart now passes them as each user's openshell-saw values.
-PATTERN_SAW_SETTINGS = (
-    "--set", "accessControl.owner=alice",
-    "--set", "job.waitForSecrets=true",
-    "--set", "job.backoffLimit=5",
-    "--set", "dashboard.insecureSkipIssuerTlsVerify=true",
-)
+def _pattern_saw_settings():
+    """The openshell-saw values the saw-users chart gives every user
+    (defaults.openshellSaw) plus alice as owner, as --set flags, so these
+    tests follow the chart instead of a copy of it."""
+    defaults = yaml.safe_load((ROOT / "charts/saw-users/values.yaml").read_text())["defaults"]["openshellSaw"]
+
+    def flatten(prefix, value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        else:
+            yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
+
+    flags = [f for pair in flatten("", defaults) for f in pair]
+    return (*flags, "--set", "accessControl.owner=alice")
+
+
+PATTERN_SAW_SETTINGS = _pattern_saw_settings()
 
 
 def render(*args, **kwargs):

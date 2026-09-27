@@ -207,7 +207,8 @@ Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD
 The virtual machine is named `saw-<name>` (Alice's machine is `saw-alice`, not `openshell-saw`).
 Set `OPENSHELL_SAW_NAME` and `SAW_NS` to that same name.
 Removing an entry deletes that user's Argo apps and leaves the VM running.
-Set `pruneOnRemove: true` in `charts/saw-users` before removing the entry to delete the namespace and the VM as well.
+To delete the namespace and the VM as well, first set `pruneOnRemove: true` on that user's entry and push, then remove the entry and push.
+Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from the single-user layout](docs/deployment-guide.md#upgrading-from-the-single-user-layout).
 
 #### Option B: Quickstart (manual, step-by-step)
 

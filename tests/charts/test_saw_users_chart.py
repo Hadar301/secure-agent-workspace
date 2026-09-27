@@ -87,7 +87,9 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert application["metadata"]["namespace"] == "vp-gitops"
         assert "finalizers" not in application["metadata"]
         assert application["spec"]["destination"]["name"] == "in-cluster"
-        assert application["spec"]["syncPolicy"] == {"automated": {}, "retry": {"limit": 20}}
+        assert application["spec"]["syncPolicy"] == {"automated": {"selfHeal": True},
+                                                      "retry": {"limit": 20}}
+        assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
         assert "syncOptions" not in application["spec"]["syncPolicy"]
 
 
@@ -150,6 +152,35 @@ def test_prune_on_remove_adds_the_foreground_finalizer(tmp_path):
         assert application["metadata"]["finalizers"] == [FINALIZER]
     namespace = by_kind(docs, "Namespace")[0]
     assert "argocd.argoproj.io/sync-options" not in namespace["metadata"]["annotations"]
+
+
+def test_prune_on_remove_can_be_set_per_user(tmp_path):
+    """Set it on the one entry about to be removed, not for everyone: while it
+    is on, deleting the apps (or the saw-users app) deletes that user's VM."""
+    docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob", "pruneOnRemove": True}]))
+    for name in ("saw-bob", "saw-bob-bom", "saw-bob-secrets"):
+        assert app(docs, name)["metadata"]["finalizers"] == [FINALIZER]
+    for name in ("saw-alice", "saw-alice-bom", "saw-alice-secrets"):
+        assert "finalizers" not in app(docs, name)["metadata"]
+    namespaces = {d["metadata"]["name"]: d["metadata"]["annotations"] for d in by_kind(docs, "Namespace")}
+    assert "argocd.argoproj.io/sync-options" not in namespaces["saw-bob"]
+    assert namespaces["saw-alice"]["argocd.argoproj.io/sync-options"] == "Prune=false"
+
+
+def test_a_user_can_opt_out_of_the_chart_wide_prune(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob", "pruneOnRemove": False}],
+                                 extra={"pruneOnRemove": True}))
+    assert app(docs, "saw-alice")["metadata"]["finalizers"] == [FINALIZER]
+    assert "finalizers" not in app(docs, "saw-bob")["metadata"]
+
+
+def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], extra={
+        "global": {"repoURL": "https://example.com/repo.git", "targetRevision": "main",
+                   "vpArgoNamespace": "vp-gitops", "clusterDomain": "example.com",
+                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA"}}))
+    assert helm_values(app(docs, "saw-alice"))["global"] == {
+        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA"}
 
 
 @pytest.mark.parametrize("name,message", [

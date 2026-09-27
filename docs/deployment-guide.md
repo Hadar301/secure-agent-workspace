@@ -135,6 +135,39 @@ A Kubernetes Job (`openshell-saw-setup`) runs after the VM boots. It:
     - Injects SSH public key into the sandbox
     - Starts the dashboard + OAuth2 proxy as Docker containers
 
+## Upgrading from the single-user layout
+
+Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
+the `saw-alice` namespace and the `openshell-saw`, `saw-bom` and
+`pattern-secrets` applications (VM `openshell-saw`). Upgrading an existing
+install does not remove them: the pattern's top-level application syncs
+without pruning, so the old applications keep running next to the new
+`saw-alice*` ones and both manage the same ExternalSecrets and ConfigMap in
+`saw-alice`.
+
+Remove the old applications **without cascading**. Every pattern application
+carries the `resources-finalizer.argocd.argoproj.io/foreground` finalizer, so
+a plain `oc delete application` would also delete the ExternalSecrets and the
+`saw-bom-profiles` ConfigMap that the new applications now use.
+
+```bash
+ARGO_NS=vp-gitops   # the pattern's Argo CD namespace (global.vpArgoNamespace)
+for app in openshell-saw saw-bom pattern-secrets; do
+  oc -n "$ARGO_NS" patch application "$app" --type json \
+    -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+  oc -n "$ARGO_NS" delete application "$app"
+done
+# The old VM and its disk are no longer managed; delete them.
+oc -n saw-alice delete vm openshell-saw
+oc -n saw-alice delete datavolume openshell-saw-root --ignore-not-found
+```
+
+The `saw-alice*` applications keep the shared objects in place (they self-heal
+anything removed). Alice's new VM is `saw-alice`: use
+`OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice`. Sandboxes and files inside the
+old VM are not migrated; the new VM recreates the profile's workspaces and
+sandboxes.
+
 ## Network Architecture
 
 ### Routes
