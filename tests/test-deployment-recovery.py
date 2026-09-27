@@ -79,13 +79,45 @@ def test_readiness_failure_stops_before_onboarding(monkeypatch):
     assert all(command[:3] == ['openshell', 'sandbox', 'get'] for command in shell.commands)
 
 
-def test_container_lookup_includes_workspace():
+@pytest.mark.parametrize('runtime', ['docker', 'podman'])
+def test_container_lookup_includes_workspace(monkeypatch, runtime):
+    monkeypatch.setenv('CONTAINER_RUNTIME', runtime)
     shell = Shell((0, '', ''))
     deployer = bom.WorkspaceDeployer(shell, None)
     deployer.chown_sandbox_home('notebook', 'vllm')
     deployer.chown_sandbox_home('notebook', 'default')
     assert 'openshell-vllm--notebook-' in shell.commands[0][-1]
     assert 'openshell-(default--)?notebook-' in shell.commands[1][-1]
+    import re
+    for command, workspace in zip(shell.commands, ['vllm', 'default']):
+        script = command[-1]
+        assert ('sudo docker ps' if runtime == 'docker' else 'podman ps') in script
+        assert ('sudo docker exec' if runtime == 'docker' else 'podman exec') in script
+        pattern = re.search(r"--filter 'name=([^']+)'", script).group(1)
+        assert re.search(pattern, f'openshell-{workspace}--notebook-id')
+        assert re.search(pattern, f'/openshell-{workspace}--notebook-id')
+        assert not re.search(pattern, 'openshell-unrelated--notebook-id')
+
+
+@pytest.mark.parametrize('runtime', ['docker', 'podman'])
+@pytest.mark.parametrize('phase', ['Error', 'Restarting'])
+def test_creation_diagnostics_preserve_failure_and_workspace(monkeypatch, runtime, phase):
+    monkeypatch.setenv('CONTAINER_RUNTIME', runtime)
+    monkeypatch.setattr(bom.time, 'sleep', lambda _: None)
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ['openshell', 'sandbox', 'get']:
+            return 1, '', 'not found'
+        if cmd[:3] == ['openshell', 'sandbox', 'create']:
+            return 0, f'Phase: {phase}', ''
+        return 0, '', ''
+    deployer = bom.WorkspaceDeployer(SimpleNamespace(run=run, dry_run=False), None)
+    assert deployer.create_sandbox_generic(bom.Sandbox('notebook'), 'vllm') is False
+    diagnostic = next(cmd[-1] for cmd in calls if cmd[:2] == ['bash', '-c'])
+    assert "name=^/?openshell-vllm--notebook-" in diagnostic
+    assert ('sudo docker logs' if runtime == 'docker' else 'podman logs') in diagnostic
+    subprocess.run(['bash', '-n'], input=diagnostic, text=True, check=True)
 
 
 def test_inference_template_optional_url(tmp_path):

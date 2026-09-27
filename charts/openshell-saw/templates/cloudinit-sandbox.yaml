@@ -63,6 +63,11 @@ data:
           allow_unauthenticated_users = false
           {{- end }}
 
+          {{- if eq .Values.containerRuntime "podman" }}
+          [openshell.drivers.podman]
+          supervisor_image = {{ .Values.openshell.supervisorImage | quote }}
+          {{- end }}
+
           {{- if .Values.governance.enabled }}
           [openshell.gateway]
           provider_profile_sources = [
@@ -72,6 +77,7 @@ data:
           [[openshell.gateway.interceptors]]
           name           = "governance"
           grpc_endpoint  = {{ .Values.governance.endpoint | default (printf "http://governance-interceptor.%s.svc.cluster.local:%v" .Release.Namespace (.Values.governance.port | default 18081)) | quote }}
+          allow_insecure_transport = {{ .Values.governance.allowInsecureTransport | default true }}
           order          = 10
           failure_policy = {{ .Values.governance.failurePolicy | default "fail_closed" | quote }}
           binding_policy = "allowlist"

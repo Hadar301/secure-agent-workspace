@@ -13,7 +13,7 @@ RUN git rev-parse HEAD > .source-revision 2>/dev/null || echo "00000000000000000
 RUN npm run build:cli
 
 FROM ${NODE_IMAGE}
-ARG MAX_OPENSHELL_VERSION=0.0.110
+ARG MAX_OPENSHELL_VERSION=0.0.116
 WORKDIR /opt/nemoclaw
 COPY --from=builder /opt/nemoclaw/package.json /opt/nemoclaw/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
@@ -23,6 +23,7 @@ COPY --from=builder /opt/nemoclaw/nemoclaw/dist/ ./nemoclaw/dist/
 COPY --from=builder /opt/nemoclaw/agents/ ./agents/
 COPY --from=builder /opt/nemoclaw/scripts/ ./scripts/
 COPY --from=builder /opt/nemoclaw/nemoclaw-blueprint/ ./nemoclaw-blueprint/
+COPY --from=builder /opt/nemoclaw/managed-inference/ ./managed-inference/
 RUN sed -i "s/max_openshell_version: \"[^\"]*\"/max_openshell_version: \"${MAX_OPENSHELL_VERSION}\"/" ./nemoclaw-blueprint/blueprint.yaml \
     && grep -Fq "max_openshell_version: \"${MAX_OPENSHELL_VERSION}\"" ./nemoclaw-blueprint/blueprint.yaml
 COPY --from=builder /opt/nemoclaw/schemas/ ./schemas/

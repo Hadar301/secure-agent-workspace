@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase: upgrade OpenShell binaries on the VM, patch OIDC, restart gateway.
-# Expects: GATEWAY_IMAGE, SUPERVISOR_IMAGE, OPENSHELL_PIP_VERSION, PIP_INDEX_URL,
+# Expects: GATEWAY_IMAGE, SUPERVISOR_IMAGE, CLI_IMAGE, OPENSHELL_PIP_VERSION, PIP_INDEX_URL,
 #          RUNTIME, SECRETS_DIR, WORK_DIR, NS, ALLOW_ANONYMOUS_PULL,
 #          guest_ssh/guest_scp (functions)
 
@@ -24,12 +24,24 @@ if [[ -n "${GATEWAY_IMAGE}" && -n "${SUPERVISOR_IMAGE}" && -n "${OPENSHELL_PIP_V
     sudo chmod 755 /usr/local/bin/openshell-supervisor && \
     echo 'supervisor upgraded'
   " || echo "WARN: supervisor binary upgrade failed (continuing with existing version)"
-  PIP_EXTRA=""
-  [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
-  guest_ssh "
-    pip3 install openshell==${OPENSHELL_PIP_VERSION} ${PIP_EXTRA} \
-    && echo 'openshell CLI upgraded'
-  " || echo "WARN: openshell CLI upgrade failed (continuing with existing version)"
+  if [[ -n "${CLI_IMAGE}" ]]; then
+    guest_ssh "
+      ${RUNTIME} pull '${CLI_IMAGE}' && \
+      CID=\$(${RUNTIME} create '${CLI_IMAGE}') && \
+      ${RUNTIME} cp \${CID}:/usr/local/bin/openshell /tmp/openshell && \
+      ${RUNTIME} rm \${CID} && \
+      sudo mv /tmp/openshell /usr/local/bin/openshell && \
+      sudo chmod 755 /usr/local/bin/openshell && \
+      echo 'openshell CLI upgraded from image'
+    " || echo "WARN: openshell CLI image upgrade failed (continuing with existing version)"
+  else
+    PIP_EXTRA=""
+    [[ -n "${PIP_INDEX_URL}" ]] && PIP_EXTRA="--extra-index-url ${PIP_INDEX_URL}"
+    guest_ssh "
+      pip3 install openshell==${OPENSHELL_PIP_VERSION} ${PIP_EXTRA} \
+      && echo 'openshell CLI upgraded'
+    " || echo "WARN: openshell CLI upgrade failed (continuing with existing version)"
+  fi
   # Patch the pip-installed openshell binary's version output so nemoclaw's
   # feature gate sees matching versions across all three components. The pip
   # binary uses '+' (PEP 440 local) while the native Go binaries use '-'
@@ -66,19 +78,24 @@ guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install 
 
 # --- Trust cluster's service-serving CA (for the internal image registry) ---
 # Only needed when internalRegistry.allowAnonymousPull is enabled (see
-# values.yaml) — the sandbox VM's Docker daemon needs this to pull
+# values.yaml) — the sandbox VM's configured container runtime needs this to pull
 # internally-built images over TLS. Every namespace gets an
 # "openshift-service-ca.crt" ConfigMap containing the CA that signs
-# internal service serving certs. Requires a Docker restart to pick up
-# the refreshed system trust store.
+# internal service serving certs. Docker requires a daemon restart to pick up
+# the refreshed system trust store; rootless Podman reads it per invocation.
 if [[ "${ALLOW_ANONYMOUS_PULL:-false}" == "true" ]]; then
   echo "Installing cluster service-serving CA into VM trust store..."
   SERVICE_CA="$(kubectl get configmap openshift-service-ca.crt -n "${NS}" -o jsonpath='{.data.service-ca\.crt}' 2>/dev/null || true)"
   if [[ -n "${SERVICE_CA}" ]]; then
     echo "${SERVICE_CA}" > "${WORK_DIR}/service-ca.crt"
     guest_scp "${WORK_DIR}/service-ca.crt" "/tmp/openshift-service-ca.crt"
-    guest_ssh "sudo cp /tmp/openshift-service-ca.crt /etc/pki/ca-trust/source/anchors/openshift-service-ca.crt && sudo update-ca-trust extract && sudo systemctl restart docker" \
-      || echo "WARN: failed to install service-serving CA into VM trust store (non-fatal)"
+    if [[ "${RUNTIME}" == "docker" ]]; then
+      guest_ssh "sudo cp /tmp/openshift-service-ca.crt /etc/pki/ca-trust/source/anchors/openshift-service-ca.crt && sudo update-ca-trust extract && sudo systemctl restart docker" \
+        || echo "WARN: failed to install service-serving CA into VM trust store (non-fatal)"
+    else
+      guest_ssh "sudo cp /tmp/openshift-service-ca.crt /etc/pki/ca-trust/source/anchors/openshift-service-ca.crt && sudo update-ca-trust extract" \
+        || echo "WARN: failed to install service-serving CA into VM trust store (non-fatal)"
+    fi
   else
     echo "WARN: could not fetch cluster service-serving CA (non-fatal, continuing)"
   fi

@@ -119,6 +119,24 @@ class Shell:
         return result.returncode, stdout, stderr
 
 
+def runtime_command(*args):
+    """Return a container command for the configured gateway runtime.
+
+    Podman runs rootless as the gateway user. Docker remains supported as the
+    explicit legacy runtime and retains the existing sudo invocation.
+    """
+    runtime = os.environ.get("CONTAINER_RUNTIME", "podman").strip().lower()
+    if runtime not in {"docker", "podman"}:
+        raise ValueError(f"unsupported container runtime: {runtime}")
+    prefix = ["podman"] if runtime == "podman" else ["sudo", "docker"]
+    return prefix + list(args)
+
+
+def runtime_shell_command(*args):
+    """Return a safely shell-quoted runtime command for diagnostics."""
+    return shlex.join(runtime_command(*args))
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -400,6 +418,14 @@ class WorkspaceDeployer:
         self.sh = shell
         self.gw = gateway_setup
 
+    @staticmethod
+    def runtime_command(*args):
+        return runtime_command(*args)
+
+    @staticmethod
+    def runtime_shell_command(*args):
+        return runtime_shell_command(*args)
+
     def create_workspace(self, ws):
         if ws.name == "default":
             log(f"Using existing 'default' workspace")
@@ -483,8 +509,9 @@ class WorkspaceDeployer:
             check=False)
         if rc == 0:
             clean = re.sub(r'\x1b\[[0-9;]*m', '', out)
-            if "Error" in clean:
-                log(f"Sandbox '{sandbox.name}' is in Error state, "
+            if "Error" in clean or "Phase: Completed" in clean:
+                state = "Completed" if "Phase: Completed" in clean else "Error"
+                log(f"Sandbox '{sandbox.name}' is in {state} state, "
                     "recreating...")
                 self.sh.run(
                     ["openshell", "sandbox", "delete",
@@ -495,7 +522,7 @@ class WorkspaceDeployer:
                 return True
         is_full_ref = sandbox.image and ("/" in sandbox.image or ":" in sandbox.image)
         if is_full_ref:
-            self.sh.run(["sudo", "docker", "pull", sandbox.image], check=False)
+            self.sh.run(self.runtime_command("pull", sandbox.image), check=False)
         args = ["openshell", "sandbox", "create", "--name", sandbox.name]
         if sandbox.image:
             args += ["--from", sandbox.image]
@@ -503,10 +530,29 @@ class WorkspaceDeployer:
             args += ["--workspace", workspace_name]
         for prov in sandbox.providers:
             args += ["--provider", prov]
-        args += ["--no-tty", "--", "sh", "-c", "echo sandbox-ready"]
+        # Keep the sandbox Ready for follow-up `sandbox exec` setup.
+        # A detached long-running workload prevents premature completion.
+        args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         rc, out, err = self.sh.run(args, check=False)
         combined = re.sub(r'\x1b\[[0-9;]*m', '',
                           (out or "") + " " + (err or ""))
+        if "Error" in combined or "Restarting" in combined:
+            log("Sandbox entered Error state, waiting 10s for logs...")
+            if not self.sh.dry_run:
+                time.sleep(10)
+            prefix = "(default--)?" if workspace_name == "default" else re.escape(workspace_name) + "--"
+            container_pattern = "^/?openshell-" + prefix + re.escape(sandbox.name) + "-"
+            self.sh.run([
+                "bash", "-c",
+                f"CNAME=$({self.runtime_shell_command('ps', '-a')} "
+                f"--filter 'name={container_pattern}' "
+                "--format '{{.Names}}' | head -1) && "
+                "[ -n \"$CNAME\" ] && echo \"Container: $CNAME\" && "
+                f"echo \"Status: $({self.runtime_shell_command('inspect')} \"$CNAME\" "
+                "--format '{{.State.Status}} ExitCode={{.State.ExitCode}}')"
+                "\" && echo '--- logs ---' && "
+                f"{self.runtime_shell_command('logs')} \"$CNAME\" 2>&1 | tail -30"
+            ], check=False)
         if rc != 0 or "Error" in combined or "Restarting" in combined:
             log(f"ERROR: sandbox creation failed in '{workspace_name}': {sandbox.name}")
             return False
@@ -517,20 +563,20 @@ class WorkspaceDeployer:
 
         The image bakes UID 65532. The supervisor rewrites passwd to
         whatever uid is free (1000, 998, …) and does not chown existing
-        files. openshell sandbox exec cannot chown (not root); docker
-        exec -u 0 can. After passwd rewrite, name 'sandbox' is the
+        files. openshell sandbox exec cannot chown (not root); the configured
+        runtime's exec -u 0 can. After passwd rewrite, name 'sandbox' is the
         runtime uid, so this works on any cluster.
         """
         prefix = "(default--)?" if workspace_name == "default" else re.escape(workspace_name) + "--"
-        container_pattern = "^/openshell-" + prefix + re.escape(sandbox_name) + "-"
+        container_pattern = "^/?openshell-" + prefix + re.escape(sandbox_name) + "-"
         log(f"Chowning /sandbox to sandbox user in '{sandbox_name}'")
         self.sh.run([
             "bash", "-c",
-            "CNAME=$(sudo docker ps -a "
+            f"CNAME=$({self.runtime_shell_command('ps', '-a')} "
             f"--filter 'name={container_pattern}' "
             "--format '{{.Names}}' | head -1) && "
             "[ -n \"$CNAME\" ] && "
-            "sudo docker exec -u 0 \"$CNAME\" "
+            f"{self.runtime_shell_command('exec', '-u', '0')} \"$CNAME\" "
             "chown -R sandbox:sandbox /sandbox",
         ], check=False)
 
@@ -542,11 +588,13 @@ class WorkspaceDeployer:
             log("nemoclaw CLI already installed, skipping")
             return
         section("Installing nemoclaw CLI")
+        runtime = self.runtime_shell_command
         self.sh.run([
             "bash", "-c",
-            f"CID=$(docker create '{cli_image}' 2>/dev/null) && "
-            f"docker cp $CID:/opt/nemoclaw /tmp/nemoclaw-cli && "
-            f"docker rm $CID >/dev/null && "
+            f"{runtime('pull')} '{cli_image}' && "
+            f"CID=$({runtime('create')} '{cli_image}') && "
+            f"{runtime('cp')} $CID:/opt/nemoclaw /tmp/nemoclaw-cli && "
+            f"{runtime('rm')} $CID >/dev/null && "
             f"sudo mv /tmp/nemoclaw-cli /opt/nemoclaw && "
             f"printf '#!/usr/bin/env bash\\nexec node "
             f"/opt/nemoclaw/bin/nemoclaw.js \"$@\"\\n' "
@@ -962,7 +1010,7 @@ def main():
                 section(f"Sandbox '{sb.name}' (type={sb.type})")
 
                 if sb.type == "nemoclaw":
-                    # Nemoclaw flow (matches feat/fix-docker-golden-image):
+                    # NemoClaw flow (works with the configured container runtime):
                     # 1. Install nemoclaw CLI
                     # 2. nemoclaw onboard (configures provider)
                     # 3. Fallback: openshell provider create
@@ -979,7 +1027,7 @@ def main():
                                                 or ":" in sb.image)
                     if is_full_ref:
                         deployer.sh.run(
-                            ["sudo", "docker", "pull", sb.image],
+                            deployer.runtime_command("pull", sb.image),
                             check=False)
 
                     prov = find_provider(ws, sb.providers)

@@ -31,6 +31,8 @@ from apply_bom import (  # noqa: E402
     parse_profiles,
     resolve_configured_type,
     resolve_credential,
+    runtime_command,
+    WorkspaceDeployer,
 )
 
 
@@ -412,6 +414,71 @@ def test_onboard_nemoclaw_omits_inference_base_url_when_url_empty(tmp_path, monk
     deployer.onboard_nemoclaw(sb, p, credential="apikey")
 
     assert all("NEMOCLAW_INFERENCE_BASE_URL" not in e for e in envs_captured)
+
+
+# ---------------------------------------------------------------------------
+# Container runtime selection
+# ---------------------------------------------------------------------------
+
+def test_runtime_command_uses_rootless_podman(monkeypatch):
+    monkeypatch.setenv("CONTAINER_RUNTIME", "podman")
+    assert runtime_command("pull", "example/image:latest") == [
+        "podman", "pull", "example/image:latest"
+    ]
+
+
+def test_runtime_command_uses_podman_default(monkeypatch):
+    monkeypatch.delenv("CONTAINER_RUNTIME", raising=False)
+    assert runtime_command("pull", "example/image:latest") == [
+        "podman", "pull", "example/image:latest"
+    ]
+
+
+def test_sandbox_fallback_keeps_workload_alive():
+    class RecordingShell:
+        dry_run = False
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd, **kwargs):
+            self.calls.append(cmd)
+            if cmd[:3] == ["openshell", "sandbox", "get"]:
+                return 1, "", "sandbox not found"
+            return 0, "", ""
+
+    shell = RecordingShell()
+    deployer = WorkspaceDeployer(shell, gateway_setup=None)
+    deployer.create_sandbox_generic(
+        Sandbox(name="cuda-sandbox", image="quay.io/example/sandbox:latest"),
+        workspace_name="cuda-dev",
+    )
+
+    create = next(cmd for cmd in shell.calls
+                  if cmd[:3] == ["openshell", "sandbox", "create"])
+    assert "--detach" in create
+    assert create[-3:] == ["sh", "-c", "sleep infinity"]
+
+
+def test_completed_sandbox_is_recreated_for_fallback():
+    class ExistingCompletedShell:
+        dry_run = False
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd, **kwargs):
+            self.calls.append(cmd)
+            if cmd[:3] == ["openshell", "sandbox", "get"]:
+                return 0, "Phase: Completed", ""
+            return 0, "", ""
+
+    shell = ExistingCompletedShell()
+    WorkspaceDeployer(shell, gateway_setup=None).create_sandbox_generic(
+        Sandbox(name="cuda-sandbox"), workspace_name="cuda-dev")
+
+    assert ["openshell", "sandbox", "delete", "cuda-sandbox",
+            "--workspace", "cuda-dev"] in shell.calls
 
 
 if __name__ == "__main__":
