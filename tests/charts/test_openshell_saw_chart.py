@@ -171,7 +171,7 @@ def test_installer_units_run_install_then_apply(default_docs, tmp_path):
     assert "Wants=saw-install.service" in apply
     assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install" in install
     assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py apply" in apply
-    assert "After=saw-install.service" in apply
+    assert "saw-install.service" in unit_deps(apply)["After"]
     for unit in (install, apply):
         assert "ExecStartPre=/usr/local/sbin/saw-mount-inputs" in unit
         assert "StandardOutput=journal+console" in unit      # visible in guest-console-log
@@ -186,6 +186,88 @@ def test_installer_units_run_install_then_apply(default_docs, tmp_path):
                                  ("saw-install.service", "saw-apply.service"))],
                                 capture_output=True, text=True)
         assert "Unknown" not in result.stderr and "Invalid" not in result.stderr, result.stderr
+
+
+def unit_deps(text):
+    deps = {}
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key in ("After", "Before", "WantedBy", "DefaultDependencies"):
+            deps.setdefault(key, []).extend(value.split())
+    return deps
+
+
+def golden_image_setup_unit():
+    """openshell-gateway-setup.service as the golden image build writes it."""
+    build = (ROOT / "image-builder-charts" / "helm" / "openshell-gateway-image" /
+             "templates" / "buildconfig.yaml").read_text()
+    body = build.split("cat > /build/openshell-gateway-setup.service <<'UNIT'\n", 1)[1].split("UNIT\n", 1)[0]
+    return "\n".join(line.strip() for line in body.splitlines())
+
+
+def ordering_cycle(units):
+    """Find a boot ordering cycle the way systemd sees it. A target gets an
+    implicit After= on every unit it wants (WantedBy=), unless that unit is
+    already ordered after the target or has DefaultDependencies=no; that
+    implicit edge is what turns 'After=<unit ordered after the target>' into
+    a cycle that makes systemd delete the job at boot."""
+    before = {}                                   # a -> {b}: a starts before b
+
+    def edge(a, b):
+        before.setdefault(a, set()).add(b)
+    for name, deps in units.items():
+        for other in deps.get("After", []):
+            edge(other, name)
+        for other in deps.get("Before", []):
+            edge(name, other)
+    for name, deps in units.items():
+        if deps.get("DefaultDependencies", ["yes"])[-1] == "no":
+            continue
+        for target in deps.get("WantedBy", []):
+            if target not in deps.get("After", []):
+                edge(name, target)
+
+    def visit(node, path):
+        if node in path:
+            return path[path.index(node):] + [node]
+        for nxt in sorted(before.get(node, ())):
+            found = visit(nxt, path + [node])
+            if found:
+                return found
+        return None
+    for start in sorted(before):
+        found = visit(start, [])
+        if found:
+            return found
+    return None
+
+
+def test_ordering_cycle_detector_catches_the_live_boot_failure():
+    """The units as first shipped: systemd deleted saw-install at boot."""
+    units = {
+        "openshell-gateway-setup.service": unit_deps(golden_image_setup_unit()),
+        "saw-install.service": unit_deps("After=network-online.target openshell-gateway-setup.service\n"
+                                         "WantedBy=multi-user.target"),
+    }
+    assert ordering_cycle(units)
+
+
+def test_installer_units_have_no_boot_ordering_cycle(default_docs):
+    """Live bug: saw-install was After= the golden image's setup unit, which
+    is After=multi-user.target, while WantedBy=multi-user.target made the
+    target wait for saw-install. systemd broke the cycle by deleting the
+    saw-install and saw-apply jobs, so nothing ran after a reboot."""
+    cfg = cloud_config(default_docs)
+    units = {
+        "openshell-gateway-setup.service": unit_deps(golden_image_setup_unit()),
+        "saw-install.service": unit_deps(written(cfg, "/etc/systemd/system/saw-install.service")),
+        "saw-apply.service": unit_deps(written(cfg, "/etc/systemd/system/saw-apply.service")),
+    }
+    assert units["openshell-gateway-setup.service"]["After"] == ["multi-user.target"]
+    assert ordering_cycle(units) is None
+    # Still runs after the golden image's first-boot setup, install before apply.
+    assert "openshell-gateway-setup.service" in units["saw-install.service"]["After"]
+    assert "saw-install.service" in units["saw-apply.service"]["After"]
 
 
 def test_readiness_probe_is_opt_in(default_docs):

@@ -1,7 +1,8 @@
 [Unit]
 Description=SAW installer step 2: apply SAW-BOM profiles
 Wants=saw-install.service
-After=saw-install.service
+# After multi-user.target for the same reason as saw-install.service.
+After=multi-user.target saw-install.service
 ConditionPathExists=/var/lib/openshell-gateway-setup.done
 StartLimitIntervalSec=1h
 StartLimitBurst=10
