@@ -1,8 +1,10 @@
 """The openclaw-openshell sandbox image must start under OpenShell's supervisor.
 
-Live: `USER 65532` with no passwd entry made every notebook sandbox exit with
-"OCI USER '65532' uses a numeric UID without an explicit group, but
-/etc/passwd has no matching primary GID" (OpenShell 0.0.116).
+Found live with OpenShell 0.0.116:
+- `USER 65532` with no passwd entry: "OCI USER '65532' uses a numeric UID
+  without an explicit group, but /etc/passwd has no matching primary GID".
+- The aipcc agentic OpenClaw base has no nsenter: "Network namespace creation
+  failed ... trusted nsenter helper not found".
 """
 
 import re
@@ -22,15 +24,31 @@ def user_lines(dockerfile):
     return [l.strip() for l in dockerfile.splitlines() if l.strip().startswith("USER ")]
 
 
-def test_final_user_has_an_explicit_group():
-    users = user_lines((CHART / "Dockerfile").read_text())
-    assert users[-1] == "USER 65532:65532"
+def dockerfile():
+    return (CHART / "Dockerfile").read_text()
 
 
-def test_passwd_and_group_entries_are_checked_at_build_time():
-    text = (CHART / "Dockerfile").read_text()
-    assert "|| true" not in text.split("USER root", 1)[1].split("RUN mkdir", 1)[0]
-    assert "grep '^[^:]*:[^:]*:65532:65532:' /etc/passwd" in text
+def test_base_image_is_pinned_by_digest_and_matches_values():
+    base = re.search(r"^FROM (\S+)$", dockerfile(), re.M).group(1)
+    assert re.fullmatch(r"quay\.io/aipcc/base-images/agentic/openclaw@sha256:[0-9a-f]{64}", base)
+    assert yaml.safe_load((CHART / "values.yaml").read_text())["build"]["baseImage"] == base
+
+
+def test_final_user_is_the_base_images_sandbox_user_with_explicit_group():
+    assert user_lines(dockerfile())[-1] == "USER 1000:1000"
+    assert "grep '^sandbox:[^:]*:1000:1000:' /etc/passwd" in dockerfile()
+
+
+def test_supervisor_tools_are_installed_and_checked_at_build_time():
+    text = dockerfile()
+    for package in ("util-linux", "nftables", "iproute"):
+        assert package in text
+    assert "command -v nsenter && command -v nft && command -v ip" in text
+    assert "|| true" not in text
+
+
+def test_openshell_plugin_is_installed():
+    assert "openclaw plugins install @openclaw/openshell-sandbox" in dockerfile()
 
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
