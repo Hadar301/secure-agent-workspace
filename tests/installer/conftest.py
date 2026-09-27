@@ -126,6 +126,10 @@ class FakeWorld:
     def deny(self, *operations):
         (self.state / "deny.json").write_text(json.dumps(list(operations)))
 
+    def without_profiles(self, *types):
+        """Gateway without these provider profiles (e.g. governance off)."""
+        (self.state / "no-profiles.json").write_text(json.dumps(list(types)))
+
     def other_calls(self, name):
         log = self.state / f"{name}.log"
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []

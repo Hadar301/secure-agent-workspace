@@ -20,6 +20,8 @@ state = json.loads(path.read_text()) if path.exists() else {
     "gateways": [], "selected": None, "workspaces": ["default"], "members": [],
     "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None}
 deny = json.loads((state_dir / "deny.json").read_text()) if (state_dir / "deny.json").exists() else []
+no_profiles = (json.loads((state_dir / "no-profiles.json").read_text())
+               if (state_dir / "no-profiles.json").exists() else [])
 
 
 def save():
@@ -79,6 +81,10 @@ elif op == "workspace member":
         fail("Error: member already exists")
     state["members"].append(member)
 elif op == "provider create":
+    if opt("--type") in no_profiles:
+        # Wording of OpenShell 0.0.116 when governance does not serve the profile.
+        fail(f"Error:   × unsupported provider type or profile: {opt('--type')} (provider profile "
+             f"'{opt('--type')}' not\n  │ found; import a matching profile before using this provider type)")
     key = f"{ws}/{opt('--name')}"
     if key in state["providers"]:
         fail(f"Error: provider {opt('--name')} already exists")
@@ -108,6 +114,9 @@ elif op == "sandbox get":
 elif op == "sandbox create":
     key = f"{ws}/{opt('--name')}"
     providers = [head[i + 1] for i, a in enumerate(head) if a == "--provider"]
+    missing = [p for p in providers if f"{ws}/{p}" not in state["providers"]]
+    if missing:
+        fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
 elif op == "sandbox delete":
     state["sandboxes"].pop(f"{ws}/{head[2]}", None)

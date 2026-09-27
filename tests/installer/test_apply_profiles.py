@@ -1,5 +1,7 @@
 """Applying SAW-BOM profiles through the (fake) OpenShell CLI over mTLS."""
 
+import json
+
 import pytest
 
 
@@ -96,6 +98,19 @@ def test_second_apply_is_idempotent(ab, fake_env, config, profiles, creds):
     assert after["sandboxes"] == before["sandboxes"]
     creates = [c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]]
     assert len(creates) == 2          # existing Ready sandboxes are not recreated
+    # Live: on a reboot `nemoclaw onboard --fresh` refused the running gateway
+    # (gateway.port.uncontested). A running sandbox is onboarded only once.
+    assert len(fake_env.other_calls("nemoclaw")) == 1
+
+
+def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profiles, creds):
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["cuda-dev/cuda-sandbox"]["phase"] = "Error"
+    (fake_env.state / "openshell.json").write_text(json.dumps(state))
+    make_applier(ab, config, creds).apply(profiles)
+    assert len(fake_env.other_calls("nemoclaw")) == 2
+    assert fake_env.openshell_state()["sandboxes"]["cuda-dev/cuda-sandbox"]["phase"] == "Ready"
 
 
 def test_owner_subject_becomes_admin_of_each_workspace(ab, fake_env, config, profiles, creds):
@@ -178,3 +193,49 @@ def test_dry_run_calls_nothing(ab, fake_env, config, profiles, creds):
     applier = ab.ProfileApplier(ab.Shell(dry_run=True), config, creds)
     applier.apply(profiles)
     assert fake_env.openshell_calls() == []
+
+
+# -- providers the gateway has no profile for (governance off) --------------
+
+def default_ws(ab, profiles):
+    return next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+
+
+def test_provider_without_gateway_profile_is_skipped_not_fatal(ab, fake_env, config, profiles, creds):
+    """Live: with governance off, OpenShell 0.0.116 has no 'brave' profile and
+    `provider create --type brave` failed the whole apply."""
+    fake_env.without_profiles("brave")
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    assert "default/brave" not in state["providers"]
+    assert {"default/nvidia", "cuda-dev/nvidia"} <= set(state["providers"])
+    assert set(state["sandboxes"]) == {"default/notebook", "cuda-dev/cuda-sandbox"}
+    assert state["system_inference"] is not None
+    assert applier.skipped == {("default", "brave")}
+    assert applier.verify(profiles) == []
+
+
+def test_sandbox_is_created_without_a_skipped_provider(ab, fake_env, config, profiles, creds):
+    fake_env.without_profiles("brave")
+    notebook = next(sb for sb in default_ws(ab, profiles).sandboxes if sb.name == "notebook")
+    notebook.providers = ["nvidia", "brave"]
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == ["nvidia"]
+    assert applier.verify(profiles) == []
+
+
+def test_other_provider_errors_still_fail(ab, fake_env, config, profiles, creds):
+    fake_env.deny("provider create")
+    with pytest.raises(ab.InstallerError, match="could not create provider"):
+        make_applier(ab, config, creds).apply(profiles)
+
+
+def test_no_system_route_when_default_model_provider_is_skipped(ab, fake_env, config, profiles, creds):
+    fake_env.without_profiles("nvidia")
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    assert state["system_inference"] is None and state["inference"] == {}
+    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]

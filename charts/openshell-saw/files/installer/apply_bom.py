@@ -76,6 +76,10 @@ OPENSHELL_NAME_LIMIT = 19
 # The gateway resolves the system inference route's provider in this workspace.
 SYSTEM_WORKSPACE = "default"
 ALREADY_RE = re.compile(r"already (exists|a member)", re.IGNORECASE)
+# The gateway has no profile for this provider type. Profiles such as brave
+# come from the governance interceptor, so they are missing when it is off.
+NO_PROFILE_RE = re.compile(r"provider profile '[^']*' not\s+found|unsupported provider type",
+                           re.IGNORECASE)
 
 PROVIDER_CRED_MAP = {
     "gemini": "GEMINI_API_KEY",
@@ -880,12 +884,17 @@ class ProfileApplier:
         self.cfg = cfg
         self.creds = creds
         self.gateway = cfg["mtlsGateway"]
+        self.skipped = set()          # (workspace, provider) the gateway had no profile for
         for workspace in creds.values():
             for value in workspace.values():
                 shell.add_secret(value)
 
     def cli(self, *args, **kwargs):
         return self.sh.run(["openshell", *args], **kwargs)
+
+    def usable(self, ws):
+        """Enabled providers that exist on the gateway (not skipped)."""
+        return [p for p in ws.providers if p.enabled and (ws.name, p.name) not in self.skipped]
 
     # -- gateway access ------------------------------------------------------
 
@@ -929,7 +938,16 @@ class ProfileApplier:
         env = {env_name: credential}
         created = self.cli("provider", "create", "--name", provider.name, "--type", provider.type,
                            *ws_args(ws.name), "--credential", env_name,
-                           env=env, ok_if_exists=True)
+                           env=env, ok_if_exists=True, check=False)
+        if not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err):
+            log(f"WARN: skipping provider '{provider.name}': the gateway has no '{provider.type}' "
+                "provider profile (governed profiles come from the governance interceptor; "
+                "is governance enabled?)")
+            self.skipped.add((ws.name, provider.name))
+            return
+        if not created.ok:
+            raise InstallerError(f"could not create provider '{provider.name}' in workspace "
+                                 f"'{ws.name}' (openshell provider create failed)")
         if created.existed:
             updated = self.cli("provider", "update", provider.name, *ws_args(ws.name),
                                "--credential", env_name, env=env, check=False)
@@ -937,7 +955,7 @@ class ProfileApplier:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
 
     def apply_inference(self, ws):
-        chosen = next((p for p in ws.providers if p.enabled and p.model), None)
+        chosen = next((p for p in self.usable(ws) if p.model), None)
         if not chosen:
             return
         log(f"Inference for '{ws.name}': {chosen.name} / {chosen.model}")
@@ -953,23 +971,29 @@ class ProfileApplier:
     # -- sandboxes -------------------------------------------------------
 
     def find_provider(self, ws, names):
-        enabled = [p for p in ws.providers if p.enabled]
+        enabled = self.usable(ws)
         for name in names or []:
             for p in enabled:
                 if p.name == name:
                     return p
         return enabled[0] if enabled else None
 
-    def create_sandbox(self, ws, sb):
+    def sandbox_state(self, ws, sb):
+        """'running', 'broken' (Error/Completed) or 'missing'."""
         state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
-        if state.ok:
-            clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
-            if "Error" in clean or "Phase: Completed" in clean:
-                log(f"Sandbox '{sb.name}' is not running; recreating it")
-                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-            else:
-                log(f"Sandbox '{sb.name}' already exists")
-                return
+        if not state.ok:
+            return "missing"
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
+        return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
+
+    def create_sandbox(self, ws, sb):
+        state = self.sandbox_state(ws, sb)
+        if state == "broken":
+            log(f"Sandbox '{sb.name}' is not running; recreating it")
+            self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+        elif state == "running":
+            log(f"Sandbox '{sb.name}' already exists")
+            return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
         args = ["sandbox", "create", "--name", sb.name]
@@ -977,6 +1001,9 @@ class ProfileApplier:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
         for prov in sb.providers:
+            if (ws.name, prov) in self.skipped:
+                log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
+                continue
             args += ["--provider", prov]
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
@@ -1077,8 +1104,17 @@ class ProfileApplier:
 
     def apply_sandbox(self, ws, sb):
         provider = self.find_provider(ws, sb.providers)
+        if provider is None and sb.type in ("nemoclaw", "openclaw"):
+            log(f"WARN: no usable provider for {sb.type} sandbox '{sb.name}'; "
+                "creating it without agent onboarding")
+            self.create_sandbox(ws, sb)
+            return
         if sb.type == "nemoclaw":
-            if provider and not self.onboard_nemoclaw(ws, sb, provider):
+            # Onboard once: on later boots the sandbox exists and nemoclaw
+            # refuses to attach to the already running gateway.
+            if self.sandbox_state(ws, sb) == "running":
+                log(f"Sandbox '{sb.name}' already onboarded; skipping nemoclaw onboard")
+            elif not self.onboard_nemoclaw(ws, sb, provider):
                 log(f"nemoclaw onboard failed for '{sb.name}'; continuing with plain sandbox create")
             self.create_sandbox(ws, sb)
             self.start_openclaw(ws, sb, provider)
@@ -1101,7 +1137,7 @@ class ProfileApplier:
                     self.apply_provider(ws, provider)
             self.apply_inference(ws)
             system_set = system_set or (ws.name == SYSTEM_WORKSPACE and any(
-                p.enabled and p.model for p in ws.providers))
+                p.model for p in self.usable(ws)))
             for sb in ws.sandboxes:
                 if sb.enabled:
                     self.apply_sandbox(ws, sb)
@@ -1118,8 +1154,8 @@ class ProfileApplier:
         for profile, ws in enabled_workspaces(profiles):
             if ws.name != "default" and not re.search(rf"(^|\s){re.escape(ws.name)}(\s|$)", listed.out, re.M):
                 failures.append(f"workspace '{ws.name}' is missing")
-            for p in ws.providers:
-                if p.enabled and not self.cli("provider", "get", p.name, *ws_args(ws.name),
+            for p in self.usable(ws):
+                if not self.cli("provider", "get", p.name, *ws_args(ws.name),
                                               check=False, quiet=True).ok:
                     failures.append(f"provider '{p.name}' in '{ws.name}' is missing")
             for sb in ws.sandboxes:
@@ -1132,8 +1168,10 @@ class ProfileApplier:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out
                     for name in sb.providers:
-                        if name not in attached:
+                        if (ws.name, name) not in self.skipped and name not in attached:
                             failures.append(f"sandbox '{sb.name}' is missing provider '{name}'")
+        for ws_name, name in sorted(self.skipped):
+            log(f"SKIP  provider '{name}' in '{ws_name}': no provider profile on the gateway")
         for failure in failures:
             log(f"FAIL  {failure}")
         if not failures:
