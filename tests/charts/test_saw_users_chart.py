@@ -115,7 +115,7 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     alice = app(docs, "saw-alice")
     assert alice["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
     assert alice["spec"]["source"]["path"] == "charts/openshell-saw"
-    assert alice["spec"]["source"]["helm"]["releaseName"] == "saw-alice"
+    assert alice["spec"]["source"]["helm"]["releaseName"] == "alice"
     assert alice["spec"]["source"]["repoURL"] == "https://example.com/secure-agent-workspace.git"
     assert alice["spec"]["source"]["targetRevision"] == "main"
     alice_values = helm_values(alice)
@@ -189,7 +189,7 @@ def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
     ("-alice", "lowercase DNS label"),
     ("alice-", "lowercase DNS label"),
     ("", "lowercase DNS label"),
-    ("a" * 16, "OpenShell allows 19"),
+    ("a" * 20, "OpenShell allows 19"),
 ])
 def test_bad_names_fail_at_render(tmp_path, name, message):
     result = render_file(tmp_path, [{"name": name}])
@@ -203,13 +203,13 @@ def test_duplicate_names_fail_at_render(tmp_path):
     assert 'duplicate user name "alice"' in result.stderr
 
 
-def test_fifteen_character_name_is_accepted(tmp_path):
-    name = "a" * 15
-    route = f"saw-{name}-dashboard-saw-{name}"
-    assert len(f"saw-{name}") == 19
-    assert len(route) == 49 and len(route) <= 63
+def test_nineteen_character_name_is_accepted(tmp_path):
+    """The user name is the VM name, as with make openshell-saw-create."""
+    name = "a" * 19
+    route = f"{name}-dashboard-saw-{name}"
+    assert len(route) == 53 and len(route) <= 63
     docs = docs_from(render_file(tmp_path, [{"name": name}]))
-    assert app(docs, f"saw-{name}")["spec"]["source"]["helm"]["releaseName"] == f"saw-{name}"
+    assert app(docs, f"saw-{name}")["spec"]["source"]["helm"]["releaseName"] == name
 
 
 def test_shipped_override_renders_alice(tmp_path):
@@ -229,13 +229,15 @@ def test_missing_repo_url_fails(tmp_path):
 def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     values_file = tmp_path / "alice-values.yaml"
-    values_file.write_text(app(docs, "saw-alice")["spec"]["source"]["helm"]["values"])
-    rendered = helm("template", "saw-alice", str(SAW_CHART), "--namespace", "saw-alice",
+    application = app(docs, "saw-alice")
+    values_file.write_text(application["spec"]["source"]["helm"]["values"])
+    rendered = helm("template", application["spec"]["source"]["helm"]["releaseName"],
+                    str(SAW_CHART), "--namespace", "saw-alice",
                     "-f", str(values_file))
     assert rendered.returncode == 0, rendered.stderr
     saw_docs = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc]
     installer = next(doc for doc in saw_docs if doc["kind"] == "ConfigMap"
-                     and doc["metadata"]["name"] == "saw-alice-installer")
+                     and doc["metadata"]["name"] == "alice-installer")
     bom = helm("template", "saw-alice-bom", str(BOM_CHART), "--namespace", "saw-alice")
     assert bom.returncode == 0, bom.stderr
     [profile_cm] = [doc for doc in yaml.safe_load_all(bom.stdout) if doc]
@@ -259,5 +261,5 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     assert "2 workspace(s) ['cuda-dev', 'default']" in result.stdout
     assert "3 credential(s)" in result.stdout
     config = json.loads(installer["data"]["config.json"])
-    assert config["vmName"] == "saw-alice"
+    assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""

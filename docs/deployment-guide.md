@@ -163,8 +163,8 @@ oc -n saw-alice delete datavolume openshell-saw-root --ignore-not-found
 ```
 
 The `saw-alice*` applications keep the shared objects in place (they self-heal
-anything removed). Alice's new VM is `saw-alice`: use
-`OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice`. Sandboxes and files inside the
+anything removed). Alice's new VM is `alice` in `saw-alice`: use
+`OPENSHELL_SAW_NAME=alice`. Sandboxes and files inside the
 old VM are not migrated; the new VM recreates the profile's workspaces and
 sandboxes.
 

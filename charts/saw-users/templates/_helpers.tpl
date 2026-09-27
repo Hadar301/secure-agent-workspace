@@ -20,11 +20,10 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
 {{- fail (printf "user name %q must be a lowercase DNS label (letters, digits, and hyphens; must start and end with a letter or digit)" $name) -}}
 {{- end -}}
-{{- $saw := printf "saw-%s" $name -}}
-{{- if gt (len $saw) 19 -}}
-{{- fail (printf "user name %q is too long: %s is %d characters and OpenShell allows 19" $name $saw (len $saw)) -}}
+{{- if gt (len $name) 19 -}}
+{{- fail (printf "user name %q is too long: it names the VM (%d characters) and OpenShell allows 19" $name (len $name)) -}}
 {{- end -}}
-{{- $route := printf "saw-%s-dashboard-saw-%s" $name $name -}}
+{{- $route := printf "%s-dashboard-saw-%s" $name $name -}}
 {{- if gt (len $route) 63 -}}
 {{- fail (printf "user name %q makes dashboard route label %q %d characters; DNS labels allow 63" $name $route (len $route)) -}}
 {{- end -}}

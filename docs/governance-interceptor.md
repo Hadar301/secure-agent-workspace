@@ -201,32 +201,32 @@ gateway interceptor evaluated
 ### List active profiles
 
 ```bash
-make governance-list-profiles OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice
+make governance-list-profiles OPENSHELL_SAW_NAME=alice
 ```
 
 ### Add a profile from a YAML file
 
 ```bash
-make governance-create-profile OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice \
+make governance-create-profile OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=jira PROFILE_FILE=/path/to/jira.yaml
 ```
 
 ### Remove a profile
 
 ```bash
-make governance-remove-profile OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice \
+make governance-remove-profile OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
 ### Restore a previously removed profile
 
 ```bash
-make governance-add-profile OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice \
+make governance-add-profile OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
 ### Run the full demo
 
 ```bash
-make governance-demo OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice
+make governance-demo OPENSHELL_SAW_NAME=alice
 ```

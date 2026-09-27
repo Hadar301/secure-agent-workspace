@@ -82,7 +82,7 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
   collides with a platform Keycloak in `keycloak`, as on many demo clusters).
   Each person is one entry in [`overrides/saw-users.yaml`](../overrides/saw-users.yaml).
   The `saw-users` chart creates namespace `saw-<name>` and the three apps
-  (secrets, bill of materials, and virtual machine `saw-<name>`).
+  (secrets, bill of materials, and virtual machine `<name>`).
 
 ## Authentication
 
