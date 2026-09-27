@@ -179,5 +179,5 @@ make test-installer        # installer + chart tests; chart tests need helm
 A self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...) is an `openai`
 provider with `OPENAI_BASE_URL` plus the workspace inference route, as in
 OpenShell's inference routing docs. Select the `custom-inference` SAW-BOM
-profile and put `provider: custom`, `model`, `url` and `api_key` in the
+profile and put `provider: openai`, `model`, `url` and `api_key` in the
 `inference` Secret; see [Custom inference](custom-inference.md).

@@ -13,7 +13,7 @@ MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 @pytest.fixture
 def custom_secrets(secrets_dir):
     inference = secrets_dir / "inference"
-    for key, value in {"provider": "custom", "api_key": "sk-CUSTOM-TEST-KEY",
+    for key, value in {"provider": "openai", "api_key": "sk-CUSTOM-TEST-KEY",
                        "url": URL + "/", "model": MODEL}.items():
         (inference / key).write_text(value + "\n")
     return secrets_dir
@@ -78,6 +78,14 @@ def test_a_secret_for_another_provider_still_fails(ab, profiles, custom_secrets)
     Secret is still an error, never a silent skip."""
     (custom_secrets / "inference" / "provider").write_text("gemini\n")
     with pytest.raises(ab.InstallerError, match="is for 'gemini'"):
+        ab.resolve_credentials(profiles, custom_secrets)
+
+
+def test_the_secret_names_the_openshell_provider_type(ab, profiles, custom_secrets):
+    """There is no `custom` provider type in OpenShell: the Secret says
+    `openai`, the type the gateway creates."""
+    (custom_secrets / "inference" / "provider").write_text("custom\n")
+    with pytest.raises(ab.InstallerError, match="expects a openai credential"):
         ab.resolve_credentials(profiles, custom_secrets)
 
 

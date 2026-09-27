@@ -7,10 +7,9 @@ spec:
     # OpenShell's `openai` provider type reaches any OpenAI-compatible server:
     # the gateway's inference router calls OPENAI_BASE_URL with the key, and
     # sandboxes use https://inference.local/v1 without ever seeing the key.
-    # The base URL and model come from the `inference` Secret (provider: custom).
+    # The base URL and model come from the `inference` Secret (provider: openai).
     - name: custom
       type: openai
-      secretProvider: custom
       credentialSecret: inference
       credentialSecretKey: api_key
       baseUrlSecretKey: url

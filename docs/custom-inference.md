@@ -23,11 +23,11 @@ OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.11
 
 2. Put the endpoint in the `inference` Secret (pattern: `~/values-secret-*.yaml`,
    see `values-secret.yaml.template`; quickstart: `oc create secret generic
-   inference --from-literal=provider=custom --from-literal=model=... --from-literal=url=... --from-file=api_key=...`):
+   inference --from-literal=provider=openai --from-literal=model=... --from-literal=url=... --from-file=api_key=...`):
 
    | Key | Value |
    |---|---|
-   | `provider` | `custom` |
+   | `provider` | `openai` (OpenShell's provider type for any OpenAI-compatible API) |
    | `model` | the model name the server serves, e.g. `meta-llama/Llama-3.1-8B-Instruct` |
    | `url` | the OpenAI-compatible base URL, ending in `/v1` |
    | `api_key` | the server's key; any non-empty value if it needs none |

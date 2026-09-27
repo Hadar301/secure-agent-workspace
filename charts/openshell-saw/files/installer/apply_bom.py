@@ -331,8 +331,6 @@ class Provider:
     # Secret keys the base URL and the model are read from (optional).
     base_url_secret_key: str = ""
     model_secret_key: str = ""
-    # Other values of the Secret's `provider` key that select this provider.
-    secret_provider: str = ""
     inference_timeout: int = 0
     base_url: str = ""
 
@@ -430,7 +428,6 @@ def parse_profiles(files):
                         model=p.get("model", ""),
                         base_url_secret_key=p.get("baseUrlSecretKey", ""),
                         model_secret_key=p.get("modelSecretKey", ""),
-                        secret_provider=p.get("secretProvider", ""),
                         inference_timeout=int(p.get("inferenceTimeout", 0) or 0)))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
@@ -531,7 +528,7 @@ def check_provider_type(provider, configured):
     for. Refuse to hand, say, a Gemini key to an NVIDIA provider."""
     if not configured:
         return
-    valid = {v for v in (provider.type, provider.nemoclaw_provider, provider.secret_provider) if v}
+    valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
     if configured not in valid:
         raise InstallerError(
             f"provider '{provider.name}' expects a {' or '.join(sorted(valid))} "
