@@ -86,15 +86,7 @@ fi
 if [[ "${OIDC_ISSUER}" == "none" ]]; then
   OIDC_ISSUER=""
 elif [[ -z "${OIDC_ISSUER}" ]]; then
-  # Any Keycloak CR in KEYCLOAK_NS (not only one named openshell-keycloak).
-  KC_HOST=$(oc get keycloak -n "${KEYCLOAK_NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null \
-    | sed 's|^https://||;s|/$||' || true)
-  if [[ -z "${KC_HOST}" ]]; then
-    KC_HOST=$(oc get keycloak -n "${KEYCLOAK_NS}" -o jsonpath='{.items[0].spec.hostname.hostname}' 2>/dev/null || true)
-  fi
-  if [[ -z "${KC_HOST}" ]]; then
-    KC_HOST=$(oc get route -n "${KEYCLOAK_NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
-  fi
+  KC_HOST=$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}" 2>/dev/null || true)
   if [[ -n "${KC_HOST}" ]]; then
     OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
   fi

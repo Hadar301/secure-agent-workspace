@@ -315,15 +315,7 @@ keycloak: ## Deploy Keycloak instance + realm via RHBK operator
 	$(SCRIPTS_DIR)/deploy-keycloak.sh
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
-	@host=$$(oc get keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null \
-		| sed 's|^https://||;s|/$$||'); \
-	if [ -z "$${host}" ]; then \
-		host=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
-	fi; \
-	if [ -z "$${host}" ]; then \
-		echo "Error: Keycloak not found. Run 'make keycloak' first." >&2; \
-		exit 1; \
-	fi; \
+	@host=$$($(SCRIPTS_DIR)/keycloak-host.sh $(KEYCLOAK_NS)) || exit 1; \
 	echo "https://$${host}/realms/$(KEYCLOAK_REALM)"
 
 login: ## Authenticate with the OIDC provider
@@ -376,11 +368,7 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
 	OIDC_ISSUER="$(OIDC_ISSUER)"; \
 	if [ -z "$$OIDC_ISSUER" ]; then \
-		KC_HOST=$$(oc get keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null \
-			| sed 's|^https://||;s|/$$||'); \
-		if [ -z "$$KC_HOST" ]; then \
-			KC_HOST=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
-		fi; \
+		KC_HOST=$$($(SCRIPTS_DIR)/keycloak-host.sh $(KEYCLOAK_NS) 2>/dev/null); \
 		if [ -n "$$KC_HOST" ]; then OIDC_ISSUER="https://$$KC_HOST/realms/$(KEYCLOAK_REALM)"; fi; \
 	fi; \
 	OIDC_OPTS=""; \
