@@ -12,8 +12,17 @@ spec:
 
       USER root
 
-      RUN groupadd -g 65532 sandbox 2>/dev/null || true && \
-          useradd -u 65532 -g 65532 -m -d /sandbox -s /bin/bash sandbox 2>/dev/null || true
+      # OpenShell's supervisor resolves the image USER through /etc/passwd: a
+      # numeric UID with no passwd entry and no group is refused ("uses a numeric
+      # UID without an explicit group"). groupadd/useradd are missing in some base
+      # images, so fall back to writing the entries, and fail the build if they
+      # are still absent.
+      RUN (grep -q '^[^:]*:[^:]*:65532:' /etc/group || groupadd -g 65532 sandbox 2>/dev/null || \
+            echo 'sandbox:x:65532:' >> /etc/group) && \
+          (grep -q '^[^:]*:[^:]*:65532:' /etc/passwd || \
+            useradd -u 65532 -g 65532 -M -d /sandbox -s /bin/sh sandbox 2>/dev/null || \
+            echo 'sandbox:x:65532:65532::/sandbox:/bin/sh' >> /etc/passwd) && \
+          grep '^[^:]*:[^:]*:65532:65532:' /etc/passwd && grep '^[^:]*:[^:]*:65532:' /etc/group
 
       RUN mkdir -p /sandbox/.openclaw/state /run/secrets && \
           chown -R 65532:65532 /sandbox && \
@@ -50,7 +59,8 @@ spec:
           SQLITE_TMPDIR=/sandbox/.openclaw/state \
           TMPDIR=/sandbox/.openclaw/state
 
-      USER 65532
+      # Explicit group: see the passwd note above.
+      USER 65532:65532
 
       RUN OPENCLAW_NIX_MODE=0 \
           openclaw plugins install @openclaw/openshell-sandbox
