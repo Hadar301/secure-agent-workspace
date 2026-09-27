@@ -35,6 +35,8 @@ import json
 import os
 import re
 import secrets
+import shlex
+from urllib.parse import urlsplit
 import shutil
 import socket
 import subprocess
@@ -84,6 +86,7 @@ NO_PROFILE_RE = re.compile(r"provider profile '[^']*' not\s+found|unsupported pr
                            re.IGNORECASE)
 
 PROVIDER_CRED_MAP = {
+    "custom-inference": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "google-vertex-ai": "GOOGLE_API_KEY",
     "claude-code": "ANTHROPIC_API_KEY",
@@ -146,7 +149,7 @@ class Shell:
         self._secrets = set()
 
     def add_secret(self, value):
-        if value and len(value) >= 4:
+        if value:
             self._secrets.add(value)
 
     def mask(self, text):
@@ -319,6 +322,10 @@ class Provider:
     credential_secret: str = ""
     credential_secret_key: str = "api_key"
     model: str = ""
+    url: str = ""
+    url_secret_key: str = "url"
+    model_secret_key: str = "model"
+    skip_reason: str = ""
 
 
 @dataclass
@@ -411,7 +418,9 @@ def parse_profiles(files):
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
-                        model=p.get("model", "")))
+                        model=p.get("model", ""),
+                        url_secret_key=p.get("urlSecretKey", "url"),
+                        model_secret_key=p.get("modelSecretKey", "model")))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
@@ -434,6 +443,20 @@ def enabled_workspaces(profiles):
         for ws in profile.workspaces:
             if ws.enabled:
                 yield profile, ws
+
+
+def eligible_sandbox(ws, sb):
+    names = {p.name for p in ws.providers if p.enabled and not p.skip_reason}
+    return sb.enabled and set(sb.providers) <= names
+
+
+def selected_workspaces(profiles):
+    for profile, ws in enabled_workspaces(profiles):
+        if (any(p.skip_reason for p in ws.providers)
+                and not any(p.enabled and not p.skip_reason for p in ws.providers)
+                and not any(eligible_sandbox(ws, sb) for sb in ws.sandboxes)):
+            continue
+        yield profile, ws
 
 
 def validate_profiles(profiles):
@@ -487,7 +510,7 @@ def check_profiles_against_bom(profiles, bom):
         return
     for _, ws in enabled_workspaces(profiles):
         for s in ws.sandboxes:
-            if s.enabled and s.type == "nemoclaw":
+            if eligible_sandbox(ws, s) and s.type == "nemoclaw":
                 raise InstallerError(
                     f"sandbox '{s.name}' in workspace '{ws.name}' is type nemoclaw, but the "
                     "InstallerBOM has no spec.nemoclaw.cliImage; add it or disable the sandbox")
@@ -497,9 +520,54 @@ def check_profiles_against_bom(profiles, bom):
 # Credentials
 # ---------------------------------------------------------------------------
 
+def custom_endpoint(url):
+    """Validate a base URL without including potentially sensitive input in errors."""
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or "?" in url or "#" in url or "\\" in url
+                or any(c.isspace() or ord(c) < 32 for c in url)):
+            raise ValueError
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        if not 1 <= port <= 65535:
+            raise ValueError
+        host = parsed.hostname.lower().rstrip(".")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host):
+            raise ValueError
+        return parsed.scheme, host, port
+    except (TypeError, ValueError):
+        raise ValueError("custom inference requires an HTTP(S) base URL with a DNS/IPv4 host, "
+                         "without credentials, query or fragment") from None
+
+
+def validate_custom_profile(provider, credential, profile):
+    scheme, host, port = custom_endpoint(provider.url)
+    if not provider.model.strip() or not credential or not credential.strip():
+        raise ValueError("custom inference requires nonempty model and api_key")
+    if profile.get("id") != "custom-inference":
+        raise ValueError("custom-inference profile is not available in the gateway catalog")
+    endpoints = profile.get("endpoints", [])
+    expected_tls = "terminate" if scheme == "https" else "passthrough"
+    if not any(e.get("host", "").lower().rstrip(".") == host
+               and e.get("port") == port and e.get("tls") == expected_tls
+               and not e.get("path") and e.get("protocol") == "rest"
+               and e.get("enforcement") == "enforce" for e in endpoints):
+        raise ValueError("inference URL does not match the approved customInference host/port/scheme")
+    if not any("OPENAI_API_KEY" in c.get("env_vars", [])
+               and c.get("required") and c.get("auth_style") == "bearer"
+               and c.get("header_name", "").lower() == "authorization"
+               for c in profile.get("credentials", [])):
+        raise ValueError("custom-inference profile must bind OPENAI_API_KEY as a required bearer credential")
+
+
 def check_provider_type(provider, configured):
     """The Secret may carry a `provider` key naming the service the key is
     for. Refuse to hand, say, a Gemini key to an NVIDIA provider."""
+    if provider.type == "custom-inference":
+        if configured != "custom":
+            raise InstallerError("custom-inference requires explicit provider: custom")
+        return
     if not configured:
         return
     valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
@@ -522,6 +590,27 @@ def resolve_credentials(profiles, secrets_dir):
             if not p.enabled:
                 continue
             base = secrets_dir / p.credential_secret
+            type_file = base / "provider"
+            configured = type_file.read_text(encoding="utf-8").strip() if type_file.is_file() else ""
+            try:
+                check_provider_type(p, configured)
+            except InstallerError:
+                p.skip_reason = "incompatible or unset configured provider type"
+                log(f"SKIP provider '{p.name}' in '{ws.name}': {p.skip_reason}")
+                continue
+            p.skip_reason = ""
+            if p.type == "custom-inference":
+                for key_name in (p.url_secret_key, p.model_secret_key):
+                    if not SECRET_KEY_RE.fullmatch(key_name or ""):
+                        raise InstallerError("custom inference has an invalid Secret field name")
+                try:
+                    p.url = (base / p.url_secret_key).read_text().strip()
+                    p.model = (base / p.model_secret_key).read_text().strip()
+                    custom_endpoint(p.url)
+                except (OSError, ValueError):
+                    raise InstallerError("custom inference requires a valid URL in its mounted Secret") from None
+                if not p.model:
+                    raise InstallerError("custom inference requires a nonempty model")
             key_file = base / p.credential_secret_key
             try:
                 value = key_file.read_text(encoding="utf-8").strip()
@@ -532,9 +621,6 @@ def resolve_credentials(profiles, secrets_dir):
                     f"credential for provider '{p.name}' in workspace '{ws.name}' not found: "
                     f"Secret '{p.credential_secret}' key '{p.credential_secret_key}'. "
                     "List the Secret in openshell-saw additionalProviderSecrets and make sure it exists.")
-            type_file = base / "provider"
-            configured = type_file.read_text(encoding="utf-8").strip() if type_file.is_file() else ""
-            check_provider_type(p, configured)
             creds.setdefault(ws.name, {})[p.name] = value
     return creds
 
@@ -897,7 +983,7 @@ class ProfileApplier:
 
     def usable(self, ws):
         """Enabled providers that exist on the gateway (not skipped)."""
-        return [p for p in ws.providers if p.enabled and (ws.name, p.name) not in self.skipped]
+        return [p for p in ws.providers if p.enabled and not p.skip_reason and (ws.name, p.name) not in self.skipped]
 
     # -- gateway access ------------------------------------------------------
 
@@ -980,7 +1066,241 @@ class ProfileApplier:
             self.cli("workspace", "member", "add", "--workspace", ws.name,
                      "--subject", owner, "--role", "admin", ok_if_exists=True)
 
+    @staticmethod
+    def custom_runtime_command(*args):
+        return ["podman", *args]
+
+    def custom_run(self, cmd, **kwargs):
+        # Bound new custom-provider commands without changing cloud onboarding budgets.
+        return self.sh.run(cmd, timeout=120, **kwargs)
+
+    def create_custom_provider(self, provider, credential, workspace_name):
+        """Reconcile only a matching provider, after validating catalog policy."""
+        try:
+            custom_endpoint(provider.url)
+            if not provider.model.strip() or not credential or not credential.strip():
+                raise ValueError("custom inference requires nonempty model and api_key")
+            if self.sh.dry_run:
+                log("[dry-run] custom catalog and existing-resource checks require a gateway")
+                return True
+            for attempt in range(24):
+                result = self.custom_run([
+                    "openshell", "provider", "profile", "export", provider.type,
+                    "--workspace", workspace_name, "-o", "json"], check=False, quiet=True)
+                rc = result.rc
+                out = result.out
+                if rc == 0:
+                    validate_custom_profile(provider, credential, json.loads(out))
+                    break
+                if attempt == 23:
+                    raise ValueError("custom-inference catalog profile unavailable after 24 attempts")
+                time.sleep(5)
+            # CLI JSON deliberately omits config values and credentials. Validate
+            # identity, then reconcile required values instead of trusting stale ones.
+            result = self.custom_run([
+                "openshell", "provider", "list", "--workspace", workspace_name,
+                "-o", "json", "--limit", "100", "--offset", "0"], check=False, quiet=True)
+            rc = result.rc
+            out = result.out
+            if rc:
+                return False
+            rows = json.loads(out)
+            offset = 0
+            existing = None
+            while True:
+                existing = next((row for row in rows if row.get("name") == provider.name), None)
+                if existing or len(rows) < 100:
+                    break
+                offset += 100
+                result = self.custom_run([
+                    "openshell", "provider", "list", "--workspace", workspace_name,
+                    "-o", "json", "--limit", "100", "--offset", str(offset)],
+                    check=False, quiet=True)
+                rc = result.rc
+                out = result.out
+                if rc:
+                    return False
+                rows = json.loads(out)
+            if existing:
+                if (existing.get("workspace") != workspace_name
+                        or existing.get("type") != provider.type
+                        or set(existing.get("credential_keys", [])) != {"OPENAI_API_KEY"}
+                        or set(existing.get("config_keys", [])) - {"base_url", "model"}):
+                    raise ValueError("existing custom provider conflicts with the BOM; no resources changed")
+                args = ["openshell", "provider", "update", provider.name]
+            else:
+                args = ["openshell", "provider", "create", "--name", provider.name,
+                        "--type", provider.type]
+            args += ["--workspace", workspace_name, "--credential", "OPENAI_API_KEY",
+                     "--config", f"base_url={provider.url}", "--config", f"model={provider.model}"]
+            result = self.custom_run(args, env={"OPENAI_API_KEY": credential},
+                                    check=False, ok_if_exists=False)
+            rc = result.rc
+            return rc == 0
+        except (ValueError, TypeError, KeyError) as exc:
+            log(f"ERROR: custom provider configuration: {exc}")
+            return False
+
+    def custom_sandbox_state(self, name, workspace):
+        result = self.custom_run([
+            "openshell", "sandbox", "get", name, "--workspace", workspace,
+            "-o", "json"], check=False, quiet=True)
+        rc = result.rc
+        out = result.out
+        err = result.err
+        if rc:
+            # Authentication/transport errors must never be treated as absence.
+            if "sandbox not found" in (out + err).lower():
+                return None
+            raise ValueError("cannot read custom sandbox state")
+        state = json.loads(out)
+        if state.get("name") != name or state.get("workspace") != workspace:
+            raise ValueError("custom sandbox identity does not match its workspace")
+        return state
+
+    def custom_attachments_match(self, sandbox, workspace):
+        result = self.custom_run([
+            "openshell", "sandbox", "provider", "list", sandbox.name,
+            "--workspace", workspace], check=False, quiet=True)
+        rc = result.rc
+        out = result.out
+        # v0.0.116 exposes only a table for attachment lists.
+        rows = [line.split() for line in re.sub(r'\x1b\[[0-9;]*m', '', out).splitlines()]
+        attached = {row[0]: row[1] for row in rows
+                    if len(row) == 4 and row[2].isdigit() and row[3].isdigit()}
+        return rc == 0 and attached == {name: "custom-inference" for name in sandbox.providers}
+
+    def provision_custom_sandbox(self, sandbox, provider, workspace):
+        """Preserve existing sandboxes; never delete/recreate on conflict."""
+        if self.sh.dry_run:
+            log(f"[dry-run] provision custom OpenClaw sandbox {workspace}/{sandbox.name}")
+            return True
+        try:
+            state = self.custom_sandbox_state(sandbox.name, workspace)
+            if state:
+                if (state.get("phase") in {"Error", "Completed"}
+                        or not self.custom_attachments_match(sandbox, workspace)):
+                    raise ValueError("existing sandbox state/attachments conflict; no sandbox recreated")
+            else:
+                if sandbox.image:
+                    result = self.custom_run(self.custom_runtime_command("pull", sandbox.image), check=False)
+                    rc = result.rc
+                    if rc:
+                        return False
+                args = ["openshell", "sandbox", "create", "--name", sandbox.name,
+                        "--workspace", workspace]
+                if sandbox.image:
+                    args += ["--from", sandbox.image]
+                for name in sandbox.providers:
+                    args += ["--provider", name]
+                args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
+                result = self.custom_run(args, check=False, ok_if_exists=False)
+                rc = result.rc
+                if rc:
+                    return False
+            for attempt in range(24):
+                state = self.custom_sandbox_state(sandbox.name, workspace)
+                if state and state.get("phase") == "Ready":
+                    if not self.custom_attachments_match(sandbox, workspace):
+                        raise ValueError("custom provider attachment verification failed")
+                    policy = state.get("policy") or {}
+                    rule_name = "_provider_" + re.sub(r"[^a-zA-Z0-9_]", "_", provider.name).lower().strip("_")
+                    if (state.get("policy_source") == "global"
+                            or rule_name not in policy.get("network_policies", {})):
+                        raise ValueError("custom provider policy is missing; check providers_v2_enabled/global policy")
+                    return self.start_custom_openclaw(sandbox, provider, workspace)
+                if state and state.get("phase") in {"Error", "Completed"}:
+                    raise ValueError("custom sandbox entered a terminal phase")
+                if attempt < 23:
+                    time.sleep(5)
+            raise ValueError("custom sandbox readiness timed out after 24 attempts")
+        except (ValueError, TypeError, KeyError) as exc:
+            log(f"ERROR: {exc}")
+            return False
+
+    def start_custom_openclaw(self, sandbox, provider, workspace):
+        # Scope runtime repair to exactly one workspace/name. Never select the
+        # first container matching a broad name across multiple workspaces.
+        scope = f"{workspace}--{sandbox.name}"
+        pattern = "^/?openshell-" + re.escape(scope) + "-[a-z0-9-]+$"
+        result = self.custom_run(self.custom_runtime_command("ps", "--format", "{{.Names}}"),
+                                    check=False, quiet=True)
+        rc = result.rc
+        names = result.out
+        matches = [name for name in names.splitlines() if re.fullmatch(pattern, name)]
+        if rc or len(matches) != 1:
+            log("ERROR: cannot identify a unique running custom sandbox container")
+            return False
+        result = self.custom_run(self.custom_runtime_command(
+            "exec", "-u", "0", matches[0], "chown", "-R", "sandbox:sandbox", "/sandbox"),
+            check=False)
+        rc = result.rc
+        if rc:
+            return False
+        command = ["openshell", "sandbox", "exec", "-n", sandbox.name,
+                   "--workspace", workspace, "--no-tty", "--"]
+        # Probe new exec environments until the attached provider is observed.
+        guard = ('case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*) exit 0;; '
+                 '*) exit 1;; esac')
+        for attempt in range(24):
+            result = self.custom_run(command + ["sh", "-c", guard], check=False)
+            rc = result.rc
+            if rc == 0:
+                break
+            if attempt == 23:
+                log("ERROR: managed OPENAI_API_KEY placeholder is unavailable; refusing raw-key fallback")
+                return False
+            time.sleep(5)
+        env = ("export OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
+               "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0; ")
+        onboard = (
+            'set -eu; case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*) ;; '
+            '*) exit 1;; esac; ' + env +
+            'mkdir -p /sandbox/.openclaw/state; '
+            'export CUSTOM_API_KEY="$OPENAI_API_KEY"; '
+            'openclaw onboard --non-interactive --accept-risk --mode local '
+            '--auth-choice custom-api-key --custom-compatibility openai '
+            '--custom-provider-id custom-inference --custom-base-url ' + shlex.quote(provider.url) +
+            ' --custom-model-id ' + shlex.quote(provider.model) + ' --skip-channels --skip-health')
+        result = self.custom_run(command + ["sh", "-c", onboard], check=False, quiet=True)
+        rc = result.rc
+        if rc:
+            return False
+        # PID belongs to this sandbox's managed gateway only. On repeat setup,
+        # restart it so the newly provisioned model and placeholder take effect.
+        start = ('set -eu; ' + env +
+                 'pidfile=/sandbox/.openclaw/custom-gateway.pid; '
+                 'if [ -f "$pidfile" ]; then '
+                 'pid=$(cat "$pidfile"); case "$pid" in ""|*[!0-9]*) exit 1;; esac; '
+                 'if kill -0 "$pid" 2>/dev/null; then '
+                 'tr "\\000" " " < /proc/"$pid"/cmdline | grep -q "openclaw" || exit 1; '
+                 'kill "$pid"; i=0; while kill -0 "$pid" 2>/dev/null; do '
+                 'i=$((i+1)); [ "$i" -lt 20 ] || exit 1; sleep 1; done; fi; fi; '
+                 'nohup openclaw gateway run --allow-unconfigured --bind loopback --port 18789 '
+                 '> /sandbox/.openclaw/custom-gateway.log 2>&1 < /dev/null & '
+                 'echo $! > "$pidfile"')
+        result = self.custom_run(command + ["sh", "-c", start], check=False)
+        rc = result.rc
+        if rc:
+            return False
+        for attempt in range(24):
+            result = self.custom_run(command + ["curl", "-fsS", "--max-time", "5",
+                                            "http://127.0.0.1:18789/health"], check=False)
+            rc = result.rc
+            if rc == 0:
+                log("Custom OpenClaw health passed; inference has not been tested by setup")
+                return True
+            if attempt < 23:
+                time.sleep(5)
+        log("ERROR: custom OpenClaw health timed out")
+        return False
+
+
     def apply_provider(self, ws, provider):
+        if provider.type == "custom-inference":
+            if not self.create_custom_provider(provider, self.creds[ws.name][provider.name], ws.name):
+                raise InstallerError(f"custom provider provisioning failed in '{ws.name}'")
+            return
         """Create the provider; if it exists, push the current key to it.
 
         `--credential NAME` (no value) makes the CLI read the key from the
@@ -1027,7 +1347,7 @@ class ProfileApplier:
                                  f"workspace '{ws.name}'")
 
     def apply_inference(self, ws):
-        chosen = next((p for p in self.usable(ws) if p.model), None)
+        chosen = next((p for p in self.usable(ws) if p.model and p.type != "custom-inference"), None)
         if not chosen:
             return
         log(f"Inference for '{ws.name}': {chosen.name} / {chosen.model}")
@@ -1175,6 +1495,18 @@ class ProfileApplier:
         self.sh.run(["sudo", "-n", "systemctl", "enable", "--now", service], check=False)
 
     def apply_sandbox(self, ws, sb):
+        if not eligible_sandbox(ws, sb):
+            log(f"SKIP sandbox '{ws.name}/{sb.name}': disabled or incompatible required provider")
+            return
+        custom = [p for p in self.usable(ws) if p.type == "custom-inference" and p.name in sb.providers]
+        if custom:
+            if len(custom) != 1 or set(sb.providers) != {custom[0].name}:
+                raise InstallerError("custom sandbox requires exactly its custom-inference provider")
+            if sb.type != "openclaw":
+                raise InstallerError("custom inference example requires an openclaw sandbox")
+            if not self.provision_custom_sandbox(sb, custom[0], ws.name):
+                raise InstallerError(f"custom sandbox provisioning failed in '{ws.name}'")
+            return
         provider = self.find_provider(ws, sb.providers)
         if provider is None and sb.type in ("nemoclaw", "openclaw"):
             log(f"WARN: no usable provider for {sb.type} sandbox '{sb.name}'; "
@@ -1201,15 +1533,15 @@ class ProfileApplier:
     def apply(self, profiles):
         self.register_gateway()
         system_set = False
-        for profile, ws in enabled_workspaces(profiles):
+        for profile, ws in selected_workspaces(profiles):
             banner(f"Profile {profile.name} / workspace {ws.name}")
             self.apply_workspace(ws)
             for provider in ws.providers:
-                if provider.enabled:
+                if provider.enabled and not provider.skip_reason:
                     self.apply_provider(ws, provider)
             self.apply_inference(ws)
             system_set = system_set or (ws.name == SYSTEM_WORKSPACE and any(
-                p.model for p in self.usable(ws)))
+                p.model for p in self.usable(ws) if p.type != "custom-inference"))
             for sb in ws.sandboxes:
                 if sb.enabled:
                     self.apply_sandbox(ws, sb)
@@ -1223,7 +1555,7 @@ class ProfileApplier:
         banner("Verification")
         failures = []
         listed = self.cli("workspace", "list", check=False, quiet=True)
-        for profile, ws in enabled_workspaces(profiles):
+        for profile, ws in selected_workspaces(profiles):
             if ws.name != "default" and not re.search(rf"(^|\s){re.escape(ws.name)}(\s|$)", listed.out, re.M):
                 failures.append(f"workspace '{ws.name}' is missing")
             for p in self.usable(ws):
@@ -1231,10 +1563,30 @@ class ProfileApplier:
                                               check=False, quiet=True).ok:
                     failures.append(f"provider '{p.name}' in '{ws.name}' is missing")
             for sb in ws.sandboxes:
-                if not sb.enabled:
+                if not eligible_sandbox(ws, sb):
                     continue
                 if not self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True).ok:
                     failures.append(f"sandbox '{sb.name}' in '{ws.name}' is missing")
+                    continue
+                custom = next((p for p in self.usable(ws)
+                               if p.type == "custom-inference" and p.name in sb.providers), None)
+                if custom:
+                    try:
+                        state = self.custom_sandbox_state(sb.name, ws.name)
+                        rule = "_provider_" + re.sub(r"[^a-zA-Z0-9_]", "_", custom.name).lower().strip("_")
+                        if (not state or state.get("phase") != "Ready"
+                                or not self.custom_attachments_match(sb, ws.name)
+                                or state.get("policy_source") == "global"
+                                or rule not in (state.get("policy") or {}).get("network_policies", {})):
+                            raise ValueError("readiness, attachment or composed policy check failed")
+                        health = self.custom_run([
+                            "openshell", "sandbox", "exec", "-n", sb.name,
+                            "--workspace", ws.name, "--no-tty", "--", "curl", "-fsS",
+                            "--max-time", "5", "http://127.0.0.1:18789/health"], check=False, quiet=True)
+                        if not health.ok:
+                            raise ValueError("OpenClaw health check failed")
+                    except (ValueError, TypeError, KeyError) as exc:
+                        failures.append(f"custom sandbox '{ws.name}/{sb.name}': {exc}")
                     continue
                 if sb.type in ("openclaw", "nemoclaw"):
                     # The agent setup steps are best effort; this is what
@@ -1317,8 +1669,8 @@ class Inputs:
         cfg = load_config(self.config)
         profiles = parse_profiles(read_profile_files(self.profiles))
         validate_profiles(profiles)
-        check_profiles_against_bom(profiles, bom)
         creds = resolve_credentials(profiles, self.secrets)
+        check_profiles_against_bom(profiles, bom)
         return bom, cfg, profiles, creds
 
 
@@ -1359,7 +1711,7 @@ class Status:
 
 def cmd_validate(args):
     bom, cfg, profiles, creds = Inputs(args.inputs).load()
-    workspaces = [ws.name for _, ws in enabled_workspaces(profiles)]
+    workspaces = [ws.name for _, ws in selected_workspaces(profiles)]
     log(f"BOM {bom['metadata']['name']}: " + ", ".join(
         f"{c} {e['version']}" for c, e in bom["spec"]["openshell"].items()))
     log(f"VM {cfg['vmName']}: {len(workspaces)} workspace(s) {workspaces}, "

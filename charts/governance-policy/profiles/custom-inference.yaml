@@ -1,0 +1,41 @@
+{{- if .Values.customInference.enabled }}
+{{- $host := required "customInference.host is required when enabled" .Values.customInference.host }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9.-]*$" $host) }}
+{{- fail "customInference.host must be a DNS hostname or IPv4 address, without a scheme, path or port" }}
+{{- end }}
+{{- if not (has .Values.customInference.scheme (list "https" "http")) }}
+{{- fail "customInference.scheme must be https or http" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9]+$" (toString .Values.customInference.port)) }}
+{{- fail "customInference.port must be an integer" }}
+{{- end }}
+{{- if or (lt (int .Values.customInference.port) 1) (gt (int .Values.customInference.port) 65535) }}
+{{- fail "customInference.port must be between 1 and 65535" }}
+{{- end }}
+id: custom-inference
+display_name: Custom inference endpoint
+description: Explicitly approved OpenAI-compatible inference endpoint
+credentials:
+  - name: api_key
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: {{ $host | lower | trimSuffix "." | quote }}
+    port: {{ .Values.customInference.port }}
+    protocol: rest
+{{- if eq .Values.customInference.scheme "https" }}
+    tls: terminate
+{{- else }}
+    tls: passthrough
+{{- end }}
+    enforcement: enforce
+    access: read-write
+binaries:
+  - /usr/local/bin/node
+  - /usr/bin/curl
+inference_capable: false
+{{- end }}

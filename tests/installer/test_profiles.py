@@ -16,7 +16,7 @@ def test_shipped_profile_parses(ab, shipped_profile_files):
     profiles = ab.parse_profiles(shipped_profile_files)
     assert [p.name for p in profiles] == ["data-science"]
     workspaces = ws_by_name(profiles)
-    assert set(workspaces) == {"default", "cuda-dev"}
+    assert set(workspaces) == {"default", "cuda-dev", "vllm"}
     default = workspaces["default"]
     assert [(p.name, p.type, p.credential_secret) for p in default.providers] == [
         ("nvidia", "nvidia", "inference"), ("brave", "brave", "web-search")]
@@ -163,8 +163,12 @@ def test_empty_secret_value_is_an_error(ab, shipped_profile_files, secrets_dir):
 
 def test_secret_for_another_provider_is_refused(ab, shipped_profile_files, secrets_dir):
     (secrets_dir / "inference" / "provider").write_text("gemini\n")
-    with pytest.raises(ab.InstallerError, match="Secret 'inference' is for 'gemini'"):
-        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir)
+    profiles = ab.parse_profiles(shipped_profile_files)
+    creds = ab.resolve_credentials(profiles, secrets_dir)
+    assert creds == {"default": {"brave": "brave-TEST-KEY-456"}}
+    assert all(p.skip_reason for _, ws in ab.enabled_workspaces(profiles)
+               for p in ws.providers if p.credential_secret == "inference")
+    assert [ws.name for _, ws in ab.selected_workspaces(profiles)] == ["default"]
 
 
 @pytest.mark.parametrize("configured", ["nvidia", "build", ""])

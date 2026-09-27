@@ -30,6 +30,9 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.17.3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
       - name: Install test dependencies
         run: python -m pip install -r tests/requirements.txt -e ./cli
       - name: Lint charts

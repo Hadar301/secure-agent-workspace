@@ -173,3 +173,20 @@ make test-installer        # installer + chart tests; chart tests need helm
 - Migrating VMs created by the old SSH-based chart in place: cloud-init has
   already run on them, so the installer units are never written. Recreate
   the VM (delete the VM and its `-root` DataVolume) after upgrading the chart.
+
+## Custom inference
+
+See [Custom inference](custom-inference-provider.md) for the dedicated
+`custom-inference` catalog profile and `vllm/notebook` example. Its endpoint
+requires explicit governance approval as well as provider/model/URL/key Secret
+fields. The installer resolves these from mounted inputs and passes its plan
+through stdin; credentials never belong in command arguments.
+
+Examples whose configured provider type is incompatible are skipped before
+provisioning, including their dependent sandboxes and otherwise empty workspaces.
+A custom profile missing from the authoritative interceptor catalog is a setup
+failure; the installer does not import a local replacement. Existing cloud
+catalog fallback behavior is unchanged.
+
+Custom sandbox readiness, OpenClaw local health, dashboard access, and successful
+agent inference are separate checks. A successful apply does not prove inference.

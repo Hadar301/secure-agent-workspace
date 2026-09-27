@@ -568,10 +568,17 @@ def test_governance_profiles_carry_their_id():
     """OpenShell's profile parser requires `id` (missing field `id` otherwise),
     so the files are only importable with it. The interceptor derives the id
     from the filename and overwrites the field, so it must match."""
-    for path in sorted(GOVERNANCE_PROFILES.glob("*.yaml")):
-        doc = yaml.safe_load(path.read_text())
-        assert doc.get("id") == path.stem, path.name
-        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
+    result = helm_template(GOVERNANCE_PROFILES.parent,
+                           "--set", "customInference.enabled=true",
+                           "--set", "customInference.host=inference.example.com")
+    assert result.returncode == 0, result.stderr
+    data = next(d["data"] for d in yaml.safe_load_all(result.stdout)
+                if d and d["metadata"]["name"] == "governance-interceptor-profiles")
+    assert set(data) == {p.name for p in GOVERNANCE_PROFILES.glob("*.yaml")}
+    for name, content in data.items():
+        doc = yaml.safe_load(content)
+        assert doc.get("id") == Path(name).stem, name
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), name
 
 
 def test_installer_profile_copies_match_governance_policy():
@@ -606,16 +613,21 @@ def test_create_script_passes_the_keycloak_it_finds():
     assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
 
 
-def test_secret_template_matches_the_default_profile():
-    """The pattern's values-secret template must give the default profile's
-    providers keys of the right type, or the installer refuses them."""
+def test_secret_template_matches_the_default_profile(ab, tmp_path):
+    """The default cloud Secret provisions cloud examples and skips custom."""
     template = yaml.safe_load((ROOT / "values-secret.yaml.template").read_text())
-    secrets = {s["name"]: {f["name"]: f for f in s["fields"]} for s in template["secrets"]}
-    providers = []
-    for f in (ROOT / "charts/saw-bom/profiles/data-science").glob("*/providers.yaml"):
-        providers += yaml.safe_load(f.read_text())["spec"]["providers"]
-    for p in providers:
-        fields = secrets[p["credentialSecret"]]
-        assert p["credentialSecretKey"] in fields, p["name"]
-        configured = fields.get("provider", {}).get("value")
-        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+    for secret in template["secrets"]:
+        base = tmp_path / secret["name"]
+        base.mkdir()
+        for field in secret["fields"]:
+            (base / field["name"]).write_text(str(field.get("value", "test-placeholder-key")))
+    files = {str(p.relative_to(BOM_CHART)).replace("/", "__"): p.read_text()
+             for p in (BOM_CHART / "profiles/data-science").rglob("*.yaml")}
+    profiles = ab.parse_profiles(files)
+    creds = ab.resolve_credentials(profiles, tmp_path)
+    assert {ws: set(providers) for ws, providers in creds.items()} == {
+        "default": {"nvidia", "brave"}, "cuda-dev": {"nvidia"}}
+    assert {ws.name for _, ws in ab.selected_workspaces(profiles)} == {"default", "cuda-dev"}
+    custom = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "vllm")
+    assert all(p.skip_reason for p in custom.providers)
+    assert not any(ab.eligible_sandbox(custom, sb) for sb in custom.sandboxes)
