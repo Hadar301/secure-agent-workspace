@@ -47,11 +47,10 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `openshift-cnv` | `openshift-cnv` | KubeVirt operator for VM lifecycle |
 | `vault` | `vault` | HashiCorp Vault for secret storage |
 | `openshift-external-secrets` | `external-secrets` | External Secrets Operator |
-| `pattern-secrets` | `openshell-agents` | ExternalSecret CRs that pull from Vault |
+| `saw-users` | `openshell-agents` | One namespace and three apps per user, from `overrides/saw-users.yaml` |
 | `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
 | `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
-| `openshell-saw` | `openshell-agents` | VM + setup Job + routes + services |
 
 **Operator Subscriptions:** OpenShift Virtualization, RHBK (Keycloak), External Secrets Operator, RHDH, OpenShift AI.
 
@@ -83,13 +82,16 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 ### Phase 3: Secrets
 
-Three ExternalSecret CRs pull from Vault:
+ExternalSecret CRs pull from Vault:
 
 | Secret | Vault Path | Content |
 | --- | --- | --- |
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key |
+
+`<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
 ### Phase 4: Governance Policy
 
@@ -132,6 +134,39 @@ A Kubernetes Job (`openshell-saw-setup`) runs after the VM boots. It:
     - Starts the agent web UI (openclaw) inside the sandbox on port 18789
     - Injects SSH public key into the sandbox
     - Starts the dashboard + OAuth2 proxy as Docker containers
+
+## Upgrading from the single-user layout
+
+Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
+the `saw-alice` namespace and the `openshell-saw`, `saw-bom` and
+`pattern-secrets` applications (VM `openshell-saw`). Upgrading an existing
+install does not remove them: the pattern's top-level application syncs
+without pruning, so the old applications keep running next to the new
+`saw-alice*` ones and both manage the same ExternalSecrets and ConfigMap in
+`saw-alice`.
+
+Remove the old applications **without cascading**. Every pattern application
+carries the `resources-finalizer.argocd.argoproj.io/foreground` finalizer, so
+a plain `oc delete application` would also delete the ExternalSecrets and the
+`saw-bom-profiles` ConfigMap that the new applications now use.
+
+```bash
+ARGO_NS=vp-gitops   # the pattern's Argo CD namespace (global.vpArgoNamespace)
+for app in openshell-saw saw-bom pattern-secrets; do
+  oc -n "$ARGO_NS" patch application "$app" --type json \
+    -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+  oc -n "$ARGO_NS" delete application "$app"
+done
+# The old VM and its disk are no longer managed; delete them.
+oc -n saw-alice delete vm openshell-saw
+oc -n saw-alice delete datavolume openshell-saw-root --ignore-not-found
+```
+
+The `saw-alice*` applications keep the shared objects in place (they self-heal
+anything removed). Alice's new VM is `alice` in `saw-alice`: use
+`OPENSHELL_SAW_NAME=alice`. Sandboxes and files inside the
+old VM are not migrated; the new VM recreates the profile's workspaces and
+sandboxes.
 
 ## Network Architecture
 

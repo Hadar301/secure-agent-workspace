@@ -1,0 +1,17 @@
+{{- include "saw-users.validate" . -}}
+{{- range $user := .Values.users | default list }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ printf "saw-%s" $user.name }}
+  labels:
+    openshell.pattern/saw: "true"
+    openshell.pattern/owner: {{ $user.name | quote }}
+    argocd.argoproj.io/managed-by: {{ include "saw-users.argoNamespace" $ | quote }}
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ $.Values.syncWave.namespace | quote }}
+    {{- if not (include "saw-users.prune" (dict "root" $ "user" $user)) }}
+    argocd.argoproj.io/sync-options: Prune=false
+    {{- end }}
+{{- end }}
