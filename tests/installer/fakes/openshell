@@ -162,6 +162,12 @@ elif op == "sandbox exec":
                if (state_dir / "exec-fail.json").exists() else [])
     if opt("-n") in failing:
         fail("sh: line 1: /usr/local/sbin/openclaw: Permission denied", 126)
+    # exec-output.json: {"<substring of the command>": "<stderr to print>"}
+    outputs = (json.loads((state_dir / "exec-output.json").read_text())
+               if (state_dir / "exec-output.json").exists() else {})
+    for needle, text in outputs.items():
+        if needle in " ".join(args):
+            print(text, file=sys.stderr)
 elif op == "sandbox provider" and head[2] == "attach":
     sb = state["sandboxes"].get(f"{ws}/{head[3]}")
     if not sb:

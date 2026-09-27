@@ -943,6 +943,19 @@ def sync_gateway_config(inputs, cfg, etc_dir, home, owner=None, dry_run=False):
 # Profile application (runtime user, mTLS only)
 # ---------------------------------------------------------------------------
 
+def openclaw_replacement_profile(output):
+    """The credential id in OpenClaw's "Replacement credential saved but
+    inactive ... openclaw models auth activate <id> --agent main" message
+    (approach from #50), or None. Only a well-formed id is accepted: the
+    value is used in a shell command."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    if "Replacement credential saved but inactive" not in text:
+        return None
+    ids = re.findall(r"openclaw models auth activate ([a-z0-9][a-z0-9_.-]*:setup-[0-9a-f]{8}-"
+                     r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) --agent main", text)
+    return ids[0] if len(set(ids)) == 1 else None
+
+
 def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
@@ -1228,12 +1241,20 @@ class ProfileApplier:
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
         oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                   "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
-        self.cli(*exec_cmd, "sh", "-c",
+        onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} CUSTOM_API_KEY=proxy-managed openclaw onboard --non-interactive "
                  "--accept-risk --mode local --auth-choice custom-api-key "
                  '--custom-base-url "https://inference.local/v1" '
                  f"--custom-provider-id {provider.type} --custom-model-id \"{model}\" "
                  "--custom-compatibility openai --skip-channels --skip-health", check=False)
+        # Re-onboarding an existing sandbox with a different provider or model
+        # (e.g. after switching to a custom endpoint) makes OpenClaw save the
+        # new credential but keep the old connection; activate the new one.
+        profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
+        if profile_id:
+            log(f"Activating the new OpenClaw credential '{profile_id}'")
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw models auth activate {profile_id} --agent main", check=False)
         self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config set gateway.auth.token '{token}'",
                  check=False)
         route = self.cfg.get("sandboxDashboardRoute")
