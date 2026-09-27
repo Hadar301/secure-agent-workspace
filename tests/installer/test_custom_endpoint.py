@@ -131,3 +131,19 @@ def test_the_shipped_openai_profile_is_imported_when_the_gateway_lacks_it(
     applier.apply(profiles)
     assert fake_env.openshell_state()["providers"]["default/custom"]["type"] == "openai"
     assert applier.verify(profiles) == []
+
+
+def test_a_provider_that_arrives_later_is_attached_to_the_existing_sandbox(
+        ab, fake_env, config, profiles, custom_secrets):
+    """Found live: boot 1 had no `openai` profile, so `notebook` was created
+    without `custom`; after the profile reached the catalog, boot 2 created
+    the provider but left the running sandbox without it."""
+    fake_env.without_profiles("openai")
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == []
+    (fake_env.state / "no-profiles.json").write_text("[]")      # the catalog now has it
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    applier.apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == ["custom"]
+    assert applier.verify(profiles) == []

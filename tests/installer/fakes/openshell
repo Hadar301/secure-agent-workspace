@@ -162,6 +162,14 @@ elif op == "sandbox exec":
                if (state_dir / "exec-fail.json").exists() else [])
     if opt("-n") in failing:
         fail("sh: line 1: /usr/local/sbin/openclaw: Permission denied", 126)
+elif op == "sandbox provider" and head[2] == "attach":
+    sb = state["sandboxes"].get(f"{ws}/{head[3]}")
+    if not sb:
+        fail("Error: sandbox not found")
+    if f"{ws}/{head[4]}" not in state["providers"]:
+        fail(f"Error: provider '{head[4]}' not found")
+    if head[4] not in sb["providers"]:
+        sb["providers"].append(head[4])
 elif op == "sandbox provider":
     sb = state["sandboxes"].get(f"{ws}/{head[3]}")
     for p in (sb or {}).get("providers", []):
