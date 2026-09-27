@@ -103,3 +103,31 @@ def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_di
     ab.resolve_credentials(profiles, secrets_dir)
     nvidia = next(p for p in profiles[0].workspaces[0].providers if p.name == "nvidia")
     assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3-super-120b-a12b")
+
+
+def test_without_an_openai_profile_the_agent_is_not_onboarded_with_another_provider(
+        ab, fake_env, config, profiles, custom_secrets):
+    """Found live with governance on: `openai` had no provider profile, the
+    provider was skipped, and OpenClaw was onboarded with `brave` and a
+    default NVIDIA model while verification passed."""
+    fake_env.without_profiles("openai")
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    applier.apply(profiles)
+    calls = [" ".join(c) for c in fake_env.openshell_calls()]
+    assert not any("onboard" in c for c in calls)
+    failures = applier.verify(profiles)
+    assert any("has no usable provider" in f and "custom (openai)" in f for f in failures), failures
+
+
+def test_the_shipped_openai_profile_is_imported_when_the_gateway_lacks_it(
+        ab, fake_env, config, profiles, custom_secrets, tmp_path):
+    """Governance off: the installer imports its copy of the `openai` profile."""
+    from pathlib import Path
+    fake_env.without_profiles("openai")
+    shipped = Path(__file__).resolve().parents[2] / "charts/openshell-saw/files/provider-profiles/openai.yaml"
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds, {"openai": shipped.read_text()})
+    applier.apply(profiles)
+    assert fake_env.openshell_state()["providers"]["default/custom"]["type"] == "openai"
+    assert applier.verify(profiles) == []

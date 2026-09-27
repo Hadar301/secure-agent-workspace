@@ -576,7 +576,7 @@ def test_governance_profiles_carry_their_id():
 
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml"]
+    assert [p.name for p in copies] == ["brave.yaml", "openai.yaml"]
     for path in copies:
         assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
@@ -586,7 +586,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave"}
+    assert set(ab.provider_profiles(tmp_path)) == {"brave", "openai"}
 
 
 def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
