@@ -10,10 +10,11 @@ users: []
 # while it is true for a user, deleting that user's apps (or the saw-users app,
 # or uninstalling the pattern) also deletes that user's VM.
 # false: removing a user deletes that user's Argo CD Applications and leaves
-# the namespace and the VM. The namespace is marked Prune=false so the parent
-# app does not delete it.
-# true: those Applications get a foreground finalizer, so Argo CD deletes the
-# VM (the chart's pre-delete hook runs), and the namespace is removed too.
+# the namespace and the VM (openshell-saw gets cleanupOnDelete: false, so its
+# pre-delete hook, which Argo CD would run on app deletion, is not rendered).
+# The namespace is marked Prune=false so the parent app does not delete it.
+# true: those Applications get a foreground finalizer and openshell-saw keeps
+# its pre-delete hook, so Argo CD deletes the VM and the namespace goes too.
 # The saw-users app in values-prod turns on prune. Without that, Argo CD
 # keeps objects after they disappear from this chart.
 pruneOnRemove: false

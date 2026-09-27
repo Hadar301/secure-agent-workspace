@@ -167,6 +167,15 @@ def test_prune_on_remove_can_be_set_per_user(tmp_path):
     assert namespaces["saw-alice"]["argocd.argoproj.io/sync-options"] == "Prune=false"
 
 
+def test_the_vm_cleanup_hook_follows_prune_on_remove(tmp_path):
+    """Found live: Argo CD runs openshell-saw's Helm pre-delete hook when the
+    Application is deleted, so without this a removed user lost their VM even
+    with pruneOnRemove false."""
+    docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob", "pruneOnRemove": True}]))
+    assert helm_values(app(docs, "saw-alice"))["cleanupOnDelete"] is False
+    assert helm_values(app(docs, "saw-bob"))["cleanupOnDelete"] is True
+
+
 def test_a_user_can_opt_out_of_the_chart_wide_prune(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob", "pruneOnRemove": False}],
                                  extra={"pruneOnRemove": True}))

@@ -77,6 +77,9 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- end -}}
 {{- end -}}
 {{- $_ := set $base "global" $globals -}}
+{{- /* Argo CD runs the chart's pre-delete hook when the app is deleted: only
+     users with pruneOnRemove get it, the others keep their VM. */ -}}
+{{- $_ := set $base "cleanupOnDelete" (eq (include "saw-users.prune" (dict "root" $root "user" $user)) "true") -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
 {{- mergeOverwrite $base $overlay | toYaml -}}
 {{- end -}}

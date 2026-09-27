@@ -647,3 +647,12 @@ def test_secret_template_matches_the_default_profile():
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
         assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+
+
+def test_cleanup_hook_can_be_turned_off():
+    """helm uninstall (and deleting the Argo CD app) deletes the VM through a
+    pre-delete hook unless cleanupOnDelete is false."""
+    hooks = lambda docs: [k for k, d in docs.items()
+                          if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
+    assert ("Pod", "saw-test-cleanup") in hooks(render())
+    assert hooks(render("--set", "cleanupOnDelete=false")) == []
