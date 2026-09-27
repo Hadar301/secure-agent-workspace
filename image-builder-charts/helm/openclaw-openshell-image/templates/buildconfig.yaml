@@ -8,16 +8,23 @@ spec:
   source:
     type: Dockerfile
     dockerfile: |
-      # Builder stage for nsenter and nft (see the note in the final stage).
-      FROM quay.io/fedora/fedora:43 AS tools
+      # Tools stage: the Hummingbird Node.js 26 builder, the same builder image the
+      # aipcc agentic OpenClaw base is built with, so nsenter and nft come from the
+      # same Red Hat Hummingbird package set. The base itself is distroless (no dnf).
+      FROM registry.access.redhat.com/hi/nodejs:26-builder@sha256:a8f5ef6d72222e139493128b122b691d04f1f830309e6b27918ef0b1656f2b92 AS tools
+      USER 0
       RUN dnf install -y --setopt=install_weak_deps=0 util-linux-core nftables && dnf clean all
+      # Collect each tool with its shared libraries and the dynamic loader (listed by
+      # the loader itself, so ldd is not needed).
       RUN set -e; mkdir -p /out/bin /out/lib; \
+          LOADER=$(ls /usr/lib64/ld-linux-*.so.* /lib64/ld-linux-*.so.* 2>/dev/null | head -1); \
+          cp -L "$LOADER" /out/lib/; \
           for bin in /usr/bin/nsenter /usr/sbin/nft; do \
             cp "$bin" /out/bin/; \
-            ldd "$bin" | awk '$2 == "=>" && $3 ~ /^\// {print $3} $1 ~ /^\/.*ld-linux/ {print $1}' | \
+            "$LOADER" --list "$bin" | awk '$2 == "=>" && $3 ~ /^\// {print $3}' | \
               xargs -r -I{} cp -L {} /out/lib/; \
           done; \
-          ls /out/lib/ld-linux-*.so.*
+          ls /out/bin /out/lib
 
       FROM {{ .Values.build.baseImage }}
 
@@ -40,10 +47,11 @@ spec:
           done; \
           nsenter --version && nft --version && command -v ip
 
-      # The base image's sandbox user (1000:1000) owns /sandbox, its home.
-      RUN grep '^sandbox:[^:]*:1000:1000:' /etc/passwd && \
+      # The base image's sandbox user owns /sandbox, its home. Referenced by name:
+      # its UID differs between base image builds (1000, 1001).
+      RUN grep -q '^sandbox:' /etc/passwd && grep -q '^sandbox:' /etc/group && \
           mkdir -p /sandbox/.openclaw/state /run/secrets && \
-          chown -R 1000:1000 /sandbox/.openclaw && \
+          chown -R sandbox:sandbox /sandbox/.openclaw && \
           chmod 700 /sandbox/.openclaw /sandbox/.openclaw/state && \
           chmod 755 /run/secrets
 
@@ -52,9 +60,9 @@ spec:
           SQLITE_TMPDIR=/sandbox/.openclaw/state \
           TMPDIR=/sandbox/.openclaw/state
 
-      # Explicit group: OpenShell's supervisor refuses a numeric USER it cannot
-      # resolve to a primary group.
-      USER 1000:1000
+      # Explicit group: OpenShell's supervisor resolves USER through /etc/passwd and
+      # /etc/group and refuses a user it cannot map to a primary group.
+      USER sandbox:sandbox
 
       RUN OPENCLAW_NIX_MODE=0 \
           openclaw plugins install @openclaw/openshell-sandbox

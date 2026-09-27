@@ -38,15 +38,18 @@ def test_base_image_is_pinned_by_digest_and_matches_values():
 
 
 def test_final_user_is_the_base_images_sandbox_user_with_explicit_group():
-    assert user_lines(dockerfile())[-1] == "USER 1000:1000"
-    assert "grep '^sandbox:[^:]*:1000:1000:' /etc/passwd" in dockerfile()
+    """By name: the base image's sandbox UID changed between builds (1000, 1001)."""
+    assert user_lines(dockerfile())[-1] == "USER sandbox:sandbox"
+    assert "grep -q '^sandbox:' /etc/passwd && grep -q '^sandbox:' /etc/group" in dockerfile()
 
 
 def test_supervisor_tools_are_bundled_and_checked_at_build_time():
     """nsenter and nft come from the tools stage with their own loader, at
     paths in OpenShell's trusted search lists."""
     text = dockerfile()
-    assert re.search(r"^FROM \S+ AS tools$", text, re.M)
+    tools = re.search(r"^FROM (\S+) AS tools$", text, re.M).group(1)
+    # Same Hummingbird builder the aipcc base is built with, pinned.
+    assert re.fullmatch(r"registry\.access\.redhat\.com/hi/nodejs:26-builder@sha256:[0-9a-f]{64}", tools)
     assert "util-linux-core nftables" in text
     assert "COPY --from=tools /out /opt/openshell-tools" in text
     assert "nsenter:/usr/bin/nsenter nft:/usr/sbin/nft" in text
