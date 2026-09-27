@@ -658,7 +658,7 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     assert result.returncode == 0, result.stderr
     [cm] = [d for d in yaml.safe_load_all(result.stdout) if d]
     assert all("__custom-inference__" in k for k in cm["data"])
-    docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
+    docs = render(*PATTERN_SAW_SETTINGS)
     run_saw = tmp_path / "run-saw"
     for key, value in installer_data(docs).items():
         (run_saw / "installer").mkdir(parents=True, exist_ok=True)
