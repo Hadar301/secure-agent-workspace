@@ -6,7 +6,9 @@ set -euo pipefail
 BUILD_NS="${BUILD_NS:-openshell-agents}"
 QUAY_REPO="${QUAY_REPO:-quay.io/rh-ai-quickstart}"
 VERSION="${OPENSHELL_VERSION:-v0.0.116}"
-IMAGES="${IMAGES:-openshell-gateway openshell-gateway-docker nemoclaw-sandbox nemoclaw-cli}"
+# Only the gateway VM disk image is needed in the cluster (golden image);
+# sandbox and NemoClaw CLI images are pulled from quay by the VM itself.
+IMAGES="${IMAGES:-openshell-gateway}"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Setting up image-mirror ServiceAccount..."
@@ -25,8 +27,20 @@ for IMAGE in ${IMAGES}; do
   envsubst '${IMAGE} ${BUILD_NS} ${QUAY_REPO} ${VERSION}' \
     < "${SCRIPTS_DIR}/mirror-images-job.yaml" \
     | oc apply -n "${BUILD_NS}" -f -
-  oc -n "${BUILD_NS}" wait --for=condition=complete \
-    job/"mirror-${IMAGE}" --timeout=600s
+  # `oc wait --for=condition=complete` would sit out its timeout on a failed Job.
+  deadline=$(( $(date +%s) + 900 ))
+  while :; do
+    ok=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.succeeded}' 2>/dev/null)
+    bad=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)
+    [[ "${ok}" == 1 ]] && break
+    if [[ "${bad}" == True || $(date +%s) -gt ${deadline} ]]; then
+      echo "ERROR: mirroring ${IMAGE} failed:"
+      oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=10 2>&1
+      exit 1
+    fi
+    sleep 5
+  done
+  oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=2 2>/dev/null
   oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null || true
   echo "  ${IMAGE} done."
 done
