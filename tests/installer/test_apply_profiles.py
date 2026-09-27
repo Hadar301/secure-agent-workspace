@@ -1,6 +1,7 @@
 """Applying SAW-BOM profiles through the (fake) OpenShell CLI over mTLS."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -239,3 +240,57 @@ def test_no_system_route_when_default_model_provider_is_skipped(ab, fake_env, co
     state = fake_env.openshell_state()
     assert state["system_inference"] is None and state["inference"] == {}
     assert not [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]
+
+
+# -- importing a shipped provider profile the gateway lacks ------------------
+
+SHIPPED_PROFILES = Path(__file__).resolve().parents[2] / "charts" / "openshell-saw" / "files" / "provider-profiles"
+
+
+def applier_with_shipped_profiles(ab, config, creds):
+    docs = {p.stem: p.read_text() for p in SHIPPED_PROFILES.glob("*.yaml")}
+    return ab.ProfileApplier(ab.Shell(), config, creds, docs)
+
+
+def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fake_env, config, profiles, creds):
+    """Governance off: the gateway has no 'brave' profile. The installer imports
+    the shipped copy (same file as governance-policy/profiles/brave.yaml) into
+    the workspace and creates the provider."""
+    fake_env.without_profiles("brave")
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    assert state["imported_profiles"] == {"default": ["brave"]}
+    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
+    assert applier.skipped == set()
+    assert applier.verify(profiles) == []
+    imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
+    assert len(imports) == 1 and "--workspace" not in imports[0]      # default workspace
+
+
+def test_profile_is_imported_once_across_applies(ab, fake_env, config, profiles, creds):
+    fake_env.without_profiles("brave")
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
+    assert len(imports) == 1
+
+
+def test_no_import_when_the_gateway_has_the_profile(ab, fake_env, config, profiles, creds):
+    """Governance on: the interceptor serves 'brave'; nothing is imported."""
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "profile"]]
+    assert "default/brave" in fake_env.openshell_state()["providers"]
+
+
+def test_failed_profile_import_stops_the_apply(ab, fake_env, config, profiles, creds):
+    fake_env.without_profiles("brave")
+    applier = ab.ProfileApplier(ab.Shell(), config, creds, {"brave": "display_name: no id\n"})
+    with pytest.raises(ab.InstallerError, match="could not import the 'brave' provider profile"):
+        applier.apply(profiles)
+
+
+def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):
+    (tmp_path / "provider-profile-brave.yaml").write_text("id: brave\n")
+    (tmp_path / "config.json").write_text("{}")
+    assert ab.provider_profiles(tmp_path) == {"brave": "id: brave\n"}

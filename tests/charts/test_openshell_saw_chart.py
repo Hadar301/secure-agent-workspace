@@ -553,3 +553,34 @@ def test_pattern_uses_the_on_demand_ssh_key_secret():
     docs = render("-f", str(ROOT / "overrides" / "openshell-saw.yaml"))
     assert access_credentials(docs)[0]["sshPublicKey"]["source"]["secret"]["secretName"] == "saw-test-ssh-pubkey"
     assert "data" not in docs[("Secret", "saw-test-ssh-pubkey")]
+
+
+# -- provider profiles (governance-policy and the installer's copies) ---------
+
+GOVERNANCE_PROFILES = ROOT / "charts" / "governance-policy" / "profiles"
+SAW_PROFILES = CHART / "files" / "provider-profiles"
+
+
+def test_governance_profiles_carry_their_id():
+    """OpenShell's profile parser requires `id` (missing field `id` otherwise),
+    so the files are only importable with it. The interceptor derives the id
+    from the filename and overwrites the field, so it must match."""
+    for path in sorted(GOVERNANCE_PROFILES.glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        assert doc.get("id") == path.stem, path.name
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
+
+
+def test_installer_profile_copies_match_governance_policy():
+    copies = sorted(SAW_PROFILES.glob("*.yaml"))
+    assert [p.name for p in copies] == ["brave.yaml"]
+    for path in copies:
+        assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
+
+
+def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
+    data = installer_data(default_docs)
+    assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
+    for key, value in data.items():
+        (tmp_path / key).write_text(value)
+    assert set(ab.provider_profiles(tmp_path)) == {"brave"}

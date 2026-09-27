@@ -31,7 +31,11 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   the profiles and mounted Secrets, then runs the profile step as
   `cloud-user` with the plan on stdin. Provider keys are passed to the CLI
   as `--credential NAME` with the value in the environment, never in argv;
-  existing providers get the current key via `provider update`. It registers a local **mTLS**
+  existing providers get the current key via `provider update`. If the gateway has no profile
+  for a provider type (e.g. `brave` when governance is off), the installer imports the copy
+  shipped in `charts/openshell-saw/files/provider-profiles/` (kept identical to
+  `charts/governance-policy/profiles/`) into that workspace; a type with no shipped profile is
+  skipped with a warning. It registers a local **mTLS**
   gateway entry, creates workspaces, providers, inference routes and
   sandboxes, optionally starts the dashboard, and verifies the result.
 - The prepare Job only bootstraps the golden image DataSource and registers

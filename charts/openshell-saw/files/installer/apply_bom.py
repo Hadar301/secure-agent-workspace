@@ -879,10 +879,11 @@ def ws_args(name):
 
 
 class ProfileApplier:
-    def __init__(self, shell, cfg, creds):
+    def __init__(self, shell, cfg, creds, provider_profile_docs=None):
         self.sh = shell
         self.cfg = cfg
         self.creds = creds
+        self.provider_profiles = provider_profile_docs or {}   # id -> profile YAML
         self.gateway = cfg["mtlsGateway"]
         self.skipped = set()          # (workspace, provider) the gateway had no profile for
         for workspace in creds.values():
@@ -936,9 +937,13 @@ class ProfileApplier:
         credential = self.creds[ws.name][provider.name]
         env_name = PROVIDER_CRED_MAP[provider.type]
         env = {env_name: credential}
-        created = self.cli("provider", "create", "--name", provider.name, "--type", provider.type,
-                           *ws_args(ws.name), "--credential", env_name,
-                           env=env, ok_if_exists=True, check=False)
+        create = ("provider", "create", "--name", provider.name, "--type", provider.type,
+                  *ws_args(ws.name), "--credential", env_name)
+        created = self.cli(*create, env=env, ok_if_exists=True, check=False)
+        if (not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err)
+                and provider.type in self.provider_profiles):
+            self.import_provider_profile(ws, provider.type)
+            created = self.cli(*create, env=env, ok_if_exists=True, check=False)
         if not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err):
             log(f"WARN: skipping provider '{provider.name}': the gateway has no '{provider.type}' "
                 "provider profile (governed profiles come from the governance interceptor; "
@@ -953,6 +958,21 @@ class ProfileApplier:
                                "--credential", env_name, env=env, check=False)
             if not updated.ok:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
+
+    def import_provider_profile(self, ws, profile_id):
+        """The gateway has no profile for this provider type (governed
+        profiles come from the governance interceptor, which may be off).
+        Import the copy shipped with the chart into the workspace."""
+        log(f"Gateway has no '{profile_id}' provider profile; importing the shipped one "
+            f"into workspace '{ws.name}'")
+        with tempfile.TemporaryDirectory(prefix="saw-profile-") as tmp:
+            path = Path(tmp) / f"{profile_id}.yaml"
+            path.write_text(self.provider_profiles[profile_id], encoding="utf-8")
+            result = self.cli("provider", "profile", "import", "-f", str(path), *ws_args(ws.name),
+                              ok_if_exists=True, check=False)
+        if not result.ok:
+            raise InstallerError(f"could not import the '{profile_id}' provider profile into "
+                                 f"workspace '{ws.name}'")
 
     def apply_inference(self, ws):
         chosen = next((p for p in self.usable(ws) if p.model), None)
@@ -1352,9 +1372,19 @@ def cmd_install(args):
         return 1
 
 
-def plan_for_user(cfg, profiles, creds, dashboard_script):
+def provider_profiles(installer_dir):
+    """Provider profiles shipped on the installer disk, by profile id
+    (provider-profile-<id>.yaml)."""
+    found = {}
+    for path in sorted(Path(installer_dir).glob("provider-profile-*.yaml")):
+        found[path.name[len("provider-profile-"):-len(".yaml")]] = path.read_text(encoding="utf-8")
+    return found
+
+
+def plan_for_user(cfg, profiles, creds, dashboard_script, provider_profile_docs=None):
     return {"config": cfg, "profiles": [asdict(p) for p in profiles],
-            "credentials": creds, "dashboardScript": str(dashboard_script)}
+            "credentials": creds, "dashboardScript": str(dashboard_script),
+            "providerProfiles": provider_profile_docs or {}}
 
 
 def profiles_from_plan(data):
@@ -1395,8 +1425,9 @@ def cmd_apply(args):
         if args.dry_run:
             # Nothing runs in a dry run, so no user switch is needed (the
             # runtime user could not read /run/saw anyway).
-            apply_plan(json.loads(json.dumps(plan_for_user(cfg, profiles, creds,
-                                                           inputs.dashboard_script))), True)
+            apply_plan(json.loads(json.dumps(plan_for_user(
+                cfg, profiles, creds, inputs.dashboard_script,
+                provider_profiles(inputs.installer)))), True)
             return 0
         else:
             # A root-owned, world-readable copy the runtime user can execute.
@@ -1413,7 +1444,8 @@ def cmd_apply(args):
 
         _, wrap = runtime_user(cfg, args.as_current_user)
         argv = [sys.executable, str(script), "apply-profiles"]
-        plan = json.dumps(plan_for_user(cfg, profiles, creds, dash_copy))
+        plan = json.dumps(plan_for_user(cfg, profiles, creds, dash_copy,
+                                        provider_profiles(inputs.installer)))
         result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
         if result.returncode != 0:
             raise InstallerError("applying profiles failed; see the log above")
@@ -1434,7 +1466,7 @@ def apply_plan(data, dry_run):
     cfg = data["config"]
     profiles = profiles_from_plan(data)
     shell = Shell(dry_run=dry_run)
-    applier = ProfileApplier(shell, cfg, data["credentials"])
+    applier = ProfileApplier(shell, cfg, data["credentials"], data.get("providerProfiles"))
     if not list(enabled_workspaces(profiles)):
         log("No enabled workspaces in the SAW-BOM profiles; only the gateway entry is configured")
         applier.register_gateway()

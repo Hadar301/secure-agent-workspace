@@ -53,3 +53,9 @@ data:
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
+{{- /* Provider profiles the installer imports when the gateway lacks them
+(e.g. brave with governance off). Same files as governance-policy/profiles. */}}
+{{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" }}
+  provider-profile-{{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

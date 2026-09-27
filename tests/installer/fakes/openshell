@@ -80,8 +80,19 @@ elif op == "workspace member":
     if member in state["members"]:
         fail("Error: member already exists")
     state["members"].append(member)
+elif op == "provider profile" and head[2] == "import":
+    # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
+    import yaml
+    doc = yaml.safe_load(Path(opt("-f")).read_text())
+    if not isinstance(doc, dict) or not doc.get("id"):
+        fail("Error: failed to parse provider profile YAML: missing field `id`")
+    imported = state.setdefault("imported_profiles", {})
+    if doc["id"] in imported.get(ws, []):
+        fail(f"Error: provider profile '{doc['id']}' already exists")
+    imported.setdefault(ws, []).append(doc["id"])
+    print(f"Imported provider profile {doc['id']}")
 elif op == "provider create":
-    if opt("--type") in no_profiles:
+    if opt("--type") in no_profiles and opt("--type") not in state.get("imported_profiles", {}).get(ws, []):
         # Wording of OpenShell 0.0.116 when governance does not serve the profile.
         fail(f"Error:   × unsupported provider type or profile: {opt('--type')} (provider profile "
              f"'{opt('--type')}' not\n  │ found; import a matching profile before using this provider type)")
