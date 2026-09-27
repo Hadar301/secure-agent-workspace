@@ -193,7 +193,7 @@ make copy-images
 
 # 7. Authenticate and configure the CLI
 make login                    # Opens browser → login with alice / alice
-export OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice
+export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
@@ -204,10 +204,11 @@ openshell sandbox list --workspace cuda-dev
 ```
 
 Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD creates or removes `saw-<name>`.
-The virtual machine is named `saw-<name>` (Alice's machine is `saw-alice`, not `openshell-saw`).
-Set `OPENSHELL_SAW_NAME` and `SAW_NS` to that same name.
+Each user's virtual machine is named after them, in namespace `saw-<name>` (Alice's machine is `alice` in `saw-alice`, not `openshell-saw`), the same layout as `make openshell-saw-create OPENSHELL_SAW_NAME=alice`.
+Set `OPENSHELL_SAW_NAME` to the user name; `SAW_NS` defaults to `saw-<name>`.
 Removing an entry deletes that user's Argo apps and leaves the VM running.
-Set `pruneOnRemove: true` in `charts/saw-users` before removing the entry to delete the namespace and the VM as well.
+To delete the namespace and the VM as well, first set `pruneOnRemove: true` on that user's entry and push, then remove the entry and push.
+Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from the single-user layout](docs/deployment-guide.md#upgrading-from-the-single-user-layout).
 
 #### Option B: Quickstart (manual, step-by-step)
 
@@ -297,7 +298,7 @@ make openclaw-gui # OpenClaw
 
 > **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
-You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `saw-alice` in `saw-alice`).
+You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `alice` in `saw-alice`).
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 

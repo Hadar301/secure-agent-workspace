@@ -160,6 +160,12 @@ governance:
   failurePolicy: "fail_closed"
   timeout: "500ms"
 
+# Delete the VM and its disks when this release is deleted (a pre-delete
+# hook; Argo CD runs it when the Application is deleted, too). The pattern's
+# saw-users chart sets this from each user's pruneOnRemove, so removing a
+# user from the list keeps their VM unless pruneOnRemove is true.
+cleanupOnDelete: true
+
 # Cluster-side prepare Job. It never logs in to the VM: it only bootstraps
 # the golden image DataSource and registers the dashboard redirect URI in
 # Keycloak.

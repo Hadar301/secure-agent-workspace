@@ -30,14 +30,24 @@ def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice")
                           capture_output=True, text=True)
 
 
-# Settings that used to live in overrides/openshell-saw.yaml. The saw-users
-# chart now passes them as each user's openshell-saw values.
-PATTERN_SAW_SETTINGS = (
-    "--set", "accessControl.owner=alice",
-    "--set", "job.waitForSecrets=true",
-    "--set", "job.backoffLimit=5",
-    "--set", "dashboard.insecureSkipIssuerTlsVerify=true",
-)
+def _pattern_saw_settings():
+    """The openshell-saw values the saw-users chart gives every user
+    (defaults.openshellSaw) plus alice as owner, as --set flags, so these
+    tests follow the chart instead of a copy of it."""
+    defaults = yaml.safe_load((ROOT / "charts/saw-users/values.yaml").read_text())["defaults"]["openshellSaw"]
+
+    def flatten(prefix, value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        else:
+            yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
+
+    flags = [f for pair in flatten("", defaults) for f in pair]
+    return (*flags, "--set", "accessControl.owner=alice")
+
+
+PATTERN_SAW_SETTINGS = _pattern_saw_settings()
 
 
 def render(*args, **kwargs):
@@ -637,3 +647,12 @@ def test_secret_template_matches_the_default_profile():
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
         assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+
+
+def test_cleanup_hook_can_be_turned_off():
+    """helm uninstall (and deleting the Argo CD app) deletes the VM through a
+    pre-delete hook unless cleanupOnDelete is false."""
+    hooks = lambda docs: [k for k, d in docs.items()
+                          if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
+    assert ("Pod", "saw-test-cleanup") in hooks(render())
+    assert hooks(render("--set", "cleanupOnDelete=false")) == []

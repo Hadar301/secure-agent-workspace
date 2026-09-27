@@ -27,7 +27,7 @@
   "appName" (printf "saw-%s" $user.name)
   "wave" $.Values.syncWave.sandbox
   "path" "charts/openshell-saw"
-  "release" (printf "saw-%s" $user.name)
+  "release" $user.name
   "values" (include "saw-users.openshellValues" (dict "root" $ "user" $user))
 ) }}
 {{- end }}

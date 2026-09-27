@@ -20,11 +20,10 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
 {{- fail (printf "user name %q must be a lowercase DNS label (letters, digits, and hyphens; must start and end with a letter or digit)" $name) -}}
 {{- end -}}
-{{- $saw := printf "saw-%s" $name -}}
-{{- if gt (len $saw) 19 -}}
-{{- fail (printf "user name %q is too long: %s is %d characters and OpenShell allows 19" $name $saw (len $saw)) -}}
+{{- if gt (len $name) 19 -}}
+{{- fail (printf "user name %q is too long: it names the VM (%d characters) and OpenShell allows 19" $name (len $name)) -}}
 {{- end -}}
-{{- $route := printf "saw-%s-dashboard-saw-%s" $name $name -}}
+{{- $route := printf "%s-dashboard-saw-%s" $name $name -}}
 {{- if gt (len $route) 63 -}}
 {{- fail (printf "user name %q makes dashboard route label %q %d characters; DNS labels allow 63" $name $route (len $route)) -}}
 {{- end -}}
@@ -40,17 +39,22 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- end -}}
 
 {{/*
-Non-empty global.* values. Empty parameters are omitted so Argo CD does not
-flap OutOfSync the way it does when a helm parameter is present with no value.
+global.* values: openshell-saw only gets the keys in machineGlobals, when
+non-empty (an empty helm parameter makes Argo CD flap OutOfSync; framework
+internals such as deletePattern are not copied).
 */}}
-{{- define "saw-users.globals" -}}
-{{- $globals := dict -}}
-{{- range $k, $v := .Values.global -}}
-{{- if $v -}}
-{{- $_ := set $globals $k $v -}}
+
+{{/*
+Whether removing this user also deletes the VM and namespace: the user's
+own pruneOnRemove, else the chart-wide default. "true" or "".
+*/}}
+{{- define "saw-users.prune" -}}
+{{- $user := .user -}}
+{{- $prune := .root.Values.pruneOnRemove -}}
+{{- if hasKey $user "pruneOnRemove" -}}
+{{- $prune = $user.pruneOnRemove -}}
 {{- end -}}
-{{- end -}}
-{{- toYaml $globals -}}
+{{- if $prune -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -66,12 +70,16 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $_ := set $ac "ownerSubject" ($user.ownerSubject | default "" | toString) -}}
 {{- $_ := set $base "accessControl" $ac -}}
 {{- $globals := dict -}}
-{{- range $k, $v := $root.Values.global -}}
+{{- range $k := $root.Values.machineGlobals | default list -}}
+{{- $v := index $root.Values.global $k -}}
 {{- if $v -}}
 {{- $_ := set $globals $k $v -}}
 {{- end -}}
 {{- end -}}
 {{- $_ := set $base "global" $globals -}}
+{{- /* Argo CD runs the chart's pre-delete hook when the app is deleted: only
+     users with pruneOnRemove get it, the others keep their VM. */ -}}
+{{- $_ := set $base "cleanupOnDelete" (eq (include "saw-users.prune" (dict "root" $root "user" $user)) "true") -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
 {{- mergeOverwrite $base $overlay | toYaml -}}
 {{- end -}}
@@ -105,7 +113,7 @@ metadata:
     openshell.pattern/owner: {{ $user.name | quote }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ .wave | quote }}
-  {{- if $root.Values.pruneOnRemove }}
+  {{- if include "saw-users.prune" (dict "root" $root "user" $user) }}
   finalizers:
     - {{ $root.Values.argo.finalizer }}
   {{- end }}
@@ -120,11 +128,13 @@ spec:
     path: {{ .path }}
     helm:
       releaseName: {{ .release }}
-      ignoreMissingValueFiles: true
       values: |
 {{ .values | indent 8 }}
   syncPolicy:
-    automated: {}
+    # selfHeal like the pattern's other apps: objects deleted or changed by
+    # hand (e.g. while cleaning up an older install) are restored.
+    automated:
+      selfHeal: true
     retry:
       limit: {{ $root.Values.argo.retryLimit }}
 {{- end -}}
