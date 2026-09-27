@@ -1,0 +1,55 @@
+{{- /*
+Everything the in-guest installer needs except credentials. Attached to the
+VM as a read-only disk and mounted at /run/saw/installer on every boot, so
+changes here reach an existing VM after a restart (unlike cloud-init).
+*/ -}}
+{{- range $name, $c := .Values.bom.spec.openshell }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$" ($c.image | default "")) }}
+{{- fail (printf "bom.spec.openshell.%s.image must be pinned by digest (repo@sha256:...), got %q" $name ($c.image | default "")) }}
+{{- end }}
+{{- end }}
+{{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+{{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
+{{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
+{{- $sandboxRoute := "" }}
+{{- if and .Values.route.dashboard $dashboardHost }}{{- $sandboxRoute = $dashboardHost }}{{- end }}
+{{- $redirectUrl := "" }}
+{{- if $webuiHost }}{{- $redirectUrl = printf "https://%s/oauth2/callback" $webuiHost }}{{- end }}
+{{- $dashboardEnabled := false }}
+{{- if and .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
+{{- $config := dict
+      "vmName" (include "openshell-sandbox.fullname" .)
+      "namespace" .Release.Namespace
+      "runtimeUser" "cloud-user"
+      "mtlsGateway" "openshell"
+      "ownerSubject" (.Values.accessControl.ownerSubject | default "")
+      "oidcIssuer" $oidcIssuer
+      "routeHost" (include "openshell-sandbox.routeHost" .)
+      "sandboxDashboardRoute" $sandboxRoute
+      "dashboard" (dict
+          "enabled" $dashboardEnabled
+          "image" .Values.dashboard.image
+          "proxyImage" .Values.dashboard.proxyImage
+          "clientId" .Values.dashboard.clientId
+          "redirectUrl" $redirectUrl
+          "insecureSkipTlsVerify" (.Values.dashboard.insecureSkipIssuerTlsVerify | default false))
+      "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-installer
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+data:
+  installer-bom.yaml: |
+{{ toYaml .Values.bom | indent 4 }}
+  config.json: |
+{{ toPrettyJson $config | indent 4 }}
+  gateway.env: |
+{{ include "openshell-sandbox.gatewayEnv" . | indent 4 }}
+  gateway.toml: |
+{{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
+  apply_bom.py: |
+{{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
+  setup-dashboard.sh: |
+{{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}

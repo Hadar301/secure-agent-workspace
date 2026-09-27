@@ -1,9 +1,9 @@
 apiVersion: v2
 name: openshell-saw
-description: Per-user agent sandbox — clones from a bootc golden image and configures via Job
+description: Per-user agent sandbox — clones a golden image and installs itself from a versioned BOM (no SSH)
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 keywords:
   - openshell
   - nemoclaw

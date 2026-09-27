@@ -1,0 +1,26 @@
+# Example InstallerBOM (the openshell-saw chart default, `bom:` in values.yaml).
+# Every OpenShell component is pinned by image digest; the in-guest installer
+# pulls each image, copies the binary out, checks its version and installs it.
+# To upgrade: change versions/digests here (or in chart values) and restart the VM.
+apiVersion: saw.redhat.com/v1alpha1
+kind: InstallerBOM
+metadata:
+  name: openshell-0-0-116-rhaiv-0
+spec:
+  # Version of charts/openshell-saw/files/installer/apply_bom.py this BOM targets.
+  installerVersion: 0.1.0
+  openshell:
+    cli:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-cli@sha256:ffd6c5e163180aba4f19d445a23906856bd9b7a24710aa134484f2b2ee7a8f17
+    gateway:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-gateway@sha256:456650bc420ff3bda27e81c13bea3ebad721b6a00d8541251f48ec999f92af6d
+    supervisor:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-supervisor@sha256:6c56ca2495ee10a77773b154cefd7309ebcab071962ea069ac349a3d9ec8c55a
+      # Optional: where the binary lives inside the image (this is the default).
+      # path: /openshell-sandbox
+  # Optional: only needed by `type: nemoclaw` sandboxes.
+  # nemoclaw:
+  #   cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli@sha256:<digest>

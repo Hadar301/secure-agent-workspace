@@ -1,0 +1,10 @@
+#!/bin/bash
+# Fake install: like a read-only filesystem, touching a mounted directory fails.
+for arg in "$@"; do
+  if grep -qxF "${arg}" "${FAKE_STATE}/mounted" 2>/dev/null; then
+    echo "install: cannot change permissions of '${arg}': Read-only file system" >&2
+    exit 1
+  fi
+done
+echo "$*" >> "${FAKE_STATE}/install.log"
+exec /usr/bin/install "$@"

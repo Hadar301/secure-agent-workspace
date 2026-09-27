@@ -9,10 +9,20 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - openshift-cnv
+    # Shared: golden image, image builds, governance interceptor.
     openshell-agents:
+    # Keycloak and its RHBK operator (any namespace works; see
+    # openshell-saw oidc.keycloakNamespace).
+    keycloak:
       operatorGroup: true
       targetNamespaces:
-        - openshell-agents
+        - keycloak
+    # One namespace per user SAW. The label lets the shared governance
+    # interceptor accept the SAW's gateway VM.
+    saw-alice:
+      labels:
+        openshell.pattern/saw: "true"
+        openshell.pattern/owner: alice
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -34,7 +44,7 @@ clusterGroup:
       channel: stable
     rhbk:
       name: rhbk-operator
-      namespace: openshell-agents
+      namespace: keycloak
       channel: stable-v26
     rhdh:
       name: rhdh
@@ -65,11 +75,13 @@ clusterGroup:
       path: charts/openshift-cnv
     openshell-keycloak:
       name: openshell-keycloak
-      namespace: openshell-agents
+      namespace: keycloak
       path: charts/openshell-keycloak
+    # The SAW's provider Secrets, profiles and VM live in its own namespace
+    # (a VM can only attach ConfigMaps/Secrets from its namespace).
     pattern-secrets:
       name: pattern-secrets
-      namespace: openshell-agents
+      namespace: saw-alice
       path: charts/pattern-secrets
     governance-policy:
       name: governance-policy
@@ -81,11 +93,11 @@ clusterGroup:
       path: charts/governance-interceptor
     saw-bom:
       name: saw-bom
-      namespace: openshell-agents
+      namespace: saw-alice
       path: charts/saw-bom
     openshell-saw:
       name: openshell-saw
-      namespace: openshell-agents
+      namespace: saw-alice
       path: charts/openshell-saw
       extraValueFiles:
         - /overrides/openshell-saw.yaml

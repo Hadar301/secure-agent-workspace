@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Fake setsebool -P NAME on|off: records the change."""
+import json, os, sys
+from pathlib import Path
+state = Path(os.environ["FAKE_STATE"]) / "sebool.json"
+values = json.loads(state.read_text()) if state.exists() else {"virt_qemu_ga_manage_ssh": "off"}
+args = [a for a in sys.argv[1:] if a != "-P"]
+values[args[0]] = args[1]
+state.write_text(json.dumps(values))
+with open(Path(os.environ["FAKE_STATE"]) / "setsebool.log", "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")

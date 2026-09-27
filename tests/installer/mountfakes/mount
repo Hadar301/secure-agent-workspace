@@ -1,0 +1,7 @@
+#!/bin/bash
+# Fake mount: "mount -t iso9660 -o OPTS DEV TARGET" copies DEV (a directory
+# standing in for the disk) into TARGET and records TARGET as mounted.
+dev="${@: -2:1}"; target="${@: -1}"
+echo "$*" >> "${FAKE_STATE}/mount.log"
+cp -r "${dev}/." "${target}/"
+echo "${target}" >> "${FAKE_STATE}/mounted"

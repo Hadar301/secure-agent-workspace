@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+with open(Path(os.environ["FAKE_STATE"]) / "virtctl.log", "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")

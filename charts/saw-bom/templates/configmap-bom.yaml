@@ -1,3 +1,5 @@
+{{- /* SAW-BOM profiles only. The installer (apply_bom.py) ships with the
+     openshell-saw chart and is versioned with its InstallerBOM. */ -}}
 {{- $profileFiles := dict }}
 {{- range $profile := .Values.profiles }}
 {{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
@@ -18,6 +20,4 @@ data:
   {{ $path | replace "/" "__" }}: |
 {{ $content | indent 4 }}
   {{- end }}
-  apply_bom.py: |
-{{ .Files.Get "scripts/apply_bom.py" | indent 4 }}
 {{- end }}

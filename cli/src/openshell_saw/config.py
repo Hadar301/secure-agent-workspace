@@ -11,11 +11,13 @@ from pathlib import Path
 import yaml
 
 SHARED_NAMESPACE = "openshell-agents"
+KEYCLOAK_NAMESPACE = "keycloak"
 USER_NS_PREFIX = "saw-"
 
 DEFAULTS = {
     "namespace": SHARED_NAMESPACE,
     "shared_namespace": SHARED_NAMESPACE,
+    "keycloak_namespace": KEYCLOAK_NAMESPACE,
     "ssh_key": ".generated-ssh-keys/sandbox-ssh",
     "agent": "openclaw",
     "oidc": {
@@ -109,6 +111,12 @@ def ssh_pubkey(key_path):
             f"Set --ssh-key or configure ssh_key in {CONFIG_FILE}"
         )
     return pub.read_text().strip()
+
+
+def saw_namespace(name):
+    """Each SAW gets its own namespace: saw-<name>."""
+    sanitized = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:58]
+    return f"{USER_NS_PREFIX}{sanitized}"
 
 
 def user_namespace(username):

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-NS="${KEYCLOAK_NS:-openshell-agents}"
+NS="${KEYCLOAK_NS:-keycloak}"
 CHART="${KEYCLOAK_CHART:-charts/openshell-keycloak}"
 
 # Check RHBK operator is installed in the target namespace

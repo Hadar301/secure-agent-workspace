@@ -1,0 +1,3 @@
+#!/bin/bash
+# Fake mountpoint -q TARGET
+grep -qxF "${@: -1}" "${FAKE_STATE}/mounted" 2>/dev/null

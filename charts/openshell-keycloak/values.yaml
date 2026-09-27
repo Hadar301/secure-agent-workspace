@@ -30,9 +30,9 @@ keycloak:
       # Keycloak's redirect URI matching only supports a *trailing* wildcard —
       # confirmed live that "https://*/oauth2/callback" is rejected outright
       # ("Invalid parameter: redirect_uri") — so a single static entry can't
-      # cover every sandbox. Each sandbox's setup Job registers its own exact
+      # cover every sandbox. Each sandbox's prepare Job registers its own exact
       # redirect URI onto this client via the Keycloak Admin API instead (see
-      # charts/openshell-saw/templates/configmap-scripts.yaml, run-setup.sh).
+      # charts/openshell-saw/files/register-keycloak-redirect.sh).
       # These are just the initial (empty) values before any sandbox exists.
       redirectUris: []
       webOrigins: []

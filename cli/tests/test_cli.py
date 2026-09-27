@@ -88,24 +88,59 @@ class TestSandboxCreate:
         assert result.exit_code != 0
         assert "Missing option" in result.output or "required" in result.output.lower()
 
-    def test_create_no_oidc(self, _, tmp_path):
+    def _create(self, *extra, claims=None, issuer=None):
+        calls = {}
         with (
-            patch("openshell_saw.oidc.auto_detect_issuer", return_value=None),
+            patch("openshell_saw.oidc.auto_detect_issuer", return_value=issuer),
+            patch("openshell_saw.oidc.token_claims", return_value=claims or {}),
             patch("openshell_saw.config.ssh_pubkey", return_value="ssh-ed25519 AAAA"),
-            patch("openshell_saw.kube.ensure_ssh_secret"),
-            patch("openshell_saw.config.chart_path", return_value="/charts/sandbox"),
-            patch("openshell_saw.helm.install_chart"),
+            patch("openshell_saw.config.chart_path", return_value="/charts/openshell-saw"),
+            patch("openshell_saw.kube.ensure_namespace") as ns,
+            patch("openshell_saw.kube.label_saw_namespace") as label,
+            patch("openshell_saw.kube.apply_secret") as secret,
+            patch("openshell_saw.helm.install_chart") as install,
             patch("openshell_saw.kube.get_route_url", return_value=None),
         ):
-            runner = CliRunner()
-            result = runner.invoke(main, [
-                "sandbox", "create", "test",
-                "--provider", "gemini",
-                "--model", "gemini-2.5-flash",
-                "--api-key", "key123",
-            ])
-            assert result.exit_code == 0
-            assert "deployed" in result.output.lower()
+            result = CliRunner().invoke(main, [*extra, "sandbox", "create", "test",
+                                               "--provider", "build", "--model", "m1",
+                                               "--api-key", "key123"])
+            calls.update(ns=ns, label=label, secret=secret, install=install)
+        return result, calls
+
+    def test_create_uses_its_own_namespace(self, _):
+        result, calls = self._create()
+        assert result.exit_code == 0, result.output
+        calls["ns"].assert_called_once_with("saw-test")
+        calls["label"].assert_called_once_with("saw-test", None)
+        kwargs = calls["install"].call_args.kwargs
+        assert kwargs["namespace"] == "saw-test"
+        assert kwargs["chart_path"] == "/charts/openshell-saw"
+        assert kwargs["sets"]["governance.namespace"] == "openshell-agents"
+        assert kwargs["sets"]["source.dataSourceNamespace"] == "openshell-agents"
+        assert kwargs["sets"]["oidc.keycloakNamespace"] == "keycloak"
+
+    def test_api_key_goes_to_a_secret_not_helm_values(self, _):
+        result, calls = self._create()
+        calls["secret"].assert_called_once_with(
+            "inference", "saw-test", {"api_key": "key123", "provider": "build", "model": "m1"})
+        kwargs = calls["install"].call_args.kwargs
+        assert "key123" not in repr(kwargs)
+
+    def test_owner_subject_from_token_and_no_token_in_values(self, _):
+        claims = {"sub": "f00d-subject", "preferred_username": "alice"}
+        result, calls = self._create(claims=claims, issuer="https://kc/realms/openshell")
+        assert result.exit_code == 0, result.output
+        kwargs = calls["install"].call_args.kwargs
+        assert kwargs["set_strings"] == {"accessControl.ownerSubject": "f00d-subject"}
+        assert kwargs["sets"]["accessControl.owner"] == "alice"
+        assert kwargs["sets"]["oidc.issuerUrl"] == "https://kc/realms/openshell"
+        assert not any("token" in k for k in {**kwargs["sets"], **kwargs["set_strings"]})
+        calls["label"].assert_called_once_with("saw-test", "alice")
+
+    def test_explicit_namespace_is_honoured(self, _):
+        result, calls = self._create("-n", "team-a")
+        assert result.exit_code == 0, result.output
+        assert calls["install"].call_args.kwargs["namespace"] == "team-a"
 
 
 @patch("openshell_saw.config.repo_root", return_value=None)
@@ -117,32 +152,14 @@ class TestNamespaceOverride:
             assert result.exit_code == 0
             mock_list.assert_called_once_with("custom-ns")
 
-    def test_auto_namespace_from_token(self, _):
-        with (
-            patch("openshell_saw.config.get_username_from_token", return_value="alice"),
-            patch("openshell_saw.helm.list_sandboxes", return_value=[]) as mock_list,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["sandbox", "list"])
+    def test_default_lists_every_saw_namespace(self, _):
+        with patch("openshell_saw.helm.list_sandboxes", return_value=[]) as mock_list:
+            result = CliRunner().invoke(main, ["sandbox", "list"])
             assert result.exit_code == 0
-            mock_list.assert_called_once_with("saw-alice")
+            mock_list.assert_called_once_with(None)
 
-    def test_namespace_flag_overrides_token(self, _):
-        with (
-            patch("openshell_saw.config.get_username_from_token", return_value="alice"),
-            patch("openshell_saw.helm.list_sandboxes", return_value=[]) as mock_list,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["-n", "my-ns", "sandbox", "list"])
+    def test_commands_target_the_saw_namespace(self, _):
+        with patch("openshell_saw.kube.get_route_url", return_value=None) as mock_url:
+            result = CliRunner().invoke(main, ["sandbox", "url", "alice-saw"])
             assert result.exit_code == 0
-            mock_list.assert_called_once_with("my-ns")
-
-    def test_no_token_uses_default(self, _):
-        with (
-            patch("openshell_saw.config.get_username_from_token", return_value=None),
-            patch("openshell_saw.helm.list_sandboxes", return_value=[]) as mock_list,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["sandbox", "list"])
-            assert result.exit_code == 0
-            mock_list.assert_called_once_with("openshell-agents")
+            assert mock_url.call_args_list[0].args == ("alice-saw-gateway", "saw-alice-saw")

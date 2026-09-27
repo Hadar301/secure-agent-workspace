@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Fake sudo: records the command and its stdin, runs nothing."""
+import json
+import os
+import sys
+from pathlib import Path
+
+state = Path(os.environ["FAKE_STATE"])
+data = sys.stdin.read() if not sys.stdin.isatty() else ""
+with open(state / "sudo.log", "a") as log:
+    log.write(json.dumps({"args": sys.argv[1:], "stdin": data}) + "\n")

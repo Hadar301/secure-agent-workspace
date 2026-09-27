@@ -1,0 +1,21 @@
+[Unit]
+Description=SAW installer step 2: apply SAW-BOM profiles
+Wants=saw-install.service
+After=saw-install.service
+ConditionPathExists=/var/lib/openshell-gateway-setup.done
+StartLimitIntervalSec=1h
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/sbin/saw-mount-inputs
+ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py apply
+Restart=on-failure
+RestartSec=120
+TimeoutStartSec=45min
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=SAW installer step 1: install BOM components and start the gateway
+Wants=network-online.target
+After=network-online.target openshell-gateway-setup.service
+# On first boot cloud-init starts this after the golden image's first-boot
+# setup has finished; on later boots it runs on its own.
+ConditionPathExists=/var/lib/openshell-gateway-setup.done
+StartLimitIntervalSec=1h
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/sbin/saw-mount-inputs
+ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=30min
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -38,8 +38,8 @@ def uninstall(release, namespace):
 
 
 def list_releases(namespace, filter_pattern=None):
-    """List helm releases as a list of dicts."""
-    cmd = ["helm", "list", "-n", namespace, "-o", "json"]
+    """List helm releases as a list of dicts (namespace None = all)."""
+    cmd = ["helm", "list", "-o", "json"] + (["-A"] if namespace is None else ["-n", namespace])
     if filter_pattern:
         cmd.extend(["--filter", filter_pattern])
     r = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -51,18 +51,22 @@ def list_releases(namespace, filter_pattern=None):
         return []
 
 
-def list_sandboxes(namespace):
-    """List sandbox releases enriched with VM status."""
+def list_sandboxes(namespace=None):
+    """List SAW releases enriched with VM status. namespace None lists every
+    namespace (each SAW has its own)."""
     releases = list_releases(namespace)
-    sandboxes = [r for r in releases if r.get("chart", "").startswith("openshell-sandbox")]
-    vm_statuses = kube.list_vms(namespace)
+    sandboxes = [r for r in releases if r.get("chart", "").startswith(("openshell-saw", "openshell-sandbox"))]
+    vm_cache = {}
     result = []
     for sb in sandboxes:
-        name = sb["name"]
+        name, ns = sb["name"], sb.get("namespace", namespace)
+        if ns not in vm_cache:
+            vm_cache[ns] = kube.list_vms(ns)
         result.append({
             "name": name,
+            "namespace": ns,
             "status": sb.get("status", "unknown"),
-            "vm_status": vm_statuses.get(name, "n/a"),
+            "vm_status": vm_cache[ns].get(name, "n/a"),
             "updated": sb.get("updated", "").split(".")[0],
         })
     return result

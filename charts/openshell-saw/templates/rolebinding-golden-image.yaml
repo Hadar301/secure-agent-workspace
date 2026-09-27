@@ -1,0 +1,53 @@
+{{- /*
+The golden image DataSource lives in a shared namespace, while each SAW has
+its own. CDI only clones across namespaces when the cloning service account
+may `create` `datavolumes/source` in the source namespace. KubeVirt clones
+the VM's root disk as the SAW namespace's `default` service account; the
+prepare Job may also create the DataSource/clone (bootstrap-golden-image.sh).
+*/ -}}
+{{- $golden := include "openshell-sandbox.goldenNamespace" . }}
+{{- if and (not (or .Values.source.registryURL .Values.source.httpURL)) (ne $golden .Release.Namespace) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-{{ .Release.Namespace }}-golden-image
+  namespace: {{ $golden }}
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+rules:
+  # Clone authorization checked by CDI for cross-namespace clones.
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datasources"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-{{ .Release.Namespace }}-golden-image
+  namespace: {{ $golden }}
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: {{ .Release.Namespace }}
+  - kind: ServiceAccount
+    name: {{ include "openshell-sandbox.fullname" . }}-prepare
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "openshell-sandbox.fullname" . }}-{{ .Release.Namespace }}-golden-image
+{{- end }}

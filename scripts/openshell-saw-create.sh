@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 # Provision a sandbox — detects owner from OIDC token, deploys via helm.
 #
-# Required env vars: OPENSHELL_SAW_NAME, SSH_PUBKEY, SAW_CHART
+# Required env vars: OPENSHELL_SAW_NAME, SAW_CHART
 # Required env vars (provider): PROVIDER + MODEL + API_KEY, or GCP_SA_JSON
-# Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS,
-#           AGENT, ENDPOINT_URL, WEB_SEARCH, NAMESPACE_MODE, SCRIPTS_DIR
+# Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
+#           KEYCLOAK_NS, AGENT, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR
+#
+# Each SAW gets its own namespace (SAW_NS, default saw-<name>). The shared
+# namespace NS keeps the golden image and the governance interceptor.
 
 set -euo pipefail
 
 NS="${NS:-openshell-agents}"
 OPENSHELL_SAW_NAME="${OPENSHELL_SAW_NAME:?OPENSHELL_SAW_NAME is required}"
+SAW_NS="${SAW_NS:-saw-${OPENSHELL_SAW_NAME}}"
+KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
+KEYCLOAK_REALM="${KEYCLOAK_REALM:-openshell}"
+SAW_BOM_CHART="${SAW_BOM_CHART:-charts/saw-bom}"
+WEB_SEARCH_API_KEY="${WEB_SEARCH_API_KEY:-}"
 if (( ${#OPENSHELL_SAW_NAME} > 19 )); then
   echo "ERROR: OPENSHELL_SAW_NAME '${OPENSHELL_SAW_NAME}' is ${#OPENSHELL_SAW_NAME} characters — OpenShell enforces a 19-character maximum." >&2
   exit 1
 fi
 SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
-SSH_PUBKEY="${SSH_PUBKEY:?SSH_PUBKEY is required}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"
 AGENT="${AGENT:-openclaw}"
 PROVIDER="${PROVIDER:-}"
@@ -28,7 +35,7 @@ OIDC_ISSUER="${OIDC_ISSUER:-}"
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}"
 OIDC_TOKEN_DIR="${OIDC_TOKEN_DIR:-$HOME/.config/openshell/oidc}"
 OWNER="${OWNER:-}"
-NAMESPACE_MODE="${NAMESPACE_MODE:-shared}"
+OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
@@ -61,6 +68,10 @@ if [[ -z "${OWNER}" ]]; then
     exit 1
   fi
 
+  # The token's subject is the identity OpenShell uses for workspace
+  # membership; the installer makes it admin of the SAW's workspaces.
+  OWNER_SUBJECT=$(jq -r '.access_token // empty' "${OIDC_TOKEN_DIR}/token.json" 2>/dev/null \
+    | python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('sub',''))" 2>/dev/null || true)
   printf "Logged in as '\033[1m%s\033[0m'\n" "${KC_USER}"
   printf "Press Enter to set owner to '%s', or type a different owner: " "${KC_USER}"
   read -r INPUT_OWNER
@@ -71,35 +82,39 @@ if [[ -z "${OWNER}" ]]; then
   fi
 fi
 
-# --- Detect OIDC issuer ---
-if [[ -z "${OIDC_ISSUER}" ]]; then
-  KC_HOST=$(oc get keycloak --all-namespaces -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null \
+# --- Detect OIDC issuer (OIDC_ISSUER=none deploys without OIDC) ---
+if [[ "${OIDC_ISSUER}" == "none" ]]; then
+  OIDC_ISSUER=""
+elif [[ -z "${OIDC_ISSUER}" ]]; then
+  # Any Keycloak CR in KEYCLOAK_NS (not only one named openshell-keycloak).
+  KC_HOST=$(oc get keycloak -n "${KEYCLOAK_NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null \
     | sed 's|^https://||;s|/$||' || true)
   if [[ -z "${KC_HOST}" ]]; then
-    KC_HOST=$(oc get route --all-namespaces -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
+    KC_HOST=$(oc get keycloak -n "${KEYCLOAK_NS}" -o jsonpath='{.items[0].spec.hostname.hostname}' 2>/dev/null || true)
+  fi
+  if [[ -z "${KC_HOST}" ]]; then
+    KC_HOST=$(oc get route -n "${KEYCLOAK_NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
   fi
   if [[ -n "${KC_HOST}" ]]; then
-    OIDC_ISSUER="https://${KC_HOST}/realms/openshell"
+    OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
   fi
 fi
 
 # --- Build OIDC helm options ---
 OIDC_OPTS=""
 if [[ -n "${OIDC_ISSUER}" ]]; then
+  # The gateway only needs the issuer. Your own token stays on your machine;
+  # the VM's installer uses its local mTLS identity instead.
   OIDC_OPTS="--set oidc.issuerUrl=${OIDC_ISSUER} --set oidc.clientId=${OIDC_CLIENT_ID}"
-  OIDC_TOKEN=$(OIDC_TOKEN_DIR="${OIDC_TOKEN_DIR}" OIDC_CLIENT_ID="${OIDC_CLIENT_ID}" \
-    OIDC_ISSUER="${OIDC_ISSUER}" NS="${NS}" "${SCRIPTS_DIR}/oidc-login.sh" token 2>/dev/null || true)
-  if [[ -n "${OIDC_TOKEN}" ]]; then
-    OIDC_OPTS="${OIDC_OPTS} --set-string oidc.token=${OIDC_TOKEN}"
-  fi
 fi
 
-# --- Namespace ---
-DEPLOY_NS="${NS}"
-if [[ "${NAMESPACE_MODE}" == "perUser" ]]; then
-  DEPLOY_NS="saw-$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-58)"
-  oc create namespace "${DEPLOY_NS}" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
-fi
+# --- Namespace: one per SAW ---
+DEPLOY_NS="${SAW_NS}"
+oc create namespace "${DEPLOY_NS}" --dry-run=client -o yaml | oc apply -f - >/dev/null
+# The label lets the shared governance interceptor accept this SAW's VM.
+oc label namespace "${DEPLOY_NS}" openshell.pattern/saw=true \
+  ${OWNER:+openshell.pattern/owner="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | cut -c1-63)"} \
+  --overwrite >/dev/null
 
 # --- Compute route hostname ---
 ROUTE_HOST=""
@@ -109,6 +124,31 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
   ROUTE_HOST="${OPENSHELL_SAW_NAME}-gateway-${DEPLOY_NS}.${APPS_DOMAIN}"
 fi
 
+# --- Provider credential Secret ---
+# The VM's installer reads provider keys only from mounted Secrets, so the
+# key goes into the "inference" Secret instead of the Helm release values.
+if [[ -n "${API_KEY}" ]]; then
+  oc create secret generic inference -n "${DEPLOY_NS}" \
+    --from-literal=api_key="${API_KEY}" \
+    ${PROVIDER:+--from-literal=provider="${PROVIDER}"} \
+    ${MODEL:+--from-literal=model="${MODEL}"} \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null
+  echo "Secret 'inference' updated in ${DEPLOY_NS}."
+fi
+
+if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
+  oc create secret generic web-search -n "${DEPLOY_NS}" \
+    --from-literal=api_key="${WEB_SEARCH_API_KEY}" \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null
+  echo "Secret 'web-search' updated in ${DEPLOY_NS}."
+fi
+
+# --- SAW-BOM profiles ---
+# The VM can only attach ConfigMaps from its own namespace, so each SAW gets
+# its own saw-bom-profiles ConfigMap.
+helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" >/dev/null
+echo "SAW-BOM profiles installed in ${DEPLOY_NS}."
+
 # --- Deploy ---
 echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in namespace '${DEPLOY_NS}'..."
 
@@ -116,22 +156,25 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   --set sandboxName="${OPENSHELL_SAW_NAME}" \
-  --set sshPublicKey="${SSH_PUBKEY}" \
   ${SANDBOX_IMAGE:+--set sandboxImage="${SANDBOX_IMAGE}"} \
   --set agent="${AGENT}" \
   --set inference.provider="${PROVIDER}" \
   --set inference.model="${MODEL}" \
-  --set inference.apiKey="${API_KEY}" \
   --set inference.endpointUrl="${ENDPOINT_URL}" \
   --set inference.webSearch="${WEB_SEARCH}" \
   ${GCP_SA_JSON:+--set-file vertexSaJson="${GCP_SA_JSON}"} \
   ${OIDC_OPTS} \
   --set accessControl.owner="${OWNER}" \
-  --set namespaceMode="${NAMESPACE_MODE}" \
+  ${OWNER_SUBJECT:+--set-string accessControl.ownerSubject="${OWNER_SUBJECT}"} \
+  --set oidc.keycloakNamespace="${KEYCLOAK_NS}" \
+  --set governance.namespace="${NS}" \
+  --set source.dataSourceNamespace="${NS}" \
   --set containerRuntime="${CONTAINER_RUNTIME}" \
   --set governance.enabled="${GOVERNANCE_ENABLED}" \
   --set route.enabled=true --set route.dashboard=true \
-  ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"}
+  ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"} \
+  ${APPS_DOMAIN:+--set route.webuiHost="${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"} \
+  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"}
 
 echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."
@@ -150,6 +193,7 @@ fi
 
 echo ""
 echo "Next steps:"
-echo "  1. make openshell-saw-configure-gateway OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} NS=${DEPLOY_NS}"
+echo "  1. make openshell-saw-configure-gateway OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} SAW_NS=${DEPLOY_NS}"
 echo "  2. openshell gateway login"
 echo "  3. openshell sandbox list"
+echo "Shell on the VM (adds your SSH key on demand): make openshell-saw-vm-ssh OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} SAW_NS=${DEPLOY_NS}"

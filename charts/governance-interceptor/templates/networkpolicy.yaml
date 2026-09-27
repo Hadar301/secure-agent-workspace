@@ -17,12 +17,15 @@ spec:
         - port: {{ .Values.port }}
           protocol: TCP
       from:
-        # KubeVirt VM pods (gateway connects to interceptor)
+        # KubeVirt VM pods in this namespace (gateway connects to interceptor)
         - podSelector:
             matchLabels:
               kubevirt.io: virt-launcher
-        # Setup Job pods (preflight check)
-        - podSelector:
+        # Gateway VMs of SAWs, each in its own labelled namespace
+        - namespaceSelector:
             matchLabels:
-              app.kubernetes.io/name: openshell-saw
+              {{ .Values.sawNamespaceLabel.key }}: {{ .Values.sawNamespaceLabel.value | quote }}
+          podSelector:
+            matchLabels:
+              kubevirt.io: virt-launcher
 {{- end }}

@@ -1,23 +1,30 @@
-openshell-sandbox "{{ .Values.sandboxName }}" deployed.
+openshell-sandbox "{{ .Values.sandboxName }}" deployed with BOM {{ .Values.bom.metadata.name }}.
 
-A setup Job is configuring your sandbox (clone VM, Vertex AI, NemoClaw agent).
+The VM installs itself on boot (no SSH, no setup Job):
+  saw-install.service  installs the BOM's OpenShell binaries, starts the gateway
+  saw-apply.service    applies the SAW-BOM profiles (workspaces, providers, sandboxes)
 
-Monitor progress:
+Follow the installer on the VM's serial console:
 
-  oc -n {{ .Release.Namespace }} logs -f job/{{ include "openshell-sandbox.fullname" . }}-setup
+  oc -n {{ .Release.Namespace }} logs -f \
+    $(oc -n {{ .Release.Namespace }} get pod -l vm.kubevirt.io/name={{ include "openshell-sandbox.fullname" . }} -o name) \
+    -c guest-console-log
 
-Check Job status:
+The cluster-side prepare Job (golden image, Keycloak redirect) logs:
 
-  oc -n {{ .Release.Namespace }} get job/{{ include "openshell-sandbox.fullname" . }}-setup
+  oc -n {{ .Release.Namespace }} logs -f job/{{ include "openshell-sandbox.fullname" . }}-prepare
 
-Once the Job completes, connect:
+To apply a changed BOM, restart the VM: virtctl restart {{ include "openshell-sandbox.fullname" . }} -n {{ .Release.Namespace }}
+
+Once the installer reports "apply: Done", connect:
 {{- if .Values.route.enabled }}
 
   Gateway URL (get after Route is assigned):
 
     oc get route {{ include "openshell-sandbox.fullname" . }}-gateway -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}'
 
-  Use the OpenShell CLI:
+  Use the OpenShell CLI with your own OIDC login (the in-VM mTLS identity
+  is for the installer only):
 
     openshell --gateway $(oc get route {{ include "openshell-sandbox.fullname" . }}-gateway -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}') sandbox list
 {{- end }}
@@ -28,10 +35,10 @@ Once the Job completes, connect:
     oc get route {{ include "openshell-sandbox.fullname" . }}-dashboard -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}'
 {{- end }}
 
-  SSH (debugging):
+  Shell on the VM (debugging). Adds your public key to the
+  {{ include "openshell-sandbox.sshKeySecretName" . }} Secret; KubeVirt pushes it into the running VM:
 
-    virtctl -n {{ .Release.Namespace }} ssh cloud-user@vm/{{ include "openshell-sandbox.fullname" . }} \
-      --local-ssh-opts "-o StrictHostKeyChecking=no"
+    make openshell-saw-vm-ssh OPENSHELL_SAW_NAME={{ include "openshell-sandbox.fullname" . }} SAW_NS={{ .Release.Namespace }}
 
   TUI / GUI:
 
