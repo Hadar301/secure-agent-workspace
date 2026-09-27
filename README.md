@@ -23,6 +23,7 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
       - [Option A: Validated Pattern (automated, GitOps)](#option-a-validated-pattern-automated-gitops)
       - [Option B: Quickstart (manual, step-by-step)](#option-b-quickstart-manual-step-by-step)
       - [Supported inference providers](#supported-inference-providers)
+      - [Custom inference provider](#custom-inference-provider)
     - [Validating the deployment](#validating-the-deployment)
     - [Delete](#delete)
   - [Repository structure](#repository-structure)
@@ -46,7 +47,7 @@ This quickstart implements NVIDIA's [Secure Agent Workspace reference architectu
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
-For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see the [custom inference guide](docs/custom-inference.md).
+For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom inference provider](#custom-inference-provider).
 
 ### Architecture diagrams
 
@@ -307,7 +308,37 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 | NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
-| Custom endpoint | `custom` | any (set `ENDPOINT_URL`) |
+| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+
+#### Custom inference provider
+
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The SAW uses OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.116/docs/sandboxes/inference-routing.mdx): the installer creates an `openai` provider with the endpoint's base URL and sets it as the workspace's inference route. Agents call `https://inference.local/v1`; the gateway adds the key, so it never enters a sandbox.
+
+Select the `custom-inference` SAW-BOM profile and give the endpoint's URL, model and key.
+
+**Option A (Validated Pattern)** — in `~/values-secret-secure-agent-workspace.yaml`, use the commented custom example of the `inference` secret (`provider: openai`, `model`, `url`, `api_key`), and select the profile in `charts/saw-bom/values.yaml` (committed to the branch the pattern deploys):
+
+```yaml
+profiles:
+  - custom-inference
+```
+
+**Option B (Quickstart)** — one command:
+
+```bash
+make openshell-saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
+  PROVIDER=openai MODEL=<served model> \
+  ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
+  API_KEY=<key>          # any non-empty value if the server needs no key
+```
+
+Notes:
+
+- The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
+- With governance on, the `openai` provider type must be in the governance catalog (`charts/governance-policy/profiles/openai.yaml`, shipped with the chart).
+- Self-hosted models can be slow; the profile sets a 300-second inference timeout.
+
+Details: [docs/custom-inference.md](docs/custom-inference.md).
 
 ### Validating the deployment
 

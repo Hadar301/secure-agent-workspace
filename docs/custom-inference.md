@@ -47,6 +47,10 @@ OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.11
   (`http://vllm.<ns>.svc:8000/v1`) or Route host. `localhost` is refused.
 - `url` must be `http(s)://host[:port][/path]` without credentials, query or
   fragment. The installer rejects anything else without logging the value.
+- With governance on, the gateway only accepts provider types from the
+  governance catalog, so `charts/governance-policy/profiles/openai.yaml` must
+  be deployed (a profile the installer imports itself is not enough). The
+  profile has no endpoints: sandboxes get no direct egress from it.
 - Self-hosted models can be slow: the profile sets `inferenceTimeout: 300`
   seconds (OpenShell's default is 60).
 
