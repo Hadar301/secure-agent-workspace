@@ -4,7 +4,12 @@
 # Required env vars: OPENSHELL_SAW_NAME, SAW_CHART
 # Required env vars (provider): PROVIDER + MODEL + API_KEY, or GCP_SA_JSON
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
-#           KEYCLOAK_NS, AGENT, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR
+#           KEYCLOAK_NS, AGENT, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
+#           PROFILES (comma-separated SAW-BOM profiles, default: the chart's)
+#
+# Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
+#   PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
+#   API_KEY=<key> PROFILES=custom-inference
 #
 # Each SAW gets its own namespace (SAW_NS, default saw-<name>). The shared
 # namespace NS keeps the golden image and the governance interceptor.
@@ -29,6 +34,7 @@ PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
 ENDPOINT_URL="${ENDPOINT_URL:-}"
+PROFILES="${PROFILES:-}"
 WEB_SEARCH="${WEB_SEARCH:-}"
 GCP_SA_JSON="${GCP_SA_JSON:-}"
 OIDC_ISSUER="${OIDC_ISSUER:-}"
@@ -136,6 +142,7 @@ if [[ -n "${API_KEY}" ]]; then
     --from-literal=api_key="${API_KEY}" \
     ${PROVIDER:+--from-literal=provider="${PROVIDER}"} \
     ${MODEL:+--from-literal=model="${MODEL}"} \
+    ${ENDPOINT_URL:+--from-literal=url="${ENDPOINT_URL}"} \
     --dry-run=client -o yaml | oc apply -f - >/dev/null
   echo "Secret 'inference' updated in ${DEPLOY_NS}."
 fi
@@ -150,8 +157,16 @@ fi
 # --- SAW-BOM profiles ---
 # The VM can only attach ConfigMaps from its own namespace, so each SAW gets
 # its own saw-bom-profiles ConfigMap.
-helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" >/dev/null
-echo "SAW-BOM profiles installed in ${DEPLOY_NS}."
+BOM_OPTS=()
+if [[ -n "${PROFILES}" ]]; then
+  BOM_VALUES="$(mktemp)"
+  trap 'rm -f "${BOM_VALUES}"' EXIT
+  { echo "profiles:"; tr ',' '\n' <<<"${PROFILES}" | sed -e 's/^ *//' -e 's/ *$//' -e '/^$/d' -e 's/^/  - /'; } > "${BOM_VALUES}"
+  BOM_OPTS=(-f "${BOM_VALUES}")
+fi
+# ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
+helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
+echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
 # --- Deploy ---
 echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in namespace '${DEPLOY_NS}'..."

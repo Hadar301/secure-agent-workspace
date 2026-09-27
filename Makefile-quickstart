@@ -17,6 +17,8 @@ PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
 ENDPOINT_URL   ?=
+# Comma-separated SAW-BOM profiles for openshell-saw-create (default: data-science)
+PROFILES       ?=
 WEB_SEARCH     ?=
 GCP_SA_JSON    ?=
 OIDC_ISSUER    ?=
@@ -369,7 +371,7 @@ openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=,
 	OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SAW_CHART=$(SAW_CHART) \
 	SANDBOX_IMAGE=$(SANDBOX_IMAGE) AGENT=$(AGENT) \
 	PROVIDER=$(PROVIDER) MODEL=$(MODEL) API_KEY=$(API_KEY) \
-	ENDPOINT_URL=$(ENDPOINT_URL) WEB_SEARCH=$(WEB_SEARCH) GCP_SA_JSON=$(GCP_SA_JSON) \
+	ENDPOINT_URL=$(ENDPOINT_URL) PROFILES=$(PROFILES) WEB_SEARCH=$(WEB_SEARCH) GCP_SA_JSON=$(GCP_SA_JSON) \
 	OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
 	OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) OWNER=$(OWNER) \
 	SCRIPTS_DIR=$(SCRIPTS_DIR) \
@@ -394,24 +396,11 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	$(SCRIPTS_DIR)/extract-gateway-ca.sh || exit 1; \
 	echo "Registering gateway '$(OPENSHELL_SAW_NAME)'..."; \
 	openshell gateway remove $(OPENSHELL_SAW_NAME) 2>/dev/null || true; \
-	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) $$OIDC_OPTS; \
-	openshell gateway select $(OPENSHELL_SAW_NAME); \
-	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"; \
-	OIDC_TOKEN_FILE="$(OIDC_TOKEN_DIR)/token.json"; \
-	GW_TOKEN_DIR="$$GW_CONFIG_DIR"; \
-	if [ -f "$$OIDC_TOKEN_FILE" ] && [ -n "$$OIDC_ISSUER" ]; then \
-		echo "Copying OIDC token to gateway config..."; \
-		mkdir -p "$$GW_TOKEN_DIR"; \
-		chmod 700 "$$GW_TOKEN_DIR"; \
-		python3 -c " \
-import json; \
-t = json.load(open('$$OIDC_TOKEN_FILE')); \
-gt = {'access_token': t['access_token'], 'refresh_token': t.get('refresh_token',''), 'issuer': t.get('issuer_url',''), 'client_id': '$(OIDC_CLIENT_ID)'}; \
-json.dump(gt, open('$$GW_TOKEN_DIR/oidc_token.json','w'))" 2>/dev/null && \
-		chmod 600 "$$GW_TOKEN_DIR/oidc_token.json" 2>/dev/null && \
-		echo "Token configured." || \
-		echo "Token copy skipped (already authenticated via gateway login)."; \
-	fi
+	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) $$OIDC_OPTS || exit 1; \
+	openshell gateway select $(OPENSHELL_SAW_NAME) || exit 1; \
+	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"
+# Keep the token saved by `openshell gateway add`. The separate make-login token
+# may belong to another cluster and must not overwrite this gateway's login.
 
 openshell-saw-list: ## List all sandboxes (every SAW namespace)
 	@printf "%-20s %-24s %-12s %-10s %s\n" "NAME" "NAMESPACE" "STATUS" "VM" "UPDATED"

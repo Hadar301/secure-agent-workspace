@@ -174,3 +174,11 @@ make test-installer        # installer + chart tests; chart tests need helm
 - Migrating VMs created by the old SSH-based chart in place: cloud-init has
   already run on them, so the installer units are never written. Recreate
   the VM (delete the VM and its `-root` DataVolume) after upgrading the chart.
+
+## Custom inference
+
+A self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...) is an `openai`
+provider with `OPENAI_BASE_URL` plus the workspace inference route, as in
+OpenShell's inference routing docs. Select the `custom-inference` SAW-BOM
+profile and put `provider: openai`, `model`, `url` and `api_key` in the
+`inference` Secret; see [Custom inference](custom-inference.md).

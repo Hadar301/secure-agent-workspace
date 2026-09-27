@@ -1,0 +1,22 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: custom-inference
+spec:
+  providers:
+    # OpenShell's `openai` provider type reaches any OpenAI-compatible server:
+    # the gateway's inference router calls OPENAI_BASE_URL with the key, and
+    # sandboxes use https://inference.local/v1 without ever seeing the key.
+    # The base URL and model come from the `inference` Secret (provider: openai).
+    - name: custom
+      type: openai
+      credentialSecret: inference
+      credentialSecretKey: api_key
+      baseUrlSecretKey: url
+      modelSecretKey: model
+      # Self-hosted models can take longer than OpenShell's 60 s default.
+      inferenceTimeout: 300
+    - name: brave
+      type: brave
+      credentialSecret: web-search
+      credentialSecretKey: api_key

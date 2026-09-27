@@ -44,6 +44,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -96,6 +97,14 @@ PROVIDER_CRED_MAP = {
     "tavily": "TAVILY_API_KEY",
 }
 SANDBOX_TYPES = {"generic", "openclaw", "nemoclaw"}
+# Provider config key that holds the upstream base URL for OpenShell's
+# inference router (openshell-core inference profiles). An `openai` provider
+# with OPENAI_BASE_URL reaches any OpenAI-compatible server (vLLM, Ollama, ...).
+BASE_URL_CONFIG_KEYS = {
+    "openai": "OPENAI_BASE_URL",
+    "anthropic": "ANTHROPIC_BASE_URL",
+    "nvidia": "NVIDIA_BASE_URL",
+}
 
 
 class InstallerError(Exception):
@@ -319,6 +328,11 @@ class Provider:
     credential_secret: str = ""
     credential_secret_key: str = "api_key"
     model: str = ""
+    # Secret keys the base URL and the model are read from (optional).
+    base_url_secret_key: str = ""
+    model_secret_key: str = ""
+    inference_timeout: int = 0
+    base_url: str = ""
 
 
 @dataclass
@@ -411,7 +425,10 @@ def parse_profiles(files):
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
-                        model=p.get("model", "")))
+                        model=p.get("model", ""),
+                        base_url_secret_key=p.get("baseUrlSecretKey", ""),
+                        model_secret_key=p.get("modelSecretKey", ""),
+                        inference_timeout=int(p.get("inferenceTimeout", 0) or 0)))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
@@ -461,6 +478,15 @@ def validate_profiles(profiles):
                 errors.append(f"{where}: provider '{p.name}' has an invalid credentialSecret name")
             if not SECRET_KEY_RE.match(p.credential_secret_key or ""):
                 errors.append(f"{where}: provider '{p.name}' has an invalid credentialSecretKey")
+            for field_name, value in (("baseUrlSecretKey", p.base_url_secret_key),
+                                      ("modelSecretKey", p.model_secret_key)):
+                if value and not SECRET_KEY_RE.match(value):
+                    errors.append(f"{where}: provider '{p.name}' has an invalid {field_name}")
+            if p.base_url_secret_key and p.type not in BASE_URL_CONFIG_KEYS:
+                errors.append(f"{where}: provider '{p.name}' of type '{p.type}' does not take a base URL "
+                              f"(supported: {', '.join(sorted(BASE_URL_CONFIG_KEYS))})")
+            if p.inference_timeout < 0:
+                errors.append(f"{where}: provider '{p.name}' has a negative inferenceTimeout")
         sandbox_names = set()
         for s in ws.sandboxes:
             if not s.enabled:
@@ -535,8 +561,49 @@ def resolve_credentials(profiles, secrets_dir):
             type_file = base / "provider"
             configured = type_file.read_text(encoding="utf-8").strip() if type_file.is_file() else ""
             check_provider_type(p, configured)
+            if p.model_secret_key:
+                p.model = read_secret_value(base, p.model_secret_key) or p.model
+            if p.base_url_secret_key:
+                p.base_url = read_secret_value(base, p.base_url_secret_key)
+                if p.base_url:
+                    try:
+                        p.base_url = check_base_url(p.base_url)
+                    except ValueError as exc:
+                        raise InstallerError(f"provider '{p.name}' in workspace '{ws.name}': {exc} "
+                                             f"(Secret '{p.credential_secret}' key "
+                                             f"'{p.base_url_secret_key}')") from None
             creds.setdefault(ws.name, {})[p.name] = value
     return creds
+
+
+def read_secret_value(base, key):
+    try:
+        return (Path(base) / key).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def check_base_url(url):
+    """An http(s) base URL without credentials, query or fragment. The value
+    is not echoed in errors: a pasted URL may contain a token."""
+    try:
+        parts = urlsplit(url)
+        ok = (parts.scheme in ("http", "https") and parts.hostname
+              and parts.username is None and parts.password is None
+              and not parts.query and not parts.fragment
+              and not any(c.isspace() for c in url))
+        if ok:
+            parts.port  # raises ValueError on a bad port
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError("base URL must be http(s)://host[:port][/path] without credentials, "
+                         "query or fragment")
+    host = parts.hostname
+    if host in ("localhost", "127.0.0.1", "::1"):
+        raise ValueError("base URL must not be localhost: the gateway, not the sandbox, "
+                         "calls it (use a cluster Service or Route host)")
+    return url.rstrip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +943,19 @@ def sync_gateway_config(inputs, cfg, etc_dir, home, owner=None, dry_run=False):
 # Profile application (runtime user, mTLS only)
 # ---------------------------------------------------------------------------
 
+def openclaw_replacement_profile(output):
+    """The credential id in OpenClaw's "Replacement credential saved but
+    inactive ... openclaw models auth activate <id> --agent main" message
+    (approach from #50), or None. Only a well-formed id is accepted: the
+    value is used in a shell command."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    if "Replacement credential saved but inactive" not in text:
+        return None
+    ids = re.findall(r"openclaw models auth activate ([a-z0-9][a-z0-9_.-]*:setup-[0-9a-f]{8}-"
+                     r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) --agent main", text)
+    return ids[0] if len(set(ids)) == 1 else None
+
+
 def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
@@ -989,8 +1069,12 @@ class ProfileApplier:
         credential = self.creds[ws.name][provider.name]
         env_name = PROVIDER_CRED_MAP[provider.type]
         env = {env_name: credential}
+        # OpenAI-compatible (and other) endpoints: the inference router reads
+        # the upstream base URL from the provider config.
+        config = (("--config", f"{BASE_URL_CONFIG_KEYS[provider.type]}={provider.base_url}")
+                  if provider.base_url else ())
         create = ("provider", "create", "--name", provider.name, "--type", provider.type,
-                  *ws_args(ws.name), "--credential", env_name)
+                  *ws_args(ws.name), "--credential", env_name, *config)
         created = self.cli(*create, env=env, ok_if_exists=True, check=False)
         if (not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err)
                 and provider.type in self.provider_profiles):
@@ -1007,7 +1091,7 @@ class ProfileApplier:
                                  f"'{ws.name}' (openshell provider create failed)")
         if created.existed:
             updated = self.cli("provider", "update", provider.name, *ws_args(ws.name),
-                               "--credential", env_name, env=env, check=False)
+                               "--credential", env_name, *config, env=env, check=False)
             if not updated.ok:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
 
@@ -1031,24 +1115,27 @@ class ProfileApplier:
         if not chosen:
             return
         log(f"Inference for '{ws.name}': {chosen.name} / {chosen.model}")
+        timeout = ("--timeout", str(chosen.inference_timeout)) if chosen.inference_timeout else ()
         self.cli("inference", "set", "--provider", chosen.name, "--model", chosen.model,
-                 "--workspace", ws.name, "--no-verify")
+                 "--workspace", ws.name, *timeout, "--no-verify")
         # The system route must point at a provider in the 'default'
         # workspace (the gateway looks it up there), so only that workspace
         # sets it.
         if ws.name == SYSTEM_WORKSPACE:
             self.cli("inference", "set", "--system", "--provider", chosen.name,
-                     "--model", chosen.model, "--no-verify")
+                     "--model", chosen.model, *timeout, "--no-verify")
 
     # -- sandboxes -------------------------------------------------------
 
     def find_provider(self, ws, names):
-        enabled = self.usable(ws)
-        for name in names or []:
-            for p in enabled:
-                if p.name == name:
-                    return p
-        return enabled[0] if enabled else None
+        """The provider an agent sandbox is onboarded with: one of the
+        sandbox's own providers, preferring one with a model. Never another
+        provider of the workspace: found live, a skipped `custom` provider
+        made OpenClaw onboard with `brave` and a default NVIDIA model."""
+        usable = self.usable(ws)
+        if names:
+            usable = [p for n in names for p in usable if p.name == n]
+        return next((p for p in usable if p.model), usable[0] if usable else None)
 
     def sandbox_state(self, ws, sb):
         """'running', 'broken' (Error/Completed) or 'missing'."""
@@ -1065,6 +1152,7 @@ class ProfileApplier:
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
         elif state == "running":
             log(f"Sandbox '{sb.name}' already exists")
+            self.attach_missing_providers(ws, sb)
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
@@ -1080,6 +1168,21 @@ class ProfileApplier:
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
+
+    def attach_missing_providers(self, ws, sb):
+        """A sandbox created while one of its providers was skipped (e.g. no
+        provider profile yet) gets it once it exists. Found live: the
+        sandbox kept running without `custom` after the profile arrived."""
+        if not sb.providers:
+            return
+        listed = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
+                          check=False, quiet=True)
+        attached = set(re.sub(r"\x1b\[[0-9;]*m", "", listed.out).split())
+        for prov in sb.providers:
+            if prov in attached or (ws.name, prov) in self.skipped:
+                continue
+            log(f"Attaching provider '{prov}' to existing sandbox '{sb.name}'")
+            self.cli("sandbox", "provider", "attach", sb.name, prov, *ws_args(ws.name), check=False)
 
     def onboard_nemoclaw(self, ws, sb, provider):
         home = Path(os.environ.get("HOME", "/home/cloud-user"))
@@ -1138,12 +1241,20 @@ class ProfileApplier:
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
         oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                   "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
-        self.cli(*exec_cmd, "sh", "-c",
+        onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} CUSTOM_API_KEY=proxy-managed openclaw onboard --non-interactive "
                  "--accept-risk --mode local --auth-choice custom-api-key "
                  '--custom-base-url "https://inference.local/v1" '
                  f"--custom-provider-id {provider.type} --custom-model-id \"{model}\" "
                  "--custom-compatibility openai --skip-channels --skip-health", check=False)
+        # Re-onboarding an existing sandbox with a different provider or model
+        # (e.g. after switching to a custom endpoint) makes OpenClaw save the
+        # new credential but keep the old connection; activate the new one.
+        profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
+        if profile_id:
+            log(f"Activating the new OpenClaw credential '{profile_id}'")
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw models auth activate {profile_id} --agent main", check=False)
         self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config set gateway.auth.token '{token}'",
                  check=False)
         route = self.cfg.get("sandboxDashboardRoute")
@@ -1245,6 +1356,14 @@ class ProfileApplier:
                     if not ran.ok:
                         detail = (ran.err or ran.out).strip().splitlines()[-1:] or [f"exit {ran.rc}"]
                         failures.append(f"openclaw cannot run in sandbox '{sb.name}': {detail[0]}")
+                if sb.type in ("openclaw", "nemoclaw") and sb.providers and \
+                        self.find_provider(ws, sb.providers) is None:
+                    # All of the agent's providers were skipped (e.g. no
+                    # provider profile for their type): it has no model.
+                    skipped = ", ".join(f"{p.name} ({p.type})" for p in ws.providers
+                                        if p.name in sb.providers)
+                    failures.append(f"{sb.type} sandbox '{sb.name}' in '{ws.name}' has no usable "
+                                    f"provider: skipped {skipped}; the gateway has no profile for that type")
                 if sb.providers:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out

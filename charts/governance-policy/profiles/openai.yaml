@@ -1,0 +1,18 @@
+id: openai
+display_name: OpenAI-compatible endpoint
+description: Any OpenAI-compatible API (OpenAI, vLLM, Ollama, ...) used through inference routing
+provider_type: openai
+inference_capable: true
+credentials:
+  - name: api_key
+    description: API key for the endpoint (any non-empty value if it needs none)
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+# No endpoints: sandboxes reach the model only through https://inference.local,
+# where the gateway's inference router calls the provider's OPENAI_BASE_URL.
+# A sandbox attached to this provider gets no direct egress from it.
+endpoints: []
