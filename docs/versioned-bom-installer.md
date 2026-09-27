@@ -79,9 +79,10 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
   `KEYCLOAK_NS` (default `saw-keycloak`; `KEYCLOAK_NS=keycloak` to use a Keycloak the cluster already runs there). `make openshell-saw-delete` also
   deletes the namespace if it carries the SAW label.
 - Pattern: `values-prod.yaml` puts Keycloak/RHBK in `saw-keycloak` (so it never
-  collides with a platform Keycloak in `keycloak`, as on many demo clusters) and the
-  default user's SAW (`openshell-saw`, `saw-bom`, `pattern-secrets`) in
-  `saw-alice`. Add a namespace + those three applications per user.
+  collides with a platform Keycloak in `keycloak`, as on many demo clusters).
+  Each person is one entry in [`overrides/saw-users.yaml`](../overrides/saw-users.yaml).
+  The `saw-users` chart creates namespace `saw-<name>` and the three apps
+  (secrets, bill of materials, and virtual machine `saw-<name>`).
 
 ## Authentication
 

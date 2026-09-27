@@ -47,11 +47,10 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `openshift-cnv` | `openshift-cnv` | KubeVirt operator for VM lifecycle |
 | `vault` | `vault` | HashiCorp Vault for secret storage |
 | `openshift-external-secrets` | `external-secrets` | External Secrets Operator |
-| `pattern-secrets` | `openshell-agents` | ExternalSecret CRs that pull from Vault |
+| `saw-users` | `openshell-agents` | One namespace and three apps per user, from `overrides/saw-users.yaml` |
 | `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
 | `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
-| `openshell-saw` | `openshell-agents` | VM + setup Job + routes + services |
 
 **Operator Subscriptions:** OpenShift Virtualization, RHBK (Keycloak), External Secrets Operator, RHDH, OpenShift AI.
 
@@ -83,13 +82,16 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 ### Phase 3: Secrets
 
-Three ExternalSecret CRs pull from Vault:
+ExternalSecret CRs pull from Vault:
 
 | Secret | Vault Path | Content |
 | --- | --- | --- |
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key |
+
+`<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
 ### Phase 4: Governance Policy
 

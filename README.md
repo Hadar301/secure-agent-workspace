@@ -187,13 +187,13 @@ make copy-images
 
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on the remote (origin).
-# If deploying from a local-only branch, set TARGET_REVISION first:
-#   export TARGET_REVISION=main
+# pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
+#   export TARGET_BRANCH=main TARGET_ORIGIN=origin
 ./pattern.sh make install
 
 # 7. Authenticate and configure the CLI
 make login                    # Opens browser → login with alice / alice
-export OPENSHELL_SAW_NAME=openshell-saw SAW_NS=saw-alice
+export OPENSHELL_SAW_NAME=saw-alice SAW_NS=saw-alice
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
@@ -202,6 +202,12 @@ openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 ```
+
+Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD creates or removes `saw-<name>`.
+The virtual machine is named `saw-<name>` (Alice's machine is `saw-alice`, not `openshell-saw`).
+Set `OPENSHELL_SAW_NAME` and `SAW_NS` to that same name.
+Removing an entry deletes that user's Argo apps and leaves the VM running.
+Set `pruneOnRemove: true` in `charts/saw-users` before removing the entry to delete the namespace and the VM as well.
 
 #### Option B: Quickstart (manual, step-by-step)
 
@@ -291,7 +297,7 @@ make openclaw-gui # OpenClaw
 
 > **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
-You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `openshell-saw` in `saw-alice`).
+You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `saw-alice` in `saw-alice`).
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 
@@ -377,11 +383,12 @@ make delete-all
 ├── values-prod.yaml                  # ClusterGroup (operators, subscriptions, applications)
 ├── values-secret.yaml.template       # Secrets template (inference keys, SSH keys)
 ├── overrides/
-│   └── openshell-saw.yaml        # Default sandbox values for VP flow
+│   └── saw-users.yaml                # One list entry per user
 ├── charts/                           # ArgoCD-managed Helm charts
 │   ├── openshell-keycloak/           # Keycloak CR + KeycloakRealmImport (RHBK operator)
 │   ├── openshell-saw/            # Per-user sandbox VM + gateway + agent
-│   └── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
+│   ├── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
+│   └── saw-users/                    # Turns the user list into namespaces and Argo apps
 ├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
 │   └── helm/
 │       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig

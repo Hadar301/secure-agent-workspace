@@ -1,0 +1,54 @@
+# One entry per person. The pattern's list lives in overrides/saw-users.yaml.
+# A name is a lowercase DNS label, unique, and at most 15 characters:
+# "saw-" plus the name must be at most 19 (OpenShell's sandbox limit), and
+# the dashboard route label "saw-<name>-dashboard-saw-<name>" must be at
+# most 63. At 15 characters that label is 49.
+users: []
+
+# false: removing a user deletes that user's Argo CD Applications and leaves
+# the namespace and the VM. The namespace is marked Prune=false so the parent
+# app does not delete it.
+# true: those Applications get a foreground finalizer, so Argo CD deletes the
+# VM (the chart's pre-delete hook runs), and the namespace is removed too.
+# The saw-users app in values-prod turns on prune. Without that, Argo CD
+# keeps objects after they disappear from this chart.
+pruneOnRemove: false
+
+defaults:
+  profiles:
+    - data-science
+  # Shared hub prefix. Set vaultPrefix on a user for a private path.
+  # This chart does not create Vault entries.
+  vaultPrefix: secret/data/hub
+  # Merged under each user's `values`. owner is the user name.
+  openshellSaw:
+    job:
+      waitForSecrets: true
+      backoffLimit: 5
+    dashboard:
+      insecureSkipIssuerTlsVerify: true
+
+# Where the generated Application objects are stored. The pattern injects
+# global.vpArgoNamespace; argo.namespace is the fallback for helm template.
+argo:
+  namespace: vp-gitops
+  project: default
+  destinationName: in-cluster
+  retryLimit: 20
+  finalizer: resources-finalizer.argocd.argoproj.io/foreground
+
+syncWave:
+  namespace: "-1"
+  secrets: "0"
+  bom: "0"
+  sandbox: "1"
+
+# Stubs so `helm template` works. On a cluster the pattern replaces these
+# with the real global.* parameters. Empty values are not copied onto the
+# per-user apps (an empty parameter makes the root app look OutOfSync).
+global:
+  repoURL: https://example.com/secure-agent-workspace.git
+  targetRevision: main
+  clusterDomain: example.com
+  pattern: secure-agent-workspace
+  vpArgoNamespace: vp-gitops
