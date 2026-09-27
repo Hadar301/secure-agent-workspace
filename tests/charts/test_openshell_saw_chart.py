@@ -601,3 +601,18 @@ def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
 def test_create_script_passes_the_keycloak_it_finds():
     text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
     assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
+
+
+def test_secret_template_matches_the_default_profile():
+    """The pattern's values-secret template must give the default profile's
+    providers keys of the right type, or the installer refuses them."""
+    template = yaml.safe_load((ROOT / "values-secret.yaml.template").read_text())
+    secrets = {s["name"]: {f["name"]: f for f in s["fields"]} for s in template["secrets"]}
+    providers = []
+    for f in (ROOT / "charts/saw-bom/profiles/data-science").glob("*/providers.yaml"):
+        providers += yaml.safe_load(f.read_text())["spec"]["providers"]
+    for p in providers:
+        fields = secrets[p["credentialSecret"]]
+        assert p["credentialSecretKey"] in fields, p["name"]
+        configured = fields.get("provider", {}).get("value")
+        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)

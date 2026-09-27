@@ -177,7 +177,8 @@ make generate-keys
 
 # 4. Configure secrets
 cp values-secret.yaml.template ~/values-secret.yaml
-# Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
+# The default profile needs an NVIDIA key and a Brave Search key:
+#   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
