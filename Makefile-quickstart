@@ -29,6 +29,8 @@ KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= keycloak
 KEYCLOAK_REALM ?= openshell
+# yes/no: let `make keycloak` import the realm into a Keycloak already in KEYCLOAK_NS
+USE_EXISTING_KEYCLOAK ?=
 SCRIPTS_DIR    := scripts
 GUI_PORT       ?= 18789
 WORKSPACE      ?= default
@@ -116,7 +118,7 @@ WORKSPACE      ?= default
 	echo "  Image registry route: enabled"
 	@echo "Prerequisites OK."
 
-.PHONY: check-prereqs generate-keys \
+.PHONY: check-prereqs keycloak-check generate-keys \
         build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
@@ -310,9 +312,13 @@ sandbox-pre-delete: .check-saw-name
 
 # --- Keycloak / OIDC ---
 
-keycloak: ## Deploy Keycloak instance + realm via RHBK operator
-	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) \
-	$(SCRIPTS_DIR)/deploy-keycloak.sh
+keycloak: ## Deploy Keycloak + realm (uses a Keycloak already in KEYCLOAK_NS if configured; asks before importing the realm into it)
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
+	USE_EXISTING_KEYCLOAK=$(USE_EXISTING_KEYCLOAK) $(SCRIPTS_DIR)/deploy-keycloak.sh
+
+keycloak-check: ## Check the Keycloak in KEYCLOAK_NS is configured for OpenShell (realm, CLI client, roles)
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
+	$(SCRIPTS_DIR)/keycloak-check.sh
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
 	@host=$$($(SCRIPTS_DIR)/keycloak-host.sh $(KEYCLOAK_NS)) || exit 1; \

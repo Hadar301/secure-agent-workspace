@@ -223,12 +223,13 @@ make generate-keys
 # 5. Copy pre-built images to the cluster
 make copy-images
 
-# 6. Deploy Keycloak
+# 6. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
+#    you are asked before the OpenShell realm is imported into it)
 make keycloak
 
-# 7. Verify Keycloak
+# 7. Verify Keycloak (realm, openshell-cli client, roles)
+make keycloak-check
 make keycloak-issuer
-curl -sk "$(make keycloak-issuer)/.well-known/openid-configuration" | python3 -m json.tool | head -5
 
 # 8. Deploy governance interceptor
 helm upgrade --install governance-policy charts/governance-policy \

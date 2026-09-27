@@ -3,7 +3,7 @@ kind: KeycloakRealmImport
 metadata:
   name: {{ .Values.keycloak.name }}-realm
 spec:
-  keycloakCRName: {{ .Values.keycloak.name }}
+  keycloakCRName: {{ .Values.keycloak.existing | default .Values.keycloak.name }}
   realm:
     id: {{ .Values.keycloak.realm }}
     realm: {{ .Values.keycloak.realm }}
