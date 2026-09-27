@@ -1139,6 +1139,7 @@ class ProfileApplier:
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
         elif state == "running":
             log(f"Sandbox '{sb.name}' already exists")
+            self.attach_missing_providers(ws, sb)
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
@@ -1154,6 +1155,21 @@ class ProfileApplier:
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
+
+    def attach_missing_providers(self, ws, sb):
+        """A sandbox created while one of its providers was skipped (e.g. no
+        provider profile yet) gets it once it exists. Found live: the
+        sandbox kept running without `custom` after the profile arrived."""
+        if not sb.providers:
+            return
+        listed = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
+                          check=False, quiet=True)
+        attached = set(re.sub(r"\x1b\[[0-9;]*m", "", listed.out).split())
+        for prov in sb.providers:
+            if prov in attached or (ws.name, prov) in self.skipped:
+                continue
+            log(f"Attaching provider '{prov}' to existing sandbox '{sb.name}'")
+            self.cli("sandbox", "provider", "attach", sb.name, prov, *ws_args(ws.name), check=False)
 
     def onboard_nemoclaw(self, ws, sb, provider):
         home = Path(os.environ.get("HOME", "/home/cloud-user"))
