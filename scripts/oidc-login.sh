@@ -14,7 +14,7 @@ OIDC_TOKEN_FILE="${OIDC_TOKEN_DIR}/token.json"
 OIDC_CALLBACK_PORT="${OIDC_CALLBACK_PORT:-8400}"
 OIDC_CA_BUNDLE="${OIDC_CA_BUNDLE:-}"
 # Namespace with the Keycloak instance (make passes KEYCLOAK_NS).
-NS="${NS:-keycloak}"
+NS="${NS:-saw-keycloak}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-openshell}"
 
 # TLS verification: use --cacert when OIDC_CA_BUNDLE is set, --insecure otherwise.
@@ -95,40 +95,48 @@ do_browser_login() {
   fi
 
   echo "Waiting for callback on localhost:${OIDC_CALLBACK_PORT}..."
+  # The callback must carry this run's `state`: a code from another login
+  # (another terminal, an old tab) would fail the token exchange anyway,
+  # and accepting it unchecked is a CSRF hole.
   local auth_code
-  auth_code="$(python3 -c "
-import http.server, urllib.parse, sys
+  auth_code="$(OIDC_STATE="${state}" OIDC_PORT="${OIDC_CALLBACK_PORT}" python3 -c '
+import http.server, os, sys, urllib.parse
 
-code = None
+expected, port = os.environ["OIDC_STATE"], int(os.environ["OIDC_PORT"])
+result = {}
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        global code
         params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if 'code' in params:
-            code = params['code'][0]
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(b'<html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>')
+        if params.get("state", [""])[0] != expected:
+            result["error"] = "the login in the browser belongs to another `make login` run (state mismatch); use the URL printed above"
+            status, body = 400, "<h2>Login failed</h2><p>This login belongs to another run. Use the URL shown in the terminal.</p>"
+        elif "code" in params:
+            result["code"] = params["code"][0]
+            status, body = 200, "<h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p>"
         else:
-            error = params.get('error', ['unknown'])[0]
-            desc = params.get('error_description', [''])[0]
-            self.send_response(400)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(f'<html><body><h2>Login failed</h2><p>{error}: {desc}</p></body></html>'.encode())
+            result["error"] = "{}: {}".format(params.get("error", ["unknown"])[0], params.get("error_description", [""])[0])
+            status, body = 400, "<h2>Login failed</h2><p>" + result["error"] + "</p>"
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(("<html><body>" + body + "</body></html>").encode())
     def log_message(self, *args):
         pass
 
-server = http.server.HTTPServer(('127.0.0.1', ${OIDC_CALLBACK_PORT}), Handler)
+class Server(http.server.HTTPServer):
+    allow_reuse_address = False   # fail fast if another login is listening
+
+try:
+    server = Server(("127.0.0.1", port), Handler)
+except OSError as e:
+    sys.exit(f"Error: cannot listen on localhost:{port} ({e.strerror}); is another `make login` still waiting? Or set OIDC_CALLBACK_PORT")
 server.handle_request()
 server.server_close()
-if code:
-    print(code)
-else:
-    sys.exit(1)
-" 2>/dev/null)" || die "Failed to receive authorization callback"
+if "code" not in result:
+    sys.exit("Error: " + result.get("error", "no authorization code in the callback"))
+print(result["code"])
+')" || die "Failed to receive authorization callback"
 
   [[ -n "${auth_code}" ]] || die "No authorization code received"
 
