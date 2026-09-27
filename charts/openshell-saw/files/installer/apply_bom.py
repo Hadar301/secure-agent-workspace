@@ -1184,6 +1184,15 @@ class ProfileApplier:
                 if not self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True).ok:
                     failures.append(f"sandbox '{sb.name}' in '{ws.name}' is missing")
                     continue
+                if sb.type in ("openclaw", "nemoclaw"):
+                    # The agent setup steps are best effort; this is what
+                    # catches an image whose OpenClaw cannot run under the
+                    # sandbox policy (found live: /opt/openclaw was denied).
+                    ran = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty",
+                                   "--", "sh", "-c", "openclaw --version", check=False, quiet=True)
+                    if not ran.ok:
+                        detail = (ran.err or ran.out).strip().splitlines()[-1:] or [f"exit {ran.rc}"]
+                        failures.append(f"openclaw cannot run in sandbox '{sb.name}': {detail[0]}")
                 if sb.providers:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out

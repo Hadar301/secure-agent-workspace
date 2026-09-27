@@ -132,7 +132,10 @@ elif op == "sandbox create":
 elif op == "sandbox delete":
     state["sandboxes"].pop(f"{ws}/{head[2]}", None)
 elif op == "sandbox exec":
-    pass
+    failing = (json.loads((state_dir / "exec-fail.json").read_text())
+               if (state_dir / "exec-fail.json").exists() else [])
+    if opt("-n") in failing:
+        fail("sh: line 1: /usr/local/sbin/openclaw: Permission denied", 126)
 elif op == "sandbox provider":
     sb = state["sandboxes"].get(f"{ws}/{head[3]}")
     for p in (sb or {}).get("providers", []):

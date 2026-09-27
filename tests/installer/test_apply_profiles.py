@@ -294,3 +294,24 @@ def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):
     (tmp_path / "provider-profile-brave.yaml").write_text("id: brave\n")
     (tmp_path / "config.json").write_text("{}")
     assert ab.provider_profiles(tmp_path) == {"brave": "id: brave\n"}
+
+
+def test_verify_fails_when_openclaw_cannot_run_in_the_sandbox(ab, fake_env, config, profiles, creds):
+    """Live: the sandbox was Ready but `openclaw` was denied by the sandbox
+    filesystem policy; the best-effort setup steps hid it and verify passed."""
+    fake_env.exec_fails_in("notebook")
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    failures = applier.verify(profiles)
+    assert failures == ["openclaw cannot run in sandbox 'notebook': "
+                        "sh: line 1: /usr/local/sbin/openclaw: Permission denied"]
+
+
+def test_verify_runs_openclaw_in_agent_sandboxes_only(ab, fake_env, config, profiles, creds):
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    before = len(fake_env.openshell_calls())
+    assert applier.verify(profiles) == []
+    checks = [c for c in fake_env.openshell_calls()[before:]
+              if c[:2] == ["sandbox", "exec"] and c[-1] == "openclaw --version"]
+    assert sorted(c[c.index("-n") + 1] for c in checks) == ["cuda-sandbox", "notebook"]

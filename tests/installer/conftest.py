@@ -126,6 +126,10 @@ class FakeWorld:
     def deny(self, *operations):
         (self.state / "deny.json").write_text(json.dumps(list(operations)))
 
+    def exec_fails_in(self, *sandboxes):
+        """`sandbox exec` into these sandboxes fails like a policy denial."""
+        (self.state / "exec-fail.json").write_text(json.dumps(list(sandboxes)))
+
     def without_profiles(self, *types):
         """Gateway without these provider profiles (e.g. governance off)."""
         (self.state / "no-profiles.json").write_text(json.dumps(list(types)))
