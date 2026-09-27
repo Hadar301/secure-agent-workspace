@@ -14,7 +14,9 @@ NS="${1:-${KEYCLOAK_NS:-keycloak}}"
 
 clean() { sed -e 's|^https\{0,1\}://||' -e 's|/.*$||'; }
 
-host=$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null | clean)
+# The repo's own Keycloak (make keycloak) wins if the namespace has several.
+host=$(oc get keycloak openshell-keycloak -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null | clean)
+[[ -n "${host}" ]] || host=$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null | clean)
 [[ -n "${host}" ]] || host=$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].spec.hostname.hostname}' 2>/dev/null | clean)
 [[ -n "${host}" ]] || host=$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null)
 [[ -n "${host}" ]] || host=$(oc get route -n "${NS}" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)

@@ -41,6 +41,11 @@ def test_live_cluster_shape(tmp_path):
     assert result.stdout.strip() == "sso.apps.cluster.example.com"
 
 
+def test_the_repos_keycloak_wins_when_a_namespace_has_several(tmp_path):
+    result = host(tmp_path, {"ownURL": "https://openshell-kc.example.com", "externalURL": "https://other.example.com"})
+    assert result.stdout.strip() == "openshell-kc.example.com"
+
+
 def test_status_url_wins(tmp_path):
     result = host(tmp_path, {"externalURL": "https://a.example.com", "hostname": "b.example.com"})
     assert result.stdout.strip() == "a.example.com"
