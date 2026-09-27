@@ -13,7 +13,9 @@ OIDC_TOKEN_DIR="${OIDC_TOKEN_DIR:-${HOME}/.config/openshell/oidc}"
 OIDC_TOKEN_FILE="${OIDC_TOKEN_DIR}/token.json"
 OIDC_CALLBACK_PORT="${OIDC_CALLBACK_PORT:-8400}"
 OIDC_CA_BUNDLE="${OIDC_CA_BUNDLE:-}"
-NS="${NS:-openshell-agents}"
+# Namespace with the Keycloak instance (make passes KEYCLOAK_NS).
+NS="${NS:-keycloak}"
+KEYCLOAK_REALM="${KEYCLOAK_REALM:-openshell}"
 
 # TLS verification: use --cacert when OIDC_CA_BUNDLE is set, --insecure otherwise.
 if [[ -n "${OIDC_CA_BUNDLE}" ]]; then
@@ -41,7 +43,7 @@ auto_detect_issuer() {
   fi
   local host
   # Try externalURL from Keycloak CR first
-  host="$(oc get keycloak openshell-keycloak -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null | sed 's|^https://||;s|/$||' || true)"
+  host="$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null | sed 's|^https://||;s|/$||' || true)"
   # Fall back to route by label (RHBK generates route names)
   if [[ -z "${host}" ]]; then
     host="$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)"
@@ -53,7 +55,7 @@ auto_detect_issuer() {
   if [[ -z "${host}" ]]; then
     die "OIDC_ISSUER not set and no Keycloak found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak' first."
   fi
-  OIDC_ISSUER="https://${host}/realms/openshell"
+  OIDC_ISSUER="https://${host}/realms/${KEYCLOAK_REALM}"
   echo "Auto-detected OIDC issuer: ${OIDC_ISSUER}"
 }
 
