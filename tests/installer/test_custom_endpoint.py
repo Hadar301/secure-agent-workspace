@@ -147,3 +147,29 @@ def test_a_provider_that_arrives_later_is_attached_to_the_existing_sandbox(
     applier.apply(profiles)
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == ["custom"]
     assert applier.verify(profiles) == []
+
+
+REPLACED = ("error: Replacement credential saved but inactive. Your connection is unchanged. "
+            "Test and activate it with:\nopenclaw models auth activate "
+            "openai:setup-df67c47c-d3f2-46f5-b698-c42390c67b5d --agent main")
+
+
+def test_a_replaced_openclaw_credential_is_activated(ab, fake_env, config, profiles, custom_secrets):
+    """Found live: re-onboarding the existing notebook for the custom
+    endpoint left OpenClaw on its previous connection."""
+    import json
+    (fake_env.state / "exec-output.json").write_text(json.dumps({"openclaw onboard": REPLACED}))
+    creds = ab.resolve_credentials(profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    calls = [" ".join(c) for c in fake_env.openshell_calls()]
+    assert any("openclaw models auth activate openai:setup-df67c47c-d3f2-46f5-b698-c42390c67b5d --agent main"
+               in c for c in calls)
+
+
+@pytest.mark.parametrize("output", [
+    "Onboarding complete",
+    "Replacement credential saved but inactive.\nopenclaw models auth activate x;rm -rf / --agent main",
+    REPLACED + "\nopenclaw models auth activate openai:setup-00000000-0000-0000-0000-000000000000 --agent main",
+])
+def test_replacement_parsing_is_strict(ab, output):
+    assert ab.openclaw_replacement_profile(output) is None
