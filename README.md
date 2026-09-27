@@ -340,7 +340,8 @@ oc get route ${OPENSHELL_SAW_NAME}-dashboard -n ${SAW_NS:-saw-$OPENSHELL_SAW_NAM
 make openshell-saw-status
 make openshell-saw-vm-ssh
 
-# Installer and chart tests (no cluster needed)
+# Installer and chart tests (no cluster needed; needs helm and
+# python3 -m pip install -r tests/requirements.txt)
 make test-installer
 
 # Run offline template validation (43 checks)

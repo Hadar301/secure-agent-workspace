@@ -553,4 +553,8 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 PYTHON ?= python3
 .PHONY: test-installer
 test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
-	$(PYTHON) -m pytest -q -p no:cacheprovider tests/installer tests/charts tests/scripts cli/tests/test_kube.py cli/tests/test_cli.py
+	@$(PYTHON) -c "import pytest, yaml, click, requests" 2>/dev/null || { \
+		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
+		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
+		tests/installer tests/charts tests/scripts cli/tests/test_kube.py cli/tests/test_cli.py
