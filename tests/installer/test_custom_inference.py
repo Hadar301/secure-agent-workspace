@@ -15,7 +15,7 @@ def custom_provider(**kwargs):
 
 
 def catalog(scheme="https", port=443):
-    return {"id": "custom-inference", "credentials": [{"env_vars": ["OPENAI_API_KEY"],
+    return {"id": "custom-inference", "binaries": ["/usr/bin/node-26"], "credentials": [{"env_vars": ["OPENAI_API_KEY"],
             "required": True, "auth_style": "bearer", "header_name": "authorization"}],
             "endpoints": [{"host": "inference.example.com", "port": port, "protocol": "rest",
                            "enforcement": "enforce", "access": "read-write",
@@ -166,7 +166,7 @@ def test_custom_openclaw_failure_and_repeat_setup(monkeypatch, stage):
         text = " ".join(cmd)
         return ((stage == "placeholder" and cmd[-1].startswith('case "${OPENAI_API_KEY'))
                 or (stage == "onboard" and "openclaw onboard" in text)
-                or (stage == "health" and "http://127.0.0.1:18789/health" in cmd))
+                or (stage == "health" and "http://127.0.0.1:18789/health" in text))
     sh = CustomShell(fail=fail)
     deployer = ProfileApplier(sh, {"mtlsGateway": "saw-installer"}, {})
     for _ in range(2):
@@ -296,3 +296,79 @@ def test_skipped_custom_workspace_is_not_created_or_verified(ab, monkeypatch):
     app.apply(profiles)
     assert app.verify(profiles) == []
     assert [c for c, _ in sh.calls] == [['openshell', 'workspace', 'list']]
+
+
+PROFILE_ID = 'custom-inference:setup-81feb9b8-691c-4597-a455-34665ad7a841'
+REPLACEMENT = ('Replacement credential saved but inactive. Your connection is unchanged. '
+               'Test and activate it with:\nopenclaw models auth activate ' + PROFILE_ID + ' --agent main')
+
+
+@pytest.mark.parametrize('activation_rc,output,success', [
+    (0, 'Activated', True), (1, 'network connection error', False),
+    (0, 'Credentials saved; default unchanged.', False)])
+def test_repeat_onboard_activates_saved_profile(ab, monkeypatch, activation_rc, output, success):
+    monkeypatch.setattr(ab.time, 'sleep', lambda _: None)
+
+    class ReplacementShell(CustomShell):
+        def run(self, cmd, **kwargs):
+            text = ' '.join(cmd)
+            if 'openclaw onboard' in text or 'models auth activate' in text:
+                self.calls.append((cmd, kwargs))
+                if 'openclaw onboard' in text:
+                    return ab.Result(1, '', REPLACEMENT)
+                return ab.Result(activation_rc, output, '')
+            return super().run(cmd, **kwargs)
+
+    sh = ReplacementShell()
+    app = ab.ProfileApplier(sh, {'mtlsGateway': 'saw-installer'}, {})
+    assert app.start_custom_openclaw(ab.Sandbox('notebook'), custom_provider(), 'vllm') == success
+    calls = [' '.join(c) for c, _ in sh.calls]
+    activated = [c for c in calls if 'models auth activate' in c]
+    assert len(activated) == 1 and PROFILE_ID in activated[0]
+    assert 'OPENCLAW_HOME=/sandbox' in activated[0]
+    assert any('nohup openclaw' in c for c in calls) == success
+    health = [c for c, _ in sh.calls if ab.CUSTOM_HEALTH_JS in c]
+    assert bool(health) == success
+    assert all(ab.CUSTOM_NODE in c and 'curl' not in c for c in health)
+
+
+@pytest.mark.parametrize('output', [
+    REPLACEMENT.replace('custom-inference:setup-', 'other:setup-'),
+    REPLACEMENT.replace('--agent main', '--agent other'),
+    REPLACEMENT.replace('--agent main', '--agent main; touch /tmp/unwanted'),
+    REPLACEMENT + '\n' + REPLACEMENT,
+    'unrelated error',
+])
+def test_replacement_response_is_strict(ab, output):
+    assert ab.replacement_profile(ab.Result(1, '', output)) is None
+
+
+@pytest.mark.parametrize('status', [200, 503])
+def test_node_health_probe_http_status(ab, status):
+    import http.server
+    import shutil
+    import subprocess
+    import threading
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node is needed to execute the sandbox health probe')
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        script = ab.CUSTOM_HEALTH_JS.replace(':18789/', f':{server.server_port}/')
+        result = subprocess.run([node, '-e', script], capture_output=True, timeout=10)
+        assert (result.returncode == 0) == (status == 200)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

@@ -35,7 +35,7 @@ endpoints:
     enforcement: enforce
     access: read-write
 binaries:
-  - /usr/local/bin/node
-  - /usr/bin/curl
+  # Kernel-resolved executable in the Hummingbird OpenClaw image.
+  - /usr/bin/node-26
 inference_capable: false
 {{- end }}

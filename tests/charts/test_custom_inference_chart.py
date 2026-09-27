@@ -39,7 +39,7 @@ def test_profile_rendering_preserves_cloud_profiles(scheme, port, tls):
     assert endpoint["host"] == "inference.example.com"
     assert endpoint["port"] == port and endpoint["tls"] == tls
     assert custom["credentials"][0]["env_vars"] == ["OPENAI_API_KEY"]
-    assert custom["binaries"] == ["/usr/local/bin/node", "/usr/bin/curl"]
+    assert custom["binaries"] == ["/usr/bin/node-26"]
 
 
 @pytest.mark.parametrize("setting", ["customInference.host=", "customInference.host=https://example.com",

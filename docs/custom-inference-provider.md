@@ -114,7 +114,11 @@ unexpected credential/configuration keys, terminal sandboxes, or mismatched
 attachments fail without deleting the sandbox. This feature does not migrate
 PR #46's older custom instances named `openai`.
 
-The OpenClaw process is restarted on repeat setup to observe new configuration.
+If repeat onboarding saves an inactive replacement credential, setup runs the
+explicit activation test for that saved profile. Failed activation remains a
+setup failure; it does not replace the working connection or trigger a raw-key
+fallback. The OpenClaw process is restarted after successful onboarding or
+activation to observe new configuration.
 The custom example binds its gateway to sandbox loopback. External dashboard
 exposure and dashboard service repair are outside this feature.
 
@@ -137,6 +141,11 @@ template expressions in strict missing-key mode; it does not run an ESO controll
 After an authorized deployment, authenticate and select the intended gateway,
 then inspect its authoritative profile:
 
+`make openshell-saw-configure-gateway` keeps the token produced by that gateway's
+OIDC login. It does not copy the separate `make login` cache, which may belong to
+another cluster. If an older configuration copied a stale token, run
+`openshell gateway logout <gateway>` followed by `openshell gateway login <gateway>`.
+
 ```bash
 openshell provider list-profiles --workspace vllm
 openshell provider profile export custom-inference --workspace vllm -o yaml \
@@ -150,8 +159,10 @@ openshell policy get notebook --workspace vllm --full
 
 Lint the exported canonical profile, not the unrendered Helm file. In v0.0.116,
 `profile lint` contacts the gateway; it is not an offline YAML-only validator.
-Confirm the endpoint, bearer binding, `/usr/local/bin/node` and `/usr/bin/curl`
-executables, and `_provider_custom_inference` policy. Plain `sandbox list` queries
+Confirm the endpoint, bearer binding, `/usr/bin/node-26` executable, and
+`_provider_custom_inference` policy. This is the kernel-resolved Node executable
+in the Hummingbird OpenClaw image; `/usr/sbin/node` is a symlink. This image does
+not contain curl, so probes below use Node. Plain `sandbox list` queries
 the default workspace and may correctly show no sandboxes.
 
 ## Validate inference after an authorized rollout
@@ -160,14 +171,18 @@ Use an endpoint that enforces its API key. Run these commands in Bash, substitut
 your endpoint and served model. Only the sandbox expands the managed credential:
 
 ```bash
-openshell sandbox exec -n notebook --workspace vllm --no-tty -- sh -c '
-  set -eu
-  case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*) ;; *) exit 1;; esac
-  curl -sS --fail-with-body --max-time 120 \
-    https://inference.example.com/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $OPENAI_API_KEY" \
-    -d "{\"model\":\"YOUR_SERVED_MODEL_ID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"max_tokens\":32}"
+openshell sandbox exec -n notebook --workspace vllm --no-tty -- /usr/bin/node-26 -e '
+  const key = process.env.OPENAI_API_KEY || "";
+  if (!key.startsWith("openshell:resolve:env:")) process.exit(1);
+  fetch("https://inference.example.com/v1/chat/completions", {
+    method: "POST", signal: AbortSignal.timeout(120000),
+    headers: {"Content-Type": "application/json", Authorization: "Bearer " + key},
+    body: JSON.stringify({model: "YOUR_SERVED_MODEL_ID",
+      messages: [{role: "user", content: "Say hello"}], max_tokens: 32})
+  }).then(async r => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    console.log(await r.text());
+  }).catch(e => { console.error(e.message); process.exitCode = 1; });
 '
 ```
 
@@ -180,14 +195,14 @@ its running gateway:
 
 ```bash
 openshell sandbox exec -n notebook --workspace vllm --no-tty -- \
-  curl -fsS --max-time 5 http://127.0.0.1:18789/health
+  /usr/bin/node-26 -e 'fetch("http://127.0.0.1:18789/health", {signal: AbortSignal.timeout(5000)}).then(r => { console.log(r.status); process.exitCode = r.ok ? 0 : 1; }).catch(() => { process.exitCode = 1; });'
 openshell sandbox exec -n notebook --workspace vllm --no-tty -- \
   env OPENCLAW_HOME=/sandbox openclaw agent --agent main \
     --message 'Reply with a short greeting. Do not use tools.' --timeout 120 --json
 ```
 
 Require an actual agent reply and verify the reported provider/model. An HTTP
-health response, a successful `saw-apply.service` run, or a direct curl completion does not prove
+health response, a successful `saw-apply.service` run, or a direct HTTP completion does not prove
 the OpenClaw agent path. Very small models may support basic completions while
 failing agent context-size or tool requirements; record that distinction.
 
@@ -219,10 +234,16 @@ that OpenClaw contains a managed placeholder rather than the raw inference key.
 
 ## Acceptance record
 
-Local validation on Python 3.12: 345 regression tests passed (clean-main baseline:
+Local validation on Python 3.12: 357 regression tests passed (clean-main baseline:
 275), plus 43 OIDC template checks. All four affected charts passed Helm lint;
 rendering, affected shell syntax, and whitespace checks passed. These results
 use local fixtures, not a deployed gateway or inference server.
+
+Live troubleshooting confirmed that the deployed OpenClaw process resolves to
+`/usr/bin/node-26`, which the previous custom profile denied. The corrected
+allowlist, Node-based health checks, replacement-credential activation, and
+gateway token preservation have local regression coverage. End-to-end inference
+must be retested after these fixes are deployed.
 
 | Check | Current evidence |
 | --- | --- |

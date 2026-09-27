@@ -520,6 +520,27 @@ def check_profiles_against_bom(profiles, bom):
 # Credentials
 # ---------------------------------------------------------------------------
 
+CUSTOM_NODE = "/usr/bin/node-26"
+CUSTOM_HEALTH_JS = (
+    'const http=require("node:http"); '
+    'const req=http.get("http://127.0.0.1:18789/health",r=>{'
+    'r.resume(); process.exitCode=(r.statusCode>=200&&r.statusCode<300)?0:1;}); '
+    'req.setTimeout(5000,()=>req.destroy(new Error("health timeout"))); '
+    'req.on("error",()=>{process.exitCode=1;});'
+)
+
+
+def replacement_profile(result):
+    """Recognize the replacement response without executing CLI output."""
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.out + "\n" + result.err)
+    if "Replacement credential saved but inactive." not in output:
+        return None
+    matches = re.findall(
+        r"openclaw models auth activate (custom-inference:setup-[0-9a-f]{8}-"
+        r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) --agent main(?:\s|$)", output)
+    return matches[0] if len(matches) == 1 else None
+
+
 def custom_endpoint(url):
     """Validate a base URL without including potentially sensitive input in errors."""
     try:
@@ -547,6 +568,8 @@ def validate_custom_profile(provider, credential, profile):
         raise ValueError("custom inference requires nonempty model and api_key")
     if profile.get("id") != "custom-inference":
         raise ValueError("custom-inference profile is not available in the gateway catalog")
+    if CUSTOM_NODE not in profile.get("binaries", []):
+        raise ValueError("custom-inference profile must allow the image's /usr/bin/node-26 executable")
     endpoints = profile.get("endpoints", [])
     expected_tls = "terminate" if scheme == "https" else "passthrough"
     if not any(e.get("host", "").lower().rstrip(".") == host
@@ -1263,8 +1286,18 @@ class ProfileApplier:
             '--custom-provider-id custom-inference --custom-base-url ' + shlex.quote(provider.url) +
             ' --custom-model-id ' + shlex.quote(provider.model) + ' --skip-channels --skip-health')
         result = self.custom_run(command + ["sh", "-c", onboard], check=False, quiet=True)
-        rc = result.rc
-        if rc:
+        profile_id = replacement_profile(result)
+        if profile_id:
+            log("Testing and activating the saved custom OpenClaw credential")
+            activation = ('set -eu; ' + env + 'openclaw models auth activate '
+                          + shlex.quote(profile_id) + ' --agent main')
+            result = self.custom_run(command + ["sh", "-c", activation], check=False, quiet=True)
+            output = (result.out + "\n" + result.err).lower()
+            if (not result.ok or "default unchanged" in output
+                    or "no default model was changed" in output or "saved but inactive" in output):
+                log("ERROR: custom OpenClaw credential activation failed; existing connection retained")
+                return False
+        elif (not result.ok or "saved but inactive" in (result.out + result.err).lower()):
             return False
         # PID belongs to this sandbox's managed gateway only. On repeat setup,
         # restart it so the newly provisioned model and placeholder take effect.
@@ -1284,11 +1317,10 @@ class ProfileApplier:
         if rc:
             return False
         for attempt in range(24):
-            result = self.custom_run(command + ["curl", "-fsS", "--max-time", "5",
-                                            "http://127.0.0.1:18789/health"], check=False)
+            result = self.custom_run(command + [CUSTOM_NODE, "-e", CUSTOM_HEALTH_JS], check=False)
             rc = result.rc
             if rc == 0:
-                log("Custom OpenClaw health passed; inference has not been tested by setup")
+                log("Custom OpenClaw health passed; verify an agent-generated inference response separately")
                 return True
             if attempt < 23:
                 time.sleep(5)
@@ -1581,8 +1613,8 @@ class ProfileApplier:
                             raise ValueError("readiness, attachment or composed policy check failed")
                         health = self.custom_run([
                             "openshell", "sandbox", "exec", "-n", sb.name,
-                            "--workspace", ws.name, "--no-tty", "--", "curl", "-fsS",
-                            "--max-time", "5", "http://127.0.0.1:18789/health"], check=False, quiet=True)
+                            "--workspace", ws.name, "--no-tty", "--", CUSTOM_NODE,
+                            "-e", CUSTOM_HEALTH_JS], check=False, quiet=True)
                         if not health.ok:
                             raise ValueError("OpenClaw health check failed")
                     except (ValueError, TypeError, KeyError) as exc:
