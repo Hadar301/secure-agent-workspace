@@ -63,6 +63,22 @@ def test_check_reports_what_is_missing(kc, realm, expect):
     assert r.returncode == 1 and expect in r.stdout, r.stdout
 
 
+def test_device_request_carries_a_pkce_challenge(kc):
+    """Found live: the imported realm's client enforces PKCE, and Keycloak
+    rejected a device request without a challenge (invalid_request)."""
+    kc.set(realms={"openshell": GOOD_REALM}, imports={"openshell": ["openshell-admin", "openshell-user"]})
+    r = kc.run("keycloak-check.sh")
+    assert r.returncode == 0, r.stdout
+    (device,) = [c for c in kc.calls("curl") if c[-1].endswith("/auth/device") or any(a.endswith("/auth/device") for a in c)]
+    assert "code_challenge_method=S256" in device
+    assert any(a.startswith("code_challenge=") and len(a) > 50 for a in device)
+
+
+def test_check_shows_keycloaks_error_description(kc):
+    kc.set(realms={"openshell": {**GOOD_REALM, "clients": {"openshell-cli": {"public": True, "device": False}}}})
+    assert "unauthorized_client" in kc.run("keycloak-check.sh").stdout
+
+
 def test_check_reports_missing_roles(kc):
     kc.set(realms={"openshell": GOOD_REALM}, imports={"openshell": ["openshell-user"]})
     r = kc.run("keycloak-check.sh")

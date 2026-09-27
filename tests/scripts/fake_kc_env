@@ -50,6 +50,9 @@ if tool == "curl":
             print('{"error":"invalid_client"}')
         elif not c["device"]:
             print('{"error":"unauthorized_client"}')
+        elif c.get("pkce_required", True) and not any(a.startswith("code_challenge_method=S256") for a in args):
+            # Keycloak with pkce.code.challenge.method=S256 on the client
+            print('{"error":"invalid_request","error_description":"Missing parameter: code_challenge_method"}')
         else:
             print('{"device_code":"x","user_code":"ABCD"}')
         sys.exit(0)

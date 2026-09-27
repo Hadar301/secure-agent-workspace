@@ -53,12 +53,17 @@ device_ep="$(jq -r '.device_authorization_endpoint // empty' <<<"${disc}")"
 if [[ -z "${device_ep}" ]]; then
   fail "realm has no device authorization endpoint"
 else
-  resp="$(curl -sk --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" || true)"
+  # With PKCE enforced on the client, Keycloak requires a code challenge on
+  # the device authorization request too.
+  verifier="$(openssl rand -hex 32)"
+  challenge="$(printf '%s' "${verifier}" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+  resp="$(curl -sk --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" \
+    -d "code_challenge=${challenge}" -d "code_challenge_method=S256" || true)"
   if jq -e .device_code >/dev/null 2>&1 <<<"${resp}"; then
     ok "client ${CLIENT} exists, is public and allows the device flow"
   else
-    err="$(jq -r '.error // "no response"' <<<"${resp}" 2>/dev/null || echo "no response")"
-    case "${err}" in
+    err="$(jq -r '[.error, .error_description] | map(select(. != null)) | join(": ") | if . == "" then "no response" else . end' <<<"${resp}" 2>/dev/null || echo "no response")"
+    case "${err%%:*}" in
       invalid_client) fail "client ${CLIENT} is missing or not public (${err})" ;;
       unauthorized_client) fail "client ${CLIENT} does not allow the device flow (${err})" ;;
       *) fail "client ${CLIENT}: device authorization failed (${err})" ;;
