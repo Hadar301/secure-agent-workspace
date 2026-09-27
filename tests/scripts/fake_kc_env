@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Fake oc/curl/helm for keycloak-check.sh and deploy-keycloak.sh.
+Invoked through symlinks named oc, curl, helm. State: $FAKE_STATE/kc.json
+  {"keycloaks": ["keycloak"], "host": "sso.example.com",
+   "realms": {"sso": {"pkce": true, "device": true, "clients": {"openshell-cli": {"public": true, "device": true}}}},
+   "imports": {"sso": ["openshell-admin", "openshell-user"]}, "rhbk_csv": true}
+Every call is logged to $FAKE_STATE/calls.log."""
+import json, os, sys
+from pathlib import Path
+state_dir = Path(os.environ["FAKE_STATE"])
+st = json.loads((state_dir / "kc.json").read_text())
+tool, args = Path(sys.argv[0]).name, sys.argv[1:]
+with open(state_dir / "calls.log", "a") as f:
+    f.write(json.dumps([tool] + args) + "\n")
+
+def save():
+    (state_dir / "kc.json").write_text(json.dumps(st))
+
+if tool == "helm":
+    # `helm upgrade --install openshell-keycloak ... --set keycloak.existing=X --set keycloak.realm=R`
+    sets = dict(a.split("=", 1) for a in args if "=" in a and a.startswith("keycloak."))
+    realm = sets.get("keycloak.realm", "openshell")
+    st["realms"][realm] = {"pkce": True, "device": True,
+                           "clients": {"openshell-cli": {"public": True, "device": True}}}
+    st["imports"][realm] = ["openshell-admin", "openshell-user"]
+    if "keycloak.existing" not in sets:
+        st["keycloaks"].append("openshell-keycloak")
+    st["realm_import_done"] = True
+    save()
+    sys.exit(0)
+
+if tool == "curl":
+    url = next(a for a in args if a.startswith("https://"))
+    realm = url.split("/realms/")[1].split("/")[0]
+    r = st["realms"].get(realm)
+    if url.endswith("/.well-known/openid-configuration"):
+        if not r:
+            if "-f" in args or "-skf" in args:
+                sys.exit(22)
+            print('{"error":"Realm does not exist"}'); sys.exit(0)
+        doc = {"issuer": f"https://{st['host']}/realms/{realm}",
+               "code_challenge_methods_supported": ["plain", "S256"] if r["pkce"] else ["plain"]}
+        if r["device"]:
+            doc["device_authorization_endpoint"] = f"https://{st['host']}/realms/{realm}/protocol/openid-connect/auth/device"
+        print(json.dumps(doc)); sys.exit(0)
+    if url.endswith("/auth/device"):
+        client = next(a.split("=", 1)[1] for a in args if a.startswith("client_id="))
+        c = r["clients"].get(client)
+        if not c or not c["public"]:
+            print('{"error":"invalid_client"}')
+        elif not c["device"]:
+            print('{"error":"unauthorized_client"}')
+        elif c.get("pkce_required", True) and not any(a.startswith("code_challenge_method=S256") for a in args):
+            # Keycloak with pkce.code.challenge.method=S256 on the client
+            print('{"error":"invalid_request","error_description":"Missing parameter: code_challenge_method"}')
+        else:
+            print('{"device_code":"x","user_code":"ABCD"}')
+        sys.exit(0)
+    sys.exit(7)
+
+# oc
+out = next((a for a in args if a.startswith("jsonpath=")), args[args.index("-o") + 1] if "-o" in args else "")
+if args[:2] == ["get", "csv"]:
+    print("rhbk-operator.v26  Succeeded" if st.get("rhbk_csv", True) else ""); sys.exit(0)
+if args[:2] == ["get", "keycloak"]:
+    named = args[2] if len(args) > 2 and not args[2].startswith("-") else None
+    if named:
+        if named not in st["keycloaks"]:
+            sys.exit(1)
+        if out == "name":
+            print(f"keycloak.k8s.keycloak.org/{named}"); sys.exit(0)
+        if "conditions" in out:
+            print("True"); sys.exit(0)
+        print(f"https://{st['host']}" if named == "openshell-keycloak" else "", end=""); sys.exit(0)
+    if "metadata.name" in out:
+        print("\n".join(st["keycloaks"])); sys.exit(0)
+    if "hostname.hostname" in out and st["keycloaks"]:
+        print(st["host"], end=""); sys.exit(0)
+    sys.exit(0)
+if args[:2] == ["get", "keycloakrealmimport"]:
+    if "conditions" in out:
+        print("True" if st.get("realm_import_done") else "", end=""); sys.exit(0)
+    items = [{"spec": {"realm": {"realm": r, "roles": {"realm": [{"name": n} for n in roles]}}}}
+             for r, roles in st["imports"].items()]
+    print(json.dumps({"items": items})); sys.exit(0)
+if args[:2] == ["get", "route"]:
+    sys.exit(0)
+sys.exit(0)

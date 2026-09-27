@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+state = Path(os.environ["FAKE_STATE"])
+with open(state / "virtctl.log", "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")
+# Probe (`--command true`): reject the key for the first N probes, like a VM
+# whose guest agent has not written authorized_keys yet.
+if sys.argv[-1] == "true" and "--command" in sys.argv:
+    counter = state / "probes"
+    n = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(n))
+    if n <= int(os.environ.get("REJECT_PROBES", "0")):
+        sys.exit("cloud-user@vm: Permission denied (publickey).")

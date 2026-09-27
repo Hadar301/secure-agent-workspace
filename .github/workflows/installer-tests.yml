@@ -1,0 +1,40 @@
+name: In-guest installer and chart tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.14 matches the Fedora 44 guest that runs apply_bom.py.
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - name: Install test dependencies
+        run: python -m pip install -r tests/requirements.txt -e ./cli
+      - name: Lint charts
+        run: |
+          helm lint charts/openshell-saw --set sandboxName=ci
+          helm lint charts/saw-bom
+      - name: Installer, chart and CLI tests
+        run: make test-installer PYTHON=python

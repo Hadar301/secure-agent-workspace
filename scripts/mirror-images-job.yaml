@@ -23,8 +23,20 @@ spec:
           set -euo pipefail
           mkdir -p "${HOME}" "${XDG_RUNTIME_DIR}"
           TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          # quay tags have been published as X.Y.Z, vX.Y.Z or only latest:
+          # use the first that exists and store it as the requested version.
+          WANTED="${VERSION}"
+          SRC=""
+          for TAG in "${WANTED}" "v${WANTED#v}" latest; do
+            if skopeo inspect --raw "docker://${QUAY_REPO}/${IMAGE}:${TAG}" >/dev/null 2>&1; then
+              SRC="${TAG}"; break
+            fi
+            echo "no tag ${TAG} on ${QUAY_REPO}/${IMAGE}"
+          done
+          if [ -z "${SRC}" ]; then echo "ERROR: none of the tags exist"; exit 1; fi
+          echo "Copying ${QUAY_REPO}/${IMAGE}:${SRC}"
           skopeo copy --src-tls-verify=true --dest-tls-verify=false \
             --dest-creds="unused:${TOKEN}" \
-            "docker://${QUAY_REPO}/${IMAGE}:${VERSION}" \
-            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${VERSION}"
-          echo "Mirror complete: ${IMAGE}:${VERSION}"
+            "docker://${QUAY_REPO}/${IMAGE}:${SRC}" \
+            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${WANTED}"
+          echo "Mirror complete: ${IMAGE}:${SRC} -> ${IMAGE}:${WANTED}"

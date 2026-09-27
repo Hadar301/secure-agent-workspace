@@ -3,7 +3,7 @@ kind: KeycloakRealmImport
 metadata:
   name: {{ .Values.keycloak.name }}-realm
 spec:
-  keycloakCRName: {{ .Values.keycloak.name }}
+  keycloakCRName: {{ .Values.keycloak.existing | default .Values.keycloak.name }}
   realm:
     id: {{ .Values.keycloak.realm }}
     realm: {{ .Values.keycloak.realm }}
@@ -14,12 +14,16 @@ spec:
     duplicateEmailsAllowed: false
     sslRequired: external
     roles:
+      {{- if .Values.keycloak.roles }}
       realm:
         {{- range .Values.keycloak.roles }}
         - name: {{ . | quote }}
           composite: false
           clientRole: false
         {{- end }}
+      {{- else }}
+      realm: []
+      {{- end }}
     clients:
       - clientId: {{ .Values.keycloak.clients.cli.clientId | quote }}
         name: OpenShell CLI
@@ -67,14 +71,10 @@ spec:
         serviceAccountsEnabled: false
         attributes:
           pkce.code.challenge.method: S256
-        redirectUris:
-          {{- range .Values.keycloak.clients.dashboard.redirectUris }}
-          - {{ . | quote }}
-          {{- end }}
-        webOrigins:
-          {{- range .Values.keycloak.clients.dashboard.webOrigins }}
-          - {{ . | quote }}
-          {{- end }}
+        # toJson: an empty list must render as [] (the CRD rejects null, and
+        # server-side apply enforces it). Each SAW's prepare Job adds its own.
+        redirectUris: {{ .Values.keycloak.clients.dashboard.redirectUris | default list | toJson }}
+        webOrigins: {{ .Values.keycloak.clients.dashboard.webOrigins | default list | toJson }}
         protocolMappers:
           - name: realm-roles
             protocol: openid-connect
@@ -107,6 +107,7 @@ spec:
               included.client.audience: {{ .Values.keycloak.clients.cli.clientId | quote }}
               id.token.claim: "false"
               access.token.claim: "true"
+    {{- if .Values.keycloak.testUsers }}
     users:
       {{- range .Values.keycloak.testUsers }}
       - username: {{ .username | quote }}
@@ -119,8 +120,8 @@ spec:
           - type: password
             value: {{ .password | quote }}
             temporary: false
-        realmRoles:
-          {{- range .roles }}
-          - {{ . | quote }}
-          {{- end }}
+        realmRoles: {{ .roles | default list | toJson }}
       {{- end }}
+    {{- else }}
+    users: []
+    {{- end }}

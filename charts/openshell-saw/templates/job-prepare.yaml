@@ -1,0 +1,56 @@
+{{- /*
+Cluster-side preparation only: golden image DataSource and the dashboard's
+Keycloak redirect URI. It never connects to the VM (no SSH, no virtctl).
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-prepare
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-sandbox.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-prepare
+      restartPolicy: OnFailure
+      {{- if .Values.job.waitForSecrets }}
+      initContainers:
+        - name: wait-for-secrets
+          image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for provider Secrets..."
+              deadline=$((SECONDS + 600))
+              while true; do
+                missing=0
+                for secret in {{ range (include "openshell-sandbox.providerSecrets" . | fromJsonArray) }}{{ . | quote }} {{ end }}; do
+                  if ! kubectl get secret "${secret}" -n {{ .Release.Namespace }} >/dev/null 2>&1; then
+                    echo "  waiting for secret/${secret}..."
+                    missing=1
+                  fi
+                done
+                [[ "${missing}" -eq 0 ]] && { echo "All secrets ready."; exit 0; }
+                (( SECONDS > deadline )) && { echo "Timed out waiting for secrets" >&2; exit 1; }
+                sleep 10
+              done
+      {{- end }}
+      containers:
+        - name: prepare
+          image: {{ .Values.job.image }}
+          command: ["/bin/bash", "/scripts/prepare.sh"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "openshell-sandbox.fullname" . }}-prepare-scripts
+            defaultMode: 0755

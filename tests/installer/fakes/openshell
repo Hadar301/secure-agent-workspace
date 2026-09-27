@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Fake, stateful OpenShell CLI for installer tests.
+
+State lives in openshell.json; every call is appended to openshell.log.
+deny.json lists operations (e.g. "workspace create") that fail with a
+permission error, to test error paths.
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+state_dir = Path(os.environ["FAKE_STATE"])
+args = sys.argv[1:]
+with open(state_dir / "openshell.log", "a") as log:
+    log.write(json.dumps(args) + "\n")
+
+path = state_dir / "openshell.json"
+state = json.loads(path.read_text()) if path.exists() else {
+    "gateways": [], "selected": None, "workspaces": ["default"], "members": [],
+    "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None}
+deny = json.loads((state_dir / "deny.json").read_text()) if (state_dir / "deny.json").exists() else []
+no_profiles = (json.loads((state_dir / "no-profiles.json").read_text())
+               if (state_dir / "no-profiles.json").exists() else [])
+
+
+def save():
+    path.write_text(json.dumps(state))
+
+
+def opt(name, default=None):
+    return args[args.index(name) + 1] if name in args else default
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    save()
+    sys.exit(code)
+
+
+def credential():
+    """Like the real CLI: `--credential NAME` reads $NAME, `NAME=value` is literal."""
+    spec = opt("--credential")
+    if spec is None:
+        return None
+    if "=" in spec:
+        return spec
+    if spec not in os.environ:
+        fail(f"Error: environment variable {spec} is not set")
+    return f"{spec}={os.environ[spec]}"
+
+
+if "--" in args:
+    head = args[:args.index("--")]
+else:
+    head = args
+op = " ".join(head[:2])
+if op in deny:
+    fail("Error: permission denied (requires platform admin)")
+if op == "workspace create" and (state_dir / "rbac").exists():
+    # OIDC RBAC: platform-admin methods need the admin role; an mTLS caller's
+    # roles come from its certificate's OU.
+    selected = next((g for g in state["gateways"] if g["name"] == state["selected"]), {})
+    if "openshell-admin" not in selected.get("roles", []):
+        fail("Error: permission denied (requires platform admin)")
+ws = opt("--workspace", "default")
+
+def cert_roles(tls_dir):
+    """OUs of the client certificate `gateway add --local` would import."""
+    import subprocess
+    subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-nameopt", "sep_multiline",
+                              "-in", str(Path(tls_dir) / "client" / "tls.crt")],
+                             capture_output=True, text=True, check=True).stdout
+    return [line.split("=", 1)[1] for line in subject.splitlines() if line.strip().startswith("OU=")]
+
+
+if head[0] == "gateway":
+    if head[1] == "add":
+        tls_dir = os.environ.get("OPENSHELL_LOCAL_TLS_DIR")
+        # Without an override, --local imports the gateway's own client
+        # certificate, which carries OU=openshell-user.
+        roles = cert_roles(tls_dir) if tls_dir else ["openshell-user"]
+        state["gateways"].append({"name": opt("--name"), "endpoint": head[2], "local": "--local" in head,
+                                  "roles": roles})
+    elif head[1] == "remove":
+        state["gateways"] = [g for g in state["gateways"] if g["name"] != head[2]]
+    elif head[1] == "select":
+        state["selected"] = head[2]
+elif op == "workspace list":
+    print("NAME")
+    for w in state["workspaces"]:
+        print(w)
+elif op == "workspace create":
+    name = opt("--name")
+    if name in state["workspaces"]:
+        fail(f"Error: workspace {name} already exists")
+    state["workspaces"].append(name)
+elif op == "workspace member":
+    member = [opt("--workspace"), opt("--subject"), opt("--role")]
+    if member in state["members"]:
+        fail("Error: member already exists")
+    state["members"].append(member)
+elif op == "provider profile" and head[2] == "import":
+    # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
+    import yaml
+    doc = yaml.safe_load(Path(opt("-f")).read_text())
+    if not isinstance(doc, dict) or not doc.get("id"):
+        fail("Error: failed to parse provider profile YAML: missing field `id`")
+    imported = state.setdefault("imported_profiles", {})
+    if doc["id"] in imported.get(ws, []):
+        fail(f"Error: provider profile '{doc['id']}' already exists")
+    imported.setdefault(ws, []).append(doc["id"])
+    print(f"Imported provider profile {doc['id']}")
+elif op == "provider create":
+    if opt("--type") in no_profiles and opt("--type") not in state.get("imported_profiles", {}).get(ws, []):
+        # Wording of OpenShell 0.0.116 when governance does not serve the profile.
+        fail(f"Error:   × unsupported provider type or profile: {opt('--type')} (provider profile "
+             f"'{opt('--type')}' not\n  │ found; import a matching profile before using this provider type)")
+    key = f"{ws}/{opt('--name')}"
+    if key in state["providers"]:
+        fail(f"Error: provider {opt('--name')} already exists")
+    state["providers"][key] = {"type": opt("--type"), "credential": credential()}
+elif op == "provider update":
+    key = f"{ws}/{head[2]}"
+    if key not in state["providers"]:
+        fail("Error: provider not found")
+    state["providers"][key]["credential"] = credential()
+elif op == "provider get":
+    if f"{ws}/{head[2]}" not in state["providers"]:
+        fail("Error: provider not found")
+    print(f"Name: {head[2]}")
+elif op == "inference set":
+    if "--system" in head:
+        # Like the real gateway: the system route's provider must exist in 'default'.
+        if f"default/{opt('--provider')}" not in state["providers"]:
+            fail(f"Error: provider '{opt('--provider')}' not found in workspace 'default'")
+        state["system_inference"] = [opt("--provider"), opt("--model")]
+    else:
+        state["inference"][ws] = [opt("--provider"), opt("--model")]
+elif op == "sandbox get":
+    sb = state["sandboxes"].get(f"{ws}/{head[2]}")
+    if not sb:
+        fail("Error: sandbox not found")
+    print(f"Name: {head[2]}\nPhase: {sb['phase']}")
+elif op == "sandbox create":
+    key = f"{ws}/{opt('--name')}"
+    providers = [head[i + 1] for i, a in enumerate(head) if a == "--provider"]
+    missing = [p for p in providers if f"{ws}/{p}" not in state["providers"]]
+    if missing:
+        fail(f"Error: provider '{missing[0]}' not found")
+    state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
+elif op == "sandbox delete":
+    state["sandboxes"].pop(f"{ws}/{head[2]}", None)
+elif op == "sandbox exec":
+    failing = (json.loads((state_dir / "exec-fail.json").read_text())
+               if (state_dir / "exec-fail.json").exists() else [])
+    if opt("-n") in failing:
+        fail("sh: line 1: /usr/local/sbin/openclaw: Permission denied", 126)
+elif op == "sandbox provider":
+    sb = state["sandboxes"].get(f"{ws}/{head[3]}")
+    for p in (sb or {}).get("providers", []):
+        print(p)
+else:
+    fail(f"fake openshell: unsupported {args}", 2)
+save()

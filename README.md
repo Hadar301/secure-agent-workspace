@@ -172,12 +172,13 @@ cd secure-agent-workspace
 # 2. Log in to OpenShift with cluster-admin
 oc login --server=https://api.<cluster>:6443 -u <user>
 
-# 3. Generate SSH keys for sandbox provisioning
+# 3. Generate SSH keys (used for on-demand SSH into the gateway VM)
 make generate-keys
 
 # 4. Configure secrets
 cp values-secret.yaml.template ~/values-secret.yaml
-# Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
+# The default profile needs an NVIDIA key and a Brave Search key:
+#   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
@@ -192,7 +193,7 @@ make copy-images
 
 # 7. Authenticate and configure the CLI
 make login                    # Opens browser → login with alice / alice
-export OPENSHELL_SAW_NAME=openshell-saw
+export OPENSHELL_SAW_NAME=openshell-saw SAW_NS=saw-alice
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
@@ -204,7 +205,7 @@ openshell sandbox list --workspace cuda-dev
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `openshell-agents` namespace.
+Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `saw-keycloak` namespace (set `KEYCLOAK_NS` to use another one, e.g. `KEYCLOAK_NS=keycloak` for a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
 
 ```bash
 # 1. Clone the repository
@@ -223,12 +224,13 @@ make generate-keys
 # 5. Copy pre-built images to the cluster
 make copy-images
 
-# 6. Deploy Keycloak
+# 6. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
+#    you are asked before the OpenShell realm is imported into it)
 make keycloak
 
-# 7. Verify Keycloak
+# 7. Verify Keycloak (realm, openshell-cli client, roles)
+make keycloak-check
 make keycloak-issuer
-curl -sk "$(make keycloak-issuer)/.well-known/openid-configuration" | python3 -m json.tool | head -5
 
 # 8. Deploy governance interceptor
 helm upgrade --install governance-policy charts/governance-policy \
@@ -240,52 +242,48 @@ helm upgrade --install governance-interceptor charts/governance-interceptor \
 make login                    # Opens browser → login with alice / alice
 make whoami                   # Verify identity
 
-# 10. Create a sandbox
-export OPENSHELL_SAW_NAME=alice-openshell-saw
+# 10. Create a sandbox (deploys into namespace saw-alice)
+export OPENSHELL_SAW_NAME=alice
 make openshell-saw-create \
-  PROVIDER=gemini \
-  MODEL=gemini-2.5-flash \
+  PROVIDER=build \
+  MODEL=nvidia/nemotron-3-super-120b-a12b \
   API_KEY=<your-api-key>
 
-# 11. Follow setup logs (in another terminal)
+# 11. Follow the in-VM installer (in another terminal)
 make openshell-saw-logs
 
 # 12. Check status
 make openshell-saw-list
 make status
 
-# 13. Wait for VM to be ready
-oc get vmi -n openshell-agents
-# Wait for PHASE=Running, READY=True
+# 13. Wait for the installer to finish
+make openshell-saw-status
+# Wait for "install" and "apply" to show "phase": "Done"
 
 # 14. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Authenticate CLI with the gateway
-openshell gateway add https://$(oc get route openshell-saw-gateway -n openshell-agents -o jsonpath='{.spec.host}') --name saw
+# 15. Authenticate CLI with the gateway
+openshell gateway login $OPENSHELL_SAW_NAME
 # Log in as alice / alice in the browser
 
-# 15. Verify sandboxes
+# 16. Verify sandboxes
 # sandbox list without --workspace only shows workspace "default"
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 
-# 16. Launch TUI (pick one)
-OPENSHELL_SAW_NAME=openshell-saw \
+# 17. Launch TUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 make nemoclaw-tui # NemoClaw
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 make openclaw-tui # OpenClaw
 
-# 17. Launch GUI (pick one)
-OPENSHELL_SAW_NAME=openshell-saw \
+# 18. Launch GUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
 make nemoclaw-gui # NemoClaw
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 GUI_PORT=18790 \
 make openclaw-gui # OpenClaw
@@ -293,7 +291,7 @@ make openclaw-gui # OpenClaw
 
 > **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
-You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically.
+You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `openshell-saw` in `saw-alice`).
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 
@@ -317,21 +315,17 @@ openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 
 # NemoClaw sandbox (TUI and GUI) — workspace cuda-dev
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 make nemoclaw-tui
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
 make nemoclaw-gui
 
 # OpenClaw sandbox (TUI and GUI) — workspace default
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 make openclaw-tui
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 GUI_PORT=18790 \
 make openclaw-gui
@@ -341,11 +335,16 @@ make openshell-saw-tui
 make openshell-saw-gui
 
 # Or access the dashboard directly via the route
-oc get route ${OPENSHELL_SAW_NAME}-dashboard -n openshell-agents -o jsonpath='https://{.spec.host}'
+oc get route ${OPENSHELL_SAW_NAME}-dashboard -n ${SAW_NS:-saw-$OPENSHELL_SAW_NAME} -o jsonpath='https://{.spec.host}'
 
-# Option B only: automated E2E test (headless, creates its own sandbox)
-# Do not run this against an Option A GitOps deployment.
-make test
+# Installer status, and a shell on the gateway VM for debugging
+# (adds your SSH key to the VM on demand)
+make openshell-saw-status
+make openshell-saw-vm-ssh
+
+# Installer and chart tests (no cluster needed; needs helm and
+# python3 -m pip install -r tests/requirements.txt)
+make test-installer
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
@@ -435,12 +434,15 @@ The system implements layered isolation:
 | `alice` | `alice` | `openshell-user`, `openshell-admin` |
 | `bob` | `bob` | `openshell-user`, `openshell-admin` |
 
-### Namespace modes
+### Namespaces
 
-| Mode | Description |
+| Namespace | Contents |
 |---|---|
-| `shared` (default) | All sandboxes in one namespace. Scales to thousands of users. |
-| `perUser` | Each user gets `saw-<username>` namespace. Kubernetes-level resource isolation. |
+| `saw-<name>` (one per sandbox) | The gateway VM, its installer inputs and provider Secrets |
+| `openshell-agents` | Golden VM image, image builds, governance interceptor |
+| `keycloak` | Keycloak (RHBK) |
+
+The gateway VM installs itself from a versioned Bill of Materials on every boot; see [docs/versioned-bom-installer.md](docs/versioned-bom-installer.md).
 
 ### OIDC issuer resolution
 

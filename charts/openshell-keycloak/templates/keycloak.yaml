@@ -1,3 +1,4 @@
+{{- if not .Values.keycloak.existing }}
 apiVersion: k8s.keycloak.org/v2alpha1
 kind: Keycloak
 metadata:
@@ -27,3 +28,4 @@ spec:
   {{- end }}
   proxy:
     headers: xforwarded
+{{- end }}

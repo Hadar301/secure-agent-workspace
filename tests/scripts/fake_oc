@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Fake oc for openshell-saw-vm-ssh.sh: VM secret name, Secret data, VMI sync condition."""
+import base64, json, os, sys
+from pathlib import Path
+st_path = Path(os.environ["FAKE_STATE"]) / "oc.json"
+st = json.loads(st_path.read_text())
+args = sys.argv[1:]
+with open(Path(os.environ["FAKE_STATE"]) / "oc.log", "a") as f:
+    f.write(json.dumps(args) + "\n")
+def arg(flag):
+    return args[args.index(flag) + 1] if flag in args else None
+out = arg("-o") or ""
+if args[:2] == ["get", "vm"]:
+    print(st.get("secret", ""), end="")
+elif args[:2] == ["get", "secret"]:
+    key = out.split('index .data "')[1].split('"')[0]
+    data = st.get("data", {})
+    print(data[key] if key in data else "<no value>", end="")
+elif args[:2] == ["get", "vmi"]:
+    if "message" in out:
+        print("guest agent error")
+    else:
+        st["polls"] = st.get("polls", 0) + 1
+        print("True" if st["polls"] >= st.get("sync_after", 1) else "False", end="")
+elif args[:2] == ["patch", "secret"]:
+    patch = json.loads(Path(arg("--patch-file")).read_text())
+    for k, v in patch["stringData"].items():
+        st.setdefault("data", {})[k] = base64.b64encode(v.encode()).decode()
+else:
+    sys.exit(f"fake oc: unsupported {args}")
+st_path.write_text(json.dumps(st))

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Phase: register dashboard redirect URI on Keycloak and run dashboard setup on VM.
-# Expects: VM_NAME, NS, SSH_USER, RUNTIME, OIDC_KEYCLOAK_NAME, OIDC_REALM,
-#          KEYCLOAK_NS, DASHBOARD_IMAGE, DASHBOARD_PROXY_IMAGE, DASHBOARD_CLIENT_ID,
-#          OIDC_ISSUER_URL, SCRIPTS_DIR, guest_ssh, guest_scp (functions)
+# Phase: register this VM's dashboard redirect URI on the shared Keycloak client.
+# Cluster-side only; the dashboard itself is started by the in-VM installer.
+# Expects: VM_NAME, NS, OIDC_KEYCLOAK_NAME, OIDC_REALM, KEYCLOAK_NS,
+#          DASHBOARD_CLIENT_ID, OIDC_ISSUER_URL
 
-guest_scp "${SCRIPTS_DIR}/setup-dashboard.sh" "/home/${SSH_USER}/setup-dashboard.sh"
 WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
 if [[ -z "${WEBUI_ROUTE_HOST}" ]]; then
   echo "WARNING: ${VM_NAME}-webui route not found — skipping dashboard setup"
@@ -12,13 +11,12 @@ if [[ -z "${WEBUI_ROUTE_HOST}" ]]; then
 fi
 
 DASHBOARD_REDIRECT_URL="https://${WEBUI_ROUTE_HOST}/oauth2/callback"
-DASHBOARD_COOKIE_SECRET="$(openssl rand -hex 16)"
 
 # Register redirect URI on Keycloak client
 KC_ADMIN_SECRET="${OIDC_KEYCLOAK_NAME}-initial-admin"
 KC_ADMIN_USER="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KEYCLOAK_NS}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)"
 KC_ADMIN_PASS="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KEYCLOAK_NS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
-KC_BASE="$(echo "${OIDC_ISSUER:-${OIDC_ISSUER_URL}}" | sed 's#/realms/.*##')"
+KC_BASE="$(echo "${OIDC_ISSUER_URL}" | sed 's#/realms/.*##')"
 if [[ -n "${KC_ADMIN_USER}" && -n "${KC_BASE}" ]]; then
   echo "Registering redirect URI on Keycloak client '${DASHBOARD_CLIENT_ID}'..."
   KC_TOKEN_RESPONSE="$(curl -sk -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
@@ -58,17 +56,3 @@ if [[ -n "${KC_ADMIN_USER}" && -n "${KC_BASE}" ]]; then
 else
   echo "WARNING: Keycloak admin credentials not found — dashboard OIDC login will fail"
 fi
-
-# Run dashboard setup on VM
-guest_ssh "
-  set -a; source /home/${SSH_USER}/bom.env 2>/dev/null; set +a
-  export RUNTIME='${RUNTIME}'
-  export DASHBOARD_ENABLED=true
-  export DASHBOARD_IMAGE='${DASHBOARD_IMAGE}'
-  export DASHBOARD_PROXY_IMAGE='${DASHBOARD_PROXY_IMAGE}'
-  export DASHBOARD_CLIENT_ID='${DASHBOARD_CLIENT_ID}'
-  export DASHBOARD_COOKIE_SECRET=${DASHBOARD_COOKIE_SECRET}
-  export DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
-  export DASHBOARD_INSECURE_SKIP_TLS='${DASHBOARD_INSECURE_SKIP_TLS}'
-  bash /home/${SSH_USER}/setup-dashboard.sh
-" 2>&1 || echo "WARN: dashboard setup failed"

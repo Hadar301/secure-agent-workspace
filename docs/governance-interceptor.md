@@ -75,12 +75,17 @@ Contains the interceptor application deployment.
 
 ### Provider profile format
 
-Each profile is a YAML file named after the provider ID (filename = profile ID on the gateway):
+Each profile is a YAML file named after the provider ID (filename = profile ID on the gateway).
+Profiles use OpenShell's provider profile schema. Set `id` to the filename: the interceptor
+overwrites it from the filename anyway, but OpenShell's own parser requires it, so the same
+file also works with `openshell provider profile import -f <file>` (the SAW installer imports
+`brave.yaml` this way when governance is off).
 
 ```yaml
+id: github
 display_name: GitHub
 description: GitHub API and Git operations
-provider_type: custom
+category: source_control
 endpoints:
   - host: api.github.com
     port: 443

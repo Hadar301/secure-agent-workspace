@@ -88,3 +88,17 @@ class TestListVms:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             assert kube.list_vms("ns") == {}
+
+
+class TestFollowVmConsole:
+    def test_follows_guest_console_log_of_the_vm(self):
+        import pytest
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            with pytest.raises(SystemExit) as exit_info:
+                kube.follow_vm_console("alice-saw", "openshell-agents")
+        assert exit_info.value.code == 0
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["oc", "-n", "openshell-agents", "logs", "-f",
+                       "-l", "vm.kubevirt.io/name=alice-saw",
+                       "-c", "guest-console-log", "--tail=-1"]

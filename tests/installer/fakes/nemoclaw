@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Fake nemoclaw: records calls (and whether a provider key was passed)."""
+import json
+import os
+import sys
+from pathlib import Path
+
+state = Path(os.environ["FAKE_STATE"])
+with open(state / "nemoclaw.log", "a") as log:
+    log.write(json.dumps({"args": sys.argv[1:],
+                          "has_key": bool(os.environ.get("NEMOCLAW_PROVIDER_KEY"))}) + "\n")
+sys.exit(1 if (state / "nemoclaw-fail").exists() else 0)

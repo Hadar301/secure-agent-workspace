@@ -1,0 +1,6 @@
+# Test dependencies for `make test-installer` (the CLI tests import the
+# repo's cli/src package directly; click and requests are its dependencies).
+pytest>=8
+PyYAML>=6
+click>=8.0
+requests>=2.28

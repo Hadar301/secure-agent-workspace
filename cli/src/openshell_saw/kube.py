@@ -1,6 +1,7 @@
 """Kubernetes / OpenShift / virtctl subprocess wrappers."""
 
 import json
+import re
 import subprocess
 import sys
 
@@ -28,6 +29,29 @@ def ensure_namespace(name):
         input=dry_run.stdout, text=True,
         capture_output=True,
     )
+
+
+def label_saw_namespace(name, owner=None):
+    """Mark a namespace as a SAW namespace (the governance interceptor admits
+    VMs from namespaces with this label)."""
+    labels = ["openshell.pattern/saw=true"]
+    if owner:
+        labels.append("openshell.pattern/owner=" + re.sub(r"[^a-z0-9._-]", "-", owner.lower())[:63])
+    run(["oc", "label", "namespace", name, *labels, "--overwrite"], capture=True)
+
+
+def apply_secret(name, namespace, data):
+    """Create or update an Opaque Secret from a dict, without putting the
+    values on any command line (the manifest goes over stdin)."""
+    import base64
+    import json
+    manifest = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                "metadata": {"name": name, "namespace": namespace},
+                "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items() if v}}
+    r = subprocess.run(["oc", "apply", "-f", "-"], input=json.dumps(manifest),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"Failed to apply Secret {name}: {r.stderr.strip()}")
 
 
 def get_route_url(name, namespace):
@@ -117,6 +141,17 @@ def follow_logs(resource, namespace):
     sys.exit(
         subprocess.run(
             ["oc", "-n", namespace, "logs", "-f", resource]
+        ).returncode
+    )
+
+
+def follow_vm_console(vm_name, namespace):
+    """Follow a VM's serial console, where the in-guest installer logs."""
+    sys.exit(
+        subprocess.run(
+            ["oc", "-n", namespace, "logs", "-f",
+             "-l", f"vm.kubevirt.io/name={vm_name}",
+             "-c", "guest-console-log", "--tail=-1"]
         ).returncode
     )
 

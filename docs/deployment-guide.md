@@ -48,7 +48,7 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `vault` | `vault` | HashiCorp Vault for secret storage |
 | `openshift-external-secrets` | `external-secrets` | External Secrets Operator |
 | `pattern-secrets` | `openshell-agents` | ExternalSecret CRs that pull from Vault |
-| `openshell-keycloak` | `openshell-agents` | Keycloak OIDC provider + realm |
+| `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
 | `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
 | `openshell-saw` | `openshell-agents` | VM + setup Job + routes + services |

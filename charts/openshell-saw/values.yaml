@@ -1,7 +1,16 @@
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
-# SSH public key for VM access. Set explicitly, or leave empty to read
-# from the 'public_key' field in the sshSecret (created by ESO/pattern-secrets).
+# Operator SSH access (used by `make openshell-saw-configure-gateway` to fetch
+# the gateway CA). Provisioning does not use SSH. Keys are provisioned
+# dynamically by KubeVirt accessCredentials through the qemu guest agent:
+# updating the Secret updates cloud-user's authorized_keys in the running VM.
+# https://kubevirt.io/user-guide/user_workloads/accessing_virtual_machines/
+#
+# The chart creates an empty <name>-ssh-pubkey Secret for this;
+# `make openshell-saw-vm-ssh` adds your key to it when you need a shell.
+# Or name an existing Secret instead (every value in it is a public key):
+sshPublicKeySecret: ""
+# Optional: seed the chart-created Secret with one key (key1).
 sshPublicKey: ""
 
 # VM disk source — three modes:
@@ -19,16 +28,11 @@ sshPublicKey: ""
 # 3. HTTP: download a qcow2 disk image from a URL.
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
-#
-# VM disk source — clone from a golden image DataSource.
-# The golden image is built on the cluster via make build-gateway-image
-# and imported by the openshell-gateway-image helm chart.
 source:
-  # Leave empty to auto-select from containerRuntime (openshell-gateway-docker for docker,
-  # openshell-gateway for podman). Set explicitly to override.
+  # Leave empty for the default "openshell-gateway" DataSource.
   dataSource: ""
   dataSourceNamespace: "openshell-agents"
-  # Registry URL for golden image import. Used by the setup Job to bootstrap
+  # Registry URL for golden image import. Used by the prepare Job to bootstrap
   # the DataSource on first run. Defaults to the internal registry.
   goldenImageURL: ""
   # CDI pull method: "node" (uses node runtime, trusts internal CA) or "pod" (CDI importer pod)
@@ -40,173 +44,132 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Mark the VMI Ready only after the in-guest installer finished both steps.
+  # Uses a guest-agent exec probe (`test -f /var/lib/saw/ready`). Off by
+  # default: it needs qemu-guest-agent with guest-exec allowed in the image.
+  readinessProbe: false
 
-# Sandbox container image. When empty, auto-detects from the internal registry.
-sandboxImage: ""
+# Versioned Bill of Materials for the software installed inside the VM.
+# The in-guest installer (files/installer/apply_bom.py) pulls each image by
+# digest, copies the binary out, checks its version and installs it.
+# Change this block to upgrade; the VM applies it on its next restart
+# (`virtctl restart <vm>`). Images must be pinned by digest.
+bom:
+  apiVersion: saw.redhat.com/v1alpha1
+  kind: InstallerBOM
+  metadata:
+    name: openshell-0-0-116-rhaiv-0
+  spec:
+    installerVersion: 0.1.0
+    openshell:
+      cli:
+        version: 0.0.116-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-cli@sha256:ffd6c5e163180aba4f19d445a23906856bd9b7a24710aa134484f2b2ee7a8f17
+      gateway:
+        version: 0.0.116-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-gateway@sha256:456650bc420ff3bda27e81c13bea3ebad721b6a00d8541251f48ec999f92af6d
+      supervisor:
+        version: 0.0.116-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:6c56ca2495ee10a77773b154cefd7309ebcab071962ea069ac349a3d9ec8c55a
+    # NemoClaw CLI, needed by `type: nemoclaw` sandboxes (the default
+    # data-science profile has one). Remove it if no profile needs it.
+    # A tag is accepted here with a warning; pin a digest when one exists.
+    nemoclaw:
+      cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli:latest
 
-# If you don't have push access to the quay.io registry referenced by a BOM
-# profile's sandbox image (e.g. the default openclaw profile points at
-# quay.io/rh-ai-quickstart/openclaw-openshell:latest), build it yourself
-# into this cluster's own internal registry instead:
-#   make build-openclaw-openshell-local
-# then point the BOM profile's sandbox image at:
-#   image-registry.openshift-image-registry.svc.cluster.local:5000/<namespace>/openclaw-openshell:latest
-# (must be the fully-qualified "...svc.cluster.local" form — the sandbox
-# VM's systemd-resolved doesn't apply search-domain suffixing to
-# multi-label hostnames the way a pod's glibc resolver does, so the short
-# "...svc:5000" form used elsewhere in this chart won't resolve there).
-# The sandbox VM's container runtime is external to the cluster (no
-# ServiceAccount pull secret), so also enable anonymous pull below.
-internalRegistry:
-  # Grants system:image-puller to system:unauthenticated, scoped to this
-  # namespace only, so the sandbox VM's container runtime can pull
-  # internally-built images without credentials. Off by default since it's
-  # only needed for the internal-registry fallback above.
-  allowAnonymousPull: false
+# OpenShell gateway runtime configuration inside the VM.
+openshell:
+  # Bind address for the `openshell-gateway` listener. Keep 0.0.0.0 for
+  # remote CLI access via the route; 127.0.0.1 restricts it to the VM.
+  bindAddress: "0.0.0.0"
 
-# NemoClaw CLI container image. Used to install the nemoclaw CLI on the gateway VM.
-nemoclawCliImage: ""
-
-# Agent to run inside the sandbox: openclaw, hermes, or langchain-deepagents-code
-agent: openclaw
-
-# Onboarding CLI: openclaw (runs inside sandbox) or nemoclaw (runs on gateway VM)
-onboardCli: nemoclaw
-
-# Container runtime inside the gateway VM: docker or podman
-# docker: uses openshell-gateway-docker golden image (legacy)
-# podman: uses openshell-gateway golden image and the rootless Podman socket.
+# Container runtime inside the gateway VM. Stage 1 supports podman only.
 containerRuntime: podman
 
-# OpenShell gateway runtime configuration inside the sandbox VM.
-openshell:
-  # Bind address for `openshell-gateway` listener.
-  # Keep default 0.0.0.0 for remote CLI access via route; set to 127.0.0.1
-  # to restrict access to local VM context only.
-  bindAddress: "0.0.0.0"
-  # OpenShell binaries installed at provisioning time (not baked into golden image).
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.116-rhaiv.0"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.116-rhaiv.0"
-  cliImage: "quay.io/opendatahub/odh-openshell-cli:v0.0.116-rhaiv.0"
-  version: "0.0.116+rhaiv.0"
-  pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
+# If a BOM profile's sandbox image lives in this cluster's internal registry,
+# the VM's rootless Podman pulls it without credentials. This grants
+# system:image-puller to system:unauthenticated, scoped to this namespace.
+internalRegistry:
+  allowAnonymousPull: false
 
-  # gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.116"
-  # supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.116"
-  # version: "0.0.116"
-  # pipIndexUrl: ""
-# Inference provider configuration.
-# Provider keys: gemini, brave, tavily (governed profiles required for each)
+# Provider credential Secrets. Every `credentialSecret:` named in a SAW-BOM
+# profile must be listed here (or be inference.secretName). Each Secret is
+# attached to the VM as a read-only disk; a missing Secret is attached empty,
+# and the installer then reports which provider has no credential.
 inference:
-  provider: ""
-  model: ""
-  apiKey: ""
-  endpointUrl: ""
-  webSearch: ""
-  # Name of a k8s Secret containing provider, model, and api_key fields.
-  # Defaults to "inference" (created by ESO from Vault via values-secret.yaml).
-  # The Job reads provider/model/api_key from this secret automatically.
   secretName: "inference"
-
-# Additional per-provider credential secrets to mount for the BOM path
-# (charts/saw-bom), beyond the primary `inference` secret above. Each name
-# here must exactly match a `credentialSecret:` value declared in a BOM
-# profile's providers.yaml — the Job mounts each one dynamically at
-# /ws-secrets/<name>, the same mechanism already used for the inference
-# secret, so a BOM profile's declared secret name is what actually controls
-# resolution (previously this was a single secret hardcoded to the literal
-# name "web-search", ignoring whatever a profile actually declared).
 additionalProviderSecrets:
   - web-search
 
-# Vertex AI via GCP service account (legacy — optional).
-# When set, the Vertex provider is configured via openshell provider commands
-# before nemoclaw onboard runs.
-vertexSaJson: ""
-vertex:
-  region: global
-  model: claude-sonnet-4-6
+# Keycloak/OIDC for end users. The gateway accepts OIDC bearer tokens from
+# users (roles from realm_access.roles) and mTLS from the local installer.
+# The installer never logs in to Keycloak.
+oidc:
+  issuerUrl: ""
+  clientId: "openshell-cli"
+  keycloakName: "openshell-keycloak"
+  # Namespace Keycloak runs in (any namespace works). Used to compute the
+  # issuer URL from global.clusterDomain and to find its admin Secret.
+  keycloakNamespace: "saw-keycloak"
+  realm: "openshell"
+  rolesClaim: "realm_access.roles"
+  adminRole: "openshell-admin"
+  userRole: "openshell-user"
 
-# SSH identity Secret for virtctl — must exist in the namespace.
-# The Secret should have a 'key' data field with the private key.
-sshSecret: openshell-aap-ssh
-sshUser: cloud-user
+# Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's
+# OIDC subject (`openshell whoami`) and, when set, is added as admin to every
+# workspace the installer creates.
+accessControl:
+  owner: ""
+  ownerSubject: ""
 
-# Fallback virtctl version if auto-detection from the cluster fails.
-virtctlVersion: "v1.4.1"
-
-job:
-  image: "registry.fedoraproject.org/fedora:44"
-  backoffLimit: 2
-  activeDeadlineSeconds: 1800
-  # Wait for ESO-managed secrets before starting the setup Job.
-  # Set to true when using Validated Pattern / External Secrets Operator.
-  # Leave false for manual/quickstart path where secrets are created directly.
-  waitForSecrets: false
-
-# Expose the sandbox gateway and dashboard via OpenShift Routes.
+# Expose the sandbox gateway and dashboards via OpenShift Routes.
 route:
   enabled: true
   host: ""
   dashboard: true
-  # OpenShell Dashboard web UI (see `dashboard` below). Distinct from `dashboard`
-  # above, which is the OpenClaw in-sandbox web UI on port 18789.
   webui: true
+  # Hostname of the webui route, used for the dashboard's OAuth redirect.
+  # Computed from global.clusterDomain when empty.
+  webuiHost: ""
+  # Hostname of the dashboard route (openclaw control UI allowed origin).
+  # Computed from global.clusterDomain when empty.
+  dashboardHost: ""
 
-# OpenShell Dashboard — standalone Go BFF + React admin UI for OpenShell
-# (gateways, workspaces, sandboxes, providers). Runs via the configured
-# container runtime inside the sandbox VM,
-# fronted by oauth2-proxy for OIDC/PKCE auth against the
-# centralized Keycloak. Requires oidc.issuerUrl/oidc.token to be set — the
-# dashboard's gRPC client has no mTLS support, so it only works against an
-# OIDC-configured gateway.
+# OpenShell Dashboard + oauth2-proxy, run inside the VM by the installer.
+# Needs oidc.issuerUrl (or global.clusterDomain) and a known webui host.
 dashboard:
   enabled: true
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
-  # Keycloak only supports a *trailing* wildcard in redirect URIs, which can't
-  # express "any hostname, fixed path" — needed since each sandbox VM gets a
-  # unique per-VM Route hostname. The setup Job registers this sandbox's exact
-  # redirect URI onto the shared client via the Keycloak Admin API instead
-  # (confirmed live: Keycloak rejects "https://*/oauth2/callback" outright).
-  # Namespace where Keycloak (and its "<keycloakName>-initial-admin" secret)
-  # is deployed. Empty = same namespace as this sandbox (the VP-path default,
-  # where openshell-keycloak and openshell-saw are co-located).
+  # Override the Keycloak namespace for the admin Secret lookup only.
+  # Empty = oidc.keycloakNamespace.
   keycloakNamespace: ""
-  # Skip TLS verification for the OIDC issuer in oauth2-proxy.
-  # Only enable for dev/lab clusters with self-signed Keycloak certs.
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
-# Deployed as a Kubernetes pod, accessed from VM over the pod network.
 governance:
   enabled: true
-  # gRPC endpoint reachable from the gateway VM. Leave empty to derive
-  # from the release namespace (http://governance-interceptor.<namespace>.svc.cluster.local:18081).
+  # Shared namespace where the governance-interceptor chart runs. SAWs live in
+  # their own namespaces, so the default endpoint points here.
+  namespace: "openshell-agents"
   endpoint: ""
   port: 18081
-  # The interceptor is an in-cluster plaintext gRPC service. OpenShell 0.0.116+
-  # requires this explicit opt-out from extension authentication for http://.
   allowInsecureTransport: true
   failurePolicy: "fail_closed"
   timeout: "500ms"
 
-# OIDC authentication.
-# issuerUrl can be set explicitly, or computed from global.clusterDomain
-# when deployed via the validated pattern.
-oidc:
-  token: ""
-  issuerUrl: ""
-  clientId: "openshell-cli"
-  passthrough: true
-  keycloakName: "openshell-keycloak"
-  realm: "openshell"
+# Cluster-side prepare Job. It never logs in to the VM: it only bootstraps
+# the golden image DataSource and registers the dashboard redirect URI in
+# Keycloak.
+job:
+  image: "registry.fedoraproject.org/fedora:44"
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  # Wait for ESO-managed secrets before starting the prepare Job.
+  waitForSecrets: false
 
-# Sandbox owner (used for labeling and audit).
-accessControl:
-  owner: ""
-
-# Namespace strategy: "shared" places all sandboxes in the release namespace;
-# "perUser" expects a per-user namespace (e.g. saw-<username>).
-namespaceMode: shared
+# Each SAW is installed into its own namespace (the release namespace), e.g.
+# saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
+# governance interceptor accepts its VM (make openshell-saw-create does this).

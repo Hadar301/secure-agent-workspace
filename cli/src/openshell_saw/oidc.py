@@ -53,6 +53,16 @@ def _decode_jwt_payload(token):
         return {}
 
 
+def token_claims(token_dir):
+    """Claims of the saved access token (unverified), or {}."""
+    tf = _token_file(token_dir)
+    try:
+        with open(tf) as f:
+            return _decode_jwt_payload(json.load(f).get("access_token", ""))
+    except Exception:
+        return {}
+
+
 def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace=None):
     """4-step OIDC issuer auto-detection chain.
 
