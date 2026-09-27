@@ -2,7 +2,10 @@
 # The chart cannot create Keycloak users or Vault entries.
 # ownerSubject is the Keycloak subject from `openshell whoami`. Leave it
 # empty until that person has logged in once.
+# On for this check only: removing a user also deletes the namespace and VM.
+pruneOnRemove: true
 users:
   - name: alice
     profiles:
       - data-science
+  - name: bob
