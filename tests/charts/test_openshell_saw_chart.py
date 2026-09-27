@@ -638,7 +638,7 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     for key, value in cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "custom", "model": "m",
+    for secret, data in {"inference": {"api_key": "k1", "provider": "openai", "model": "m",
                                        "url": "https://vllm.models.svc:8443/v1"},
                          "web-search": {"api_key": "k2"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
