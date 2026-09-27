@@ -235,6 +235,19 @@ openshell provider update custom-inference --workspace vllm --credential OPENAI_
 unset OPENAI_API_KEY
 ```
 
+Credential updates propagate asynchronously to the sandbox. Before interpreting
+the negative agent test, poll a small authenticated request (such as `/v1/models`)
+until it returns 401 with the managed placeholder. After restoration, wait for
+200 before resuming normal use. A request started immediately after a provider
+update may still use the previous credential.
+
+For a reproducible negative OpenClaw test, use a separate sandbox and a fresh
+OpenClaw home/state directory with the test provider's current managed placeholder.
+The reused-state test received successful responses even after direct requests
+returned 401; the fresh-state test correctly returned HTTP 401 and exit code 1.
+Do not interpret a reused-state test as proof that the intended credential was
+selected, or claim immediate revocation across existing OpenClaw auth state.
+
 If the invalid key succeeds, the endpoint is not a valid authentication fixture.
 For endpoint-binding validation, use an approved test fixture outside the custom
 profile's endpoint boundary. Attempt to use the same managed placeholder there;
@@ -269,15 +282,33 @@ a 7,210-token prompt truncated to 1,026 tokens, slow CPU generation, and a reque
 that received HTTP 504 before retrying successfully. This establishes transport
 and response generation, not useful agent behavior or reliable latency.
 
+Additional live checks used a separate validation workspace and provider, leaving
+the user's notebook credential unchanged. A managed-placeholder completion
+returned HTTP 200; changing the test provider to an invalid key returned HTTP 401
+after propagation, and restoring the valid key returned HTTP 200. Comparison
+against the real key found no match in the captured OpenClaw JSON/JSONL/config
+and log files, runtime logs, or current installer console. This scan covers those
+captured files, not arbitrary historical data or encoded representations.
+An isolated OpenClaw agent turn with fresh auth state also rejected the invalid
+key with HTTP 401 and exit code 1. Temporary test resources were removed afterward.
+
+The exported canonical profile's original ID triggers the CLI linter's
+interceptor-ownership check. A schema-equivalent copy with a temporary ID and
+without source/signature metadata passed lint; it was not imported. An attempted
+isolated fixture policy update was rejected because governance annotations were
+required. Consequently, denial of the second hostname establishes egress denial,
+not the stronger test of credential binding over an otherwise allowed connection.
+
 | Check | Current evidence |
 | --- | --- |
 | Secret compatibility, profile rendering, provisioning failure handling | Local regression tests |
 | Gemini profile preservation and missing-URL compatibility | Local regression tests; live Gemini needs credentials |
-| Catalog publication and installer endpoint checks | Deployed profile consumed; installer verification passed; separate canonical linter validation not recorded |
+| Catalog publication and installer endpoint checks | Deployed profile consumed; installer verification passed; schema-equivalent canonical copy passed lint under a temporary ID |
 | Custom-provider response through the authentication-enforcing fixture | OpenClaw received HTTP 200 and generated responses; managed credential observed during setup |
-| Incorrect-key rejection through the custom provider and endpoint isolation | Still pending; endpoint-only authentication tests do not close these checks |
+| Incorrect-key rejection through the custom provider | Direct request and fresh-state OpenClaw agent returned 401; agent exited 1; restored key returned 200 after propagation |
+| Endpoint isolation | Unapproved hostname denied; credential binding over an otherwise allowed fixture connection not established because unsigned policy updates were rejected |
 | OpenClaw agent-generated inference | Responses received with tools disabled; meaningful instruction following failed with this TinyLlama fixture |
-| Credentials absent from generated configuration and logs | Full comparison against the real key still pending |
+| Credentials absent from generated configuration and logs | Real key absent from captured OpenClaw JSON/config/log files, runtime logs, and current installer console |
 | Actual vLLM-hosted model | Still pending; current fixture uses Ollama |
 | Dashboard readiness/access | Outside this feature; not implied by OpenClaw health |
 
