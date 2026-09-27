@@ -69,13 +69,27 @@ until [[ "$(synced)" == "True" ]]; do
   fi
   sleep 3
 done
-echo "Key synced."
-${add_only} && exit 0
 
 ssh_args=(-n "${SAW_NS}" ssh "cloud-user@vm/${VM_NAME}" --identity-file="${SSH_KEY_PATH}"
   --local-ssh-opts=-oStrictHostKeyChecking=no --local-ssh-opts=-oUserKnownHostsFile=/dev/null
   --local-ssh-opts=-oLogLevel=ERROR)
+
+# The condition can already be True from an earlier sync (a fresh VM's empty
+# Secret counts as synced), so confirm the key is accepted before going on.
+until virtctl "${ssh_args[@]}" --local-ssh-opts=-oBatchMode=yes \
+    --local-ssh-opts=-oConnectTimeout=10 --command true </dev/null >/dev/null 2>&1; do
+  if (( $(date +%s) > deadline )); then
+    echo "Error: the VM does not accept the key yet after ${SYNC_TIMEOUT}s" >&2
+    exit 1
+  fi
+  sleep 3
+done
+echo "Key synced."
+${add_only} && exit 0
+
 if (( $# )); then
-  exec virtctl "${ssh_args[@]}" --command "$*"
+  # stdin closed: `openshell sandbox exec` in the command would otherwise wait
+  # for EOF on the terminal before running anything.
+  exec virtctl "${ssh_args[@]}" --command "$*" </dev/null
 fi
 exec virtctl "${ssh_args[@]}"

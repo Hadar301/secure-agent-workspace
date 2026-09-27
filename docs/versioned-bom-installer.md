@@ -117,8 +117,11 @@ make openshell-saw-vm-ssh OPENSHELL_SAW_NAME=alice CMD='sudo cat /var/lib/saw/st
 ```
 
 The target adds `$(SSH_KEY_PATH).pub` to the Secret under your login name
-(`KEY_NAME=` to change), waits for `AccessCredentialsSynchronized=True`, then
-runs `virtctl ssh`. The chart never sets the Secret's `data`, so added keys
+(`KEY_NAME=` to change), waits until the VM accepts the key, then runs
+`virtctl ssh` (stdin closed for a `CMD=` command, so `openshell sandbox exec`
+inside it does not wait for input). make expands `$(...)` in `CMD=`, so write
+`$$(...)` or call `scripts/openshell-saw-vm-ssh.sh` directly for command
+substitution. The chart never sets the Secret's `data`, so added keys
 survive upgrades; remove one with
 `oc patch secret alice-ssh-pubkey -n saw-alice --type json -p '[{"op":"remove","path":"/data/<name>"}]'`.
 The guest needs SELinux boolean `virt_qemu_ga_manage_ssh=on`; cloud-init and
