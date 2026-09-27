@@ -7,4 +7,5 @@ spec:
       type: openclaw
       enabled: true
       image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
-      providers: [custom-inference]
+      providers:
+        - custom
