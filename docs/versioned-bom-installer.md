@@ -214,9 +214,41 @@ new bundles with the new key (`.github/workflows/sign-installer-bundle.yml`),
 then drop the old public key on the following image build. A bundle signed
 only by the retired key then fails `enforce`.
 
+## Live inputs
+
+`vm.liveInputs` defaults to `false`. The installer ConfigMap, `saw-bom-profiles`,
+and provider Secrets are iso9660 disks filled at boot. Set it to `true` to
+serve those same objects over virtiofs. The guest mounts them at the same
+`/run/saw` paths. A path unit starts `saw-reconcile` after a change, and a
+60-second timer is the fallback. Reconcile waits 10 seconds so one Helm
+upgrade is one run, holds `/run/saw/lock` together with the boot units, and
+then:
+
+- runs `install` when the installer tree changed (BOM or gateway config).
+  Unchanged binaries are skipped. The gateway restarts only when a binary
+  or its config changed.
+- runs `apply` when profiles or Secrets changed. Existing providers get
+  `provider update` with the new key. Sandboxes keep running.
+- writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
+  `make openshell-saw-status` shows whether that matches the cluster.
+
+Spike on OpenShift 4.22 (virtiofs is part of the API; no extra feature gate):
+a ConfigMap attached to a Fedora 44 VM was visible in the guest, a content
+change and a new key appeared together in about 37 seconds, and writing to
+the mount was denied. The kernel reports the mount `rw`, and the files are
+labeled `virtiofs_t`. SELinux has no xattr handler for virtiofs and falls
+back to genfs; reads still succeed. Live migration of that VM was refused
+because the root disk is ReadWriteOnce. The refusal did not mention
+virtiofs. Migration was not retested with a shared disk.
+
+These still need a restart: VM size, disks, and anything cloud-init writes
+(the reconcile units included). Turning `vm.liveInputs` on does not edit an
+existing VM's cloud-init. Recreate the VM after the value is true. With
+live inputs, a change to the installer ConfigMap or a provider Secret does
+not set `RestartRequired`. The cloud-init checksum still does.
+
 ## Not in Stage 1
 
-- Live updates without a VM restart (ConfigMap/Secret disks are read at boot).
 - Removing workspaces/providers/sandboxes that were dropped from a profile.
 - Reporting status to the cluster beyond the optional readiness probe
   (`vm.readinessProbe: true`, needs guest-agent exec).

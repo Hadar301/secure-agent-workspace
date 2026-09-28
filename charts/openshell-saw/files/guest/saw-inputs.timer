@@ -1,0 +1,10 @@
+[Unit]
+Description=Fallback poll of SAW virtiofs inputs
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+Unit=saw-reconcile.service
+
+[Install]
+WantedBy=timers.target

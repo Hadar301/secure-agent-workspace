@@ -44,6 +44,11 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Share the installer ConfigMap, profiles, and provider Secrets over
+  # virtiofs so a change is visible without restarting the VM. Off until
+  # the guest units from a new cloud-init are in place: turning it on
+  # requires recreating the VM. Disks, VM size, and cloud-init still restart.
+  liveInputs: false
   # Mark the VMI Ready only after the in-guest installer finished both steps.
   # Uses a guest-agent exec probe (`test -f /var/lib/saw/ready`). Off by
   # default: it needs qemu-guest-agent with guest-exec allowed in the image.

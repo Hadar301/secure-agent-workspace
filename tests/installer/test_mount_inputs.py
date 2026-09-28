@@ -86,6 +86,23 @@ def test_missing_optional_disks_are_fine(tmp_path, disks):
     assert "optional disk saw-sec-1 is not attached" in result.stdout
 
 
+def test_virtiofs_is_used_when_the_disk_is_absent(tmp_path, disks):
+    import shutil
+    shutil.rmtree(disks / "virtio-saw-profiles")
+    virtio = tmp_path / "virtiofs"
+    (virtio / "saw-profiles").mkdir(parents=True)
+    (virtio / "saw-profiles" / "profiles__p__ws__workspace.yaml").write_text("live: 1\n")
+    state = tmp_path / "state"
+    state.mkdir()
+    env = {**os.environ, "PATH": f"{MOUNT_FAKES}:{os.environ['PATH']}", "FAKE_STATE": str(state),
+           "FAKE_VIRTIOFS": str(virtio), "SAW_DEV_DIR": str(disks),
+           "SAW_ROOT": str(tmp_path / "run-saw"), "SAW_DEV_WAIT": "0"}
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "run-saw" / "profiles" / "profiles__p__ws__workspace.yaml").read_text() == "live: 1\n"
+    assert any(line.startswith("-t virtiofs ") for line in log(state, "mount.log"))
+
+
 def test_invalid_secret_name_is_skipped(tmp_path, disks):
     (disks / "virtio-saw-installer" / "config.json").write_text(
         json.dumps({"secrets": ["../../etc", "inference"]}))

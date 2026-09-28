@@ -189,8 +189,8 @@ def test_installer_units_run_install_then_apply(default_docs, tmp_path):
     install = written(cfg, "/etc/systemd/system/saw-install.service")
     apply = written(cfg, "/etc/systemd/system/saw-apply.service")
     assert "Wants=saw-install.service" in apply
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install" in install
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py apply" in apply
+    assert "ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 /run/saw/installer/apply_bom.py install" in install
+    assert "ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 /run/saw/installer/apply_bom.py apply" in apply
     assert "saw-install.service" in unit_deps(apply)["After"]
     for unit in (install, apply):
         assert "ExecStartPre=/usr/local/sbin/saw-mount-inputs" in unit
@@ -698,6 +698,21 @@ def test_cleanup_hook_can_be_turned_off():
                           if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
     assert ("Pod", "saw-test-cleanup") in hooks(render())
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
+
+
+def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
+    docs = render("--set", "vm.liveInputs=true")
+    spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
+    disks = {d["name"] for d in spec["domain"]["devices"]["disks"]}
+    filesystems = {f["name"] for f in spec["domain"]["devices"]["filesystems"]}
+    assert disks == {"rootdisk", "cloudinitdisk"}
+    assert filesystems == {"saw-installer", "saw-profiles", "saw-sec-0", "saw-sec-1"}
+    assert all(item["virtiofs"] == {} for item in spec["domain"]["devices"]["filesystems"])
+    annotations = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["annotations"]
+    assert "openshell.pattern/installer-checksum" not in annotations
+    assert "openshell.pattern/cloudinit-checksum" in annotations
+    cfg = cloud_config(docs)
+    assert "systemctl enable saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
 
 
 def test_signing_mode_defaults_to_warn(default_docs):

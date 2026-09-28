@@ -5,7 +5,8 @@ apply_bom.py - in-guest SAW installer (Stage 1).
 Runs INSIDE the gateway VM. saw-install.service runs `install` and then
 saw-apply.service runs `apply`, on every boot.
 There is no SSH and no setup Job: the chart attaches everything this script
-needs as read-only disks, which saw-mount-inputs mounts under /run/saw:
+needs as read-only disks, or over virtiofs when vm.liveInputs is set.
+saw-mount-inputs mounts either kind under /run/saw:
 
     /run/saw/installer/installer-bom.yaml   versioned Bill of Materials
     /run/saw/installer/config.json          per-VM settings rendered by Helm
@@ -19,10 +20,8 @@ Commands:
     validate        check BOM, config, profiles and credentials; changes nothing
     install         step 1 (root): install the BOM components, start the gateway
     apply           step 2 (root): apply SAW-BOM profiles as the runtime user
+    reconcile       re-run install and/or apply when virtiofs inputs changed
     apply-profiles  (runtime user) internal; reads its plan from stdin
-
-Stage 1 scope: images are pinned by digest, which gives integrity without
-signing. Package/bundle signing is intentionally left for a later stage.
 
 The installer talks to the gateway only through a local mTLS gateway entry.
 End users log in with their own OIDC token; this script never performs an
@@ -1757,6 +1756,102 @@ def apply_plan(data, dry_run):
     return 0
 
 
+def tree_hash(path):
+    """Stable hash of a mounted input tree.
+
+    ConfigMap virtiofs mounts expose keys as symlinks into a ..data directory.
+    Names starting with '..' are that implementation and are not hashed.
+    """
+    path = Path(path)
+    digest = hashlib.sha256()
+    if not path.is_dir():
+        digest.update(b"missing")
+        return digest.hexdigest()
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+        dirnames[:] = sorted(name for name in dirnames
+                             if not name.startswith("..") and name != "__pycache__")
+        for filename in sorted(filenames):
+            if filename.startswith("..") or filename.endswith(".pyc"):
+                continue
+            file_path = Path(dirpath) / filename
+            target = file_path.resolve() if file_path.is_symlink() else file_path
+            if not target.is_file():
+                continue
+            digest.update(file_path.relative_to(path).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(target.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def input_hashes(inputs):
+    return {
+        "installer": tree_hash(inputs.installer),
+        "profiles": tree_hash(inputs.profiles),
+        "secrets": tree_hash(inputs.secrets),
+    }
+
+
+def reconcile_actions(current, applied, install_done, apply_done):
+    """What reconcile should run.
+
+    An empty applied record after a successful boot is adopted: those inputs
+    are already installed. A later change runs install for the installer
+    tree and apply for profiles or Secrets.
+    """
+    if not applied:
+        if install_done and apply_done:
+            return []
+        return ["install", "apply"]
+    actions = []
+    if current.get("installer") != applied.get("installer"):
+        actions.append("install")
+    if (current.get("profiles") != applied.get("profiles")
+            or current.get("secrets") != applied.get("secrets")):
+        actions.append("apply")
+    return actions
+
+
+def write_inputs_status(state_dir, current, applied, message):
+    path = Path(state_dir) / "status.json"
+    data = read_json(path, {})
+    data["inputs"] = {
+        "applied": applied,
+        "current": current,
+        "upToDate": current == applied,
+        "message": message,
+    }
+    write_json_atomic(path, data)
+
+
+def cmd_reconcile(args):
+    """Re-apply virtiofs inputs that changed since the last successful run."""
+    inputs = Inputs(args.inputs)
+    state_dir = Path(args.state_dir)
+    current = input_hashes(inputs)
+    data = read_json(state_dir / "status.json", {})
+    applied = (data.get("inputs") or {}).get("applied") or {}
+    install_done = data.get("install", {}).get("phase") == "Done"
+    apply_done = data.get("apply", {}).get("phase") == "Done"
+    actions = reconcile_actions(current, applied, install_done, apply_done)
+    if not actions:
+        record = current if (install_done and apply_done) else applied
+        if install_done and apply_done and not applied:
+            record = current
+        write_inputs_status(state_dir, current, record or current,
+                            "inputs are up to date")
+        log("reconcile: inputs are up to date")
+        return 0
+    log(f"reconcile: running {', '.join(actions)}")
+    if "install" in actions and cmd_install(args) != 0:
+        return 1
+    if "apply" in actions and cmd_apply(args) != 0:
+        return 1
+    write_inputs_status(state_dir, current, current, "applied changed inputs")
+    log("reconcile: applied changed inputs")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="In-guest SAW installer (Stage 1)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1765,14 +1860,15 @@ def main(argv=None):
     p_validate.add_argument("--inputs", default=str(DEFAULT_INPUTS))
 
     for name, help_text in (("install", "step 1 (root): install BOM components, start the gateway"),
-                            ("apply", "step 2 (root): apply SAW-BOM profiles as the runtime user")):
+                            ("apply", "step 2 (root): apply SAW-BOM profiles as the runtime user"),
+                            ("reconcile", "re-run install and/or apply when inputs changed")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--inputs", default=str(DEFAULT_INPUTS))
         p.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
         p.add_argument("--dry-run", action="store_true")
         # Test hook: run the user part as the current user instead of runuser.
         p.add_argument("--as-current-user", action="store_true", help=argparse.SUPPRESS)
-        if name == "install":
+        if name in ("install", "reconcile"):
             p.add_argument("--bin-dir", default="/usr/local/bin")
             p.add_argument("--opt-dir", default="/opt")
             p.add_argument("--podman", default="podman")
@@ -1784,7 +1880,8 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     commands = {"validate": cmd_validate, "install": cmd_install,
-                "apply": cmd_apply, "apply-profiles": cmd_apply_profiles}
+                "apply": cmd_apply, "reconcile": cmd_reconcile,
+                "apply-profiles": cmd_apply_profiles}
     try:
         return commands[args.command](args)
     except InstallerError as exc:

@@ -1,7 +1,17 @@
 #!/bin/bash
-# Fake mount: "mount -t iso9660 -o OPTS DEV TARGET" copies DEV (a directory
-# standing in for the disk) into TARGET and records TARGET as mounted.
-dev="${@: -2:1}"; target="${@: -1}"
+# Fake mount. iso9660 copies the device directory. virtiofs copies
+# ${FAKE_VIRTIOFS}/<tag> and fails when that directory is absent.
 echo "$*" >> "${FAKE_STATE}/mount.log"
-cp -r "${dev}/." "${target}/"
+if [[ "${1:-}" == "-t" && "${2:-}" == "virtiofs" ]]; then
+  tag="${@: -2:1}"
+  target="${@: -1}"
+  src="${FAKE_VIRTIOFS:-/nonexistent}/${tag}"
+  [[ -d "$src" ]] || exit 1
+  mkdir -p "$target"
+  cp -r "${src}/." "${target}/"
+else
+  dev="${@: -2:1}"
+  target="${@: -1}"
+  cp -r "${dev}/." "${target}/"
+fi
 echo "${target}" >> "${FAKE_STATE}/mounted"

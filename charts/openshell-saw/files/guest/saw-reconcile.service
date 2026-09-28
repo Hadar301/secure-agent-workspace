@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile SAW inputs changed over virtiofs
+After=saw-apply.service
+ConditionPathExists=/var/lib/saw/ready
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/saw-with-lock /usr/local/sbin/saw-reconcile
+TimeoutStartSec=45min
+StandardOutput=journal+console
+StandardError=journal+console
