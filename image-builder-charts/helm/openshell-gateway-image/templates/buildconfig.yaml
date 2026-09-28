@@ -205,6 +205,7 @@ spec:
       RUN echo '{{ .Files.Get "files/enforce.json" | b64enc }}' | base64 -d > /build/saw/enforce.json
       RUN echo '{{ .Files.Get "files/registries.yaml" | b64enc }}' | base64 -d > /build/saw/saw.yaml
       RUN chmod 755 /build/saw/verify-bundle /build/saw/podman-signed-pull
+      RUN curl -fsSL -o /build/saw/cosign {{ .Values.cosign.url | quote }} && chmod 755 /build/saw/cosign
 
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
@@ -231,7 +232,8 @@ spec:
             --copy-in /build/saw/podman-signed-pull:/usr/libexec/saw/ \
             --copy-in /build/saw/enforce.json:/etc/saw/policy/ \
             --copy-in /build/saw/saw.yaml:/etc/containers/registries.d/ \
-            --run-command 'chmod 755 /usr/libexec/saw/verify-bundle /usr/libexec/saw/podman-signed-pull' \
+            --copy-in /build/saw/cosign:/usr/local/bin/ \
+            --run-command 'chmod 755 /usr/libexec/saw/verify-bundle /usr/libexec/saw/podman-signed-pull /usr/local/bin/cosign' \
             --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
             --run-command 'systemctl enable openshell-gateway-setup.service' \
             --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \

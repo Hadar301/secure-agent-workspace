@@ -111,6 +111,65 @@ def test_verify_bundle_warn_allows_unsigned_and_enforce_stops(tmp_path):
     assert json.loads(status.read_text())["bundle"]["signature"] == "unsigned"
 
 
+def test_edited_bundle_fails_enforce_and_warns(tmp_path):
+    """A test key signs the three installer files. Editing apply_bom.py makes
+    enforce stop and warn continue, without touching an already installed binary."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
+    installer = tmp_path / "installer"
+    installer.mkdir()
+    for name in ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"):
+        (installer / name).write_text(name + "\n")
+    trust = tmp_path / "trust"
+    trust.mkdir()
+    key = trust / "test.key"
+    pub = trust / "test.pub"
+    subprocess.run(["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+                    "-out", str(key)], check=True, capture_output=True)
+    subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
+    payload = tmp_path / "payload"
+    payload.write_bytes(b"".join((installer / n).read_bytes() for n in
+                                 ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh")))
+    bundle = installer / "bundle.sigstore.json"
+    subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key), "-out", str(bundle), str(payload)],
+                   check=True, capture_output=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "cosign").write_text(
+        "#!/bin/bash\n"
+        "key= bundle= prev=\n"
+        "for a in \"$@\"; do\n"
+        "  [[ \"$prev\" == --key ]] && key=$a\n"
+        "  [[ \"$prev\" == --bundle ]] && bundle=$a\n"
+        "  prev=$a\n"
+        "done\n"
+        "payload=${@: -1}\n"
+        "exec openssl dgst -sha256 -verify \"$key\" -signature \"$bundle\" \"$payload\"\n")
+    (bindir / "cosign").chmod(0o755)
+    installed = tmp_path / "openshell"
+    installed.write_text("old-binary\n")
+    status = tmp_path / "status.json"
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "SAW_INSTALLER_DIR": str(installer), "SAW_TRUST_DIR": str(trust),
+           "SAW_STATUS_FILE": str(status)}
+
+    def run(mode):
+        (installer / "config.json").write_text(json.dumps({"signing": {"mode": mode}}))
+        return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+
+    assert run("enforce").returncode == 0
+    assert json.loads(status.read_text())["bundle"]["signature"] == "verified"
+    (installer / "apply_bom.py").write_text("tampered\n")
+    enforced = run("enforce")
+    assert enforced.returncode == 1
+    assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
+    warned = run("warn")
+    assert warned.returncode == 0
+    assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
+    assert installed.read_text() == "old-binary\n"
+
+
 def test_unit_runs_verifier_before_apply_bom():
     from pathlib import Path
     unit = (Path(__file__).resolve().parents[2] / "charts" / "openshell-saw" / "files" /

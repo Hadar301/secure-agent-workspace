@@ -14,7 +14,7 @@ def test_reconcile_actions(ab):
     assert ab.reconcile_actions(current, {}, False, False) == ["install", "apply"]
     assert ab.reconcile_actions(current, current, True, True) == []
     changed_bom = {**current, "installer": "a2"}
-    assert ab.reconcile_actions(changed_bom, current, True, True) == ["install"]
+    assert ab.reconcile_actions(changed_bom, current, True, True) == ["install", "apply"]
     changed_secret = {**current, "secrets": "c2"}
     assert ab.reconcile_actions(changed_secret, current, True, True) == ["apply"]
     changed_both = {**current, "installer": "a2", "profiles": "b2"}

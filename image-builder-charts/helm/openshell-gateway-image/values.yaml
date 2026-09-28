@@ -9,6 +9,12 @@ openshell:
   supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.116-rhaiv.0"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
+# Pinned cosign used only to verify the installer bundle. The OpenShell
+# publisher key is not known, so this does not verify those images.
+cosign:
+  version: "v2.4.1"
+  url: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64"
+
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"

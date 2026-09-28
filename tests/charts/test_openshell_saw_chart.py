@@ -712,7 +712,7 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     assert "openshell.pattern/installer-checksum" not in annotations
     assert "openshell.pattern/cloudinit-checksum" in annotations
     cfg = cloud_config(docs)
-    assert "systemctl enable saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
+    assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
 
 
 def test_signing_mode_defaults_to_warn(default_docs):
@@ -720,6 +720,7 @@ def test_signing_mode_defaults_to_warn(default_docs):
     assert config["signing"]["mode"] == "warn"
     assert config["prune"]["mode"] == "report"
     assert config["prune"]["sandboxes"] is False
+    assert "bundle.sigstore.json" not in installer_data(default_docs)
     unit = written(cloud_config(default_docs), "/etc/systemd/system/saw-install.service")
     assert "verify-bundle" in unit
     assert unit.index("verify-bundle") < unit.index("apply_bom.py install")

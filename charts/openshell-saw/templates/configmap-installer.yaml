@@ -69,6 +69,10 @@ data:
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
+{{- if .Files.Get "files/installer/bundle.sigstore.json" }}
+  bundle.sigstore.json: |
+{{ .Files.Get "files/installer/bundle.sigstore.json" | indent 4 }}
+{{- end }}
 {{- /* Provider profiles the installer imports when the gateway lacks them
 (e.g. brave with governance off). Same files as governance-policy/profiles. */}}
 {{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" }}

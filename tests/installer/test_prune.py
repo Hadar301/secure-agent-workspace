@@ -101,3 +101,41 @@ def test_default_workspace_is_never_deleted(ab, fake_env, config, creds, tmp_pat
     applier.desired = set()
     applier.prune()
     assert any(obj["name"] == "default" for obj in applier.ledger.data["objects"])
+
+
+def _drop_provider(profiles, workspace, name):
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name == workspace:
+                ws.providers = [p for p in ws.providers if p.name != name]
+
+
+def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    ledger = tmp_path / "managed.json"
+    report = {**config, "prune": {"mode": "report", "sandboxes": False, "ledgerPath": str(ledger)}}
+    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    _drop_provider(profiles, "default", "brave")
+    before = [c for c in fake_env.openshell_calls() if "delete" in c]
+    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    assert "default/brave" in fake_env.openshell_state()["providers"]
+    assert [c for c in fake_env.openshell_calls() if "delete" in c] == before
+    assert "would delete provider default/brave" in capsys.readouterr().out
+    on = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
+    ab.ProfileApplier(ab.Shell(), on, creds).apply(profiles)
+    assert "default/brave" not in fake_env.openshell_state()["providers"]
+
+
+def test_hand_made_workspace_and_provider_are_never_deleted(ab, fake_env, config, profiles, creds, tmp_path):
+    ledger = tmp_path / "managed.json"
+    cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["workspaces"].append("notes")
+    state["providers"]["default/mine"] = {"type": "openai", "credential": "local"}
+    fake_env.set_openshell_state(state)
+    for profile in profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    assert "notes" in state["workspaces"]
+    assert "default/mine" in state["providers"]

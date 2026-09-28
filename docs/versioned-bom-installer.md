@@ -188,7 +188,7 @@ and leaves the binaries already on disk running. `warn` logs the unsigned
 bundle and continues. An image built before this file exists has no verifier:
 `warn` and `off` still boot, `enforce` does not.
 
-The golden image also ships `/etc/saw/trust/` (the trust root),
+The golden image installs `cosign` at `/usr/local/bin/cosign` (version pinned in the image chart) and ships `/etc/saw/trust/` (the trust root),
 `/etc/containers/registries.d/saw.yaml` (`use-sigstore-attachments: true`
 for `quay.io/opendatahub`), and `/etc/saw/policy/enforce.json`. The system
 policy stays permissive so `warn` can still pull. `enforce` pulls through
@@ -210,7 +210,7 @@ secret named `COSIGN_PRIVATE_KEY`, never a file in git. The public key is
 the matching `*.pub` added to the golden image under `/etc/saw/trust` and
 listed in `signing.trustKeys`. Rotation: generate a new cosign key pair,
 add the new public key beside the old one, rebuild the golden image, sign
-new bundles with the new key (`.github/workflows/sign-installer-bundle.yml`),
+new bundles with the new key (`.github/workflows/sign-installer-bundle.yml`, which uploads `bundle.sigstore.json` and does not commit it),
 then drop the old public key on the following image build. A bundle signed
 only by the retired key then fails `enforce`.
 
@@ -224,10 +224,10 @@ serve those same objects over virtiofs. The guest mounts them at the same
 upgrade is one run, holds `/run/saw/lock` together with the boot units, and
 then:
 
-- runs `install` when the installer tree changed (BOM or gateway config).
-  Unchanged binaries are skipped. The gateway restarts only when a binary
-  or its config changed.
-- runs `apply` when profiles or Secrets changed. Existing providers get
+- runs `install`, then `apply`, when the installer tree changed (BOM or
+  gateway config). Unchanged binaries are skipped. The gateway restarts
+  only when a binary or its config changed.
+- runs `apply` only when profiles or Secrets changed. Existing providers get
   `provider update` with the new key. Sandboxes keep running.
 - writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
   `make openshell-saw-status` shows whether that matches the cluster.
@@ -256,7 +256,8 @@ set to `true`. This is per VM. It is not `pruneOnRemove`, which only decides
 whether removing a user from `overrides/saw-users.yaml` also deletes that
 user's VM.
 
-The installer records objects it creates in `/var/lib/saw/managed.json`.
+The installer records objects it creates in `/var/lib/saw/user/managed.json`
+(that directory is owned by the runtime user; `/var/lib/saw` stays root-owned).
 Only those objects can be removed. A workspace, provider, or sandbox created
 by hand is never deleted. The first successful apply adopts whatever already
 matches the current profiles and does not delete anything. Deletion order is

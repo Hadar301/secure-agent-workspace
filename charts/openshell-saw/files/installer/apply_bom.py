@@ -1867,7 +1867,17 @@ def cmd_apply(args):
 
         cfg = dict(cfg)
         prune = dict(cfg.get("prune") or {})
-        prune["ledgerPath"] = str(state_dir / "managed.json")
+        # The child runs as the runtime user. /var/lib/saw itself stays
+        # root-owned (status.json); the ledger lives in a directory that user
+        # can write, or the first apply dies with PermissionError.
+        _, owner = runtime_home(cfg, args.as_current_user)
+        ledger_dir = state_dir / "user"
+        if not args.dry_run:
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+            if owner:
+                os.chown(ledger_dir, *owner)
+            os.chmod(ledger_dir, 0o700)
+        prune["ledgerPath"] = str(ledger_dir / "managed.json")
         cfg["prune"] = prune
         if args.dry_run:
             # Nothing runs in a dry run, so no user switch is needed (the
@@ -1897,7 +1907,7 @@ def cmd_apply(args):
         if result.returncode != 0:
             raise InstallerError("applying profiles failed; see the log above")
         report = {}
-        ledger_path = state_dir / "managed.json"
+        ledger_path = state_dir / "user" / "managed.json"
         if ledger_path.is_file():
             report = json.loads(ledger_path.read_text(encoding="utf-8")).get("lastPrune") or {}
         status.set("Done", bom_name, pruned=report.get("pruned"),
@@ -1981,10 +1991,15 @@ def reconcile_actions(current, applied, install_done, apply_done):
             return []
         return ["install", "apply"]
     actions = []
-    if current.get("installer") != applied.get("installer"):
+    installer_changed = current.get("installer") != applied.get("installer")
+    rest_changed = (current.get("profiles") != applied.get("profiles")
+                    or current.get("secrets") != applied.get("secrets"))
+    if installer_changed:
         actions.append("install")
-    if (current.get("profiles") != applied.get("profiles")
-            or current.get("secrets") != applied.get("secrets")):
+    # A BOM or installer-file change is followed by apply, so the new
+    # binaries are what the profile step uses. Profile or Secret changes
+    # run apply only.
+    if installer_changed or rest_changed:
         actions.append("apply")
     return actions
 
