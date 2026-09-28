@@ -1,0 +1,81 @@
+#!/bin/bash
+# Check the installer bundle before apply_bom.py runs.
+# This script is installed from the golden image. It is not the code it checks.
+# Trust keys live in /etc/saw/trust. A namespace editor cannot replace them.
+set -u
+INSTALLER_DIR="${SAW_INSTALLER_DIR:-/run/saw/installer}"
+TRUST_DIR="${SAW_TRUST_DIR:-/etc/saw/trust}"
+STATUS="${SAW_STATUS_FILE:-/var/lib/saw/status.json}"
+CONFIG="${INSTALLER_DIR}/config.json"
+
+record() {
+  python3 - "$STATUS" "$1" "$2" <<'PY'
+import json, os, sys
+path, sig, msg = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, ValueError):
+    data = {}
+data["bundle"] = {"signature": sig, "message": msg}
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+mode=warn
+if [[ -f "$CONFIG" ]]; then
+  mode=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("signing", {}).get("mode", "warn"))' "$CONFIG" 2>/dev/null || echo warn)
+fi
+
+finish() {
+  local sig="$1" msg="$2"
+  echo "$msg" >&2
+  record "$sig" "$msg" || true
+  if [[ "$mode" == "enforce" ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+if [[ "$mode" == "off" ]]; then
+  record off ""
+  exit 0
+fi
+
+payload=$(mktemp)
+trap 'rm -f "$payload"' EXIT
+for f in installer-bom.yaml apply_bom.py setup-dashboard.sh; do
+  if [[ ! -f "${INSTALLER_DIR}/${f}" ]]; then
+    finish failed "installer bundle is missing ${f}"
+  fi
+  cat "${INSTALLER_DIR}/${f}" >> "$payload"
+done
+
+bundle="${INSTALLER_DIR}/bundle.sigstore.json"
+if [[ ! -s "$bundle" ]]; then
+  finish unsigned "installer bundle is unsigned"
+fi
+
+if ! command -v cosign >/dev/null 2>&1; then
+  finish failed "cosign is not installed; cannot verify the installer bundle"
+fi
+
+shopt -s nullglob
+keys=("${TRUST_DIR}"/*.pub)
+if [[ ${#keys[@]} -eq 0 ]]; then
+  finish failed "no public keys in ${TRUST_DIR}"
+fi
+for key in "${keys[@]}"; do
+  if cosign verify-blob --bundle "$bundle" --key "$key" --offline "$payload" >/dev/null 2>&1; then
+    record verified "installer bundle verified by $(basename "$key")"
+    exit 0
+  fi
+done
+finish failed "installer bundle signature does not match a key in ${TRUST_DIR}"

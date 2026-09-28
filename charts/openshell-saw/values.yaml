@@ -86,6 +86,17 @@ openshell:
 # Container runtime inside the gateway VM. Stage 1 supports podman only.
 containerRuntime: podman
 
+# Image and installer-bundle signature checks. warn records an unsigned
+# component and still installs it. enforce refuses the install. off skips
+# the check. enforce also requires trustKeys or a keyless identity below:
+# the public keys themselves live in the golden image at /etc/saw/trust,
+# not in this namespace.
+signing:
+  mode: warn
+  trustKeys: []
+  identity: ""
+  issuer: ""
+
 # If a BOM profile's sandbox image lives in this cluster's internal registry,
 # the VM's rootless Podman pulls it without credentials. This grants
 # system:image-puller to system:unauthenticated, scoped to this namespace.

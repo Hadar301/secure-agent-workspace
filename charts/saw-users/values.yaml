@@ -27,6 +27,8 @@ defaults:
   vaultPrefix: secret/data/hub
   # Merged under each user's `values`. owner is the user name.
   openshellSaw:
+    signing:
+      mode: warn
     job:
       waitForSecrets: true
       backoffLimit: 5

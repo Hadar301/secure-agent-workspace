@@ -16,6 +16,10 @@ StartLimitBurst=6
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/usr/local/sbin/saw-mount-inputs
+# The verifier lives in the golden image, not in the ConfigMap it checks.
+# An image built before signing was added has no verifier: warn and off
+# continue, enforce refuses to run the installer.
+ExecStartPre=/bin/bash -c 'if [[ -x /usr/libexec/saw/verify-bundle ]]; then exec /usr/libexec/saw/verify-bundle; fi; echo "verify-bundle is not in this golden image" >&2; mode=$(python3 -c "import json; print(json.load(open(\"/run/saw/installer/config.json\")).get(\"signing\", {}).get(\"mode\", \"warn\"))" 2>/dev/null || echo warn); [[ "$mode" != enforce ]]'
 ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install
 Restart=on-failure
 RestartSec=60

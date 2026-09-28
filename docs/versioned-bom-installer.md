@@ -160,9 +160,62 @@ make test-installer        # installer + chart tests; chart tests need helm
   Secrets, systemd units, gateway TOML (parsed), render-time guards, and
   runs the shipped installer's `validate` against the rendered ConfigMaps.
 
+## Signing
+
+`signing.mode` is `off`, `warn`, or `enforce`. The chart default is `warn`.
+On the pattern path set it in `defaults.openshellSaw` in
+`charts/saw-users/values.yaml`, or in one user's `values`. `enforce` fails
+at render time unless `signing.trustKeys` or both `signing.identity` and
+`signing.issuer` are set.
+
+Each OpenShell component in the InstallerBOM may name its signer:
+
+```yaml
+signature:
+  keyRef: openshell          # /etc/saw/trust/openshell.pub in the golden image
+# or, for keyless signing:
+# identity: https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1
+# issuer: https://token.actions.githubusercontent.com
+```
+
+`warn` installs the component and records `signature: unsigned` (or `failed`)
+in `/var/lib/saw/status.json`. `enforce` stops `saw-install` before any
+binary is replaced. The message is `image <ref> is not signed by <signer>`.
+`saw-install.service` runs `/usr/libexec/saw/verify-bundle` before
+`apply_bom.py`. That program is part of the golden image. A changed
+`apply_bom.py` without a new `bundle.sigstore.json` stops an `enforce` boot
+and leaves the binaries already on disk running. `warn` logs the unsigned
+bundle and continues. An image built before this file exists has no verifier:
+`warn` and `off` still boot, `enforce` does not.
+
+The golden image also ships `/etc/saw/trust/` (the trust root),
+`/etc/containers/registries.d/saw.yaml` (`use-sigstore-attachments: true`
+for `quay.io/opendatahub`), and `/etc/saw/policy/enforce.json`. The system
+policy stays permissive so `warn` can still pull. `enforce` pulls through
+`/usr/libexec/saw/podman-signed-pull`, which uses the enforce policy for
+that one pull.
+
+Spike on the `quay.io/opendatahub/odh-openshell-*` digests in
+`charts/openshell-saw/values.yaml`: each digest has a cosign `.sig` tag and
+an empty certificate, so the signature is key-based, not Fulcio keyless.
+The public key is not in the signature and is not published next to the
+image. The gateway VM's Podman is 5.8 (newer than 4.4). Rekor answers from
+the VM. Key-based trust is the one that works without Fulcio, including
+air-gapped, once the publisher key is placed in `/etc/saw/trust`. Until
+that key is known, leave `signing.mode` at `warn`. Do not put a guessed key
+in the image.
+
+Key custody for the installer bundle: the private key is a GitHub Actions
+secret named `COSIGN_PRIVATE_KEY`, never a file in git. The public key is
+the matching `*.pub` added to the golden image under `/etc/saw/trust` and
+listed in `signing.trustKeys`. Rotation: generate a new cosign key pair,
+add the new public key beside the old one, rebuild the golden image, sign
+new bundles with the new key (`.github/workflows/sign-installer-bundle.yml`),
+then drop the old public key on the following image build. A bundle signed
+only by the retired key then fails `enforce`.
+
 ## Not in Stage 1
 
-- Signing of images or installer bundles (digest pinning only).
 - Live updates without a VM restart (ConfigMap/Secret disks are read at boot).
 - Removing workspaces/providers/sandboxes that were dropped from a profile.
 - Reporting status to the cluster beyond the optional readiness probe

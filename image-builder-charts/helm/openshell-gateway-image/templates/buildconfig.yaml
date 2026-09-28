@@ -195,6 +195,17 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
+      # Trust root and the bundle verifier. These are not taken from the
+      # namespace: a namespace editor can change the installer ConfigMap, but
+      # not these files. The publisher key is not baked in; add openshell.pub
+      # here when it is known. See docs/versioned-bom-installer.md.
+      RUN mkdir -p /build/saw
+      RUN echo '{{ .Files.Get "files/verify-bundle" | b64enc }}' | base64 -d > /build/saw/verify-bundle
+      RUN echo '{{ .Files.Get "files/podman-signed-pull" | b64enc }}' | base64 -d > /build/saw/podman-signed-pull
+      RUN echo '{{ .Files.Get "files/enforce.json" | b64enc }}' | base64 -d > /build/saw/enforce.json
+      RUN echo '{{ .Files.Get "files/registries.yaml" | b64enc }}' | base64 -d > /build/saw/saw.yaml
+      RUN chmod 755 /build/saw/verify-bundle /build/saw/podman-signed-pull
+
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
             --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
@@ -214,8 +225,13 @@ spec:
             --mkdir /usr/lib/systemd/user \
             --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
             --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
-            --run-command 'mkdir -p /usr/local/sbin' \
+            --run-command 'mkdir -p /usr/local/sbin /usr/libexec/saw /etc/saw/trust /etc/saw/policy /etc/containers/registries.d' \
             --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            --copy-in /build/saw/verify-bundle:/usr/libexec/saw/ \
+            --copy-in /build/saw/podman-signed-pull:/usr/libexec/saw/ \
+            --copy-in /build/saw/enforce.json:/etc/saw/policy/ \
+            --copy-in /build/saw/saw.yaml:/etc/containers/registries.d/ \
+            --run-command 'chmod 755 /usr/libexec/saw/verify-bundle /usr/libexec/saw/podman-signed-pull' \
             --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
             --run-command 'systemctl enable openshell-gateway-setup.service' \
             --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \

@@ -698,3 +698,16 @@ def test_cleanup_hook_can_be_turned_off():
                           if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
     assert ("Pod", "saw-test-cleanup") in hooks(render())
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
+
+
+def test_signing_mode_defaults_to_warn(default_docs):
+    config = json.loads(installer_data(default_docs)["config.json"])
+    assert config["signing"]["mode"] == "warn"
+    unit = written(cloud_config(default_docs), "/etc/systemd/system/saw-install.service")
+    assert "verify-bundle" in unit
+    assert unit.index("verify-bundle") < unit.index("apply_bom.py install")
+
+
+def test_enforce_without_trust_material_fails_at_render():
+    err = render_error("--set", "signing.mode=enforce")
+    assert "signing.mode enforce requires" in err

@@ -1,0 +1,36 @@
+name: Sign installer bundle
+
+on:
+  workflow_dispatch:
+
+# COSIGN_PRIVATE_KEY is a GitHub Actions secret. It is never committed.
+# The matching public key is added to the golden image under /etc/saw/trust
+# and named by signing.trustKeys. See docs/versioned-bom-installer.md.
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the rendered installer bundle
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COSIGN_PRIVATE_KEY}" ]; then
+            echo "COSIGN_PRIVATE_KEY is not configured. Refusing to sign." >&2
+            exit 1
+          fi
+          # The VM verifies the bytes it mounts, in this order:
+          # installer-bom.yaml, apply_bom.py, setup-dashboard.sh.
+          # installer-bom.yaml is rendered from chart values, so build the
+          # payload from a rendered installer ConfigMap before signing.
+          payload=${PAYLOAD:-}
+          if [ -z "$payload" ] || [ ! -f "$payload" ]; then
+            echo "Set PAYLOAD to the concatenation of those three mounted files, then re-run." >&2
+            echo "cosign sign-blob --key env://COSIGN_PRIVATE_KEY --bundle bundle.sigstore.json \"\$PAYLOAD\"" >&2
+            exit 1
+          fi
+          cosign sign-blob --key env://COSIGN_PRIVATE_KEY --bundle bundle.sigstore.json "$payload"
+          echo "Commit bundle.sigstore.json onto the installer ConfigMap. Do not commit the private key."

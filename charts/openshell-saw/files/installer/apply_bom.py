@@ -238,12 +238,14 @@ def validate_bom(doc):
     _require_keys(spec["openshell"], set(COMPONENTS), set(COMPONENTS), "spec.openshell")
     for comp, entry in spec["openshell"].items():
         where = f"spec.openshell.{comp}"
-        _require_keys(entry, {"version", "image"}, {"version", "image", "path"}, where)
+        _require_keys(entry, {"version", "image"}, {"version", "image", "path", "signature"}, where)
         if not isinstance(entry["version"], str) or not VERSION_RE.match(entry["version"]):
             raise InstallerError(f"{where}.version is not a version string")
         _check_digest_image(entry["image"], f"{where}.image")
         if "path" in entry and (not isinstance(entry["path"], str) or not entry["path"].startswith("/")):
             raise InstallerError(f"{where}.path must be an absolute path")
+        if "signature" in entry:
+            _validate_signature(entry["signature"], f"{where}.signature")
     if "nemoclaw" in spec:
         _require_keys(spec["nemoclaw"], {"cliImage"}, {"cliImage"}, "spec.nemoclaw")
         image = spec["nemoclaw"]["cliImage"]
@@ -254,6 +256,29 @@ def validate_bom(doc):
         if not DIGEST_IMAGE_RE.match(image):
             log(f"WARN: spec.nemoclaw.cliImage {image} is not pinned by digest")
     return doc
+
+
+KEY_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+
+def _validate_signature(sig, where):
+    """A component signature is a key name or a keyless identity, not both."""
+    _require_keys(sig, set(), {"keyRef", "identity", "issuer"}, where)
+    key_ref = sig.get("keyRef", "")
+    identity = sig.get("identity", "")
+    issuer = sig.get("issuer", "")
+    if key_ref and (identity or issuer):
+        raise InstallerError(f"{where}: set keyRef or identity and issuer, not both")
+    if key_ref:
+        if not isinstance(key_ref, str) or not KEY_REF_RE.match(key_ref):
+            raise InstallerError(f"{where}.keyRef must name a file under /etc/saw/trust")
+        return
+    if identity or issuer:
+        if not (isinstance(identity, str) and isinstance(issuer, str)
+                and identity.startswith("https://") and issuer.startswith("https://")):
+            raise InstallerError(f"{where}: identity and issuer must both be https URLs")
+        return
+    raise InstallerError(f"{where}: set keyRef or both identity and issuer")
 
 
 def _check_digest_image(image, where):
@@ -290,6 +315,7 @@ CONFIG_DEFAULTS = {
     "ownerSubject": "",
     "sandboxDashboardRoute": "",
     "dashboard": {"enabled": False},
+    "signing": {"mode": "off"},
 }
 
 
@@ -307,6 +333,13 @@ def load_config(path):
         raise InstallerError("installer config: invalid runtimeUser")
     if not NAME_RE.match(merged["mtlsGateway"]):
         raise InstallerError("installer config: invalid mtlsGateway name")
+    signing = merged.get("signing") or {}
+    if not isinstance(signing, dict):
+        raise InstallerError("installer config: signing must be an object")
+    mode = signing.get("mode", "off")
+    if mode not in ("off", "warn", "enforce"):
+        raise InstallerError("installer config: signing.mode must be off, warn, or enforce")
+    merged["signing"] = {**CONFIG_DEFAULTS["signing"], **signing, "mode": mode}
     dash = merged.get("dashboard") or {}
     if dash.get("enabled"):
         for key in ("image", "proxyImage", "clientId"):
@@ -652,12 +685,16 @@ class ComponentInstaller:
     hash still match is left alone, so reboots do not re-pull anything.
     """
 
-    def __init__(self, shell, bin_dir, state_file, podman="podman", opt_dir="/opt"):
+    def __init__(self, shell, bin_dir, state_file, podman="podman", opt_dir="/opt",
+                 signing_mode="off"):
         self.sh = shell
         self.bin_dir = Path(bin_dir)
         self.state_file = Path(state_file)
         self.podman = podman
         self.opt_dir = Path(opt_dir)
+        self.signing_mode = signing_mode
+        self.signatures = {}
+        self.signed_pull = Path("/usr/libexec/saw/podman-signed-pull")
 
     def load_state(self):
         return read_json(self.state_file, {"components": {}})
@@ -679,8 +716,62 @@ class ComponentInstaller:
         finally:
             self.sh.run([self.podman, "rm", "-f", cid], check=False, quiet=True)
 
+    def signer_label(self, signature):
+        if not signature:
+            return "a configured signer"
+        if signature.get("keyRef"):
+            return signature["keyRef"]
+        return signature.get("identity") or "the configured identity"
+
+    def check_signatures(self, bom):
+        """Record a signature result per component. enforce fails before install.
+
+        A plain `podman pull` succeeding is not proof of a signature: podman
+        only refuses an unsigned image when the golden image's signed-pull
+        helper is present, or when the test fake honors SAW_SIGNING_CHECK.
+        """
+        self.signatures = {}
+        if self.signing_mode == "off" or self.sh.dry_run:
+            return self.signatures
+        installed = self.load_state().get("components", {})
+        for comp, entry in bom["spec"]["openshell"].items():
+            dest = self.bin_dir / COMPONENTS[comp]["dest"]
+            signature = entry.get("signature")
+            if not signature:
+                if self.signing_mode == "enforce":
+                    raise InstallerError(
+                        f"image {entry['image']} is not signed by {self.signer_label(None)}")
+                log(f"WARN: image {entry['image']} is not signed by {self.signer_label(None)}")
+                self.signatures[comp] = "unsigned"
+                continue
+            if self._is_current(installed.get(comp), entry["image"], dest):
+                self.signatures[comp] = "verified"
+                continue
+            self.signatures[comp] = self._verify_signature(comp, entry)
+        return self.signatures
+
+    def _verify_signature(self, comp, entry):
+        image = entry["image"]
+        signer = self.signer_label(entry.get("signature"))
+        env = {"SAW_SIGNING_CHECK": "1", "SAW_SIGNING_MODE": self.signing_mode,
+               "SAW_SIGNING_EXPECT": signer}
+        if self.signed_pull.is_file():
+            cmd = [str(self.signed_pull), image]
+        else:
+            cmd = [self.podman, "pull", "--quiet", image]
+        result = self.sh.run(cmd, env=env, check=False, timeout=900)
+        proven = self.signed_pull.is_file() or "saw-signature-verified" in (result.out or "")
+        if result.rc == 0 and proven:
+            return "verified"
+        message = f"image {image} is not signed by {signer}"
+        if self.signing_mode == "enforce":
+            raise InstallerError(message)
+        log(f"WARN: {message}")
+        return "unsigned"
+
     def install(self, bom):
         """Install every component. Returns the names of changed components."""
+        self.check_signatures(bom)
         state = self.load_state()
         installed = state.setdefault("components", {})
         changed = []
@@ -1456,16 +1547,19 @@ class Status:
     def read(self):
         return read_json(self.path, {})
 
-    def set(self, phase, bom=None, message=""):
+    def set(self, phase, bom=None, message="", signature=None):
         log(f"{self.step}: {phase}{' - ' + message if message else ''}")
         if self.dry_run:
             return
         data = self.read()
-        data[self.step] = {
+        section = {
             "phase": phase, "bom": bom, "message": message,
             "installerVersion": INSTALLER_VERSION,
             "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if signature:
+            section["signature"] = signature
+        data[self.step] = section
         write_json_atomic(self.path, data)
         install, apply = data.get("install", {}), data.get("apply", {})
         is_ready = (install.get("phase") == "Done" and apply.get("phase") == "Done"
@@ -1521,7 +1615,8 @@ def cmd_install(args):
         cfg = load_config(inputs.config)
         bom_name = bom["metadata"]["name"]
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
-                                       podman=args.podman, opt_dir=args.opt_dir)
+                                       podman=args.podman, opt_dir=args.opt_dir,
+                                       signing_mode=cfg.get("signing", {}).get("mode", "off"))
         changed = installer.install(bom)
         log(f"changed components: {', '.join(changed) or 'none'}")
 
@@ -1544,11 +1639,12 @@ def cmd_install(args):
                            restart=bool(state.get("gatewayRestartPending")))
         if state.pop("gatewayRestartPending", None) and not args.dry_run:
             write_json_atomic(state_file, state)
-        status.set("Done", bom_name)
+        status.set("Done", bom_name, signature=installer.signatures)
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
-        status.set("Failed", bom_name, str(exc).splitlines()[0])
+        signature = installer.signatures if "installer" in locals() else None
+        status.set("Failed", bom_name, str(exc).splitlines()[0], signature=signature)
         return 1
 
 

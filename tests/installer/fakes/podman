@@ -24,6 +24,14 @@ if cmd == "pull":
     if image not in images:
         print(f"Error: initializing source docker://{image}: manifest unknown", file=sys.stderr)
         sys.exit(125)
+    unsigned_file = state / "unsigned.json"
+    unsigned = json.loads(unsigned_file.read_text()) if unsigned_file.exists() else []
+    if os.environ.get("SAW_SIGNING_CHECK") == "1" and image in unsigned:
+        signer = os.environ.get("SAW_SIGNING_EXPECT", "a configured signer")
+        print(f"Error: image {image} is not signed by {signer}", file=sys.stderr)
+        sys.exit(125)
+    if os.environ.get("SAW_SIGNING_CHECK") == "1":
+        print("saw-signature-verified")
     print("sha256:" + "0" * 64)
 elif cmd == "create":
     image = args[-1]
