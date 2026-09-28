@@ -21,6 +21,10 @@ SANDBOX_IMAGE  ?=
 CONTAINER_RUNTIME ?= podman
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+# interceptor (OpenShell governance interceptor) or apf (docs/apf.md)
+GOVERNANCE_ENGINE ?= interceptor
+# Python for the APF bundle tooling (scripts/apf-bundle.py needs cryptography).
+APF_PYTHON ?= python3
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -55,7 +59,7 @@ WORKSPACE      ?= default
 # Pass values through the environment so spaces and special shell characters
 # in credentials do not become parts of a shell command.
 export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
-export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED
+export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOVERNANCE_ENGINE
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
@@ -74,6 +78,7 @@ export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
         clean-stale-operators pre-uninstall uninstall pattern-uninstall \
+        apf-keys apf-bundle apf-bundle-check governance-apf \
         .check-saw-name .check-ssh-key .check-gateway-ca .check-prereqs
 
 ##@ Setup and Images
@@ -423,6 +428,23 @@ governance-profile-create: .check-saw-name ## Create a profile from YAML (PROFIL
 
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)
+
+# --- APF (Agent Policy Fabric) governance: docs/apf.md ---
+
+APF_SEED ?= $(HOME)/.apf-keys/apf.seed
+GHCR_USER ?=
+
+apf-keys: ## Create the APF signing key (seed in APF_SEED, public key in the chart)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py keygen
+
+apf-bundle: ## Sign charts/governance-policy into the APF bundle (commit it to your deployment branch)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py build
+
+apf-bundle-check: ## Check the committed APF bundle: hashes, signature, up to date
+	@$(APF_PYTHON) scripts/apf-bundle.py verify
+
+governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=, GHCR_TOKEN= env)
+	@NS=$(NS) APF_SEED=$(APF_SEED) GHCR_USER=$(GHCR_USER) PYTHON=$(APF_PYTHON) $(SCRIPTS_DIR)/governance-apf.sh
 
 # --- Test ---
 
