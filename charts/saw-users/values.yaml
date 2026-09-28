@@ -29,6 +29,9 @@ defaults:
   openshellSaw:
     signing:
       mode: warn
+    prune:
+      mode: report
+      sandboxes: false
     job:
       waitForSecrets: true
       backoffLimit: 5

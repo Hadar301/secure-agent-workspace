@@ -247,9 +247,37 @@ existing VM's cloud-init. Recreate the VM after the value is true. With
 live inputs, a change to the installer ConfigMap or a provider Secret does
 not set `RestartRequired`. The cloud-init checksum still does.
 
+## Removing things from a profile
+
+`prune.mode` is `off`, `report`, or `on`. The default is `report`: the
+installer logs `would delete ...` and deletes nothing. `on` deletes. Even
+then, `prune.sandboxes` defaults to `false`, so sandboxes stay until that is
+set to `true`. This is per VM. It is not `pruneOnRemove`, which only decides
+whether removing a user from `overrides/saw-users.yaml` also deletes that
+user's VM.
+
+The installer records objects it creates in `/var/lib/saw/managed.json`.
+Only those objects can be removed. A workspace, provider, or sandbox created
+by hand is never deleted. The first successful apply adopts whatever already
+matches the current profiles and does not delete anything. Deletion order is
+sandboxes, the workspace inference route, providers, provider profiles the
+installer imported, then workspaces. The `default` workspace and the system
+inference route are never deleted. A workspace is deleted only when it is
+empty afterwards; otherwise it is kept and the log names what is left in it.
+
+Workspaces and sandboxes are labeled `saw.redhat.com/managed=true` (OpenShell
+0.0.116 accepts labels on those two kinds, and on no other kind this installer
+creates). Providers, inference routes, and imported provider profiles are
+identified by the ledger alone. A missing or empty profile ConfigMap fails
+the apply and deletes nothing.
+
+Spike on the gateway CLI: `workspace delete`, `sandbox delete`, `provider
+delete`, `inference delete`, and `provider profile delete` exist. `workspace
+create` and `sandbox create` take `--label`. `provider create` and `inference
+set` do not.
+
 ## Not in Stage 1
 
-- Removing workspaces/providers/sandboxes that were dropped from a profile.
 - Reporting status to the cluster beyond the optional readiness probe
   (`vm.readinessProbe: true`, needs guest-agent exec).
 - Docker as the VM container runtime.

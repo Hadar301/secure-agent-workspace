@@ -65,6 +65,16 @@ if op == "workspace create" and (state_dir / "rbac").exists():
         fail("Error: permission denied (requires platform admin)")
 ws = opt("--workspace", "default")
 
+def label_key(kind, workspace, name):
+    return f"{kind}/{workspace}/{name}"
+
+
+def remember_labels(kind, workspace, name):
+    labels = [args[i + 1] for i, arg in enumerate(args) if arg == "--label"]
+    if labels:
+        state.setdefault("labels", {})[label_key(kind, workspace, name)] = labels
+
+
 def cert_roles(tls_dir):
     """OUs of the client certificate `gateway add --local` would import."""
     import subprocess
@@ -87,14 +97,27 @@ if head[0] == "gateway":
     elif head[1] == "select":
         state["selected"] = head[2]
 elif op == "workspace list":
-    print("NAME")
+    print("NAME STATUS LABELS")
     for w in state["workspaces"]:
-        print(w)
+        labels = ",".join(state.get("labels", {}).get(label_key("workspace", "", w), []))
+        print(f"{w} Active {labels}")
+elif op == "workspace get":
+    name = head[2]
+    if name not in state["workspaces"]:
+        fail("Error: workspace not found")
+    labels = ",".join(state.get("labels", {}).get(label_key("workspace", "", name), []))
+    print(f"Name: {name}\nLabels: {labels}")
 elif op == "workspace create":
     name = opt("--name")
     if name in state["workspaces"]:
         fail(f"Error: workspace {name} already exists")
     state["workspaces"].append(name)
+    remember_labels("workspace", "", name)
+elif op == "workspace delete":
+    name = head[2]
+    if name == "default":
+        fail("Error: cannot delete the default workspace")
+    state["workspaces"] = [w for w in state["workspaces"] if w != name]
 elif op == "workspace member":
     member = [opt("--workspace"), opt("--subject"), opt("--role")]
     if member in state["members"]:
@@ -111,6 +134,9 @@ elif op == "provider profile" and head[2] == "import":
         fail(f"Error: provider profile '{doc['id']}' already exists")
     imported.setdefault(ws, []).append(doc["id"])
     print(f"Imported provider profile {doc['id']}")
+elif op == "provider profile" and head[2] == "delete":
+    imported = state.setdefault("imported_profiles", {})
+    imported[ws] = [item for item in imported.get(ws, []) if item != head[3]]
 elif op == "provider create":
     if opt("--type") in no_profiles and opt("--type") not in state.get("imported_profiles", {}).get(ws, []):
         # Wording of OpenShell 0.0.116 when governance does not serve the profile.
@@ -135,6 +161,8 @@ elif op == "provider get":
     if f"{ws}/{head[2]}" not in state["providers"]:
         fail("Error: provider not found")
     print(f"Name: {head[2]}")
+elif op == "provider delete":
+    state["providers"].pop(f"{ws}/{head[2]}", None)
 elif op == "inference set":
     if "--system" in head:
         # Like the real gateway: the system route's provider must exist in 'default'.
@@ -143,11 +171,23 @@ elif op == "inference set":
         state["system_inference"] = [opt("--provider"), opt("--model")]
     else:
         state["inference"][ws] = [opt("--provider"), opt("--model")]
+elif op == "inference delete":
+    if "--system" in head:
+        state["system_inference"] = None
+    else:
+        state["inference"].pop(ws, None)
+elif op == "sandbox list":
+    print("NAME PHASE")
+    for key in sorted(state["sandboxes"]):
+        owner, name = key.split("/", 1)
+        if owner == ws:
+            print(f"{name} {state['sandboxes'][key]['phase']}")
 elif op == "sandbox get":
     sb = state["sandboxes"].get(f"{ws}/{head[2]}")
     if not sb:
         fail("Error: sandbox not found")
-    print(f"Name: {head[2]}\nPhase: {sb['phase']}")
+    labels = ",".join(state.get("labels", {}).get(label_key("sandbox", ws, head[2]), []))
+    print(f"Name: {head[2]}\nPhase: {sb['phase']}\nLabels: {labels}")
 elif op == "sandbox create":
     key = f"{ws}/{opt('--name')}"
     providers = [head[i + 1] for i, a in enumerate(head) if a == "--provider"]
@@ -155,6 +195,7 @@ elif op == "sandbox create":
     if missing:
         fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
+    remember_labels("sandbox", ws, opt("--name"))
 elif op == "sandbox delete":
     state["sandboxes"].pop(f"{ws}/{head[2]}", None)
 elif op == "sandbox exec":

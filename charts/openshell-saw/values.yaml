@@ -102,6 +102,13 @@ signing:
   identity: ""
   issuer: ""
 
+# Dropping an object from a SAW-BOM profile. report only logs what would be
+# deleted. on deletes it. Sandboxes are kept unless sandboxes is true, because
+# they hold user work. This is not pruneOnRemove (that deletes a user's VM).
+prune:
+  mode: report
+  sandboxes: false
+
 # If a BOM profile's sandbox image lives in this cluster's internal registry,
 # the VM's rootless Podman pulls it without credentials. This grants
 # system:image-puller to system:unauthenticated, scoped to this namespace.

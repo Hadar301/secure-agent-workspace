@@ -315,6 +315,7 @@ CONFIG_DEFAULTS = {
     "sandboxDashboardRoute": "",
     "dashboard": {"enabled": False},
     "signing": {"mode": "off"},
+    "prune": {"mode": "off", "sandboxes": False},
 }
 
 
@@ -339,6 +340,14 @@ def load_config(path):
     if mode not in ("off", "warn", "enforce"):
         raise InstallerError("installer config: signing.mode must be off, warn, or enforce")
     merged["signing"] = {**CONFIG_DEFAULTS["signing"], **signing, "mode": mode}
+    prune = merged.get("prune") or {}
+    if not isinstance(prune, dict):
+        raise InstallerError("installer config: prune must be an object")
+    prune_mode = prune.get("mode", "off")
+    if prune_mode not in ("off", "report", "on"):
+        raise InstallerError("installer config: prune.mode must be off, report, or on")
+    merged["prune"] = {**CONFIG_DEFAULTS["prune"], **prune, "mode": prune_mode,
+                       "sandboxes": bool(prune.get("sandboxes", False))}
     dash = merged.get("dashboard") or {}
     if dash.get("enabled"):
         for key in ("image", "proxyImage", "clientId"):
@@ -1050,6 +1059,47 @@ def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
 
+MANAGED_LABEL = "saw.redhat.com/managed=true"
+PRUNE_ORDER = ("sandbox", "inference", "provider", "profile", "workspace")
+
+
+class Ledger:
+    """Objects the installer created. Only these can be pruned."""
+
+    def __init__(self, path, dry_run=False):
+        self.path = Path(path)
+        self.dry_run = dry_run
+        self.data = {"version": 1, "adopted": False, "objects": []}
+        if self.path.is_file():
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
+
+    def save(self):
+        if self.dry_run:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(self.path, self.data)
+
+    def add(self, kind, workspace, name, profile, adopted=False):
+        workspace = workspace or ""
+        for obj in self.data["objects"]:
+            if (obj["kind"], obj.get("workspace", ""), obj["name"]) == (kind, workspace, name):
+                obj["profile"] = profile
+                return
+        self.data["objects"].append({
+            "kind": kind, "workspace": workspace, "name": name, "profile": profile,
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "adopted": adopted,
+        })
+
+    def drop(self, kind, workspace, name):
+        workspace = workspace or ""
+        self.data["objects"] = [
+            obj for obj in self.data["objects"]
+            if (obj["kind"], obj.get("workspace", ""), obj["name"]) != (kind, workspace, name)]
+
+
 class ProfileApplier:
     def __init__(self, shell, cfg, creds, provider_profile_docs=None):
         self.sh = shell
@@ -1058,6 +1108,12 @@ class ProfileApplier:
         self.provider_profiles = provider_profile_docs or {}   # id -> profile YAML
         self.gateway = cfg["mtlsGateway"]
         self.skipped = set()          # (workspace, provider) the gateway had no profile for
+        self.desired = set()
+        self.profile_name = ""
+        prune = cfg.get("prune") or {}
+        self.prune_mode = prune.get("mode", "off")
+        self.prune_sandboxes = bool(prune.get("sandboxes", False))
+        self.ledger = Ledger(prune["ledgerPath"], shell.dry_run) if prune.get("ledgerPath") else None
         for workspace in creds.values():
             for value in workspace.values():
                 shell.add_secret(value)
@@ -1137,9 +1193,15 @@ class ProfileApplier:
 
     # -- workspaces and providers ------------------------------------------
 
+    def remember(self, kind, workspace, name):
+        """An object this apply still wants. Recorded so a later apply can prune it."""
+        self.desired.add((kind, workspace or "", name))
+
     def apply_workspace(self, ws):
+        self.remember("workspace", "", ws.name)
         if ws.name != "default":
             result = self.cli("workspace", "create", "--name", ws.name,
+                              "--label", MANAGED_LABEL,
                               check=False, ok_if_exists=True)
             if not result.ok:
                 raise InstallerError(
@@ -1184,6 +1246,7 @@ class ProfileApplier:
                                "--credential", env_name, *config, env=env, check=False)
             if not updated.ok:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
+        self.remember("provider", ws.name, provider.name)
 
     def import_provider_profile(self, ws, profile_id):
         """The gateway has no profile for this provider type (governed
@@ -1199,6 +1262,7 @@ class ProfileApplier:
         if not result.ok:
             raise InstallerError(f"could not import the '{profile_id}' provider profile into "
                                  f"workspace '{ws.name}'")
+        self.remember("profile", ws.name, profile_id)
 
     def apply_inference(self, ws):
         chosen = next((p for p in self.usable(ws) if p.model), None)
@@ -1208,6 +1272,7 @@ class ProfileApplier:
         timeout = ("--timeout", str(chosen.inference_timeout)) if chosen.inference_timeout else ()
         self.cli("inference", "set", "--provider", chosen.name, "--model", chosen.model,
                  "--workspace", ws.name, *timeout, "--no-verify")
+        self.remember("inference", ws.name, "route")
         # The system route must point at a provider in the 'default'
         # workspace (the gateway looks it up there), so only that workspace
         # sets it.
@@ -1243,10 +1308,11 @@ class ProfileApplier:
         elif state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
+            self.remember("sandbox", ws.name, sb.name)
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
-        args = ["sandbox", "create", "--name", sb.name]
+        args = ["sandbox", "create", "--name", sb.name, "--label", MANAGED_LABEL]
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
@@ -1258,6 +1324,7 @@ class ProfileApplier:
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
+        self.remember("sandbox", ws.name, sb.name)
 
     def attach_missing_providers(self, ws, sb):
         """A sandbox created while one of its providers was skipped (e.g. no
@@ -1400,9 +1467,13 @@ class ProfileApplier:
     # -- orchestration ---------------------------------------------------
 
     def apply(self, profiles):
+        if not any(True for _ in enabled_workspaces(profiles)):
+            raise InstallerError(
+                "profile ConfigMap is missing or empty; refusing to change the gateway")
         self.register_gateway()
         system_set = False
         for profile, ws in enabled_workspaces(profiles):
+            self.profile_name = profile.name
             banner(f"Profile {profile.name} / workspace {ws.name}")
             self.apply_workspace(ws)
             for provider in ws.providers:
@@ -1419,6 +1490,99 @@ class ProfileApplier:
         if not system_set:
             log(f"No provider with a model in workspace '{SYSTEM_WORKSPACE}': "
                 "system inference route left unchanged")
+        self.finish_prune()
+
+    def finish_prune(self):
+        if self.ledger is None or self.prune_mode == "off":
+            return
+        if not self.ledger.data.get("adopted"):
+            for kind, workspace, name in sorted(self.desired):
+                self.ledger.add(kind, workspace, name, self.profile_name, adopted=True)
+            self.ledger.data["adopted"] = True
+            self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": []}
+            self.ledger.save()
+            log("adopted objects that match the current profiles; pruning nothing on the first run")
+            return
+        for kind, workspace, name in self.desired:
+            self.ledger.add(kind, workspace, name, self.profile_name, adopted=False)
+        self.prune()
+
+    def managed_label_ok(self, kind, workspace, name, entry):
+        """Workspaces and sandboxes also carry saw.redhat.com/managed=true.
+
+        Adopted objects predate that label, so the ledger alone allows them.
+        Providers and inference routes cannot be labeled.
+        """
+        if entry.get("adopted") or kind not in ("workspace", "sandbox"):
+            return True
+        if kind == "sandbox":
+            got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
+        else:
+            got = self.cli("workspace", "get", name, check=False, quiet=True)
+        return got.ok and MANAGED_LABEL in (got.out + got.err)
+
+    def workspace_contents(self, name):
+        listed = self.cli("sandbox", "list", "--workspace", name, check=False, quiet=True)
+        names = []
+        for line in re.sub(r"\x1b\[[0-9;]*m", "", listed.out).splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("name"):
+                continue
+            names.append(line.split()[0])
+        return names
+
+    def delete_managed(self, kind, workspace, name):
+        if kind == "sandbox":
+            self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "inference":
+            if name == "system":
+                return False
+            self.cli("inference", "delete", "--workspace", workspace, check=False)
+        elif kind == "provider":
+            self.cli("provider", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "profile":
+            self.cli("provider", "profile", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "workspace":
+            if name == "default":
+                log("keeping workspace 'default'")
+                return False
+            left = self.workspace_contents(name)
+            if left:
+                log(f"WARN: keeping workspace '{name}'; it still contains: {', '.join(left)}")
+                return False
+            self.cli("workspace", "delete", name, check=False)
+        return True
+
+    def prune(self):
+        """Ledger entries that this apply did not want."""
+        pruned, would = [], []
+        for kind in PRUNE_ORDER:
+            for obj in list(self.ledger.data["objects"]):
+                if obj["kind"] != kind:
+                    continue
+                identity = (obj["kind"], obj.get("workspace", ""), obj["name"])
+                if identity in self.desired:
+                    continue
+                if kind == "sandbox" and not self.prune_sandboxes:
+                    log(f"keeping sandbox '{obj['name']}' in '{obj.get('workspace')}' "
+                        "(prune.sandboxes is false)")
+                    continue
+                if not self.managed_label_ok(kind, obj.get("workspace", ""), obj["name"], obj):
+                    log(f"keeping {kind} '{obj['name']}': not labeled {MANAGED_LABEL}")
+                    continue
+                label = f"{kind} {obj.get('workspace') or '-'}/{obj['name']}"
+                if self.prune_mode == "report":
+                    log(f"would delete {label}")
+                    would.append(label)
+                    continue
+                if self.prune_mode != "on":
+                    continue
+                if self.delete_managed(kind, obj.get("workspace", ""), obj["name"]):
+                    log(f"deleted {label}")
+                    pruned.append(label)
+                    self.ledger.drop(kind, obj.get("workspace", ""), obj["name"])
+        self.ledger.data["lastPrune"] = {"pruned": pruned, "wouldPrune": would}
+        self.ledger.save()
 
     def verify(self, profiles):
         banner("Verification")
@@ -1546,7 +1710,7 @@ class Status:
     def read(self):
         return read_json(self.path, {})
 
-    def set(self, phase, bom=None, message="", signature=None):
+    def set(self, phase, bom=None, message="", signature=None, pruned=None, would_prune=None):
         log(f"{self.step}: {phase}{' - ' + message if message else ''}")
         if self.dry_run:
             return
@@ -1558,6 +1722,10 @@ class Status:
         }
         if signature:
             section["signature"] = signature
+        if pruned is not None:
+            section["pruned"] = pruned
+        if would_prune is not None:
+            section["wouldPrune"] = would_prune
         data[self.step] = section
         write_json_atomic(self.path, data)
         install, apply = data.get("install", {}), data.get("apply", {})
@@ -1697,6 +1865,10 @@ def cmd_apply(args):
                 f"(install: {install.get('phase') or 'never ran'}"
                 f"{' for ' + install['bom'] if install.get('bom') else ''}); run `install` first")
 
+        cfg = dict(cfg)
+        prune = dict(cfg.get("prune") or {})
+        prune["ledgerPath"] = str(state_dir / "managed.json")
+        cfg["prune"] = prune
         if args.dry_run:
             # Nothing runs in a dry run, so no user switch is needed (the
             # runtime user could not read /run/saw anyway).
@@ -1724,7 +1896,12 @@ def cmd_apply(args):
         result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
         if result.returncode != 0:
             raise InstallerError("applying profiles failed; see the log above")
-        status.set("Done", bom_name)
+        report = {}
+        ledger_path = state_dir / "managed.json"
+        if ledger_path.is_file():
+            report = json.loads(ledger_path.read_text(encoding="utf-8")).get("lastPrune") or {}
+        status.set("Done", bom_name, pruned=report.get("pruned"),
+                   would_prune=report.get("wouldPrune"))
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")

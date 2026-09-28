@@ -718,6 +718,8 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
 def test_signing_mode_defaults_to_warn(default_docs):
     config = json.loads(installer_data(default_docs)["config.json"])
     assert config["signing"]["mode"] == "warn"
+    assert config["prune"]["mode"] == "report"
+    assert config["prune"]["sandboxes"] is False
     unit = written(cloud_config(default_docs), "/etc/systemd/system/saw-install.service")
     assert "verify-bundle" in unit
     assert unit.index("verify-bundle") < unit.index("apply_bom.py install")
