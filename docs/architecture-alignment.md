@@ -89,7 +89,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - ExternalSecret resources for each inference provider (anthropic, gemini, openai, nvidia, openrouter, vertex) and search providers (tavily, brave-search)
 - SSH private/public keys managed through Vault
 - `values-secret.yaml.template` defines the secret schema
-- The setup Job mounts provider secrets and injects API keys at runtime
+- The in-guest installer reads provider Secrets from the VM (iso9660 disks, or virtiofs when `vm.liveInputs` is true) and passes each key to the OpenShell CLI in the environment, not in argv
 
 **Alignment:** Full. API keys and SSH keys flow through Vault and ESO, keeping credentials out of Git, helm values, and ArgoCD state.
 
@@ -136,7 +136,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - OpenShell RPMs downloaded from GitHub releases (pinned version)
 - CDI imports the image into a DataSource that sandboxes clone from
 
-**Partial:** The image build pipeline is reproducible and version-pinned, but there is no image signing, attestation, or admission control to prevent unapproved images from being used.
+**Partial:** The image build pipeline is reproducible and version-pinned. The guest checks each BOM component signature before install (`signing.mode: warn` by default; `enforce` stops before replacing binaries). The golden image includes cosign for the installer bundle. The OpenShell publisher key is not in the image, and there is still no admission controller that rejects an unapproved VM image.
 
 ## Phase Mapping
 
@@ -148,6 +148,6 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 ## Recommendations for Closing Gaps
 
 1. **NetworkPolicy:** Add default-deny egress policies to sandbox namespaces with allowlists for inference provider endpoints and enterprise systems.
-2. **Image signing:** Integrate Sigstore/cosign into the BuildConfig pipeline and add an admission controller (e.g., Kyverno) to enforce signed images.
+2. **Image admission:** The guest already checks component signatures and can verify an installer bundle with cosign. What is still missing is an admission controller (e.g., Kyverno) that rejects an unapproved golden image, and the publisher public key in `/etc/saw/trust`.
 3. **Audit pipeline:** Deploy OpenShift's cluster logging operator with OCSF-compatible log normalization.
 4. **Policy bundles (Phase II):** Implement when OpenShell's policy API stabilizes — requires NFS storage, a signing pipeline, and an in-VM policy agent.

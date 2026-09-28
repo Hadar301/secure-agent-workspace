@@ -1,23 +1,30 @@
-# Versioned BOM installer (Stage 1)
+# Versioned BOM installer
 
 The gateway VM installs itself from a versioned Bill of Materials. The old
 setup Job, which logged in to the VM over SSH and ran scripts, is gone.
+Signature checks, live input updates, and profile pruning are below.
 
 ## What runs where
 
 ```text
 helm / Argo ──► openshell-saw chart
                  ├─ VirtualMachine (+ root disk clone)
-                 ├─ <vm>-installer ConfigMap ─┐  installer-bom.yaml, config.json,
-                 │                            │  apply_bom.py, setup-dashboard.sh
-                 ├─ saw-bom-profiles ConfigMap ┤  (saw-bom chart: SAW-BOM profiles)
-                 ├─ provider Secrets ─────────┤  inference, web-search, ...
-                 ├─ <vm>-cloudinit Secret     │  attached as read-only disks
-                 └─ <vm>-prepare Job          │  (cluster-side only, never touches the VM)
-                                              ▼
+                 ├─ <vm>-installer ConfigMap     installer-bom.yaml, config.json,
+                 │                               apply_bom.py, setup-dashboard.sh
+                 ├─ saw-bom-profiles ConfigMap   (saw-bom chart: SAW-BOM profiles)
+                 ├─ provider Secrets             inference, web-search, ...
+                 ├─ <vm>-cloudinit Secret        static units and first-boot files
+                 └─ <vm>-prepare Job             cluster-side only, never touches the VM
+                            │
+                            ▼
+              iso9660 disks (default)  or  virtiofs (vm.liveInputs: true)
+                            │
+                            ▼
 VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
                           apply_bom.py install    apply_bom.py apply
-                          (root)                  (root → runs profiles as cloud-user)
+                          (root)                  (root → profiles as cloud-user)
+                            │
+                            └─ vm.liveInputs: saw-reconcile on later changes
 ```
 
 - **saw-install** pulls each BOM component image by digest with podman,
@@ -38,15 +45,20 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   skipped with a warning. It registers a local **mTLS**
   gateway entry, creates workspaces, providers, inference routes and
   sandboxes, optionally starts the dashboard, and verifies the result.
+  It records what it created and, in the default `report` prune mode, only
+  logs what a later profile change would delete. See
+  [Removing things from a profile](#removing-things-from-a-profile).
 - The prepare Job only bootstraps the golden image DataSource and registers
   the dashboard redirect URI in Keycloak (admin API). It has no VM access.
 
 cloud-init runs once per VM, so it only writes static files (mount script,
-units) and first-boot copies of the gateway config. Everything that can
-change after install (BOM, gateway config, Secret list, route host) is on
-the installer disk and is re-read on every boot.
+units, and the reconcile units when `vm.liveInputs` is true) and first-boot
+copies of the gateway config. The BOM, gateway config, profiles, and provider
+Secrets are mounted at `/run/saw`. With the default disks, a change is visible
+on the next boot. With `vm.liveInputs: true`, virtiofs shows the change while
+the VM runs and `saw-reconcile` applies it. See [Live inputs](#live-inputs).
 
-Both steps also run on every boot. Status is in `/var/lib/saw/status.json`
+`saw-install` and `saw-apply` also run on every boot. Status is in `/var/lib/saw/status.json`
 (one section per step), and `/var/lib/saw/ready` exists only when both
 steps succeeded for the same BOM. Logs go to the serial console:
 
@@ -135,14 +147,22 @@ The guest needs SELinux boolean `virt_qemu_ga_manage_ssh=on`; cloud-init and
 
 ## Upgrading
 
+`vm.liveInputs` defaults to `false`. The installer ConfigMap, profiles, and
+provider Secrets are iso9660 disks filled at boot.
+
 1. Change `bom:` in the chart values (versions + digests; tags are refused
    at render time and by the installer).
-2. Sync/upgrade the chart. The VM template changes, so KubeVirt marks the VM
-   `RestartRequired`.
+2. Sync/upgrade the chart. The installer ConfigMap is part of the VM template
+   checksum, so KubeVirt marks the VM `RestartRequired`.
 3. `virtctl restart <vm>` (or `make openshell-saw-restart`). On boot,
    `saw-install` installs only the changed components.
 
-Profile or Secret changes are applied the same way (restart).
+A profile or Secret change is not in that checksum. The guest still does not
+see it until the next restart, because those disks are filled at boot.
+
+With `vm.liveInputs: true`, a BOM change runs `install` then `apply` without
+a restart, and a profile or Secret change runs `apply` only. Turning the
+flag on requires recreating the VM. See [Live inputs](#live-inputs).
 
 ## Testing
 
@@ -153,7 +173,11 @@ make test-installer        # installer + chart tests; chart tests need helm
 - `tests/installer`: the real `apply_bom.py` against fake `podman`,
   `openshell`, `nemoclaw` and `sudo` executables: BOM validation, component
   install/skip/upgrade/rollback-on-failure, profile apply and idempotency,
-  mTLS-only access, credential masking, status/ready handling, dry-run.
+  mTLS-only access, credential masking, status/ready handling, dry-run,
+  signature `warn`/`enforce` (including a tampered installer bundle),
+  reconcile (`install` then `apply` on a BOM change, `apply` only on a
+  profile or Secret change), the `/run/saw/lock` overlap, and pruning
+  (provider removal, hand-made objects left in place, `report` as a dry run).
 - `tests/scripts`: `openshell-saw-vm-ssh.sh` against fake `oc`/`virtctl`
   (key added via patch file, other keys kept, waits for sync, timeouts).
 - `tests/charts`: renders both charts, checks VM disks ↔ mount script ↔

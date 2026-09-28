@@ -102,38 +102,21 @@ The `governance-policy` chart creates two ConfigMaps from files in the chart:
 
 The `governance-interceptor` chart deploys the interceptor pod, which mounts both ConfigMaps and serves them over gRPC. See [governance-interceptor.md](governance-interceptor.md) for the full enforcement flow.
 
-### Phase 5: VM Boot + Setup
+### Phase 5: VM Boot + In-guest installer
+
+The VM boots from a clone of the golden image. Nothing logs in over SSH to install it. See [Versioned BOM installer](versioned-bom-installer.md).
 
 #### Cloud-init
 
-The VM boots from a clone of the golden image. Cloud-init (rendered by the `cloudinit-sandbox.yaml` template) configures:
+Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
 
-- SSH authorized keys for `cloud-user`
-- `/etc/openshell/gateway.env` — bind address, port, TLS paths, driver config
-- `/etc/openshell/gateway.toml` — OIDC issuer/audience, governance interceptor endpoint and bindings
-- Starts `openshell-gateway-setup.service` which bootstraps the gateway user service
+#### Prepare Job
 
-#### Setup Job
+The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource and registers the dashboard redirect URI in Keycloak. It does not install binaries or apply profiles.
 
-A Kubernetes Job (`openshell-saw-setup`) runs after the VM boots. It:
+#### Guest
 
-1. **Waits for secrets** (init container) — blocks until ESO has created `openshell-aap-ssh` and `inference` secrets
-2. **Bootstraps golden image** — creates DataVolume/DataSource if missing, waits for CDI import
-3. **Creates cloud-init Secret** — substitutes the SSH public key into the template ConfigMap
-4. **Waits for VM** — DataVolume ready, VMI running, SSH reachable, cloud-init complete
-5. **Installs binaries** — pulls gateway and supervisor container images via Docker on the VM, extracts binaries, installs openshell CLI via pip
-6. **Restarts gateway** with new binaries
-7. **Copies scripts** to VM — `run-create.sh`, `setup-nemoclaw.sh`, `configure-vertex-user.sh`, `setup-dashboard.sh`
-8. **Fetches OIDC token** from Keycloak for the sandbox owner
-9. **Registers dashboard redirect URI** on the Keycloak client via Admin API
-10. **Executes `run-create.sh`** on the VM, which:
-    - Configures inference provider with API credentials
-    - Registers mTLS local gateway (`openshell-local`) and OIDC remote gateway
-    - Runs `nemoclaw onboard` in externally-supervised mode
-    - Creates sandbox from the configured image
-    - Starts the agent web UI (openclaw) inside the sandbox on port 18789
-    - Injects SSH public key into the sandbox
-    - Starts the dashboard + OAuth2 proxy as Docker containers
+`saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, inference routes, and sandboxes. The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
 
 ## Upgrading from the single-user layout
 
@@ -184,14 +167,14 @@ sandboxes.
 | --- | --- | --- | --- |
 | Gateway (VM) | Governance interceptor (pod) | gRPC over HTTP | Policy enforcement |
 | Gateway (VM) | Keycloak (pod) | HTTPS | OIDC token validation |
-| Setup Job (pod) | VM | SSH (via virtctl) | Binary install, configuration |
+| In-guest installer | mounted ConfigMaps and Secrets | virtiofs or iso9660 | Install binaries and apply profiles |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
 
 ### Authentication Flows
 
 - **CLI:** `openshell gateway login` triggers OIDC device code flow via Keycloak. Token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
-- **Internal (nemoclaw):** mTLS client certificate, registered as `openshell-local` gateway on the VM.
+- **In-guest installer:** its own mTLS client certificate, `CN=saw-installer` and `OU=openshell-admin`, registered as the `saw-installer` gateway entry. Users still use OIDC.
 
 ## Operator Quick Reference
 

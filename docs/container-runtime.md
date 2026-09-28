@@ -150,7 +150,7 @@ ssh \
 ```
 
 > **Note:** The cert-copy step (Step 1) requires `virtctl`. A follow-up improvement is to
-> have the setup Job publish the mTLS client cert as a k8s Secret so the local setup can be
+> have the in-guest installer publish the mTLS client cert as a k8s Secret so the local setup can be
 > done with `oc extract secret/...` instead.
 
 ## Known limitations
@@ -162,7 +162,7 @@ back silently.
 
 **The `inference.local` route** (NemoClaw's LLM routing inside the openclaw sandbox) requires the OpenShell gateway to be in Docker-driver mode (openshell ≤ 0.0.97). With the externally-supervised gateway (0.0.99+), `nemoclaw onboard` reaches step 4 then exits with `OpenShell inference route was not configured`. The provider fallback in `setup-nemoclaw.sh` handles this gracefully — inference still works via the gateway-level `inference` provider.
 
-**The `nemoclaw-sandbox` image** must be available in the cluster before the setup Job runs. Either build it with `make build-nemoclaw` or mirror it from `quay.io/rh-ai-quickstart/nemoclaw-sandbox:<version>` using an in-cluster skopeo job (see Bug #1 in `local-docs/deployment-summary.md`).
+**The `nemoclaw-sandbox` image** must be available in the cluster before the in-guest installer creates that sandbox. Either build it with `make build-nemoclaw` or mirror it from `quay.io/rh-ai-quickstart/nemoclaw-sandbox:<version>` using an in-cluster skopeo job (see Bug #1 in `local-docs/deployment-summary.md`).
 
 ## Risks
 
