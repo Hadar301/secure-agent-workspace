@@ -38,3 +38,51 @@ jobs:
           helm lint charts/saw-bom
       - name: Installer, chart and CLI tests
         run: make test-installer PYTHON=python
+
+  bundle-drift-check:
+    # If a signed installer bundle is committed, it must still verify
+    # against a fresh render. Without this, any PR that edits apply_bom.py
+    # (or the shipped provider profiles, or the default BOM) without
+    # re-running "Sign installer bundle" would silently ship a bundle that
+    # fails signing.mode: enforce for every SAW, with no CI signal at all
+    # (PR #54 review, 3). Skips cleanly if no bundle is committed yet.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify the committed bundle against a fresh render
+        run: |
+          set -euo pipefail
+          bundle=charts/openshell-saw/files/installer/bundle.sigstore.json
+          if [[ ! -f "$bundle" ]]; then
+            echo "no bundle.sigstore.json committed yet; nothing to check"
+            exit 0
+          fi
+          keys=(charts/openshell-saw/files/installer/*.pub)
+          if [[ ! -e "${keys[0]}" ]]; then
+            echo "bundle.sigstore.json is committed but no matching *.pub sits next to it" >&2
+            exit 1
+          fi
+          pip install -q pyyaml
+          helm template saw-sign charts/openshell-saw --namespace saw-sign --set sandboxName=saw-sign > /tmp/rendered.yaml
+          python3 scripts/build-installer-manifest.py /tmp/rendered.yaml /tmp/installer-manifest.txt
+          ok=0
+          for key in "${keys[@]}"; do
+            if cosign verify-blob --bundle "$bundle" --key "$key" --offline /tmp/installer-manifest.txt; then
+              ok=1
+              break
+            fi
+          done
+          if [[ "$ok" -ne 1 ]]; then
+            echo "committed bundle.sigstore.json no longer verifies against a fresh render." >&2
+            echo "Re-run the 'Sign installer bundle' workflow and commit the new bundle." >&2
+            exit 1
+          fi
+          echo "bundle.sigstore.json matches a fresh render"
