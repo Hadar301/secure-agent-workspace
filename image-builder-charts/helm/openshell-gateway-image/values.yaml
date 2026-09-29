@@ -10,10 +10,20 @@ openshell:
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 # Pinned cosign used only to verify the installer bundle. The OpenShell
-# publisher key is not known, so this does not verify those images.
+# publisher key is not known, so this does not verify those images (that
+# uses apply_bom.py's own per-pull podman policy instead, from the BOM's
+# signature field).
+#
+# The download itself was unauthenticated (PR #54 review, 7): a compromised
+# release URL or a MITM'd download would bake a malicious cosign binary
+# into every golden image -- and cosign is the thing verify-bundle trusts
+# to say whether the installer is genuine. sha256 pulled from cosign's own
+# published checksums file for this release; re-verify against
+# https://github.com/sigstore/cosign/releases/tag/v2.4.1 when bumping the version.
 cosign:
   version: "v2.4.1"
   url: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64"
+  sha256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b"
 
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
