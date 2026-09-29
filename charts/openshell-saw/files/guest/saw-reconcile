@@ -38,4 +38,7 @@ if [[ "$before" != "$after" ]]; then
   echo "saw-reconcile: inputs still changing; the next event will run"
   exit 0
 fi
-exec /usr/bin/python3 /run/saw/installer/apply_bom.py reconcile
+# Run from the staged, verified copy saw-stage-installer just published in
+# this unit's ExecStartPre, not the live mount (PR #54 review, 2).
+exec /usr/bin/python3 /var/lib/saw/verified/installer/apply_bom.py reconcile \
+  --installer-dir /var/lib/saw/verified/installer
