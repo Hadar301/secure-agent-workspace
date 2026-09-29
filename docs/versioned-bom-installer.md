@@ -28,12 +28,16 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
 ```
 
 - **saw-install** pulls each BOM component image by digest with podman,
-  copies the binary out, checks `--version` against the BOM, installs it
-  atomically into `/usr/local/bin`, re-syncs `gateway.env`, `gateway.toml`
-  and the route-SAN drop-in from the installer disk, then starts the
-  user-level `openshell-gateway.service` (restarting it if a binary or the
-  config changed; an owed restart survives a failed attempt). Unchanged
-  components are skipped, so reboots pull nothing.
+  checking each signed component against a per-pull podman policy built
+  from the BOM's `signature` field, copies the binary out, checks
+  `--version` against the BOM, installs it atomically into
+  `/usr/local/bin`, re-syncs `gateway.env`, `gateway.toml` and the
+  route-SAN drop-in from the installer disk, then starts the user-level
+  `openshell-gateway.service` (restarting it if a binary or the config
+  changed; an owed restart survives a failed attempt). Unchanged components
+  are skipped, so reboots pull nothing. `apply_bom.py` itself always runs
+  from a root-owned, verified copy under `/var/lib/saw/verified`, not the
+  live installer disk/mount — see [Signing](#signing).
 - **saw-apply** runs only after `install` finished for the same BOM. It reads
   the profiles and mounted Secrets, then runs the profile step as
   `cloud-user` with the plan on stdin. Provider keys are passed to the CLI
@@ -192,6 +196,17 @@ On the pattern path set it in `defaults.openshellSaw` in
 at render time unless `signing.trustKeys` or both `signing.identity` and
 `signing.issuer` are set.
 
+The *effective* mode is the stricter of that chart value and a floor the
+golden image can pin at `/etc/saw/signing-mode` (absent = no floor). This
+matters because `config.json` — which carries `signing.mode` — ships in the
+same, unsigned installer ConfigMap as `apply_bom.py`: without the floor, a
+namespace editor could set `mode: off` next to a modified `apply_bom.py`
+and defeat `enforce` entirely. The floor can only tighten the mode, never
+loosen it, and it is checked in three places that all need to agree: the
+bundle verifier, `saw-install.service`'s no-verifier fallback, and
+`apply_bom.py` itself (which also enforces component signatures, so the
+floor has to apply there too, not just to the bundle check).
+
 Each OpenShell component in the InstallerBOM may name its signer:
 
 ```yaml
@@ -202,22 +217,92 @@ signature:
 # issuer: https://token.actions.githubusercontent.com
 ```
 
-`warn` installs the component and records `signature: unsigned` (or `failed`)
-in `/var/lib/saw/status.json`. `enforce` stops `saw-install` before any
-binary is replaced. The message is `image <ref> is not signed by <signer>`.
-`saw-install.service` runs `/usr/libexec/saw/verify-bundle` before
-`apply_bom.py`. That program is part of the golden image. A changed
-`apply_bom.py` without a new `bundle.sigstore.json` stops an `enforce` boot
-and leaves the binaries already on disk running. `warn` logs the unsigned
-bundle and continues. An image built before this file exists has no verifier:
-`warn` and `off` still boot, `enforce` does not.
+For each component with a `signature`, `apply_bom.py` builds a one-image
+`containers-policy.json` from that field — `sigstoreSigned` with
+`keyPath: /etc/saw/trust/<keyRef>.pub`, or `fulcio.oidcIssuer` for the
+keyless form — and pulls that one image with
+`podman pull --signature-policy <generated>`, default `reject` for a
+component with no `signature` configured under `enforce`. The policy is
+generated per pull, not looked up from a static, registry-scoped file, so
+a component from any registry is checked the same way; nothing pulls "for
+free" the way a system-wide permissive default would let it. `warn`
+installs the component anyway and records `signature: unsigned` (or
+`failed`) in `/var/lib/saw/status.json`; `enforce` stops `saw-install`
+before any binary is replaced, with the message
+`image <ref> is not signed by <signer>`. The result is persisted per
+component in `/var/lib/saw/installed.json`: a component whose file and
+digest are unchanged is only trusted as still `verified` if that is what
+was actually recorded last time, so switching from `off` to `enforce` does
+not retroactively call an unchecked binary "verified" — it gets
+re-verified. Keyless (`identity`/`issuer`) verification depends on the
+golden image's podman/containers-common version supporting the identity
+shape used; only `subjectEmail`-style identities and the issuer are
+matched today, and no component in this chart's default values uses this
+path (see the spike below).
 
-The golden image installs `cosign` at `/usr/local/bin/cosign` (version pinned in the image chart) and ships `/etc/saw/trust/` (the trust root),
+`saw-install.service`, `saw-apply.service`, and `saw-reconcile.service`
+each run `/usr/local/sbin/saw-stage-installer` before touching
+`apply_bom.py`. That script runs the golden image's
+`/usr/libexec/saw/verify-bundle` when present (an image built before
+signing existed has no verifier: `warn`/`off` still boot unverified,
+`enforce` refuses). Either way, the installer tree (`installer-bom.yaml`,
+`apply_bom.py`, `setup-dashboard.sh`, `config.json`, the gateway config, the
+shipped provider profiles) is copied into a root-owned staging area,
+`/var/lib/saw/verified/installer`, and `apply_bom.py` always runs from
+*that* copy — never straight off the live ConfigMap/virtiofs mount. This
+matters for two reasons: with `vm.liveInputs`, `saw-reconcile` used to run
+`apply_bom.py` off the live mount with no verification step at all, the
+most direct way to bypass `enforce`; and even `saw-install`/`saw-apply`
+verified the live mount in one step and then read that same live mount
+again to run it, a window (worse over virtiofs) where the files could
+change between the two. `enforce` never publishes a stage that failed
+verification — the previous, already-verified revision (if any) keeps
+running; `warn` publishes anyway, so a failed/unsigned bundle still takes
+effect, matching "warn logs and continues."
+
+The signed payload is a manifest of `<sha256>  <path>` lines — one per
+file — not a raw concatenation: shifting bytes across a file boundary
+while keeping the total concatenation unchanged used to leave the old
+signature valid; each file's hash is now checked independently, so that
+does not work. The manifest covers `installer-bom.yaml`, `apply_bom.py`,
+`setup-dashboard.sh`, and every shipped `provider-profile-*.yaml` — the
+parts of the installer ConfigMap that are identical across every SAW.
+`config.json`, `gateway.env`, and `gateway.toml` are **not** covered: they
+are rendered per VM (namespace, route host, owner subject, ...), so there
+is no one correct rendering for a single CI-signed blob to cover. The
+`signing.mode` leak that would otherwise create is what the golden-image
+floor above closes; the rest of `config.json` (the mTLS gateway name, the
+governance endpoint, dashboard settings) is not signed and relies on the
+namespace's own RBAC. `signing.trustKeys`, when set, also restricts which
+key names `verify-bundle` accepts for the bundle, instead of trusting
+every `*.pub` the image happens to carry.
+
+`scripts/build-installer-manifest.py` builds the exact same manifest for
+CI to sign; it must stay in lock-step with `verify-bundle`'s
+`manifest_text()` (same file set, same line format) or a genuine,
+unmodified installer starts failing `enforce` for no reason.
+`installer-tests.yml`'s `bundle-drift-check` job re-renders the chart on
+every PR and fails if a *committed* `bundle.sigstore.json` no longer
+verifies against that fresh render (skips cleanly if none is committed
+yet) — without it, a PR that edits `apply_bom.py`, a shipped provider
+profile, or the default BOM, without re-running "Sign installer bundle",
+would silently ship a bundle that fails `enforce` for every SAW. Helm's
+version is pinned in both that workflow and the signing workflow:
+`installer-bom.yaml` is `toYaml .Values.bom`, and a different Helm version
+can render that block scalar with different whitespace, changing the
+manifest for reasons that have nothing to do with the installer changing.
+A SAW whose `bom:` values are overridden per-user also renders a different
+`installer-bom.yaml` than the signing workflow's default-values render
+signs; give that SAW `signing.mode: warn` (or `off`), not `enforce`.
+
+The golden image installs `cosign` at `/usr/local/bin/cosign` (version and
+sha256 pinned in the image chart's `values.yaml`; the download itself has
+no other authentication, so an unpinned checksum would let a compromised
+release URL bake a malicious verifier into every image) and ships
+`/etc/saw/trust/` (the trust root) and
 `/etc/containers/registries.d/saw.yaml` (`use-sigstore-attachments: true`
-for `quay.io/opendatahub`), and `/etc/saw/policy/enforce.json`. The system
-policy stays permissive so `warn` can still pull. `enforce` pulls through
-`/usr/libexec/saw/podman-signed-pull`, which uses the enforce policy for
-that one pull.
+for `quay.io/opendatahub`, needed to fetch a sigstore signature's
+detached data regardless of which policy checks it).
 
 Spike on the `quay.io/opendatahub/odh-openshell-*` digests in
 `charts/openshell-saw/values.yaml`: each digest has a cosign `.sig` tag and
@@ -238,6 +323,13 @@ new bundles with the new key (`.github/workflows/sign-installer-bundle.yml`, whi
 then drop the old public key on the following image build. A bundle signed
 only by the retired key then fails `enforce`.
 
+Out of scope for this story, unchanged: sandbox images
+(`quay.io/rh-ai-quickstart/openclaw-openshell`, `nemoclaw-sandbox`) are not
+signature-checked, and `nemoclaw.cliImage` is accepted with a tag (`:latest`)
+rather than a digest, with a `WARN` at install time. Signing covers the
+gateway components (`spec.openshell.*`) and the installer bundle only;
+sandbox images can adopt the same per-pull podman policy approach later.
+
 ## Live inputs
 
 `vm.liveInputs` defaults to `false`. The installer ConfigMap, `saw-bom-profiles`,
@@ -250,11 +342,21 @@ then:
 
 - runs `install`, then `apply`, when the installer tree changed (BOM or
   gateway config). Unchanged binaries are skipped. The gateway restarts
-  only when a binary or its config changed.
+  only when a binary or its config changed. Like `saw-install`/`saw-apply`,
+  `saw-reconcile.service` runs the golden image's bundle verifier first and
+  `apply_bom.py` runs from the staged, verified copy, never the live
+  virtiofs mount — before this, reconcile ran straight off the live mount
+  with no verification at all, the most direct way to bypass
+  `signing.mode: enforce` with live inputs on (see "Signing" above).
 - runs `apply` only when profiles or Secrets changed. Existing providers get
   `provider update` with the new key. Sandboxes keep running.
 - writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
-  `make openshell-saw-status` shows whether that matches the cluster.
+  `make openshell-saw-status` shows whether that matches the cluster. A
+  failed install or apply is recorded there too (`lastFailedHash`); the
+  next reconcile does not retry the exact same failing input for 5 minutes
+  (`SAW_RECONCILE_BACKOFF`), so a component that is briefly unreachable
+  does not get hammered every ~60s while holding `/run/saw/lock`. A further
+  input change is always retried immediately, backoff or not.
 
 Spike on OpenShift 4.22 (virtiofs is part of the API; no extra feature gate):
 a ConfigMap attached to a Fedora 44 VM was visible in the guest, a content
@@ -269,7 +371,20 @@ These still need a restart: VM size, disks, and anything cloud-init writes
 (the reconcile units included). Turning `vm.liveInputs` on does not edit an
 existing VM's cloud-init. Recreate the VM after the value is true. With
 live inputs, a change to the installer ConfigMap or a provider Secret does
-not set `RestartRequired`. The cloud-init checksum still does.
+not set `RestartRequired`. The cloud-init checksum still does. Adding or
+removing an entry in `additionalProviderSecrets` (or the `inference`
+Secret's name) also needs a restart even with `vm.liveInputs: true`: it
+changes the VM template's `filesystems`/`disks` list itself, which KubeVirt
+always treats as a restart, independent of any checksum annotation.
+`saw-reconcile` does not re-run `saw-mount-inputs`: a content-only virtiofs
+change is visible under the existing mount without remounting anything, so
+that is by design, not a gap.
+
+Whether the guest's `saw-inputs.path` unit (inotify) actually fires for a
+host-side virtiofs write, versus the 60-second `saw-inputs.timer` doing all
+the work, was not conclusively settled by the spike above; treat the timer
+as the mechanism that is guaranteed to run within about a minute, and the
+path unit as a possible, unconfirmed latency improvement on top of that.
 
 ## Removing things from a profile
 
