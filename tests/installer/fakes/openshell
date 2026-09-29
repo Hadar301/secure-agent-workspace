@@ -161,6 +161,12 @@ elif op == "provider get":
     if f"{ws}/{head[2]}" not in state["providers"]:
         fail("Error: provider not found")
     print(f"Name: {head[2]}")
+elif op == "provider list":
+    print("NAME TYPE")
+    for key in sorted(state["providers"]):
+        owner, name = key.split("/", 1)
+        if owner == ws:
+            print(f"{name} {state['providers'][key]['type']}")
 elif op == "provider delete":
     state["providers"].pop(f"{ws}/{head[2]}", None)
 elif op == "inference set":
