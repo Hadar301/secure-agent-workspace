@@ -13,7 +13,7 @@ The architecture separates **policy data** from the **interceptor application**,
 |  Git Repository             |
 |  charts/governance-policy/  |
 |    profiles/github.yaml     |
-|    profiles/inference.yaml  |
+|    profiles/nvidia.yaml     |
 |    profiles/slack.yaml      |
 |    policy.yaml              |
 +----------+------------------+
@@ -158,7 +158,11 @@ Same flow in reverse — delete the file, push, and the profile is removed from 
 The gateway VM is configured via `gateway.toml` (rendered by the openshell-saw chart's cloud-init):
 
 ```toml
+[openshell]
+version = 2              # OpenShell 0.1.x gateway.toml schema
+
 [openshell.gateway]
+compute_driver = "podman"
 provider_profile_sources = [
   { type = "interceptor", name = "governance" },
 ]
@@ -177,6 +181,8 @@ phases = ["modify_operation", "validate"]
 rpc = "openshell.v1.OpenShell/CreateProvider"
 phases = ["validate"]
 ```
+
+The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/governance-interceptor/Dockerfile`.
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 

@@ -1,7 +1,9 @@
 """A custom OpenAI-compatible endpoint (vLLM, Ollama, ...) through OpenShell's
-inference router: an `openai` provider with OPENAI_BASE_URL, the workspace
-inference route, and sandboxes on https://inference.local/v1."""
+OpenShell 0.1.x: an `openai` provider with OPENAI_BASE_URL, and OpenClaw
+onboarded against that endpoint itself (no inference routes, no
+https://inference.local)."""
 
+import shlex
 import pytest
 
 from conftest import profile_files
@@ -32,24 +34,21 @@ def test_profile_is_valid_and_reads_url_and_model_from_the_secret(ab, profiles, 
     assert creds["default"]["custom"] == "sk-CUSTOM-TEST-KEY"
 
 
-def test_apply_creates_an_openai_provider_and_the_inference_route(ab, fake_env, config, profiles,
-                                                                  custom_secrets):
+def test_apply_creates_an_openai_provider_and_onboards_on_its_endpoint(
+        ab, fake_env, config, profiles, custom_secrets):
     creds = ab.resolve_credentials(profiles, custom_secrets)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     state = fake_env.openshell_state()
     assert state["providers"]["default/custom"] == {
         "type": "openai", "credential": "OPENAI_API_KEY=sk-CUSTOM-TEST-KEY",
         "config": [f"OPENAI_BASE_URL={URL}"]}
-    assert state["inference"]["default"] == ["custom", MODEL]
-    assert state["system_inference"] == ["custom", MODEL]
-    sets = [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]
-    assert sets and all(c[c.index("--timeout") + 1] == "300" for c in sets)
+    assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
     # The key only ever travels in the environment.
     assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
-    # OpenClaw is onboarded against inference.local, not the endpoint itself.
     onboard = next(" ".join(c) for c in fake_env.openshell_calls() if "onboard" in " ".join(c))
-    assert "https://inference.local/v1" in onboard and URL not in onboard
-    assert f'--custom-model-id "{MODEL}"' in onboard
+    assert f'--custom-base-url {URL} ' in onboard and "inference.local" not in onboard
+    assert 'CUSTOM_API_KEY="$OPENAI_API_KEY"' in onboard
+    assert f'--custom-model-id {shlex.quote(MODEL)} ' in onboard
 
 
 def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secrets):

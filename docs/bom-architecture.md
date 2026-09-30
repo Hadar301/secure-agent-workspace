@@ -30,7 +30,7 @@
 │                                                                         │
 │  saw-apply (root reads inputs, then cloud-user runs the plan)          │
 │  ├── mTLS client cert CN=saw-installer, OU=openshell-admin              │
-│  ├── Workspaces, providers, inference routes, sandboxes                 │
+│  ├── Workspaces, providers, sandboxes (provider attached per sandbox)   │
 │  ├── provider update when a Secret key changes                          │
 │  ├── Ledger of created objects; report mode only logs deletions        │
 │  └── Verify workspaces, providers, and sandboxes                        │
@@ -132,7 +132,7 @@ charts/saw-bom/profiles/
 | openclaw | openclaw-openshell:latest | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
 | generic | base | Plain sandbox for tools/scripts | None | OpenShell supervisor |
 
-## Inference Routing
+## Inference (OpenShell 0.1.x: no inference routes)
 
 ```
 User → OpenClaw TUI/GUI
@@ -140,13 +140,15 @@ User → OpenClaw TUI/GUI
          ▼
   OpenClaw Gateway (inside sandbox, port 18789)
          │
-         │ model: nvidia/nvidia/nemotron-3-super-120b-a12b
-         │ baseUrl: https://inference.local/v1
+         │ model: nvidia/nemotron-3-super-120b-a12b
+         │ baseUrl: https://integrate.api.nvidia.com/v1 (the provider's own endpoint)
+         │ key: the placeholder in NVIDIA_API_KEY
          │
          ▼
   OpenShell Network Proxy (10.200.0.1:3128)
          │
-         │ Injects NVIDIA_API_KEY from provider credential
+         │ Swaps in the real NVIDIA_API_KEY, only for the provider
+         │ profile's endpoints and binaries (node, curl)
          │ Enforces governance network policy
          │
          ▼

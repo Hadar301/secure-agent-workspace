@@ -1,0 +1,7 @@
+{{- if .Values.output.imageStreamTag }}
+# The build's output target when building into the internal registry.
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+{{- end }}

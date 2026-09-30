@@ -14,6 +14,14 @@ spec:
       RUN git clone --depth 1 --branch {{ .Values.source.git.ref }} {{ .Values.source.git.uri }} .
 
       WORKDIR /build/{{ .Values.build.contextDir }}
+      # Workaround for NVIDIA/OpenShell#3929 (v0.1.2): the gateway hashes provider
+      # profile annotations in map order, so a profile with more than one annotation
+      # gives a different provider_env_revision on every call and no sandbox with a
+      # provider becomes ready ("Startup configuration did not stabilize"). Keep only
+      # the signature JWT, which already carries the hash (claim) and key id (header);
+      # the gateway treats the annotations as opaque. Drop this once #3929 is fixed.
+      RUN perl -0pi -e 's/\n    profile\n        \.annotations\n        \.insert\(PROFILE_HASH_ANNOTATION\.to_string\(\), profile_hash\);\n    profile\.annotations\.insert\(\n        PROFILE_SIGNATURE_KID_ANNOTATION\.to_string\(\),\n        policy_signer\.kid\(\)\.to_string\(\),\n    \);\n/\n/' src/main.rs \
+          && ! grep -q 'insert(PROFILE_HASH_ANNOTATION' src/main.rs
       RUN cargo build --release --target-dir /out
 
       FROM registry.access.redhat.com/ubi9-micro:latest
@@ -24,11 +32,18 @@ spec:
     dockerStrategy:
       forcePull: true
   output:
+    {{- if .Values.output.imageStreamTag }}
+    # Into this cluster's internal registry (no quay push access needed).
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+    {{- else }}
     to:
       kind: DockerImage
       name: {{ .Values.output.externalImage }}
     pushSecret:
       name: {{ .Values.output.pushSecretName }}
+    {{- end }}
   resources:
     limits:
       memory: 4Gi

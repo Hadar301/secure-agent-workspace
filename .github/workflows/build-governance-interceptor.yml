@@ -42,4 +42,7 @@ jobs:
           cache_scope: governance-interceptor
           build_args: |
             OPENSHELL_REF=${{ steps.params.outputs.openshell_ref }}
+          # The chart pins ghcr.io/<owner>/governance-interceptor:<OpenShell ref>;
+          # the interceptor must match the SAW gateways' OpenShell release.
+          extra_tag: ${{ steps.params.outputs.openshell_ref }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}

@@ -47,7 +47,7 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   shipped in `charts/openshell-saw/files/provider-profiles/` (kept identical to
   `charts/governance-policy/profiles/`) into that workspace; a type with no shipped profile is
   skipped with a warning. It registers a local **mTLS**
-  gateway entry, creates workspaces, providers, inference routes and
+  gateway entry, creates workspaces, providers and
   sandboxes, optionally starts the dashboard, and verifies the result.
   It records what it created and, in the default `report` prune mode, only
   logs what a later profile change would delete. See
@@ -424,21 +424,21 @@ The installer records objects it creates in `/var/lib/saw/user/managed.json`
 Only those objects can be removed. A workspace, provider, or sandbox created
 by hand is never deleted. The first successful apply adopts whatever already
 matches the current profiles and does not delete anything. Deletion order is
-sandboxes, the workspace inference route, providers, provider profiles the
-installer imported, then workspaces. The `default` workspace and the system
-inference route are never deleted. A workspace is deleted only when it is
+sandboxes, providers, provider profiles the installer imported, then
+workspaces. The `default` workspace is never deleted. (An inference route a
+0.0.x apply recorded is dropped from the ledger when it is loaded, in every
+prune mode: OpenShell 0.1.x removed routes.) A workspace is deleted only when it is
 empty afterwards; otherwise it is kept and the log names what is left in it.
 
 Workspaces and sandboxes are labeled `saw.redhat.com/managed=true` (OpenShell
-0.0.116 accepts labels on those two kinds, and on no other kind this installer
-creates). Providers, inference routes, and imported provider profiles are
+accepts labels on those two kinds, and on no other kind this installer
+creates). Providers and imported provider profiles are
 identified by the ledger alone. A missing or empty profile ConfigMap fails
 the apply and deletes nothing.
 
 Spike on the gateway CLI: `workspace delete`, `sandbox delete`, `provider
-delete`, `inference delete`, and `provider profile delete` exist. `workspace
-create` and `sandbox create` take `--label`. `provider create` and `inference
-set` do not.
+delete`, and `provider profile delete` exist. `workspace create` and
+`sandbox create` take `--label`. `provider create` does not.
 
 ## Not in Stage 1
 
@@ -455,7 +455,37 @@ set` do not.
 ## Custom inference
 
 A self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...) is an `openai`
-provider with `OPENAI_BASE_URL` plus the workspace inference route, as in
-OpenShell's inference routing docs. Select the `custom-inference` SAW-BOM
+provider with `OPENAI_BASE_URL`, and OpenClaw calls that endpoint directly
+(OpenShell 0.1.x has no inference routes). Select the `custom-inference` SAW-BOM
 profile and put `provider: openai`, `model`, `url` and `api_key` in the
 `inference` Secret; see [Custom inference](custom-inference.md).
+
+## Moving to a new OpenShell release series (0.0.x -> 0.1.x)
+
+OpenShell 0.1.0 cannot upgrade 0.0.x state in place. When `install` replaces
+the gateway with one from a different release series (compared on
+major.minor), it first records the pending reset in `installed.json` (so a
+run that dies half way still resets on the retry), then:
+
+1. stops `openshell-gateway.service`;
+2. removes every OpenShell sandbox container (`label=openshell.ai/sandbox-name`);
+3. moves `~/.local/state/openshell/gateway` (the SQLite database) aside to
+   `gateway.<old version>.<epoch>`.
+
+The gateway then starts empty and `apply` recreates workspaces, providers and
+sandboxes from the SAW-BOM. TLS material (`~/.local/state/openshell/tls`) is
+kept. **Data in `/sandbox` does not carry over:** each sandbox's `/sandbox` is
+the podman volume `openshell-sandbox-<sandbox id>-workspace`, and recreated
+sandboxes get new ids and new, empty volumes. The old volumes are kept and the
+install log lists them, so data can be copied over by hand. Everything that talks to the gateway must be the
+same release: users need the 0.1.x `openshell` CLI, and the governance
+interceptor image must be built from the same tag
+(`image-builder-charts/helm/governance-interceptor-image`).
+
+0.1.x also changes what the chart writes: `gateway.toml` is schema version 2
+(`[openshell] version = 2`, `compute_driver`, driver settings under
+`[openshell.drivers.podman]`), `OPENSHELL_DRIVERS` became
+`OPENSHELL_COMPUTE_DRIVER`, the BOM gains `spec.openshell.sandbox` (the
+sandbox runtime image, image only), provider profiles must list `binaries`,
+and agents call their provider's own endpoint instead of
+`https://inference.local`.
