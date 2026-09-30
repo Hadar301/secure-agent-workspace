@@ -1566,19 +1566,9 @@ class ProfileApplier:
                     break
                 log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
                 time.sleep(5)
-        # The supervisor rewrites passwd; match /sandbox ownership to it.
-        # The workload container, found by OpenShell's labels (the supervisor
-        # runs in its own container). OpenShell 0.1.x starts it with no PATH,
-        # so the exec names one.
-        self.sh.run(["bash", "-c",
-                     "CNAME=$(podman ps -a "
-                     f"--filter label=openshell.ai/sandbox-name={sb.name} "
-                     f"--filter label=openshell.ai/sandbox-workspace={ws.name} "
-                     "--filter label=openshell.ai/isolation-role=sandbox "
-                     "--format '{{.Names}}' | head -1) && [ -n \"$CNAME\" ] && "
-                     "podman exec -u 0 -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-                     "\"$CNAME\" chown -R sandbox:sandbox /sandbox"],
-                    check=False)
+        # No /sandbox chown: OpenShell 0.1.x runs the workload without
+        # capabilities (root in the container cannot even read /sandbox) and
+        # already gives /sandbox to the image's user.
         token = secrets.token_hex(16)
         self.sh.add_secret(token)
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
