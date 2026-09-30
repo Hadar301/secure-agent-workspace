@@ -120,7 +120,10 @@ def test_translation_keeps_what_openshell_needs(work):
     openai = yaml.safe_load(files["provider-profiles/openai.yaml"])
     assert openai["kind"] == "Provider" and openai["metadata"]["name"] == "openai"
     assert openai["spec"]["type"] == "openai"
-    assert openai["spec"]["endpoints"] == []
+    # OpenShell 0.1.x: no inference routing, so the profile names the host and
+    # the binaries that may call it.
+    assert [e["host"] for e in openai["spec"]["endpoints"]] == ["api.openai.com"]
+    assert "/usr/bin/node-*" in openai["spec"]["binaries"]
     assert openai["spec"]["credentials"][0] == {
         "name": "api_key", "envVars": ["OPENAI_API_KEY"], "required": True,
         "style": "bearer", "header": "authorization"}

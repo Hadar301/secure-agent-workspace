@@ -178,14 +178,33 @@ def test_networkpolicy_selects_the_apf_pod(apf_chart):
 
 # -- the gateway side (openshell-saw) -----------------------------------------------
 
-def gateway_toml(*args):
+def gateway_toml_text(*args):
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--namespace", "saw-alice",
                              "--set", "sandboxName=saw-test", *args], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     for doc in yaml.safe_load_all(result.stdout):
         if doc and doc["kind"] == "ConfigMap" and "gateway.toml" in doc.get("data", {}):
-            return tomllib.loads(doc["data"]["gateway.toml"])
+            return doc["data"]["gateway.toml"]
     raise AssertionError("no gateway.toml")
+
+
+def gateway_toml(*args):
+    return tomllib.loads(gateway_toml_text(*args))
+
+
+GOLDEN = Path(__file__).resolve().parent / "golden"
+
+
+@pytest.mark.parametrize("golden,args", [
+    ("gateway-interceptor.toml", ()),
+    ("gateway-interceptor-oidc.toml", ("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")),
+])
+def test_interceptor_engine_gateway_toml_is_byte_identical(golden, args):
+    """The default engine must not change a single byte of gateway.toml: the
+    installer restarts the gateway whenever the file changes, and existing
+    VMs must not restart for this switch. The golden files are what the chart
+    rendered before the engine switch (PR #52 review)."""
+    assert gateway_toml_text(*args) == (GOLDEN / golden).read_text()
 
 
 def bindings(interceptor):

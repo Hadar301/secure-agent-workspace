@@ -125,13 +125,21 @@ first install:
 
 - The gateway starts with APF's bindings (the VM's gateway log: `interceptors initialized`); in
   `dynamic` mode every post-commit binding must come with `fail_open` from APF's manifest.
+- **OpenShell 0.1.x (the SAW's BOM since v0.1.2-rhaiv.0).** The gateway negotiates the extension
+  protocol (`PeerMetadata`, protocol 1.0) with every interceptor and stops at startup when an
+  interceptor does not speak it, so APF must be a release built for OpenShell 0.1.x; 0.2.0 was
+  built against 0.0.x and is not verified with it.
+- **Profile annotations ([NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929)).**
+  0.1.x hashes provider-profile annotations in map order, so a profile served with more than one
+  annotation makes every sandbox with that provider fail ("Startup configuration did not
+  stabilize"). The OpenShell interceptor build keeps one; check what APF puts on the profiles it
+  serves.
 - `openshell provider list-profiles` in a SAW shows the SAW profiles (APF serves the catalog
-  through `SnapshotProviderProfiles`), including `openai` with inference routing, `nvidia` and
-  `brave`. APF's Provider schema accepts only `type`, `endpoints`, `binaries` and `credentials`
-  (name, envVars, required, style, header), so OpenShell's `inference_capable`, `category`,
-  `discovery` and `query_param` are not in the bundle; check `openai` still routes inference.
-- The installer's `openshell inference set` (an `UpdateConfig`) is allowed; APF refuses policy
-  mutation, not inference configuration.
+  through `SnapshotProviderProfiles`): `openai`, `nvidia`, `brave` and `web-search`. APF's Provider
+  schema accepts only `type`, `endpoints`, `binaries` and `credentials` (name, envVars, required,
+  style, header), so OpenShell's `inference_capable`, `category`, `discovery` and `query_param`
+  are not in the bundle. OpenShell 0.1.x has no inference routing: the agent calls the provider's
+  endpoint with a placeholder key, which needs the profile's `endpoints` and `binaries` (kept).
 - `provider profile import` of a profile that is in the bundle is allowed or refused cleanly
   (the installer treats a refusal as non-fatal).
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,
