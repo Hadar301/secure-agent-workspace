@@ -6,11 +6,12 @@
 # governance-policy chart, which creates the ConfigMap this
 # deployment mounts.
 enabled: true
-# Built by .github/workflows/build-governance-interceptor.yml on main and
-# tagged with the OpenShell ref it is built from (image-builder-charts/helm/
-# governance-interceptor-image/values.yaml source.git.ref). It must match the
-# SAW gateways' OpenShell release.
-image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor:v0.1.2"
+# Must be built from the same OpenShell release as the SAW gateways
+# (image-builder-charts: `make build-governance-interceptor`, or copy the
+# on-cluster build). CI also publishes
+# ghcr.io/validatedpatterns-sandbox/governance-interceptor:<OpenShell ref>;
+# switch to it once that package is public.
+image: "quay.io/rh-ai-quickstart/governance-interceptor:v0.1.2"
 # gRPC listen port
 port: 18081
 # Interceptor-to-gateway connection (for hot-reload push)
