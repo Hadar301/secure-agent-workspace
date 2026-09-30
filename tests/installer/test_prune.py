@@ -218,3 +218,23 @@ def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_
     missing = [p for p in kept if f"cuda-dev/{p}" not in state["providers"]]
     assert not missing, f"sandbox lost providers: {missing}"
     assert "cuda-dev" in state["inference"]
+
+
+def test_kept_sandbox_providers_are_protected_when_listing_fails(
+        ab, fake_env, config, shipped_profile_files, secrets_dir, tmp_path):
+    """A failed `sandbox provider list` must not make kept_sandbox_providers
+    think a kept sandbox uses nothing, or every provider in its workspace
+    becomes prunable -- fail safe the same direction workspace_contents
+    already does for a failed listing (PR #54 review round 2, 3)."""
+    profiles = ab.parse_profiles(shipped_profile_files)
+    creds = ab.resolve_credentials(profiles, secrets_dir)
+    ledger = tmp_path / "managed.json"
+    _apply_on(ab, config, creds, profiles, ledger)
+    for profile in profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
+    fake_env.deny("sandbox provider")
+    _apply_on(ab, config, creds, profiles, ledger)
+    state = fake_env.openshell_state()
+    assert "cuda-dev/cuda-sandbox" in state["sandboxes"]
+    assert "cuda-dev/nvidia" in state["providers"], "provider pruned despite a kept sandbox using it"
+    assert "cuda-dev" in state["inference"]

@@ -72,12 +72,6 @@ VERSION_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*$")
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 SECRET_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 SECRET_KEY_RE = re.compile(r"^[-._a-zA-Z0-9]+$")
-# A plain email address, not a URL-shaped identity (e.g. a GitHub Actions
-# workflow ref, which also contains "@" but has slashes and no dot-domain
-# after the "@" segment the way an email does). Used to decide whether a
-# keyless signature's `identity` maps to podman policy.json's
-# fulcio.subjectEmail field.
-EMAIL_RE = re.compile(r"^[^@\s/]+@[^@\s/]+\.[^@\s/]+$")
 OPENSHELL_NAME_LIMIT = 19
 # The installer's own mTLS identity; the gateway reads roles from the OU.
 ADMIN_CERT_SUBJECT = "/O=openshell/OU=openshell-admin/CN=saw-installer"
@@ -812,19 +806,20 @@ class ComponentInstaller:
             key_path = self.trust_dir / f"{signature['keyRef']}.pub"
             return {"default": [{"type": "sigstoreSigned", "keyPath": str(key_path),
                                  "signedIdentity": {"type": "matchRepository"}}]}
-        # Keyless: podman's policy.json matches a Fulcio-issued certificate's
-        # email via fulcio.subjectEmail. A non-email identity (e.g. a GitHub
-        # Actions workflow ref, as in the docs' example) has no equivalent
-        # field in that schema as far as this change confirmed; oidcIssuer
-        # is still enforced either way. Needs live confirmation against the
-        # golden image's actual podman/containers-common version -- no
-        # component in this chart's default values uses this path today.
-        fulcio = {"oidcIssuer": signature["issuer"]}
-        identity = signature.get("identity", "")
-        if EMAIL_RE.match(identity):
-            fulcio["subjectEmail"] = identity
-        return {"default": [{"type": "sigstoreSigned", "fulcio": fulcio,
-                             "signedIdentity": {"type": "matchRepository"}}]}
+        # Keyless: podman's policy.json can only match a Fulcio-issued
+        # certificate by an exact fulcio.subjectEmail. _validate_signature
+        # requires `identity` to be an https:// URI (matching the docs'
+        # GitHub-Actions-workflow-ref example), so no identity that ever
+        # passes BOM validation can be email-shaped -- there is no field in
+        # podman's policy.json this schema's identity can be checked
+        # against. Checking oidcIssuer alone would accept any signer from
+        # that issuer: with https://token.actions.githubusercontent.com,
+        # that is any GitHub Actions workflow anywhere (PR #54 review
+        # round 2, 2). Reject rather than silently enforce less than the
+        # BOM asked for: a keyless signature behaves like no signer
+        # configured until there is a way to match this identity shape.
+        # Use keyRef.
+        return {"default": [{"type": "reject"}]}
 
     def _verify_signature(self, comp, entry):
         image = entry["image"]
@@ -1693,6 +1688,15 @@ class ProfileApplier:
             if listed.ok:
                 for provider_name in re.sub(r"\x1b\[[0-9;]*m", "", listed.out).split():
                     providers.add((workspace, provider_name))
+            else:
+                # Fail safe like workspace_contents: a failed listing must
+                # not look like "this sandbox uses nothing", or every
+                # provider in its workspace becomes prunable (PR #54
+                # review round 2, 3). Protect everything the ledger knows
+                # about in that workspace instead of guessing.
+                for other in self.ledger.data["objects"]:
+                    if other["kind"] == "provider" and other.get("workspace", "") == workspace:
+                        providers.add((workspace, other["name"]))
         return providers, workspaces
 
     def prune(self):

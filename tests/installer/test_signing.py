@@ -216,24 +216,29 @@ def test_signature_policy_for_keyref(ab, tmp_path):
                                    "signedIdentity": {"type": "matchRepository"}}]}
 
 
-def test_signature_policy_for_keyless_identity(ab, tmp_path):
+def test_keyless_signature_policy_always_rejects(ab, tmp_path):
+    """podman's policy.json can only match a Fulcio identity by an exact
+    fulcio.subjectEmail. _validate_signature requires `identity` to be an
+    https:// URI (the docs' own GitHub-Actions-workflow-ref example), so no
+    identity that ever passes BOM validation can be email-shaped -- there
+    is no field to check it against. Checking oidcIssuer alone would accept
+    any signer from that issuer: with
+    https://token.actions.githubusercontent.com, that is any GitHub Actions
+    workflow anywhere. Reject rather than silently enforce less than the
+    BOM asked for (PR #54 review round 2, 2)."""
     installer = ab.ComponentInstaller(ab.Shell(), tmp_path / "bin", tmp_path / "state.json")
-    policy = installer._signature_policy({
-        "identity": "release@example.com",
-        "issuer": "https://token.actions.githubusercontent.com"})
-    assert policy["default"][0]["type"] == "sigstoreSigned"
-    assert policy["default"][0]["fulcio"] == {
-        "oidcIssuer": "https://token.actions.githubusercontent.com",
-        "subjectEmail": "release@example.com"}
-    # A non-email identity (e.g. a GitHub Actions workflow ref, as in the
-    # docs' own example) still enforces the issuer; whether podman's
-    # policy.json schema on the golden image's containers-common version
-    # can also match that exact identity shape needs live confirmation.
-    policy2 = installer._signature_policy({
+    workflow_ref = installer._signature_policy({
         "identity": "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1",
         "issuer": "https://token.actions.githubusercontent.com"})
-    assert "subjectEmail" not in policy2["default"][0]["fulcio"]
-    assert policy2["default"][0]["fulcio"]["oidcIssuer"] == "https://token.actions.githubusercontent.com"
+    assert workflow_ref == {"default": [{"type": "reject"}]}
+    # Even an email-shaped identity is rejected: _validate_signature never
+    # lets one reach here (identity must start with https://), and this
+    # function does not special-case one either -- there is exactly one
+    # policy for every keyless signature today.
+    email_shaped = installer._signature_policy({
+        "identity": "release@example.com",
+        "issuer": "https://token.actions.githubusercontent.com"})
+    assert email_shaped == {"default": [{"type": "reject"}]}
 
 
 def test_signature_policy_rejects_by_default_with_no_signer(ab, tmp_path):
@@ -241,12 +246,21 @@ def test_signature_policy_rejects_by_default_with_no_signer(ab, tmp_path):
     assert installer._signature_policy(None) == {"default": [{"type": "reject"}]}
 
 
-def test_keyless_signature_is_accepted(ab, bom):
+def test_keyless_signature_shape_is_accepted_but_never_verifies(ab, bom, fake_env, tmp_path):
+    """The BOM schema still accepts identity/issuer as a valid shape (the
+    docs document it), but a component configured this way can never pass
+    verification today -- _signature_policy always returns reject for it.
+    A real signer here would still (correctly) fail under enforce."""
     bom["spec"]["openshell"]["cli"]["signature"] = {
         "identity": "https://github.com/example/openshell/.github/workflows/release.yml@refs/tags/v1",
         "issuer": "https://token.actions.githubusercontent.com",
     }
-    ab.validate_bom(bom)
+    ab.validate_bom(bom)  # shape is valid
+    fake_env.images_for_bom(bom)
+    installer = ab.ComponentInstaller(ab.Shell(), tmp_path / "bin", tmp_path / "state" / "installed.json",
+                                      signing_mode="enforce")
+    with pytest.raises(ab.InstallerError, match="is not signed by"):
+        installer.install(bom)
 
 
 def test_verify_bundle_warn_allows_unsigned_and_enforce_stops(tmp_path):
