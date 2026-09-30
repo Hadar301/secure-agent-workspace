@@ -189,11 +189,19 @@ def test_installer_units_run_install_then_apply(default_docs, tmp_path):
     install = written(cfg, "/etc/systemd/system/saw-install.service")
     apply = written(cfg, "/etc/systemd/system/saw-apply.service")
     assert "Wants=saw-install.service" in apply
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install" in install
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py apply" in apply
+    assert ("ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 "
+            "/var/lib/saw/verified/installer/apply_bom.py install "
+            "--installer-dir /var/lib/saw/verified/installer" in install)
+    assert ("ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 "
+            "/var/lib/saw/verified/installer/apply_bom.py apply "
+            "--installer-dir /var/lib/saw/verified/installer" in apply)
     assert "saw-install.service" in unit_deps(apply)["After"]
     for unit in (install, apply):
         assert "ExecStartPre=/usr/local/sbin/saw-mount-inputs" in unit
+        # apply_bom.py always runs from the staged, verified copy, never the
+        # live mount (PR #54 review, 2).
+        assert "ExecStartPre=/usr/local/sbin/saw-stage-installer" in unit
+        assert unit.index("saw-stage-installer") < unit.index("ExecStart=/usr/local/sbin/saw-with-lock")
         assert "StandardOutput=journal+console" in unit      # visible in guest-console-log
         assert "StartLimitBurst=" in unit                     # retries are bounded
         assert "ConditionPathExists=/var/lib/openshell-gateway-setup.done" in unit
@@ -698,3 +706,36 @@ def test_cleanup_hook_can_be_turned_off():
                           if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
     assert ("Pod", "saw-test-cleanup") in hooks(render())
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
+
+
+def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
+    docs = render("--set", "vm.liveInputs=true")
+    spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
+    disks = {d["name"] for d in spec["domain"]["devices"]["disks"]}
+    filesystems = {f["name"] for f in spec["domain"]["devices"]["filesystems"]}
+    assert disks == {"rootdisk", "cloudinitdisk"}
+    assert filesystems == {"saw-installer", "saw-profiles", "saw-sec-0", "saw-sec-1"}
+    assert all(item["virtiofs"] == {} for item in spec["domain"]["devices"]["filesystems"])
+    annotations = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["annotations"]
+    assert "openshell.pattern/installer-checksum" not in annotations
+    assert "openshell.pattern/cloudinit-checksum" in annotations
+    cfg = cloud_config(docs)
+    assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
+
+
+def test_signing_mode_defaults_to_warn(default_docs):
+    config = json.loads(installer_data(default_docs)["config.json"])
+    assert config["signing"]["mode"] == "warn"
+    assert config["prune"]["mode"] == "report"
+    assert config["prune"]["sandboxes"] is False
+    assert "bundle.sigstore.json" not in installer_data(default_docs)
+    unit = written(cloud_config(default_docs), "/etc/systemd/system/saw-install.service")
+    # saw-stage-installer runs verify-bundle when the golden image has it
+    # (PR #54 review, 2); apply_bom.py always runs from the staged copy.
+    assert "saw-stage-installer" in unit
+    assert unit.index("saw-stage-installer") < unit.index("apply_bom.py install")
+
+
+def test_enforce_without_trust_material_fails_at_render():
+    err = render_error("--set", "signing.mode=enforce")
+    assert "signing.mode enforce requires" in err

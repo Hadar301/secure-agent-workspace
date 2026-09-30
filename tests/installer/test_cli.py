@@ -84,6 +84,19 @@ def test_install_then_apply_reaches_ready(world):
         assert "nvapi-TEST-KEY-123" not in text
 
 
+def test_apply_writes_the_ledger_for_the_runtime_user(world):
+    cfg_path = world.inputs / "installer" / "config.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg["prune"] = {"mode": "report", "sandboxes": False}
+    cfg_path.write_text(json.dumps(cfg))
+    assert world.run("install").returncode == 0
+    result = world.run("apply")
+    assert result.returncode == 0, result.stdout + result.stderr
+    ledger = json.loads((world.state / "user" / "managed.json").read_text())
+    assert ledger["adopted"] is True
+    assert not (world.state / "managed.json").exists()
+
+
 def test_reboot_reruns_are_cheap_and_stay_ready(world):
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0

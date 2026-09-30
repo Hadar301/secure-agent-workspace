@@ -1,0 +1,52 @@
+name: Sign installer bundle
+
+on:
+  workflow_dispatch:
+
+# COSIGN_PRIVATE_KEY is a GitHub Actions secret. It is never committed.
+# Download the artifact and commit charts/openshell-saw/files/installer/bundle.sigstore.json
+# (and the matching *.pub next to it, for installer-tests.yml's drift check)
+# when the chart should carry the signature. See docs/versioned-bom-installer.md.
+#
+# Helm's version is pinned: installer-bom.yaml is `toYaml .Values.bom`, and
+# a different Helm version can render that block scalar with different
+# whitespace/quoting, changing the manifest this signs for reasons that
+# have nothing to do with the installer actually changing (PR #54 review, 3).
+# A SAW whose bom: values are overridden per-user also renders a different
+# installer-bom.yaml than this workflow signs; that SAW needs
+# signing.mode: warn (or off), not enforce -- see "Signing" in
+# docs/versioned-bom-installer.md.
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - uses: sigstore/cosign-installer@v3
+      - name: Render the chart and build the installer manifest
+        run: |
+          set -euo pipefail
+          pip install -q pyyaml
+          helm template saw-sign charts/openshell-saw --namespace saw-sign --set sandboxName=saw-sign > /tmp/rendered.yaml
+          python3 scripts/build-installer-manifest.py /tmp/rendered.yaml /tmp/installer-manifest.txt
+          cat /tmp/installer-manifest.txt
+      - name: Sign the manifest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COSIGN_PRIVATE_KEY}" ]; then
+            echo "COSIGN_PRIVATE_KEY is not configured. Refusing to sign." >&2
+            exit 1
+          fi
+          cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY \
+            --bundle bundle.sigstore.json /tmp/installer-manifest.txt
+          echo "Signed the manifest covering installer-bom.yaml, apply_bom.py, setup-dashboard.sh,"
+          echo "and every provider-profile-*.yaml. The private key was not written to the workspace."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle.sigstore.json
+          path: bundle.sigstore.json

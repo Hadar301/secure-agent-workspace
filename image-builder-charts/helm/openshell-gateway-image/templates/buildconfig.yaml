@@ -1,4 +1,8 @@
 {{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
+{{- $signingFloor := .Values.signing.floor | default "" -}}
+{{- if and $signingFloor (not (or (eq $signingFloor "off") (eq $signingFloor "warn") (eq $signingFloor "enforce"))) }}
+{{- fail (printf "signing.floor must be off, warn, enforce, or empty, got %q" $signingFloor) }}
+{{- end }}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
@@ -195,6 +199,32 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
+      # Trust root and the bundle verifier. These are not taken from the
+      # namespace: a namespace editor can change the installer ConfigMap, but
+      # not these files. The publisher key is not baked in; add openshell.pub
+      # here when it is known. See docs/versioned-bom-installer.md.
+      #
+      # apply_bom.py builds a per-pull podman policy.json from the BOM's own
+      # signature field at install time (default reject, so an unlisted
+      # registry is not implicitly trusted); there is no static, baked-in
+      # component policy file to keep in sync with that (PR #54 review, 4).
+      RUN mkdir -p /build/saw
+      RUN echo '{{ .Files.Get "files/verify-bundle" | b64enc }}' | base64 -d > /build/saw/verify-bundle
+      RUN echo '{{ .Files.Get "files/registries.yaml" | b64enc }}' | base64 -d > /build/saw/saw.yaml
+      RUN chmod 755 /build/saw/verify-bundle
+      RUN curl -fsSL -o /build/saw/cosign {{ .Values.cosign.url | quote }} \
+          && echo "{{ .Values.cosign.sha256 }}  /build/saw/cosign" | sha256sum -c - \
+          && chmod 755 /build/saw/cosign
+      {{- if $signingFloor }}
+      # A minimum signing.mode this image enforces, regardless of what
+      # config.json (in the installer ConfigMap, editable by a namespace
+      # editor) says. Read by verify-bundle and apply_bom.py; the mode
+      # actually used is the stricter of this file and config.json's
+      # signing.mode. Set signing.floor: enforce for production images
+      # (PR #54 review round 2, 1).
+      RUN printf '%s' {{ $signingFloor | quote }} > /build/saw/signing-mode
+      {{- end }}
+
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
             --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
@@ -214,8 +244,15 @@ spec:
             --mkdir /usr/lib/systemd/user \
             --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
             --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
-            --run-command 'mkdir -p /usr/local/sbin' \
+            --run-command 'mkdir -p /usr/local/sbin /usr/libexec/saw /etc/saw/trust /etc/containers/registries.d' \
             --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            --copy-in /build/saw/verify-bundle:/usr/libexec/saw/ \
+            --copy-in /build/saw/saw.yaml:/etc/containers/registries.d/ \
+            --copy-in /build/saw/cosign:/usr/local/bin/ \
+            {{- if $signingFloor }}
+            --copy-in /build/saw/signing-mode:/etc/saw/ \
+            {{- end }}
+            --run-command 'chmod 755 /usr/libexec/saw/verify-bundle /usr/local/bin/cosign' \
             --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
             --run-command 'systemctl enable openshell-gateway-setup.service' \
             --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \

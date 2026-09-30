@@ -1,0 +1,184 @@
+#!/bin/bash
+# Stage the installer tree into a root-owned, verified copy, and check the
+# installer bundle before apply_bom.py ever runs from there.
+#
+# This script is installed from the golden image. It is not the code it
+# checks, and apply_bom.py always runs from the copy this script publishes
+# under SAW_STAGE_ROOT/installer, never from the live ConfigMap/virtiofs
+# mount it was staged from. That closes two gaps found in review:
+#  - saw-reconcile used to exec apply_bom.py straight off the live mount,
+#    with no verification at all;
+#  - even saw-install/saw-apply verified the live mount and then, in a
+#    second, separate step, re-read that same live mount to run it -- a
+#    TOCTOU window, worse with vm.liveInputs's virtiofs, where the files can
+#    change between the two reads.
+#
+# The effective signing mode is the stricter of SAW_SIGNING_FLOOR_FILE (in
+# the golden image, not the namespace) and config.json's signing.mode (in
+# the installer ConfigMap, which is not itself signed). A namespace editor
+# who sets signing.mode: off next to a modified apply_bom.py cannot get
+# below the floor the image pins.
+set -u
+INSTALLER_DIR="${SAW_INSTALLER_DIR:-/run/saw/installer}"
+TRUST_DIR="${SAW_TRUST_DIR:-/etc/saw/trust}"
+STATUS="${SAW_STATUS_FILE:-/var/lib/saw/status.json}"
+STAGE_ROOT="${SAW_STAGE_ROOT:-/var/lib/saw/verified}"
+STAGE_LINK="${STAGE_ROOT}/installer"
+FLOOR_FILE="${SAW_SIGNING_FLOOR_FILE:-/etc/saw/signing-mode}"
+CONFIG="${INSTALLER_DIR}/config.json"
+
+record() {
+  python3 - "$STATUS" "$1" "$2" <<'PY'
+import json, os, sys
+path, sig, msg = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, ValueError):
+    data = {}
+data["bundle"] = {"signature": sig, "message": msg}
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+effective_mode() {
+  python3 - "$CONFIG" "$FLOOR_FILE" <<'PY'
+import json, sys
+order = {"off": 0, "warn": 1, "enforce": 2}
+config_path, floor_path = sys.argv[1:]
+configured = "warn"
+try:
+    with open(config_path, encoding="utf-8") as fh:
+        configured = json.load(fh).get("signing", {}).get("mode", "warn")
+except (OSError, ValueError):
+    pass
+if configured not in order:
+    configured = "warn"
+floor = "off"
+try:
+    with open(floor_path, encoding="utf-8") as fh:
+        value = fh.read().strip()
+    if value in order:
+        floor = value
+except OSError:
+    pass
+print(floor if order[floor] > order[configured] else configured)
+PY
+}
+
+mode=warn
+if [[ -f "$CONFIG" ]]; then
+  mode=$(effective_mode 2>/dev/null || echo warn)
+fi
+
+install -d -m 0755 "$STAGE_ROOT"
+exec 8>"${STAGE_ROOT}/.lock"
+flock 8
+
+stage=$(mktemp -d "${STAGE_ROOT}/.rev-XXXXXX")
+chmod 0755 "$stage"
+
+publish() {
+  local previous
+  previous=$(readlink -f "$STAGE_LINK" 2>/dev/null || true)
+  ln -sfn "$(basename "$stage")" "${STAGE_ROOT}/.installer-link"
+  mv -T "${STAGE_ROOT}/.installer-link" "$STAGE_LINK"
+  if [[ -n "$previous" && "$previous" != "$stage" && "$previous" == "${STAGE_ROOT}"/.rev-* ]]; then
+    rm -rf "$previous"
+  fi
+}
+
+finish() {
+  # enforce: never publish a bad/unverifiable stage -- the old, previously
+  # verified revision (if any) keeps running. warn/off: publish so this
+  # run's content executes, with the signature result recorded as-is.
+  local sig="$1" msg="$2"
+  echo "$msg" >&2
+  record "$sig" "$msg" || true
+  if [[ "$mode" == "enforce" ]]; then
+    rm -rf "$stage"
+    exit 1
+  fi
+  publish
+  exit 0
+}
+
+# Dereference every symlink while copying: a ConfigMap/virtiofs mount
+# presents each key as a symlink into a ..data directory that kubelet
+# atomically swaps. A copy that preserved those symlinks would still point
+# back at the live, mutable mount, defeating the whole point of staging.
+if ! cp -rL --preserve=mode "${INSTALLER_DIR}/." "${stage}/" 2>/dev/null; then
+  finish failed "could not stage the installer tree from ${INSTALLER_DIR}"
+fi
+
+if [[ "$mode" == "off" ]]; then
+  record off ""
+  publish
+  exit 0
+fi
+
+# Sign a manifest of "<sha256>  <path>" lines, one per covered file,
+# instead of a raw concatenation: a byte moved from the end of one file to
+# the start of the next left the old concatenation-based signature valid
+# (PR #54 review, 3). Each file's hash is checked independently below, so a
+# boundary shift like that changes two lines and is caught. Must match
+# scripts/build-installer-manifest.py exactly (same file set, same line
+# format), or a genuine, unmodified installer fails enforce.
+manifest_text() {
+  local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f
+  shopt -s nullglob
+  for extra in "${dir}"/provider-profile-*.yaml; do
+    files+=("$(basename "$extra")")
+  done
+  mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
+  for f in "${files[@]}"; do
+    [[ -f "${dir}/${f}" ]] || return 1
+    printf '%s  %s\n' "$(sha256sum "${dir}/${f}" | awk '{print $1}')" "$f"
+  done
+}
+
+payload=$(mktemp)
+trap 'rm -f "$payload"' EXIT
+if ! manifest_text "$stage" > "$payload"; then
+  finish failed "installer bundle is missing one of its covered files"
+fi
+
+bundle="${stage}/bundle.sigstore.json"
+if [[ ! -s "$bundle" ]]; then
+  finish unsigned "installer bundle is unsigned"
+fi
+
+if ! command -v cosign >/dev/null 2>&1; then
+  finish failed "cosign is not installed; cannot verify the installer bundle"
+fi
+
+shopt -s nullglob
+if [[ -n "${SAW_TRUST_KEYS:-}" ]]; then
+  # signing.trustKeys restricts which key names are accepted, instead of
+  # trusting every *.pub the golden image happens to carry.
+  keys=()
+  IFS=',' read -r -a wanted <<< "${SAW_TRUST_KEYS}"
+  for name in "${wanted[@]}"; do
+    [[ -f "${TRUST_DIR}/${name}.pub" ]] && keys+=("${TRUST_DIR}/${name}.pub")
+  done
+else
+  keys=("${TRUST_DIR}"/*.pub)
+fi
+if [[ ${#keys[@]} -eq 0 ]]; then
+  finish failed "no public keys in ${TRUST_DIR}"
+fi
+for key in "${keys[@]}"; do
+  if cosign verify-blob --bundle "$bundle" --key "$key" --offline "$payload" >/dev/null 2>&1; then
+    record verified "installer bundle verified by $(basename "$key")"
+    publish
+    exit 0
+  fi
+done
+finish failed "installer bundle signature does not match a key in ${TRUST_DIR}"

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Hold /run/saw/lock for the rest of this process. saw-install, saw-apply,
+# and saw-reconcile all enter through here so two of them never overlap.
+set -euo pipefail
+lock="${SAW_LOCK_FILE:-/run/saw/lock}"
+install -d -m 0700 "$(dirname "$lock")"
+exec 9>"$lock"
+flock 9
+exec "$@"

@@ -3,6 +3,14 @@
 
 images.json maps image -> {path-in-image: {"type": "binary", "version": v}
 or {"type": "nemoclaw"}}. Every call is appended to podman.log.
+
+`pull --signature-policy <path> <image>` reads the policy file ComponentInstaller
+generates and simulates real enforcement: a "reject" default always fails
+(no signer configured); a "sigstoreSigned" default fails only for an image
+listed in unsigned.json (this fake has no real keys or signatures to check,
+so unsigned.json is the fixture's way of saying "would not verify"). A
+plain `pull` with no --signature-policy always succeeds when the image is
+known, exactly like today's non-signature-checking extraction pulls.
 """
 import json
 import os
@@ -24,6 +32,18 @@ if cmd == "pull":
     if image not in images:
         print(f"Error: initializing source docker://{image}: manifest unknown", file=sys.stderr)
         sys.exit(125)
+    policy_path = args[args.index("--signature-policy") + 1] if "--signature-policy" in args else None
+    if policy_path:
+        policy = json.loads(Path(policy_path).read_text())
+        default = (policy.get("default") or [{}])[0]
+        unsigned_file = state / "unsigned.json"
+        unsigned = json.loads(unsigned_file.read_text()) if unsigned_file.exists() else []
+        if default.get("type") == "reject":
+            print("Error: no valid signature: policy default is reject", file=sys.stderr)
+            sys.exit(125)
+        if default.get("type") == "sigstoreSigned" and image in unsigned:
+            print(f"Error: image {image}: signature verification failed", file=sys.stderr)
+            sys.exit(125)
     print("sha256:" + "0" * 64)
 elif cmd == "create":
     image = args[-1]

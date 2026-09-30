@@ -11,10 +11,17 @@ ROOT="${SAW_ROOT:-/run/saw}"
 WAIT="${SAW_DEV_WAIT:-30}"
 
 mount_disk() {
-  local dev="${DEV_DIR}/virtio-$1" target="$2" need="$3"
+  local name="$1" target="$2" need="$3"
+  local dev="${DEV_DIR}/virtio-${name}"
   # Already mounted (e.g. by the other unit): nothing to do. This check comes
   # first; touching a read-only mount point would fail.
   if mountpoint -q "${target}" 2>/dev/null; then
+    return 0
+  fi
+  [[ -d "${target}" ]] || install -d -m 0700 "${target}"
+  # virtiofs (vm.liveInputs) uses the volume name as the tag and updates
+  # without a reboot. The iso9660 disk is the default.
+  if [[ ! -e "${dev}" ]] && mount -t virtiofs -o ro,nosuid,nodev,noexec "${name}" "${target}" 2>/dev/null; then
     return 0
   fi
   local waited=0
@@ -30,7 +37,6 @@ mount_disk() {
     echo "saw-mount-inputs: optional disk $1 is not attached"
     return 0
   fi
-  [[ -d "${target}" ]] || install -d -m 0700 "${target}"
   mount -t iso9660 -o ro,nosuid,nodev,noexec "${dev}" "${target}"
 }
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch SAW virtiofs inputs for changes
+
+[Path]
+PathChanged=/run/saw/installer
+PathChanged=/run/saw/profiles
+PathChanged=/run/saw/secrets
+Unit=saw-reconcile.service
+
+[Install]
+WantedBy=multi-user.target
