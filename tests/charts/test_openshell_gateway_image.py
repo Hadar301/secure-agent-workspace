@@ -23,8 +23,8 @@ def render(*args):
     return list(yaml.safe_load_all(result.stdout))
 
 
-def dockerfile():
-    docs = render()
+def dockerfile(*args):
+    docs = render(*args)
     build = next(d for d in docs if d["kind"] == "BuildConfig")
     return build["spec"]["source"]["dockerfile"]
 
@@ -59,6 +59,35 @@ def test_verify_bundle_and_trust_dir_are_still_baked_in():
     assert "/usr/libexec/saw/verify-bundle" in text
     assert "/etc/saw/trust" in text
     assert "/etc/containers/registries.d" in text
+
+
+def test_no_signing_floor_by_default():
+    """Empty signing.floor (the chart default) must not bake anything into
+    /etc/saw/signing-mode: absent = no floor, matching config.json alone
+    deciding the mode, which is today's documented behavior."""
+    text = dockerfile()
+    assert "signing-mode" not in text
+
+
+def test_signing_floor_is_baked_in_when_set():
+    """The golden image can pin a minimum signing.mode at
+    /etc/saw/signing-mode; config.json (in the namespace-editable installer
+    ConfigMap) can only tighten it, never loosen it below this floor
+    (PR #54 review round 2, 1: nothing used to write this file at all)."""
+    text = dockerfile("--set", "signing.floor=enforce")
+    assert "printf '%s' \"enforce\" > /build/saw/signing-mode" in text
+    assert "--copy-in /build/saw/signing-mode:/etc/saw/" in text
+    # The floor is written before it is copied into the image.
+    assert text.index("signing-mode") < text.index("--copy-in /build/saw/signing-mode")
+
+
+def test_invalid_signing_floor_fails_the_render():
+    result = subprocess.run(
+        [HELM, "template", "gw-test", str(CHART), "--namespace", "openshell-agents",
+         "--set", "containerRuntime=podman", "--set", "signing.floor=bogus"],
+        capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "signing.floor must be off, warn, enforce, or empty" in result.stderr
 
 
 def test_the_two_verify_bundle_copies_are_identical():

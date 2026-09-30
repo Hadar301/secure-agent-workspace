@@ -25,6 +25,16 @@ cosign:
   url: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64"
   sha256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b"
 
+# Minimum signing.mode this image enforces at /etc/saw/signing-mode,
+# regardless of what config.json (in the installer ConfigMap, which a
+# namespace editor can change) says -- the effective mode used by
+# verify-bundle and apply_bom.py is the stricter of this and config.json's
+# signing.mode. Empty = no floor (today's behavior). Set to "enforce" for
+# production images so a namespace editor cannot set signing.mode: off in
+# config.json and skip enforcement (PR #54 review round 2, 1).
+signing:
+  floor: ""
+
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
