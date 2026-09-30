@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -66,11 +67,12 @@ COMPONENTS = {
     "cli": {"image_path": "/usr/local/bin/openshell",
             "dest": "openshell"},
 }
-# Image-only components: pulled (and signature-checked) so the gateway can
-# use them, but no binary is extracted. `sandbox` is the OpenShell 0.1.x
-# sandbox runtime image; the podman driver mounts the supervisor from it into
-# every sandbox (gateway.toml sandbox_runtime_image). Optional, so a 0.0.x
-# BOM (which has none) still validates.
+# Image-only components: pinned in the BOM and checked here (pull and
+# signature, as root), but no binary is extracted; the gateway pulls the image
+# itself as the runtime user. `sandbox` is the OpenShell 0.1.x sandbox runtime
+# image: the podman driver mounts the supervisor from it into every sandbox
+# (gateway.toml sandbox_runtime_image). Required: the chart's gateway.toml is
+# schema v2 (0.1.x) only.
 IMAGE_COMPONENTS = {"sandbox"}
 NEMOCLAW_IMAGE_PATH = "/opt/nemoclaw"
 
@@ -253,8 +255,8 @@ def validate_bom(doc):
         raise InstallerError(
             f"InstallerBOM targets installer {spec['installerVersion']}, "
             f"this installer is {INSTALLER_VERSION}")
-    _require_keys(spec["openshell"], set(COMPONENTS), set(COMPONENTS) | IMAGE_COMPONENTS,
-                  "spec.openshell")
+    _require_keys(spec["openshell"], set(COMPONENTS) | IMAGE_COMPONENTS,
+                  set(COMPONENTS) | IMAGE_COMPONENTS, "spec.openshell")
     for comp, entry in spec["openshell"].items():
         where = f"spec.openshell.{comp}"
         _require_keys(entry, {"version", "image"}, {"version", "image", "path", "signature"}, where)
@@ -265,6 +267,12 @@ def validate_bom(doc):
             raise InstallerError(f"{where}.path must be an absolute path")
         if "signature" in entry:
             _validate_signature(entry["signature"], f"{where}.signature")
+    # Every OpenShell component must come from the same release (0.1.x does not
+    # support mixed peers); a Helm override of some versions only is refused.
+    versions = {normalize_version(e["version"]) for e in spec["openshell"].values()}
+    if len(versions) > 1:
+        raise InstallerError("spec.openshell components must all have the same version, got "
+                             + ", ".join(sorted(versions)))
     if "nemoclaw" in spec:
         _require_keys(spec["nemoclaw"], {"cliImage"}, {"cliImage"}, "spec.nemoclaw")
         image = spec["nemoclaw"]["cliImage"]
@@ -668,6 +676,11 @@ def read_secret_value(base, key):
         return ""
 
 
+# Characters a base URL never needs and a shell would interpret; the URL ends
+# up in an OpenClaw command line inside the sandbox.
+SHELL_UNSAFE = set("\"'`$\\;|&<>(){}")
+
+
 def check_base_url(url):
     """An http(s) base URL without credentials, query or fragment. The value
     is not echoed in errors: a pasted URL may contain a token."""
@@ -676,7 +689,7 @@ def check_base_url(url):
         ok = (parts.scheme in ("http", "https") and parts.hostname
               and parts.username is None and parts.password is None
               and not parts.query and not parts.fragment
-              and not any(c.isspace() for c in url))
+              and not any(c.isspace() or c in SHELL_UNSAFE for c in url))
         if ok:
             parts.port  # raises ValueError on a bad port
     except ValueError:
@@ -686,8 +699,8 @@ def check_base_url(url):
                          "query or fragment")
     host = parts.hostname
     if host in ("localhost", "127.0.0.1", "::1"):
-        raise ValueError("base URL must not be localhost: the gateway, not the sandbox, "
-                         "calls it (use a cluster Service or Route host)")
+        raise ValueError("base URL must not be localhost: inside the sandbox that is the "
+                         "sandbox itself (use a cluster Service or Route host)")
     return url.rstrip("/")
 
 
@@ -1057,29 +1070,39 @@ def needs_state_reset(old_version, new_version):
     return release_series(old_version) != release_series(new_version)
 
 
-def reset_gateway_state(shell, user, env, home, old_version, new_version, dry_run=False):
+def reset_gateway_state(shell, wrap, home, old_version, new_version, dry_run=False):
     """Move the gateway to a new release series.
 
     Stops the gateway, removes every OpenShell sandbox container, and moves
     the gateway state (its SQLite database) aside as a backup. The apply
     step then recreates workspaces, providers and sandboxes from the
-    SAW-BOM, as on a first boot. /sandbox data volumes and TLS material are
-    kept."""
+    SAW-BOM, as on a first boot. TLS material is kept. The old sandboxes'
+    /sandbox volumes are kept too, but recreated sandboxes get new IDs and
+    new, empty volumes: the old ones are listed for manual recovery."""
     log(f"OpenShell {old_version} -> {new_version} is a new release series: "
         "recreating gateway state and sandboxes")
-    systemctl = lambda *a: shell.run(as_user(user, env, ["systemctl", "--user", *a]), check=False)
+    systemctl = lambda *a: shell.run(wrap(["systemctl", "--user", *a]), check=False)
     systemctl("stop", "openshell-gateway.service")
-    listed = shell.run(as_user(user, env, [
+    listed = shell.run(wrap([
         "podman", "ps", "-a", "--filter", "label=openshell.ai/sandbox-name",
         "--format", "{{.Names}}"]), check=False, quiet=True)
     names = [n for n in listed.out.split() if n]
     if names:
         log(f"removing {len(names)} sandbox container(s) from {old_version}")
-        shell.run(as_user(user, env, ["podman", "rm", "-f", *names]), check=False)
+        shell.run(wrap(["podman", "rm", "-f", *names]), check=False)
+    volumes = shell.run(wrap([
+        "podman", "volume", "ls", "--format", "{{.Name}}"]), check=False, quiet=True)
+    kept = [v for v in volumes.out.split() if v.startswith("openshell-sandbox-")]
+    if kept:
+        log(f"kept {len(kept)} /sandbox volume(s) of the old sandboxes (new sandboxes get new "
+            f"ones; copy data over by hand if needed): {', '.join(kept)}")
     state = Path(home) / ".local" / "state" / "openshell" / "gateway"
     if state.exists() and not dry_run:
         backup = state.with_name(f"gateway.{normalize_version(old_version)}.{int(time.time())}")
-        os.rename(state, backup)
+        try:
+            os.rename(state, backup)
+        except OSError as exc:
+            raise InstallerError(f"could not move the gateway state aside: {exc}") from None
         log(f"gateway state moved to {backup}")
 
 
@@ -1102,7 +1125,7 @@ def _env_keys(text):
 # Keys an earlier chart wrote that must not survive as "extra" keys.
 # OPENSHELL_DRIVERS became OPENSHELL_COMPUTE_DRIVER in OpenShell 0.1.x; the
 # old name is only a deprecated alias there.
-RETIRED_ENV_KEYS = {"OPENSHELL_DRIVERS"}
+RETIRED_ENV_KEYS = {"OPENSHELL_DRIVERS", "OPENSHELL_CONFIG_FILE", "OPENSHELL_SSH_GATEWAY_PORT"}
 
 
 def merge_user_env(chart_env, current):
@@ -1210,7 +1233,7 @@ def ws_args(name):
 
 
 MANAGED_LABEL = "saw.redhat.com/managed=true"
-PRUNE_ORDER = ("sandbox", "inference", "provider", "profile", "workspace")
+PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
 
 
 class Ledger:
@@ -1224,6 +1247,9 @@ class Ledger:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 self.data.update(loaded)
+        # OpenShell 0.1.x has no inference routes (its upgrade drops them), so
+        # a route a 0.0.x apply recorded is forgotten, in every prune mode.
+        self.data["objects"] = [o for o in self.data["objects"] if o.get("kind") != "inference"]
 
     def save(self):
         if self.dry_run:
@@ -1541,11 +1567,14 @@ class ProfileApplier:
                 log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
                 time.sleep(5)
         # The supervisor rewrites passwd; match /sandbox ownership to it.
-        # The workload container is openshell-<workspace>--<sandbox>-<id> (the
-        # supervisor runs in its own container). OpenShell 0.1.x starts it with
-        # no PATH, so the exec names one.
+        # The workload container, found by OpenShell's labels (the supervisor
+        # runs in its own container). OpenShell 0.1.x starts it with no PATH,
+        # so the exec names one.
         self.sh.run(["bash", "-c",
-                     f"CNAME=$(podman ps -a --filter 'name=^openshell-{ws.name}--{sb.name}-' "
+                     "CNAME=$(podman ps -a "
+                     f"--filter label=openshell.ai/sandbox-name={sb.name} "
+                     f"--filter label=openshell.ai/sandbox-workspace={ws.name} "
+                     "--filter label=openshell.ai/isolation-role=sandbox "
                      "--format '{{.Names}}' | head -1) && [ -n \"$CNAME\" ] && "
                      "podman exec -u 0 -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
                      "\"$CNAME\" chown -R sandbox:sandbox /sandbox"],
@@ -1565,12 +1594,17 @@ class ProfileApplier:
         if not base_url or not key_var:
             log(f"WARN: no native endpoint known for provider type '{provider.type}'; "
                 f"set baseUrl on provider '{provider.name}'. Skipping OpenClaw onboarding")
+            # The sandbox still has to stay Ready after the installer exits.
+            self.install_keepalive(ws, sb)
             return
+        # key_var is a constant (PROVIDER_CRED_MAP); everything that comes from
+        # the profile or a Secret is quoted for the sandbox's shell.
         onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} CUSTOM_API_KEY=\"${key_var}\" openclaw onboard --non-interactive "
                  "--accept-risk --mode local --auth-choice custom-api-key "
-                 f'--custom-base-url "{base_url}" '
-                 f"--custom-provider-id {provider.type} --custom-model-id \"{model}\" "
+                 f"--custom-base-url {shlex.quote(base_url)} "
+                 f"--custom-provider-id {shlex.quote(provider.type)} "
+                 f"--custom-model-id {shlex.quote(model)} "
                  "--custom-compatibility openai --skip-channels --skip-health", check=False)
         # Re-onboarding an existing sandbox with a different provider or model
         # (e.g. after switching to a custom endpoint) makes OpenClaw save the
@@ -1683,7 +1717,7 @@ class ProfileApplier:
         """Workspaces and sandboxes also carry saw.redhat.com/managed=true.
 
         Adopted objects predate that label, so the ledger alone allows them.
-        Providers and inference routes cannot be labeled.
+        Providers cannot be labeled.
         """
         if entry.get("adopted") or kind not in ("workspace", "sandbox"):
             return True
@@ -1725,11 +1759,6 @@ class ProfileApplier:
     def delete_managed(self, kind, workspace, name):
         if kind == "sandbox":
             self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
-        elif kind == "inference":
-            # OpenShell 0.1.x removed inference routes (the upgrade drops
-            # them); an entry left in the ledger by a 0.0.x apply is only
-            # forgotten.
-            log(f"forgetting the 0.0.x inference route of '{workspace}' (removed in 0.1.x)")
         elif kind == "provider":
             self.cli("provider", "delete", name, *ws_args(workspace), check=False)
         elif kind == "profile":
@@ -2022,23 +2051,39 @@ def cmd_install(args):
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
                                        podman=args.podman, opt_dir=args.opt_dir,
                                        signing_mode=cfg.get("signing", {}).get("mode", "off"))
-        previous = installer.load_state().get("components", {}).get("gateway", {}).get("version")
+        state_file = state_dir / "installed.json"
+        # A move to a new release series must reset the gateway state even if
+        # this run dies after the new binaries are recorded: the pending reset
+        # is saved first and cleared only once it is done, so a retry (the
+        # recorded version is already the new one) still performs it.
+        state = installer.load_state()
+        previous = state.get("components", {}).get("gateway", {}).get("version")
+        new_version = bom["spec"]["openshell"]["gateway"]["version"]
+        if needs_state_reset(previous, new_version) and not state.get("gatewayStateResetPending"):
+            state["gatewayStateResetPending"] = {"from": previous, "to": new_version}
+            if not args.dry_run:
+                write_json_atomic(state_file, state)
         changed = installer.install(bom)
         log(f"changed components: {', '.join(changed) or 'none'}")
 
-        env, _ = runtime_user(cfg, args.as_current_user)
+        env, wrap = runtime_user(cfg, args.as_current_user)
         home, owner = runtime_home(cfg, args.as_current_user)
-        new_version = bom["spec"]["openshell"]["gateway"]["version"]
-        if "gateway" in changed and needs_state_reset(previous, new_version):
-            reset_gateway_state(shell, cfg["runtimeUser"], env, home, previous, new_version,
+        pending = read_json(state_file, {}).get("gatewayStateResetPending") or \
+            state.get("gatewayStateResetPending")
+        if pending:
+            reset_gateway_state(shell, wrap, home, pending["from"], pending["to"],
                                 dry_run=args.dry_run)
+            done = read_json(state_file, {"components": {}})
+            done.pop("gatewayStateResetPending", None)
+            done["gatewayRestartPending"] = True
+            if not args.dry_run:
+                write_json_atomic(state_file, done)
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
-        state_file = state_dir / "installed.json"
         state = read_json(state_file, {"components": {}})
         if {"gateway", "supervisor"} & set(changed) or config_changed:
             state["gatewayRestartPending"] = True

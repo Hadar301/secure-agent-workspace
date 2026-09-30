@@ -324,7 +324,8 @@ def gateway_files(docs):
 def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     env, toml = gateway_files(default_docs)
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env
-    assert "OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml" in env
+    assert "OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml" in env
+    assert "OPENSHELL_CONFIG_FILE" not in env      # not read by OpenShell 0.1.x
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert toml["openshell"]["drivers"]["podman"]["supervisor_image"] == \
         values["bom"]["spec"]["openshell"]["supervisor"]["image"]

@@ -61,7 +61,7 @@ def test_openclaw_calls_the_native_endpoint_with_the_placeholder_key(
     make_applier(ab, config, creds).apply(profiles)
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and "notebook" in c)
-    assert '--custom-base-url "https://integrate.api.nvidia.com/v1"' in onboard
+    assert '--custom-base-url https://integrate.api.nvidia.com/v1 ' in onboard
     assert 'CUSTOM_API_KEY="$NVIDIA_API_KEY"' in onboard
     assert "inference.local" not in onboard and "nvapi-TEST-KEY-123" not in onboard
 

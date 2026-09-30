@@ -65,7 +65,7 @@ elif cmd == "cp":
     elif content["type"] == "nemoclaw":
         (dest / "bin").mkdir(parents=True)
         (dest / "bin" / "nemoclaw.js").write_text("console.log('nemoclaw')\n")
-elif cmd in ("rm", "ps", "exec"):
+elif cmd in ("rm", "ps", "exec", "volume"):
     pass
 else:
     print(f"fake podman: unsupported {args}", file=sys.stderr)

@@ -3,6 +3,7 @@ OpenShell 0.1.x: an `openai` provider with OPENAI_BASE_URL, and OpenClaw
 onboarded against that endpoint itself (no inference routes, no
 https://inference.local)."""
 
+import shlex
 import pytest
 
 from conftest import profile_files
@@ -45,9 +46,9 @@ def test_apply_creates_an_openai_provider_and_onboards_on_its_endpoint(
     # The key only ever travels in the environment.
     assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
     onboard = next(" ".join(c) for c in fake_env.openshell_calls() if "onboard" in " ".join(c))
-    assert f'--custom-base-url "{URL}"' in onboard and "inference.local" not in onboard
+    assert f'--custom-base-url {URL} ' in onboard and "inference.local" not in onboard
     assert 'CUSTOM_API_KEY="$OPENAI_API_KEY"' in onboard
-    assert f'--custom-model-id "{MODEL}"' in onboard
+    assert f'--custom-model-id {shlex.quote(MODEL)} ' in onboard
 
 
 def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secrets):

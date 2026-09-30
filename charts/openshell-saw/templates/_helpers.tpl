@@ -178,11 +178,12 @@ boot, so later chart changes reach existing VMs after a restart.
 OPENSHELL_BIND_ADDRESS={{ .Values.openshell.bindAddress | quote }}
 OPENSHELL_SERVER_PORT=17670
 OPENSHELL_COMPUTE_DRIVER=podman
-OPENSHELL_SSH_GATEWAY_PORT=17670
 OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
 OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
 OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/ca.crt
-OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml
+# The copy the installer keeps in the runtime user's config dir (also the
+# gateway's XDG default); /etc/openshell holds the chart's copy.
+OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml
 # The in-VM installer authenticates with the local mTLS client
 # certificate. End users authenticate with OIDC bearer tokens.
 OPENSHELL_ENABLE_MTLS_AUTH=true

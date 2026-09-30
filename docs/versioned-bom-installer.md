@@ -426,8 +426,8 @@ by hand is never deleted. The first successful apply adopts whatever already
 matches the current profiles and does not delete anything. Deletion order is
 sandboxes, providers, provider profiles the installer imported, then
 workspaces. The `default` workspace is never deleted. (An inference route a
-0.0.x apply recorded is only dropped from the ledger: OpenShell 0.1.x removed
-routes.) A workspace is deleted only when it is
+0.0.x apply recorded is dropped from the ledger when it is loaded, in every
+prune mode: OpenShell 0.1.x removed routes.) A workspace is deleted only when it is
 empty afterwards; otherwise it is kept and the log names what is left in it.
 
 Workspaces and sandboxes are labeled `saw.redhat.com/managed=true` (OpenShell
@@ -464,7 +464,8 @@ profile and put `provider: openai`, `model`, `url` and `api_key` in the
 
 OpenShell 0.1.0 cannot upgrade 0.0.x state in place. When `install` replaces
 the gateway with one from a different release series (compared on
-major.minor), it first:
+major.minor), it first records the pending reset in `installed.json` (so a
+run that dies half way still resets on the retry), then:
 
 1. stops `openshell-gateway.service`;
 2. removes every OpenShell sandbox container (`label=openshell.ai/sandbox-name`);
@@ -472,8 +473,11 @@ major.minor), it first:
    `gateway.<old version>.<epoch>`.
 
 The gateway then starts empty and `apply` recreates workspaces, providers and
-sandboxes from the SAW-BOM. TLS material (`~/.local/state/openshell/tls`) and
-podman volumes are kept. Everything that talks to the gateway must be the
+sandboxes from the SAW-BOM. TLS material (`~/.local/state/openshell/tls`) is
+kept. **Data in `/sandbox` does not carry over:** each sandbox's `/sandbox` is
+the podman volume `openshell-sandbox-<sandbox id>-workspace`, and recreated
+sandboxes get new ids and new, empty volumes. The old volumes are kept and the
+install log lists them, so data can be copied over by hand. Everything that talks to the gateway must be the
 same release: users need the 0.1.x `openshell` CLI, and the governance
 interceptor image must be built from the same tag
 (`image-builder-charts/helm/governance-interceptor-image`).
