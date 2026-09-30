@@ -117,9 +117,12 @@ class FakeWorld:
     def images_for_bom(self, bom, version=None, nemoclaw=True):
         images = {}
         paths = {"gateway": "/usr/local/bin/openshell-gateway",
-                 "supervisor": "/openshell-sandbox",
+                 "supervisor": "/openshell-supervisor",
                  "cli": "/usr/local/bin/openshell"}
         for comp, entry in bom["spec"]["openshell"].items():
+            if comp not in paths:        # image-only component (sandbox runtime)
+                images[entry["image"]] = {}
+                continue
             images[entry["image"]] = {paths[comp]: {"type": "binary",
                                                     "version": version or entry["version"]}}
         if nemoclaw and "nemoclaw" in bom["spec"]:

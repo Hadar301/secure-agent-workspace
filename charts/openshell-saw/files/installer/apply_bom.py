@@ -59,11 +59,19 @@ GATEWAY_PORT = 17670
 COMPONENTS = {
     "gateway": {"image_path": "/usr/local/bin/openshell-gateway",
                 "dest": "openshell-gateway"},
-    "supervisor": {"image_path": "/openshell-sandbox",
+    # 0.1.x: the supervisor image carries /openshell-supervisor; the static
+    # /openshell-sandbox moved to the sandbox runtime image.
+    "supervisor": {"image_path": "/openshell-supervisor",
                    "dest": "openshell-supervisor"},
     "cli": {"image_path": "/usr/local/bin/openshell",
             "dest": "openshell"},
 }
+# Image-only components: pulled (and signature-checked) so the gateway can
+# use them, but no binary is extracted. `sandbox` is the OpenShell 0.1.x
+# sandbox runtime image; the podman driver mounts the supervisor from it into
+# every sandbox (gateway.toml sandbox_runtime_image). Optional, so a 0.0.x
+# BOM (which has none) still validates.
+IMAGE_COMPONENTS = {"sandbox"}
 NEMOCLAW_IMAGE_PATH = "/opt/nemoclaw"
 
 DIGEST_IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$")
@@ -75,12 +83,12 @@ SECRET_KEY_RE = re.compile(r"^[-._a-zA-Z0-9]+$")
 OPENSHELL_NAME_LIMIT = 19
 # The installer's own mTLS identity; the gateway reads roles from the OU.
 ADMIN_CERT_SUBJECT = "/O=openshell/OU=openshell-admin/CN=saw-installer"
-# The gateway resolves the system inference route's provider in this workspace.
-SYSTEM_WORKSPACE = "default"
 ALREADY_RE = re.compile(r"already (exists|a member)", re.IGNORECASE)
 # The gateway has no profile for this provider type. Profiles such as brave
 # come from the governance interceptor, so they are missing when it is off.
-NO_PROFILE_RE = re.compile(r"provider profile '[^']*' not\s+found|unsupported provider type",
+# 0.0.x: "provider profile 'x' not found"; 0.1.x: "... 'x' was not found in
+# the requested scope".
+NO_PROFILE_RE = re.compile(r"provider profile '[^']*' (was )?not\s+found|unsupported provider type",
                            re.IGNORECASE)
 
 PROVIDER_CRED_MAP = {
@@ -96,13 +104,24 @@ PROVIDER_CRED_MAP = {
     "tavily": "TAVILY_API_KEY",
 }
 SANDBOX_TYPES = {"generic", "openclaw", "nemoclaw"}
-# Provider config key that holds the upstream base URL for OpenShell's
-# inference router (openshell-core inference profiles). An `openai` provider
-# with OPENAI_BASE_URL reaches any OpenAI-compatible server (vLLM, Ollama, ...).
+# Provider config key that records a provider's base URL. OpenShell 0.1.x has
+# no inference router: the agent calls the endpoint itself (see
+# NATIVE_BASE_URLS), and the provider profile must name that endpoint's host.
 BASE_URL_CONFIG_KEYS = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
     "nvidia": "NVIDIA_BASE_URL",
+}
+# OpenShell 0.1.x removed managed inference (`openshell inference`,
+# https://inference.local). An agent is configured with its provider's native
+# OpenAI-compatible endpoint and the placeholder key the sandbox receives in
+# the provider's env var; the sandbox proxy swaps in the real key only for
+# requests to the profile's endpoints from the profile's binaries. A
+# provider's baseUrl overrides these.
+NATIVE_BASE_URLS = {
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "build": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
 }
 
 
@@ -234,7 +253,8 @@ def validate_bom(doc):
         raise InstallerError(
             f"InstallerBOM targets installer {spec['installerVersion']}, "
             f"this installer is {INSTALLER_VERSION}")
-    _require_keys(spec["openshell"], set(COMPONENTS), set(COMPONENTS), "spec.openshell")
+    _require_keys(spec["openshell"], set(COMPONENTS), set(COMPONENTS) | IMAGE_COMPONENTS,
+                  "spec.openshell")
     for comp, entry in spec["openshell"].items():
         where = f"spec.openshell.{comp}"
         _require_keys(entry, {"version", "image"}, {"version", "image", "path", "signature"}, where)
@@ -737,6 +757,11 @@ class ComponentInstaller:
                 and dest.exists()
                 and state_entry.get("sha256") == sha256_file(dest))
 
+    def _is_current_comp(self, comp, state_entry, image):
+        if comp in IMAGE_COMPONENTS:
+            return bool(state_entry) and state_entry.get("image") == image
+        return self._is_current(state_entry, image, self.bin_dir / COMPONENTS[comp]["dest"])
+
     def _extract(self, image, path_in_image, target):
         self.sh.run([self.podman, "pull", "--quiet", image], timeout=900)
         created = self.sh.run([self.podman, "create", image])
@@ -771,7 +796,6 @@ class ComponentInstaller:
             return self.signatures
         installed = self.load_state().get("components", {})
         for comp, entry in bom["spec"]["openshell"].items():
-            dest = self.bin_dir / COMPONENTS[comp]["dest"]
             signature = entry.get("signature")
             if not signature:
                 if self.signing_mode == "enforce":
@@ -781,7 +805,8 @@ class ComponentInstaller:
                 self.signatures[comp] = "unsigned"
                 continue
             record = installed.get(comp) or {}
-            if self._is_current(record, entry["image"], dest) and record.get("signature") == "verified":
+            if self._is_current_comp(comp, record, entry["image"]) and \
+                    record.get("signature") == "verified":
                 self.signatures[comp] = "verified"
                 continue
             self.signatures[comp] = self._verify_signature(comp, entry)
@@ -850,8 +875,20 @@ class ComponentInstaller:
         if not self.sh.dry_run:
             self.bin_dir.mkdir(parents=True, exist_ok=True)
         for comp, entry in bom["spec"]["openshell"].items():
-            dest = self.bin_dir / COMPONENTS[comp]["dest"]
             image = entry["image"]
+            if comp in IMAGE_COMPONENTS:
+                # Pulled for the gateway, which uses it by reference; nothing
+                # to extract or run.
+                if self._is_current_comp(comp, installed.get(comp), image):
+                    log(f"{comp}: {entry['version']} already pulled")
+                    continue
+                log(f"{comp}: pulling {entry['version']} image {image}")
+                self.sh.run([self.podman, "pull", "--quiet", image], timeout=900)
+                installed[comp] = {"image": image, "version": entry["version"],
+                                   "signature": self.signatures.get(comp, "unsigned")}
+                changed.append(comp)
+                continue
+            dest = self.bin_dir / COMPONENTS[comp]["dest"]
             if self._is_current(installed.get(comp), image, dest):
                 log(f"{comp}: {entry['version']} already installed")
                 continue
@@ -1005,6 +1042,47 @@ def ensure_gateway(shell, user, env, restart, timeout=120):
     log("openshell-gateway is up")
 
 
+def release_series(version):
+    """0.0.116-rhaiv.0 -> (0, 0); 0.1.2-rhaiv.0 -> (0, 1). Before 1.0 a minor
+    bump is a breaking release."""
+    major, minor = normalize_version(version).split(".")[:2]
+    return int(major), int(minor)
+
+
+def needs_state_reset(old_version, new_version):
+    """OpenShell 0.1.0 cannot upgrade a 0.0.x gateway in place: its database
+    and every sandbox must be recreated (docs/upgrade/0-1-0)."""
+    if not old_version or not new_version:
+        return False
+    return release_series(old_version) != release_series(new_version)
+
+
+def reset_gateway_state(shell, user, env, home, old_version, new_version, dry_run=False):
+    """Move the gateway to a new release series.
+
+    Stops the gateway, removes every OpenShell sandbox container, and moves
+    the gateway state (its SQLite database) aside as a backup. The apply
+    step then recreates workspaces, providers and sandboxes from the
+    SAW-BOM, as on a first boot. /sandbox data volumes and TLS material are
+    kept."""
+    log(f"OpenShell {old_version} -> {new_version} is a new release series: "
+        "recreating gateway state and sandboxes")
+    systemctl = lambda *a: shell.run(as_user(user, env, ["systemctl", "--user", *a]), check=False)
+    systemctl("stop", "openshell-gateway.service")
+    listed = shell.run(as_user(user, env, [
+        "podman", "ps", "-a", "--filter", "label=openshell.ai/sandbox-name",
+        "--format", "{{.Names}}"]), check=False, quiet=True)
+    names = [n for n in listed.out.split() if n]
+    if names:
+        log(f"removing {len(names)} sandbox container(s) from {old_version}")
+        shell.run(as_user(user, env, ["podman", "rm", "-f", *names]), check=False)
+    state = Path(home) / ".local" / "state" / "openshell" / "gateway"
+    if state.exists() and not dry_run:
+        backup = state.with_name(f"gateway.{normalize_version(old_version)}.{int(time.time())}")
+        os.rename(state, backup)
+        log(f"gateway state moved to {backup}")
+
+
 # ---------------------------------------------------------------------------
 # Gateway configuration (re-synced from the installer disk on every boot)
 # ---------------------------------------------------------------------------
@@ -1021,11 +1099,18 @@ def _env_keys(text):
     return keys
 
 
+# Keys an earlier chart wrote that must not survive as "extra" keys.
+# OPENSHELL_DRIVERS became OPENSHELL_COMPUTE_DRIVER in OpenShell 0.1.x; the
+# old name is only a deprecated alias there.
+RETIRED_ENV_KEYS = {"OPENSHELL_DRIVERS"}
+
+
 def merge_user_env(chart_env, current):
     """The chart's gateway.env wins; keys only the golden image's first-boot
     setup adds (runtime bridge endpoint, podman socket) are kept."""
     chart_keys = _env_keys(chart_env)
-    extra = [line for key, line in _env_keys(current).items() if key not in chart_keys]
+    extra = [line for key, line in _env_keys(current).items()
+             if key not in chart_keys and key not in RETIRED_ENV_KEYS]
     text = chart_env.rstrip("\n") + "\n"
     return text + ("\n".join(extra) + "\n" if extra else "")
 
@@ -1290,8 +1375,8 @@ class ProfileApplier:
         credential = self.creds[ws.name][provider.name]
         env_name = PROVIDER_CRED_MAP[provider.type]
         env = {env_name: credential}
-        # OpenAI-compatible (and other) endpoints: the inference router reads
-        # the upstream base URL from the provider config.
+        # A custom endpoint is recorded on the provider; start_openclaw
+        # points the agent at it.
         config = (("--config", f"{BASE_URL_CONFIG_KEYS[provider.type]}={provider.base_url}")
                   if provider.base_url else ())
         create = ("provider", "create", "--name", provider.name, "--type", provider.type,
@@ -1347,22 +1432,6 @@ class ProfileApplier:
             raise InstallerError(f"could not import the '{profile_id}' provider profile into "
                                  f"workspace '{ws.name}'")
         self.remember("profile", ws.name, profile_id)
-
-    def apply_inference(self, ws):
-        chosen = next((p for p in self.usable(ws) if p.model), None)
-        if not chosen:
-            return
-        log(f"Inference for '{ws.name}': {chosen.name} / {chosen.model}")
-        timeout = ("--timeout", str(chosen.inference_timeout)) if chosen.inference_timeout else ()
-        self.cli("inference", "set", "--provider", chosen.name, "--model", chosen.model,
-                 "--workspace", ws.name, *timeout, "--no-verify")
-        self.remember("inference", ws.name, "route")
-        # The system route must point at a provider in the 'default'
-        # workspace (the gateway looks it up there), so only that workspace
-        # sets it.
-        if ws.name == SYSTEM_WORKSPACE:
-            self.cli("inference", "set", "--system", "--provider", chosen.name,
-                     "--model", chosen.model, *timeout, "--no-verify")
 
     # -- sandboxes -------------------------------------------------------
 
@@ -1472,20 +1541,35 @@ class ProfileApplier:
                 log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
                 time.sleep(5)
         # The supervisor rewrites passwd; match /sandbox ownership to it.
+        # The workload container is openshell-<workspace>--<sandbox>-<id> (the
+        # supervisor runs in its own container). OpenShell 0.1.x starts it with
+        # no PATH, so the exec names one.
         self.sh.run(["bash", "-c",
-                     "CNAME=$(podman ps -a --filter 'name=openshell.*" + sb.name +
-                     "' --format '{{.Names}}' | head -1) && [ -n \"$CNAME\" ] && "
-                     "podman exec -u 0 \"$CNAME\" chown -R sandbox:sandbox /sandbox"],
+                     f"CNAME=$(podman ps -a --filter 'name=^openshell-{ws.name}--{sb.name}-' "
+                     "--format '{{.Names}}' | head -1) && [ -n \"$CNAME\" ] && "
+                     "podman exec -u 0 -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+                     "\"$CNAME\" chown -R sandbox:sandbox /sandbox"],
                     check=False)
         token = secrets.token_hex(16)
         self.sh.add_secret(token)
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
         oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                   "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
+        # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
+        # own endpoint with the placeholder key this exec receives in the
+        # provider's env var (e.g. NVIDIA_API_KEY); the sandbox proxy puts in
+        # the real key only for the profile's endpoints and binaries. The
+        # placeholder is read inside the sandbox (\$), never by the installer.
+        base_url = provider.base_url or NATIVE_BASE_URLS.get(provider.type, "")
+        key_var = PROVIDER_CRED_MAP.get(provider.type, "")
+        if not base_url or not key_var:
+            log(f"WARN: no native endpoint known for provider type '{provider.type}'; "
+                f"set baseUrl on provider '{provider.name}'. Skipping OpenClaw onboarding")
+            return
         onboarded = self.cli(*exec_cmd, "sh", "-c",
-                 f"{oc_env} CUSTOM_API_KEY=proxy-managed openclaw onboard --non-interactive "
+                 f"{oc_env} CUSTOM_API_KEY=\"${key_var}\" openclaw onboard --non-interactive "
                  "--accept-risk --mode local --auth-choice custom-api-key "
-                 '--custom-base-url "https://inference.local/v1" '
+                 f'--custom-base-url "{base_url}" '
                  f"--custom-provider-id {provider.type} --custom-model-id \"{model}\" "
                  "--custom-compatibility openai --skip-channels --skip-health", check=False)
         # Re-onboarding an existing sandbox with a different provider or model
@@ -1555,7 +1639,6 @@ class ProfileApplier:
             raise InstallerError(
                 "profile ConfigMap is missing or empty; refusing to change the gateway")
         self.register_gateway()
-        system_set = False
         for profile, ws in enabled_workspaces(profiles):
             self.profile_name = profile.name
             banner(f"Profile {profile.name} / workspace {ws.name}")
@@ -1563,17 +1646,11 @@ class ProfileApplier:
             for provider in ws.providers:
                 if provider.enabled:
                     self.apply_provider(ws, provider)
-            self.apply_inference(ws)
-            system_set = system_set or (ws.name == SYSTEM_WORKSPACE and any(
-                p.model for p in self.usable(ws)))
             for sb in ws.sandboxes:
                 if sb.enabled:
                     self.apply_sandbox(ws, sb)
                 else:
                     log(f"Sandbox '{sb.name}' disabled, skipping")
-        if not system_set:
-            log(f"No provider with a model in workspace '{SYSTEM_WORKSPACE}': "
-                "system inference route left unchanged")
         self.finish_prune()
 
     def finish_prune(self):
@@ -1649,9 +1726,10 @@ class ProfileApplier:
         if kind == "sandbox":
             self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
         elif kind == "inference":
-            if name == "system":
-                return False
-            self.cli("inference", "delete", "--workspace", workspace, check=False)
+            # OpenShell 0.1.x removed inference routes (the upgrade drops
+            # them); an entry left in the ledger by a 0.0.x apply is only
+            # forgotten.
+            log(f"forgetting the 0.0.x inference route of '{workspace}' (removed in 0.1.x)")
         elif kind == "provider":
             self.cli("provider", "delete", name, *ws_args(workspace), check=False)
         elif kind == "profile":
@@ -1701,7 +1779,7 @@ class ProfileApplier:
 
     def prune(self):
         """Ledger entries that this apply did not want."""
-        kept_providers, kept_workspaces = self.kept_sandbox_providers()
+        kept_providers, _ = self.kept_sandbox_providers()
         pruned, would = [], []
         for kind in PRUNE_ORDER:
             for obj in list(self.ledger.data["objects"]):
@@ -1718,10 +1796,6 @@ class ProfileApplier:
                 if kind == "provider" and (workspace, name) in kept_providers:
                     log(f"keeping provider '{name}' in '{workspace}': a sandbox this apply "
                         "is keeping still uses it")
-                    continue
-                if kind == "inference" and workspace in kept_workspaces:
-                    log(f"keeping the inference route in '{workspace}': a sandbox this apply "
-                        "is keeping still needs it")
                     continue
                 if not self.managed_label_ok(kind, workspace, name, obj):
                     log(f"keeping {kind} '{name}': not labeled {MANAGED_LABEL}")
@@ -1948,11 +2022,16 @@ def cmd_install(args):
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
                                        podman=args.podman, opt_dir=args.opt_dir,
                                        signing_mode=cfg.get("signing", {}).get("mode", "off"))
+        previous = installer.load_state().get("components", {}).get("gateway", {}).get("version")
         changed = installer.install(bom)
         log(f"changed components: {', '.join(changed) or 'none'}")
 
         env, _ = runtime_user(cfg, args.as_current_user)
         home, owner = runtime_home(cfg, args.as_current_user)
+        new_version = bom["spec"]["openshell"]["gateway"]["version"]
+        if "gateway" in changed and needs_state_reset(previous, new_version):
+            reset_gateway_state(shell, cfg["runtimeUser"], env, home, previous, new_version,
+                                dry_run=args.dry_run)
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)

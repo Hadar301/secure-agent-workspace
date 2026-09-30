@@ -177,7 +177,7 @@ boot, so later chart changes reach existing VMs after a restart.
 {{- $routeHost := include "openshell-sandbox.routeHost" . -}}
 OPENSHELL_BIND_ADDRESS={{ .Values.openshell.bindAddress | quote }}
 OPENSHELL_SERVER_PORT=17670
-OPENSHELL_DRIVERS=podman
+OPENSHELL_COMPUTE_DRIVER=podman
 OPENSHELL_SSH_GATEWAY_PORT=17670
 OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
 OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
@@ -192,12 +192,30 @@ OPENSHELL_ROUTE_FQDN={{ $routeHost }}
 {{- end }}
 
 {{/*
-Gateway TOML: OIDC for users (roles from the token), podman supervisor image
-from the BOM, governance interceptor.
+Gateway TOML, schema version 2 (OpenShell 0.1.x): OIDC for users (roles from
+the token), the podman compute driver with the supervisor and sandbox runtime
+images from the BOM, and the governance interceptor as the only provider
+profile source. 0.1.x rejects a file without `[openshell] version = 2`, and a
+v2 file on a 0.0.x gateway, so this must match the BOM's gateway version.
+TOML allows each table once: everything for [openshell.gateway] stays in the
+one table below, before its sub-tables.
 */}}
 {{- define "openshell-sandbox.gatewayToml" -}}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . -}}
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+{{- if .Values.governance.enabled }}
+# Only the governance interceptor vends provider profiles; imported
+# profiles are not used.
+provider_profile_sources = [
+  { type = "interceptor", name = "governance" },
+]
+{{- end }}
 {{- if $oidcIssuer }}
+
 [openshell.gateway.oidc]
 issuer = {{ $oidcIssuer | quote }}
 audience = {{ .Values.oidc.clientId | quote }}
@@ -207,16 +225,12 @@ user_role = {{ .Values.oidc.userRole | quote }}
 
 [openshell.gateway.auth]
 allow_unauthenticated_users = false
+{{- end }}
 
-{{ end -}}
 [openshell.drivers.podman]
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
+sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 {{- if .Values.governance.enabled }}
-
-[openshell.gateway]
-provider_profile_sources = [
-  { type = "interceptor", name = "governance" },
-]
 
 [[openshell.gateway.interceptors]]
 name           = "governance"

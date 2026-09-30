@@ -331,6 +331,19 @@ def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     assert "oidc" not in toml["openshell"].get("gateway", {})   # no issuer configured
 
 
+def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
+    """OpenShell 0.1.x rejects a gateway.toml without version 2 and wants the
+    compute driver and the sandbox runtime image named."""
+    env, toml = gateway_files(default_docs)
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert toml["openshell"]["version"] == 2
+    assert toml["openshell"]["gateway"]["compute_driver"] == "podman"
+    assert toml["openshell"]["drivers"]["podman"]["sandbox_runtime_image"] == \
+        values["bom"]["spec"]["openshell"]["sandbox"]["image"]
+    assert "OPENSHELL_COMPUTE_DRIVER=podman" in env
+    assert "OPENSHELL_DRIVERS" not in env
+
+
 def test_gateway_oidc_for_users_with_roles():
     docs = render("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")
     env, toml = gateway_files(docs)
@@ -610,9 +623,19 @@ def test_governance_profiles_carry_their_id():
         assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
 
 
+def test_every_profile_names_its_binaries():
+    """OpenShell 0.1.x: a profile whose endpoints list no binaries allows
+    nothing, and removed fields (provider_type) must not linger."""
+    for path in sorted(GOVERNANCE_PROFILES.glob("*.yaml")) + sorted(SAW_PROFILES.glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        assert "provider_type" not in doc, path.name
+        if doc.get("endpoints"):
+            assert doc.get("binaries"), path.name
+
+
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "openai.yaml"]
+    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
     for path in copies:
         assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
@@ -622,7 +645,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "openai"}
+    assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
 
 
 def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():

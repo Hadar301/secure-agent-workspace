@@ -197,7 +197,6 @@ def test_skipped_provider_is_not_pruned_on_a_transient_catalog_gap(
     _apply_on(ab, config, creds, custom_inference_profiles, ledger)
     state = fake_env.openshell_state()
     assert "default/custom" in state["providers"]
-    assert "default" in state["inference"]
 
 
 def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_profile_files,
@@ -217,7 +216,6 @@ def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_
     kept = state["sandboxes"]["cuda-dev/cuda-sandbox"]["providers"]
     missing = [p for p in kept if f"cuda-dev/{p}" not in state["providers"]]
     assert not missing, f"sandbox lost providers: {missing}"
-    assert "cuda-dev" in state["inference"]
 
 
 def test_kept_sandbox_providers_are_protected_when_listing_fails(
@@ -237,4 +235,3 @@ def test_kept_sandbox_providers_are_protected_when_listing_fails(
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" in state["sandboxes"]
     assert "cuda-dev/nvidia" in state["providers"], "provider pruned despite a kept sandbox using it"
-    assert "cuda-dev" in state["inference"]
