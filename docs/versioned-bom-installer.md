@@ -207,6 +207,17 @@ bundle verifier, `saw-install.service`'s no-verifier fallback, and
 `apply_bom.py` itself (which also enforces component signatures, so the
 floor has to apply there too, not just to the bundle check).
 
+The image-builder chart's `signing.floor` (`image-builder-charts/helm/openshell-gateway-image/values.yaml`)
+writes that file: empty (the chart default) bakes nothing, so `config.json`
+alone decides the mode, same as before the floor existed. **Set
+`signing.floor: enforce` when building a production image** — otherwise
+the floor described above is not actually in place and a namespace editor
+can still set `signing.mode: off`. `make build-gateway-podman` and
+`make build-gateway-docker` do not set it; they run
+`helm upgrade --install openshell-gateway-image ...` without it, so add
+`--set signing.floor=enforce` to that command (or edit the Makefile) for a
+production build.
+
 Each OpenShell component in the InstallerBOM may name its signer:
 
 ```yaml
@@ -234,11 +245,21 @@ component in `/var/lib/saw/installed.json`: a component whose file and
 digest are unchanged is only trusted as still `verified` if that is what
 was actually recorded last time, so switching from `off` to `enforce` does
 not retroactively call an unchecked binary "verified" — it gets
-re-verified. Keyless (`identity`/`issuer`) verification depends on the
-golden image's podman/containers-common version supporting the identity
-shape used; only `subjectEmail`-style identities and the issuer are
-matched today, and no component in this chart's default values uses this
-path (see the spike below).
+re-verified.
+
+Keyless (`identity`/`issuer`) is accepted as a BOM shape (validated the
+same as any other signature field) but **always fails verification
+today**: podman's `policy.json` can only match a Fulcio identity by an
+exact `fulcio.subjectEmail`, and `identity` here is required to be an
+`https://` URI (a workflow ref, as in the example above), never an email —
+so there is no field to check it against. Checking only `oidcIssuer` would
+accept any signer from that issuer (with
+`https://token.actions.githubusercontent.com`, any GitHub Actions workflow
+anywhere), so `_signature_policy` rejects instead of silently enforcing
+less than the BOM asked for. A component configured with `identity`/`issuer`
+behaves like one with no signer at all: `warn` records it unsigned,
+`enforce` fails it. Use `keyRef` until there is a way to match this
+identity shape.
 
 `saw-install.service`, `saw-apply.service`, and `saw-reconcile.service`
 each run `/usr/local/sbin/saw-stage-installer` before touching
@@ -294,6 +315,9 @@ manifest for reasons that have nothing to do with the installer changing.
 A SAW whose `bom:` values are overridden per-user also renders a different
 `installer-bom.yaml` than the signing workflow's default-values render
 signs; give that SAW `signing.mode: warn` (or `off`), not `enforce`.
+Checked live once: a manifest built from Argo CD's own `repo-server`
+Helm render (not a local one) verified successfully on a real guest via
+`verify-bundle`'s exact invocation, with the default (unoverridden) BOM.
 
 The golden image installs `cosign` at `/usr/local/bin/cosign` (version and
 sha256 pinned in the image chart's `values.yaml`; the download itself has
