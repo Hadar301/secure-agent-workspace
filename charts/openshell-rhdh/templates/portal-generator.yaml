@@ -1,0 +1,98 @@
+{{- /* The ApplicationSet plugin generator (portal.py serve): one parameter
+set per workspace registry entry. Also serves /catalog.yaml for RHDH. */ -}}
+{{- $ns := .Values.portal.namespace -}}
+{{- $port := int .Values.portal.generator.port -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  token: {{ include "openshell-rhdh.generatorToken" . | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+    app.kubernetes.io/name: saw-workspaces-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: saw-workspaces-generator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saw-workspaces-generator
+      annotations:
+        checksum/scripts: {{ .Files.Get "files/portal.py" | sha256sum | trunc 16 }}
+        checksum/catalog: {{ .Files.Get "files/profile-catalog.json" | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: saw-workspaces-generator
+      containers:
+        - name: generator
+          image: {{ .Values.portal.image }}
+          command: ["python3", "/opt/saw/portal.py", "serve"]
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+          env:
+            - name: NAMESPACE
+              value: {{ $ns }}
+            - name: PORT
+              value: {{ $port | quote }}
+            - name: CATALOG_PATH
+              value: /opt/saw/profile-catalog.json
+            - name: GENERATOR_TOKEN_FILE
+              value: /etc/saw-generator/token
+            - name: CLUSTER_DOMAIN
+              value: {{ .Values.global.clusterDomain | quote }}
+            - name: RHDH_BASE_URL
+              value: {{ include "openshell-rhdh.url" . }}
+            - name: SAW_USERS_VALUES
+              value: {{ include "openshell-rhdh.sawUsersValues" . | toJson }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/saw
+              readOnly: true
+            - name: token
+              mountPath: /etc/saw-generator
+              readOnly: true
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: scripts
+          configMap:
+            name: saw-portal-scripts
+        - name: token
+          secret:
+            secretName: saw-workspaces-generator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: saw-workspaces-generator
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http

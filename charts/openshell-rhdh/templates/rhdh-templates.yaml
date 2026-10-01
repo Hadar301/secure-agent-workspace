@@ -1,0 +1,14 @@
+{{- /* The scaffolder templates. create-workspace.yaml is generated from the
+SAW-BOM profiles by scripts/saw-profile-catalog.py. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-templates
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  create-workspace.yaml: |
+{{ .Files.Get "files/create-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  delete-workspace.yaml: |
+{{ .Files.Get "files/delete-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}

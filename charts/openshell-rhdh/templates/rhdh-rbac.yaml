@@ -1,0 +1,38 @@
+{{- if .Values.rhdh.rbac.enabled }}
+{{- /* Optional Backstage RBAC: users see templates and their own workspace;
+admins see everything. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-rbac
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  rbac-policy.csv: |
+    p, role:default/saw-user, scaffolder-template, read, allow
+    p, role:default/saw-user, scaffolder-action, use, allow
+    p, role:default/saw-user, scaffolder.task.create, create, allow
+    p, role:default/saw-user, scaffolder.task.read, read, allow
+    {{- range .Values.rhdh.rbac.users | default list }}
+    g, user:default/{{ . }}, role:default/saw-user
+    {{- end }}
+  rbac-conditional-policies.yaml: |
+    result: CONDITIONAL
+    roleEntityRef: role:default/saw-user
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - read
+    conditions:
+      anyOf:
+        - rule: IS_ENTITY_OWNER
+          resourceType: catalog-entity
+          params:
+            claims:
+              - $currentUser
+        - rule: IS_ENTITY_KIND
+          resourceType: catalog-entity
+          params:
+            kinds: [template, user, group, location]
+{{- end }}

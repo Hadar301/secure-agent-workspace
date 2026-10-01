@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-dynamic-plugins
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  dynamic-plugins.yaml: |
+    includes:
+      - dynamic-plugins.default.yaml
+    plugins:
+      # http:backstage:request, which the workspace templates use.
+      - package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-module-http-request-dynamic
+        disabled: false
+      {{- if .Values.rhdh.rbac.enabled }}
+      - package: ./dynamic-plugins/dist/backstage-community-plugin-rbac
+        disabled: false
+      {{- end }}

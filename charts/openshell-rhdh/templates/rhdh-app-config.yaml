@@ -1,0 +1,95 @@
+{{- $url := include "openshell-rhdh.url" . -}}
+{{- $gen := printf "saw-workspaces-generator.%s.svc:%d" .Values.portal.namespace (int .Values.portal.generator.port) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-app-config
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  app-config-saw.yaml: |
+    app:
+      title: Secure Agent Workspace
+      baseUrl: {{ $url }}
+    backend:
+      baseUrl: {{ $url }}
+      cors:
+        origin: {{ $url }}
+      reading:
+        allow:
+          - host: {{ $gen }}
+    signInPage: oidc
+    auth:
+      environment: production
+      session:
+        secret: ${SESSION_SECRET}
+      providers:
+        oidc:
+          production:
+            metadataUrl: {{ include "openshell-rhdh.issuer" . }}/.well-known/openid-configuration
+            clientId: {{ .Values.keycloak.clientId }}
+            clientSecret: ${AUTH_OIDC_CLIENT_SECRET}
+            prompt: auto
+            signIn:
+              resolvers:
+                # user:default/<Keycloak username>. Users are not imported
+                # into the catalog; the pipeline trusts only the signed token.
+                - resolver: preferredUsernameMatchingUserEntityName
+                  dangerouslyAllowSignInWithoutUserInCatalog: true
+    catalog:
+      rules:
+        - allow: [Template, Resource, User, Group, Location]
+      locations:
+        - type: file
+          target: /opt/app-root/src/saw/create-workspace.yaml
+          rules:
+            - allow: [Template]
+        - type: file
+          target: /opt/app-root/src/saw/delete-workspace.yaml
+          rules:
+            - allow: [Template]
+        # One Resource per registered workspace, owned by its user, with
+        # links to its web UIs (served by the plugin generator).
+        - type: url
+          target: http://{{ $gen }}/catalog.yaml
+          rules:
+            - allow: [Resource]
+      processingInterval: { seconds: {{ int .Values.rhdh.catalogProcessingSeconds }} }
+    # The only two cluster calls the templates make, with the rhdh-portal
+    # service account's token: create a request Secret, and start one of
+    # the two portal pipelines. Admission policies (portal namespace) pin
+    # both to their expected shape.
+    proxy:
+      endpoints:
+        /saw-requests:
+          target: https://kubernetes.default.svc/api/v1/namespaces/{{ .Values.portal.namespace }}/secrets
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['POST']
+          allowedHeaders: ['Content-Type']
+          headers:
+            Authorization: Bearer ${token}
+        /saw-pipelineruns:
+          target: https://kubernetes.default.svc/apis/tekton.dev/v1/namespaces/{{ .Values.portal.namespace }}/pipelineruns
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['POST']
+          allowedHeaders: ['Content-Type']
+          headers:
+            Authorization: Bearer ${token}
+    {{- if .Values.rhdh.rbac.enabled }}
+    permission:
+      enabled: true
+      rbac:
+        admin:
+          users:
+            {{- range .Values.rhdh.rbac.admins }}
+            - name: user:default/{{ . }}
+            {{- end }}
+        policies-csv-file: /opt/app-root/src/saw/rbac-policy.csv
+        conditionalPoliciesFile: /opt/app-root/src/saw/rbac-conditional-policies.yaml
+        policyFileReload: true
+    {{- end }}

@@ -1,0 +1,73 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: delete-saw-workspace
+  title: Delete my agent workspace
+  description: >-
+    Removes your Secure Agent Workspace: its VM, its sandboxes and everything
+    in them, and your keys in Vault. This cannot be undone.
+  tags:
+    - openshell
+    - secure-agent-workspace
+spec:
+  owner: user:default/admin
+  type: agent-workspace
+  parameters:
+    - title: Confirm
+      required:
+        - confirm
+      properties:
+        confirm:
+          title: I understand that my workspace, its VM and its data are deleted
+          type: boolean
+          const: true
+  steps:
+    - id: request
+      name: Submit the request
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/saw-requests
+        headers:
+          Content-Type: application/json
+        body:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            generateName: saw-req-
+            labels:
+              saw.redhat.com/request: "true"
+          type: Opaque
+          stringData:
+            action: delete
+            token: ${{ secrets.backstageToken }}
+    - id: run
+      name: Delete the workspace
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/saw-pipelineruns
+        headers:
+          Content-Type: application/json
+        body:
+          apiVersion: tekton.dev/v1
+          kind: PipelineRun
+          metadata:
+            generateName: saw-delete-
+            labels:
+              saw.redhat.com/request: "true"
+          spec:
+            pipelineRef:
+              name: saw-workspace-delete
+            taskRunTemplate:
+              serviceAccountName: __PROVISIONER_SA__
+            params:
+              - name: request
+                value: ${{ steps.request.output.body.metadata.name }}
+  output:
+    text:
+      - title: Deletion requested
+        content: >-
+          Pipeline run **${{ steps.run.output.body.metadata.name }}** removes your
+          workspace from the registry; Argo CD then deletes namespace
+          saw-${{ user.ref | parseEntityRef | pick('name') }} and its VM.

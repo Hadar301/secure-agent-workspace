@@ -1,0 +1,137 @@
+{{- $ns := .Values.portal.namespace -}}
+{{- $sa := .Values.portal.provisionerServiceAccount -}}
+# The pipeline's identity. It reads and deletes request Secrets and keeps the
+# workspace registry (ConfigMaps saw-ws-<user>); Vault lets it write only
+# under <prefixBase>/saw-* (role vault.role).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $ns }}
+---
+# To check a user's Applications, and to delete a portal workspace's
+# Application (an admission policy limits deletes to the portal's own).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ include "openshell-rhdh.argoNamespace" . }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ include "openshell-rhdh.argoNamespace" . }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $ns }}
+---
+# To refuse a user whose namespace saw-<user> is managed in Git.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: saw-portal-namespace-reader
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: saw-portal-namespace-reader
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: saw-portal-namespace-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $ns }}
+---
+# The plugin generator only lists the registry.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: saw-workspaces-generator
+subjects:
+  - kind: ServiceAccount
+    name: saw-workspaces-generator
+    namespace: {{ $ns }}

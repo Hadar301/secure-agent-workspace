@@ -1,0 +1,53 @@
+{{- /* rhdh-portal: the identity RHDH's two proxy endpoints use. It may
+create request Secrets and PipelineRuns in the portal namespace, nothing
+else; the admission policies pin their shape. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+# A long-lived token for that service account, kept by Kubernetes.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rhdh-portal-token
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: rhdh-portal
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rhdh-portal
+subjects:
+  - kind: ServiceAccount
+    name: rhdh-portal
+    namespace: {{ .Values.rhdh.namespace }}

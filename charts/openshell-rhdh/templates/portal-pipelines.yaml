@@ -1,0 +1,82 @@
+{{- /* Two pipelines, one task: portal.py create|delete <request Secret>. */ -}}
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: saw-workspace
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  params:
+    - name: action
+      type: string
+    - name: request
+      type: string
+  volumes:
+    - name: scripts
+      configMap:
+        name: saw-portal-scripts
+  steps:
+    - name: run
+      image: {{ .Values.portal.image }}
+      command: ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.request)"]
+      volumeMounts:
+        - name: scripts
+          mountPath: /opt/saw
+          readOnly: true
+      env:
+        - name: NAMESPACE
+          value: {{ .Values.portal.namespace }}
+        - name: CATALOG_PATH
+          value: /opt/saw/profile-catalog.json
+        - name: RHDH_INTERNAL_URL
+          value: {{ include "openshell-rhdh.internalUrl" . }}
+        - name: ARGO_NAMESPACE
+          value: {{ include "openshell-rhdh.argoNamespace" . }}
+        - name: VERIFY_TOKEN
+          value: {{ .Values.portal.verifyToken | toString | quote }}
+        - name: VAULT_ADDR
+          value: {{ .Values.vault.addr }}
+        - name: VAULT_SKIP_VERIFY
+          value: {{ .Values.vault.skipVerify | toString | quote }}
+        - name: VAULT_AUTH_MOUNT
+          value: {{ .Values.vault.authMount }}
+        - name: VAULT_ROLE
+          value: {{ .Values.vault.role }}
+        - name: VAULT_KV_MOUNT
+          value: {{ .Values.vault.kvMount }}
+        - name: VAULT_PREFIX_BASE
+          value: {{ .Values.vault.prefixBase }}
+        - name: PRUNE_ON_REMOVE
+          value: {{ .Values.portal.pruneOnRemove | toString | quote }}
+        - name: DELETE_VAULT_SECRETS
+          value: {{ .Values.portal.deleteVaultSecrets | toString | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        capabilities: { drop: [ALL] }
+        seccompProfile: { type: RuntimeDefault }
+{{- range $action := list "create" "delete" }}
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: saw-workspace-{{ $action }}
+  namespace: {{ $.Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" $ | nindent 4 }}
+spec:
+  params:
+    - name: request
+      type: string
+      description: The request Secret the RHDH template created (saw-req-*).
+  tasks:
+    - name: {{ $action }}
+      taskRef:
+        name: saw-workspace
+      params:
+        - name: action
+          value: {{ $action }}
+        - name: request
+          value: $(params.request)
+{{- end }}

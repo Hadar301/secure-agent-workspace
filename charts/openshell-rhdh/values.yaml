@@ -1,0 +1,96 @@
+# Self-service agent workspaces (see docs/self-service-portal.md).
+#
+#   RHDH template ──► request Secret + PipelineRun ──► portal.py create
+#     (namespace portal.namespace)                     ├─ keys ──► Vault <kv>/data/<prefixBase>/saw-<user>/<secret>
+#                                                      └─ ConfigMap saw-ws-<user> (the workspace registry)
+#   ApplicationSet (plugin generator portal.py serve) ──► Application saw-portal-<user>
+#     └─ charts/saw-users with that one user ──► namespace saw-<user> and its three apps
+#
+# The namespaces rhdh.namespace and portal.namespace are created by the
+# clustergroup (values-prod.yaml).
+
+rhdh:
+  namespace: rhdh
+  # Backstage CR of the Red Hat Developer Hub operator. The route is
+  # backstage-<name>-<namespace>.apps.<clusterDomain> unless host is set.
+  name: developer-hub
+  # Empty: the newest the cluster serves of v1alpha5, v1alpha4, v1alpha3
+  # (RHDH operator 1.10 serves v1alpha4 and v1alpha5); v1alpha5 when the
+  # cluster's API versions are not known (helm template without a cluster).
+  apiVersion: ""
+  host: ""
+  catalogProcessingSeconds: 30
+  # Backstage RBAC. Off: every signed-in realm user may use the templates and
+  # read the catalog. What a request may do is enforced by the pipeline, which
+  # acts only for the user whose Backstage token signed the request.
+  rbac:
+    enabled: false
+    admins:
+      - admin
+
+# The portal namespace: request Secrets, the Tekton pipelines, the workspace
+# registry (ConfigMaps saw-ws-<user>) and the ApplicationSet plugin generator.
+portal:
+  namespace: saw-portal
+  provisionerServiceAccount: saw-portal-provisioner
+  # Python 3 with the standard library is all portal.py needs.
+  image: registry.access.redhat.com/ubi9/python-311:latest
+  # A portal workspace is deleted with its VM when it is removed.
+  pruneOnRemove: true
+  # delete also removes the user's keys from Vault.
+  deleteVaultSecrets: true
+  # Check the request's Backstage token against RHDH's JWKS (keep on; off
+  # trusts the owner the template writes, for test setups only).
+  verifyToken: true
+  generator:
+    port: 4355
+
+keycloak:
+  namespace: saw-keycloak
+  name: openshell-keycloak
+  realm: openshell
+  # Default <name>-ingress-<namespace>.apps.<clusterDomain>, as openshell-saw.
+  host: ""
+  # Confidential client for RHDH; the setup Job creates or updates it.
+  clientId: rhdh
+  insecureSkipTlsVerify: true
+
+# The RHDH OIDC client secret and session secret, from Vault (values-secret:
+# rhdh-oidc, generated on first load).
+oidcSecret:
+  vaultKey: secret/data/hub/rhdh-oidc
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+
+# Where the pipeline writes a user's keys, as the service account
+# portal.provisionerServiceAccount through Vault's Kubernetes auth. The role
+# and its policy are created by the imperative job saw-portal-vault
+# (ansible/playbooks/saw-portal-vault.yaml) or `make portal-vault-setup`.
+vault:
+  addr: https://vault.vault.svc:8200
+  skipVerify: true
+  authMount: hub
+  role: saw-portal-writer
+  kvMount: secret
+  prefixBase: hub
+
+# The ApplicationSet that builds a workspace per registry entry. It lives in
+# the pattern's Argo CD namespace (global.vpArgoNamespace) unless namespace
+# is set, and needs that Argo CD's ApplicationSet controller
+# (`oc get argocd -n vp-gitops -o jsonpath='{.items[0].spec.applicationSet}'`).
+applicationSet:
+  namespace: ""
+  project: default
+
+# saw-users chart values for portal workspaces, on top of the chart defaults
+# (e.g. defaults.openshellSaw). Each workspace is a one-user saw-users release.
+sawUsers: {}
+
+# Stubs for `helm template`; the pattern sets these.
+global:
+  repoURL: https://example.com/secure-agent-workspace.git
+  targetRevision: main
+  clusterDomain: example.com
+  pattern: secure-agent-workspace
+  vpArgoNamespace: vp-gitops
