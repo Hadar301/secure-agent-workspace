@@ -218,6 +218,141 @@ def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_
     assert not missing, f"sandbox lost providers: {missing}"
 
 
+def _on(config, ledger):
+    return {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
+
+
+def _ledger_names(ledger, kind):
+    saved = json.loads(ledger.read_text())
+    return [obj["name"] for obj in saved["objects"] if obj["kind"] == kind]
+
+
+def test_managed_label_text_accepts_both_cli_formats(ab):
+    """Workspace get is `key=value`; sandbox human text is `key: value`."""
+    assert ab._managed_label_in_text("  Labels: saw.redhat.com/managed=true")
+    assert ab._managed_label_in_text("Labels:\n    saw.redhat.com/managed: true")
+    assert ab._managed_label_from_json('{"labels": {"saw.redhat.com/managed": "true"}}') is True
+    assert not ab._managed_label_in_text("Labels: saw.redhat.com/managed=false")
+    assert not ab._managed_label_in_text("Labels:\n    saw.redhat.com/managed: false")
+    assert ab._managed_label_from_json('{"labels": {}}') is False
+
+
+def test_post_adoption_sandbox_is_pruned_from_json_labels(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """Objects created after the first apply are adopted=false, so prune
+    reads the label. The fake prints the OpenShell 0.0.116 and 0.1.2 JSON
+    shape for sandbox get."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name == "default":
+                ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    saved = json.loads(ledger.read_text())
+    extra = next(obj for obj in saved["objects"] if obj["kind"] == "sandbox" and obj["name"] == "extra")
+    assert extra["adopted"] is False
+    for profile in profiles:
+        for ws in profile.workspaces:
+            ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    assert "default/extra" not in fake_env.openshell_state()["sandboxes"]
+    assert "extra" not in _ledger_names(ledger, "sandbox")
+    assert "sandbox default/extra" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
+    assert "deleted sandbox default/extra" in capsys.readouterr().out
+
+
+def test_post_adoption_sandbox_without_label_is_kept(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name == "default":
+                ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state.get("labels", {}).pop("sandbox/default/extra", None)
+    fake_env.set_openshell_state(state)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    out = capsys.readouterr().out
+    assert "default/extra" in fake_env.openshell_state()["sandboxes"]
+    assert "extra" in _ledger_names(ledger, "sandbox")
+    assert "sandbox default/extra" not in json.loads(ledger.read_text())["lastPrune"]["pruned"]
+    assert "not labeled" in out
+    assert "deleted sandbox default/extra" not in out
+
+
+def test_post_adoption_sandbox_prunes_when_json_output_is_unsupported(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """A CLI that rejects `--output json` is retried as human `key: value` text."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name == "default":
+                ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    fake_env.reject_json_output()
+    for profile in profiles:
+        for ws in profile.workspaces:
+            ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    assert "default/extra" not in fake_env.openshell_state()["sandboxes"]
+    assert "extra" not in _ledger_names(ledger, "sandbox")
+
+
+def test_post_adoption_workspace_is_pruned_from_equals_labels(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """workspace get stays `Labels: key=value`. A workspace added after
+    adoption must still match that form and be deleted once it is empty."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    profiles[0].workspaces.append(ab.Workspace(name="notes"))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    saved = json.loads(ledger.read_text())
+    notes = next(obj for obj in saved["objects"] if obj["kind"] == "workspace" and obj["name"] == "notes")
+    assert notes["adopted"] is False
+    assert "notes" in fake_env.openshell_state()["workspaces"]
+    for profile in profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name != "notes"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    assert "notes" not in fake_env.openshell_state()["workspaces"]
+    assert "notes" not in _ledger_names(ledger, "workspace")
+    assert "workspace -/notes" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
+
+
+def test_failed_provider_delete_stays_in_the_ledger(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """A provider still attached to a sandbox (here, one the ledger does not
+    track) makes the CLI fail. The installer must not log success or drop
+    the ledger entry; status.json copies lastPrune, so the provider is not
+    recorded as pruned either."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["brave"], "phase": "Ready"}
+    fake_env.set_openshell_state(state)
+    _drop_provider(profiles, "default", "brave")
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    out = capsys.readouterr().out
+    assert "default/brave" in fake_env.openshell_state()["providers"]
+    assert "default/hand" in fake_env.openshell_state()["sandboxes"]
+    assert "brave" in _ledger_names(ledger, "provider")
+    pruned = json.loads(ledger.read_text())["lastPrune"]["pruned"]
+    assert "provider default/brave" not in pruned
+    assert "deleted provider default/brave" not in out
+    assert "delete failed" in out
+
+
 def test_kept_sandbox_providers_are_protected_when_listing_fails(
         ab, fake_env, config, shipped_profile_files, secrets_dir, tmp_path):
     """A failed `sandbox provider list` must not make kept_sandbox_providers

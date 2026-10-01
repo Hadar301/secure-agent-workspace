@@ -75,6 +75,27 @@ def remember_labels(kind, workspace, name):
         state.setdefault("labels", {})[label_key(kind, workspace, name)] = labels
 
 
+def stored_labels(kind, workspace, name):
+    return state.get("labels", {}).get(label_key(kind, workspace, name), [])
+
+
+def labels_dict(kind, workspace, name):
+    """`--label key=value` args, as the CLI stores them, split into a map."""
+    parsed = {}
+    for item in stored_labels(kind, workspace, name):
+        key, sep, value = item.partition("=")
+        parsed[key] = value if sep else ""
+    return parsed
+
+
+def output_format():
+    if "--output" in args:
+        return opt("--output")
+    if "-o" in args:
+        return opt("-o")
+    return None
+
+
 def cert_roles(tls_dir):
     """OUs of the client certificate `gateway add --local` would import."""
     import subprocess
@@ -102,10 +123,12 @@ elif op == "workspace list":
         labels = ",".join(state.get("labels", {}).get(label_key("workspace", "", w), []))
         print(f"{w} Active {labels}")
 elif op == "workspace get":
+    # OpenShell 0.0.116 and 0.1.2 have no --output flag here. Human text is
+    # `Labels: key=value, key2=value2`.
     name = head[2]
     if name not in state["workspaces"]:
         fail("Error: workspace not found")
-    labels = ",".join(state.get("labels", {}).get(label_key("workspace", "", name), []))
+    labels = ",".join(stored_labels("workspace", "", name))
     print(f"Name: {name}\nLabels: {labels}")
 elif op == "workspace create":
     name = opt("--name")
@@ -168,7 +191,15 @@ elif op == "provider list":
         if owner == ws:
             print(f"{name} {state['providers'][key]['type']}")
 elif op == "provider delete":
-    state["providers"].pop(f"{ws}/{head[2]}", None)
+    # The gateway refuses to delete a provider a sandbox still uses.
+    # Leaving the object in state is the point: the installer must notice
+    # the non-zero exit and keep the ledger entry.
+    name = head[2]
+    for key, sb in state["sandboxes"].items():
+        owner, _sb_name = key.split("/", 1)
+        if owner == ws and name in sb.get("providers", []):
+            fail(f"Error: provider '{name}' is attached to a sandbox")
+    state["providers"].pop(f"{ws}/{name}", None)
 elif op == "inference set":
     if "--system" in head:
         # Like the real gateway: the system route's provider must exist in 'default'.
@@ -189,11 +220,25 @@ elif op == "sandbox list":
         if owner == ws:
             print(f"{name} {state['sandboxes'][key]['phase']}")
 elif op == "sandbox get":
-    sb = state["sandboxes"].get(f"{ws}/{head[2]}")
+    # OpenShell 0.0.116 and 0.1.2: `--output json` is a labels object; human
+    # text is one `key: value` line per label. `reject-json` simulates a CLI
+    # that does not accept the flag.
+    name = head[2]
+    fmt = output_format()
+    if fmt == "json" and (state_dir / "reject-json").exists():
+        fail("error: unexpected argument '--output' found")
+    sb = state["sandboxes"].get(f"{ws}/{name}")
     if not sb:
         fail("Error: sandbox not found")
-    labels = ",".join(state.get("labels", {}).get(label_key("sandbox", ws, head[2]), []))
-    print(f"Name: {head[2]}\nPhase: {sb['phase']}\nLabels: {labels}")
+    labels = labels_dict("sandbox", ws, name)
+    if fmt == "json":
+        print(json.dumps({"name": name, "phase": sb["phase"], "workspace": ws, "labels": labels}))
+    else:
+        print(f"Name: {name}\nPhase: {sb['phase']}")
+        if labels:
+            print("Labels:")
+            for key, value in labels.items():
+                print(f"  {key}: {value}")
 elif op == "sandbox create":
     key = f"{ws}/{opt('--name')}"
     providers = [head[i + 1] for i, a in enumerate(head) if a == "--provider"]

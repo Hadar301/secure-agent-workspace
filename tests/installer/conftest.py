@@ -149,6 +149,10 @@ class FakeWorld:
     def deny(self, *operations):
         (self.state / "deny.json").write_text(json.dumps(list(operations)))
 
+    def reject_json_output(self):
+        """`sandbox get --output json` fails like a CLI that has no such flag."""
+        (self.state / "reject-json").write_text("1")
+
     def exec_fails_in(self, *sandboxes):
         """`sandbox exec` into these sandboxes fails like a policy denial."""
         (self.state / "exec-fail.json").write_text(json.dumps(list(sandboxes)))
