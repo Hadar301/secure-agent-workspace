@@ -1233,7 +1233,43 @@ def ws_args(name):
 
 
 MANAGED_LABEL = "saw.redhat.com/managed=true"
+MANAGED_LABEL_KEY = "saw.redhat.com/managed"
+# OpenShell 0.0.116 and 0.1.2 print the two kinds differently (confirmed on
+# a 0.0.116 guest, and the same in the 0.1.2 CLI): `sandbox get` human text
+# is one `key: value` line per label and `--output json` has
+# labels[key] == "true"; `workspace get` has no `--output` flag and prints
+# `Labels: key=value, ...`.
+_MANAGED_LABEL_RE = re.compile(
+    r"(?:^|[\s,])saw\.redhat\.com/managed\s*[:=]\s*true\b")
 PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
+
+
+def _strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+
+
+def _managed_label_in_text(text):
+    return _MANAGED_LABEL_RE.search(_strip_ansi(text)) is not None
+
+
+def _managed_label_from_json(text):
+    """True or False when `text` is a JSON object, None when it is not JSON."""
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(doc, dict):
+        return False
+    labels = doc.get("labels") or {}
+    if not isinstance(labels, dict):
+        return False
+    return str(labels.get(MANAGED_LABEL_KEY, "")).lower() == "true"
+
+
+def _cli_rejected_output_flag(text):
+    low = _strip_ansi(text).lower()
+    return "output" in low and (
+        "unexpected argument" in low or "unrecognized" in low or "unknown argument" in low)
 
 
 class Ledger:
@@ -1707,15 +1743,33 @@ class ProfileApplier:
         """Workspaces and sandboxes also carry saw.redhat.com/managed=true.
 
         Adopted objects predate that label, so the ledger alone allows them.
-        Providers cannot be labeled.
+        Providers cannot be labeled. A missing object or a get that fails
+        for any other reason stays unlabeled: prune keeps it rather than
+        deleting something it could not identify.
         """
         if entry.get("adopted") or kind not in ("workspace", "sandbox"):
             return True
         if kind == "sandbox":
-            got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
-        else:
-            got = self.cli("workspace", "get", name, check=False, quiet=True)
-        return got.ok and MANAGED_LABEL in (got.out + got.err)
+            return self._sandbox_labeled(workspace, name)
+        got = self.cli("workspace", "get", name, check=False, quiet=True)
+        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
+
+    def _sandbox_labeled(self, workspace, name):
+        got = self.cli("sandbox", "get", name, *ws_args(workspace),
+                       "--output", "json", check=False, quiet=True)
+        if got.ok:
+            parsed = _managed_label_from_json(got.out)
+            if parsed is None:
+                return _managed_label_in_text(got.out + "\n" + got.err)
+            return parsed
+        # A CLI that predates `--output` rejects the flag. Retry the human
+        # text, which is `key: value`. Any other failure (not found, auth)
+        # is unlabeled.
+        blob = got.out + "\n" + got.err
+        if not _cli_rejected_output_flag(blob):
+            return False
+        got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
+        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
 
     def workspace_contents(self, name):
         """Sandboxes and providers still in the workspace, used to decide
@@ -1747,12 +1801,18 @@ class ProfileApplier:
         return contents
 
     def delete_managed(self, kind, workspace, name):
+        """Delete one ledger object. False leaves it in the ledger.
+
+        A failed CLI delete must not look like success: prune() would log
+        `deleted`, record it in lastPrune (and therefore status.json), and
+        drop the ledger entry while the object is still on the gateway.
+        """
         if kind == "sandbox":
-            self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
+            result = self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
         elif kind == "provider":
-            self.cli("provider", "delete", name, *ws_args(workspace), check=False)
+            result = self.cli("provider", "delete", name, *ws_args(workspace), check=False)
         elif kind == "profile":
-            self.cli("provider", "profile", "delete", name, *ws_args(workspace), check=False)
+            result = self.cli("provider", "profile", "delete", name, *ws_args(workspace), check=False)
         elif kind == "workspace":
             if name == "default":
                 log("keeping workspace 'default'")
@@ -1761,7 +1821,14 @@ class ProfileApplier:
             if left:
                 log(f"WARN: keeping workspace '{name}'; it still contains: {', '.join(left)}")
                 return False
-            self.cli("workspace", "delete", name, check=False)
+            result = self.cli("workspace", "delete", name, check=False)
+        else:
+            log(f"WARN: keeping {kind} '{name}': unknown kind; leaving it in the ledger")
+            return False
+        if not result.ok:
+            where = f" in '{workspace}'" if workspace else ""
+            log(f"WARN: keeping {kind} '{name}'{where}: delete failed; leaving it in the ledger")
+            return False
         return True
 
     def kept_sandbox_providers(self):
