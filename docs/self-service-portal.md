@@ -33,7 +33,10 @@ saw-users → namespace saw-<user> (label saw.redhat.com/portal=true)
             saw-<user>-bom, saw-<user> (the VM), exactly as for overrides/saw-users.yaml
 ```
 
-The generator also serves the RHDH catalog: one `Resource` per workspace,
+The generator also serves the RHDH catalog (`/catalog.yaml`, without a
+token: RHDH reads it as a plain catalog location; it lists user and profile
+names only, and a NetworkPolicy lets only RHDH's and Argo CD's namespaces
+reach the generator): one `Resource` per workspace,
 owned by its user, with links to the OpenShell web UI, each sandbox web UI,
 and the delete template.
 
@@ -50,7 +53,8 @@ signatures and expiries (a full user token from an older backend is verified
 against the auth keys alone). A user can therefore create, update or delete
 only their own workspace, and a request names its action (a create request
 cannot run the delete pipeline). Admission policies in `saw-portal` limit
-what RHDH's service account (`rhdh-portal`) can create there: Opaque Secrets
+what RHDH's service account (`rhdh-portal`) can create (or, should its Role
+ever allow it, update) there: Opaque Secrets
 named `saw-req-*`, and PipelineRuns of the two portal pipelines, as the
 provisioner, with the single parameter `request=saw-req-*`. A request is
 deleted when it has been handled, refused when older than an hour, and
@@ -63,8 +67,10 @@ applications it needs belongs to someone else, or when the user name ends in
 refuses such names too).
 
 The ApplicationSet only creates and updates Applications, and keeps them if
-it is deleted: a registry problem never deletes a VM, and a malformed
-registry entry fails the generator instead of vanishing. The delete pipeline
+it is deleted: a registry problem never deletes a VM. A malformed registry
+entry is skipped and logged, so it cannot stop everyone else's updates; the
+generator's `/healthz` lists it (`skippedRegistryEntries`). Its workspace
+keeps running unchanged until the entry is fixed. The delete pipeline
 deletes the user's Application `portal-ws-<user>` itself; an admission policy
 lets the provisioner delete only Applications labelled as the portal's. (The
 per-ApplicationSet `applicationsSync` policy applies unless the ApplicationSet
@@ -99,7 +105,11 @@ SSH key always from the shared `secret/data/hub/ssh`.
 To write there, the pipeline logs in to Vault as its service account
 (`saw-portal-provisioner`) through the `hub` Kubernetes auth mount, with the
 role `saw-portal-writer`. The role's policy allows only
-`secret/data/hub/saw-*` and `secret/metadata/hub/saw-*`. The imperative job
+`secret/data/hub/saw-*` and `secret/metadata/hub/saw-*`: any portal user's
+path, not one user's. Vault cannot tell the users apart (one provisioner
+writes for all of them); what keeps a request to its own user's path is
+`portal.py`, which takes the user only from the verified Backstage token
+(there is no setting to trust the form instead). The imperative job
 `saw-portal-vault` creates the policy and the role through Vault's HTTP API
 with the pattern's root token (`ansible/playbooks/saw-portal-vault.yaml`).
 Without the imperative framework, run
@@ -227,7 +237,7 @@ characters (they name the VM).
 |---|---|---|
 | `portal.pruneOnRemove` | `true` | deleting a workspace deletes its VM and namespace |
 | `portal.deleteVaultSecrets` | `true` | deleting a workspace deletes its keys |
-| `portal.verifyToken` | `true` | keep on; off trusts the form's owner (tests only) |
+| `portal.generator.networkPolicy` | `true` | only RHDH and Argo CD may reach the generator |
 | `rhdh.rbac.enabled` | `false` | Backstage RBAC: users see only their own workspace entity |
 | `vault.addr`, `vault.authMount`, `vault.role` | `https://vault.vault.svc:8200`, `hub`, `saw-portal-writer` | |
 | `applicationSet.namespace` | `global.vpArgoNamespace` | where the ApplicationSet lives |

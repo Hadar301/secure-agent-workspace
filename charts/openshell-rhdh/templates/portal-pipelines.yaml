@@ -33,8 +33,6 @@ spec:
           value: {{ include "openshell-rhdh.internalUrl" . }}
         - name: ARGO_NAMESPACE
           value: {{ include "openshell-rhdh.argoNamespace" . }}
-        - name: VERIFY_TOKEN
-          value: {{ .Values.portal.verifyToken | toString | quote }}
         - name: VAULT_ADDR
           value: {{ .Values.vault.addr }}
         - name: VAULT_SKIP_VERIFY

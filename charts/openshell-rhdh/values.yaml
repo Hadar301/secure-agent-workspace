@@ -39,11 +39,11 @@ portal:
   pruneOnRemove: true
   # delete also removes the user's keys from Vault.
   deleteVaultSecrets: true
-  # Check the request's Backstage token against RHDH's JWKS (keep on; off
-  # trusts the owner the template writes, for test setups only).
-  verifyToken: true
   generator:
     port: 4355
+    # Only RHDH (catalog) and Argo CD (ApplicationSet plugin) may reach the
+    # generator.
+    networkPolicy: true
 
 keycloak:
   namespace: saw-keycloak

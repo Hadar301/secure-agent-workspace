@@ -240,7 +240,10 @@ class Fake:
                     assert self.headers["X-Vault-Token"] == "vault-token"
                     fake.vault[self.path[len("/v1/secret/data/"):]] = body["data"]
                     return self._reply(200, {})
-                fake.objects[f"{self.path}/{body['metadata']['name']}"] = body
+                path = f"{self.path}/{body['metadata']['name']}"
+                if path in fake.objects:
+                    return self._reply(409, {"reason": "AlreadyExists"})
+                fake.objects[path] = body
                 self._reply(201, body)
 
             def do_PUT(self):
@@ -419,14 +422,121 @@ def test_someone_elses_application_blocks_the_workspace(portal, world):
     assert fake.vault == {}
 
 
-def test_a_broken_registry_entry_fails_the_generator(portal, world):
-    """Skipping it would read as "this workspace is gone"."""
-    fake, _ = world
+def test_a_broken_registry_entry_is_skipped_not_fatal(portal, world, capsys):
+    """Review (#57): one bad entry used to fail the generator for everyone.
+    It is skipped and logged now; the ApplicationSet only creates and
+    updates, so a skipped entry does not delete its workspace."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
     fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-bob"] = {
         "metadata": {"name": "saw-ws-bob", "labels": {"saw.redhat.com/workspace": "true"}},
         "data": {"user.json": "{not json"}}
-    with pytest.raises(portal.PortalError, match="saw-ws-bob"):
-        portal.list_workspaces(portal.kube(), "saw-portal")
+    fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-carol"] = {
+        "metadata": {"name": "saw-ws-carol", "labels": {"saw.redhat.com/workspace": "true"}},
+        "data": {"user.json": json.dumps({"name": "dave"})}}
+    ws = portal.list_workspaces(portal.kube(), "saw-portal")
+    assert [w["name"] for w in ws] == ["alice"]
+    assert portal.BAD_ENTRIES == ["saw-ws-bob", "saw-ws-carol"]
+    assert "registry entry saw-ws-bob is malformed" in capsys.readouterr().out
+
+
+def test_a_second_create_for_the_same_user_replaces_the_entry(portal, world):
+    """Review (#57): two requests at once both create the entry; the second
+    used to fail with 409, now it replaces it."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    fake.request("saw-req-2", ds_request(signer, **{"inference.api_key": "nvapi-2"}))
+    assert portal.main(["create", "saw-req-2"]) == 0
+    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-2"
+    assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" in fake.objects
+
+
+def test_there_is_no_switch_to_trust_the_form(portal, world, monkeypatch):
+    """Review (#57): VERIFY_TOKEN=false trusted the form's owner. It is gone:
+    a request without a valid token is refused whatever the environment."""
+    fake, signer = world
+    monkeypatch.setenv("VERIFY_TOKEN", "false")
+    fake.request("saw-req-1", {"action": "create", "token": "not-a-jwt", "owner": "alice",
+                               "profile": "data-science", "inference.api_key": "k",
+                               "web-search.api_key": "k"})
+    assert portal.main(["create", "saw-req-1"]) == 1
+    assert fake.vault == {}
+    assert "VERIFY_TOKEN" not in PORTAL.read_text()
+
+
+# -- the generator's HTTP server (portal.py serve) ---------------------------------------
+
+@pytest.fixture
+def generator(portal, world, monkeypatch, tmp_path):
+    import socket
+    import urllib.error
+    import urllib.request
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    token = tmp_path / "token"
+    token.write_text("gen-token\n")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setenv("GENERATOR_TOKEN_FILE", str(token))
+    monkeypatch.setenv("PORT", str(port))
+    monkeypatch.setenv("CLUSTER_DOMAIN", "apps.example.com")
+    monkeypatch.setenv("RHDH_BASE_URL", "https://rhdh.example.com")
+    monkeypatch.setenv("SAW_USERS_VALUES", json.dumps({"namespaceLabels": {"saw.redhat.com/portal": "true"}}))
+    threading.Thread(target=portal.serve, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(base + "/healthz", timeout=1)
+            break
+        except OSError:
+            time.sleep(0.05)
+
+    def call(method, path, token=None):
+        req = urllib.request.Request(base + path, method=method,
+                                     data=b"{}" if method == "POST" else None)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, resp.headers.get("Content-Type"), resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers.get("Content-Type"), exc.read().decode()
+    return fake, call
+
+
+def test_the_generator_needs_its_token_for_the_plugin_api(generator):
+    _, call = generator
+    assert call("POST", "/api/v1/getparams.execute")[0] == 403
+    assert call("POST", "/api/v1/getparams.execute", token="wrong")[0] == 403
+    code, ctype, body = call("POST", "/api/v1/getparams.execute", token="gen-token")
+    assert (code, ctype) == (200, "application/json")
+    params = json.loads(body)["output"]["parameters"]
+    assert [p["name"] for p in params] == ["alice"]
+    assert json.loads(params[0]["values"])["users"][0]["name"] == "alice"
+
+
+def test_the_generator_serves_the_catalog_and_health(generator):
+    fake, call = generator
+    code, ctype, body = call("GET", "/catalog.yaml")
+    assert (code, ctype) == (200, "application/yaml")
+    assert '"name": "saw-alice"' in body
+    fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-bob"] = {
+        "metadata": {"name": "saw-ws-bob", "labels": {"saw.redhat.com/workspace": "true"}},
+        "data": {"user.json": "broken"}}
+    assert call("GET", "/catalog.yaml")[0] == 200            # still serves alice
+    code, _, body = call("GET", "/healthz")
+    assert code == 200 and json.loads(body) == {"ok": True, "skippedRegistryEntries": ["saw-ws-bob"]}
+
+
+@pytest.mark.parametrize("method, path", [("GET", "/"), ("GET", "/api/v1/getparams.execute"),
+                                          ("POST", "/catalog.yaml")])
+def test_the_generator_refuses_other_paths(generator, method, path):
+    _, call = generator
+    assert call(method, path, token="gen-token")[0] == 404
 
 
 def test_cleanup_deletes_only_stale_requests(portal, world):

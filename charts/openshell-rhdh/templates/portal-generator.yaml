@@ -96,3 +96,31 @@ spec:
     - name: http
       port: {{ $port }}
       targetPort: http
+{{- if .Values.portal.generator.networkPolicy }}
+---
+# The generator answers two callers only: RHDH's backend (/catalog.yaml, no
+# token) and the ApplicationSet controller (plugin API, token).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-workspaces-generator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: saw-workspaces-generator
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.rhdh.namespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "openshell-rhdh.argoNamespace" . }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}

@@ -1,6 +1,8 @@
 {{- /* What rhdh-portal (RHDH's proxy identity) may create in the portal
 namespace: request Secrets named saw-req-*, and PipelineRuns of the two
-portal pipelines, run as the provisioner, with only the request parameter. */ -}}
+portal pipelines, run as the provisioner, with only the request parameter.
+Updates are checked too: rhdh-portal may only create today, but a later Role
+change must not let it edit a run or a request into another shape. */ -}}
 {{- $ns := .Values.portal.namespace -}}
 {{- $caller := printf "system:serviceaccount:%s:rhdh-portal" .Values.rhdh.namespace -}}
 apiVersion: admissionregistration.k8s.io/v1
@@ -15,7 +17,7 @@ spec:
     resourceRules:
       - apiGroups: ["tekton.dev"]
         apiVersions: ["*"]
-        operations: ["CREATE"]
+        operations: ["CREATE", "UPDATE"]
         resources: ["pipelineruns"]
   matchConditions:
     - name: from-rhdh
@@ -54,7 +56,7 @@ spec:
     resourceRules:
       - apiGroups: [""]
         apiVersions: ["v1"]
-        operations: ["CREATE"]
+        operations: ["CREATE", "UPDATE"]
         resources: ["secrets"]
   matchConditions:
     - name: from-rhdh

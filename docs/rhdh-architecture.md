@@ -21,10 +21,10 @@ This page explains the parts and how they connect. To try it, follow the
 | Portal pipelines | namespace `saw-portal`, Tekton `saw-workspace-create` / `saw-workspace-delete` | Run `portal.py` as service account `saw-portal-provisioner`: verify who the request is for, write the keys to Vault, write or delete the registry entry. |
 | Admission policies | `ValidatingAdmissionPolicy` `saw-portal-*` | Pin what `rhdh-portal` may create (Secrets `saw-req-*`, PipelineRuns of the two pipelines with one parameter) and which Argo CD applications the provisioner may delete (`portal-ws-*`, labelled as the portal's). |
 | Workspace registry | ConfigMaps `saw-ws-<user>` in `saw-portal` (label `saw.redhat.com/workspace=true`) | One entry per workspace: user name, profile, values for the `saw-users` chart. |
-| Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry. Serves the Argo CD ApplicationSet plugin API (the list of workspaces) and the RHDH catalog (`/catalog.yaml`). |
+| Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token) and the RHDH catalog (`/catalog.yaml`, no token); a NetworkPolicy admits only RHDH and Argo CD. |
 | ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. |
 | `saw-users` → `openshell-saw` | namespace `saw-<user>` | The same charts as a Git-declared user in `overrides/saw-users.yaml`: External Secrets for the user's keys, the BOM, the VM, the gateway and UI routes. |
-| Vault | `secret/data/hub/saw-<user>/<secret>` | The user's keys. The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*`. |
+| Vault | `secret/data/hub/saw-<user>/<secret>` | The user's keys. The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
 | In-VM installer | `apply_bom.py` in the VM | Creates the sandboxes, starts OpenClaw, and runs one OAuth proxy and one port forward per sandbox UI. |
 | Cleanup | CronJob `saw-portal-cleanup` | Deletes request Secrets that no pipeline handled. |
 

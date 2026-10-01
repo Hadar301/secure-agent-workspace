@@ -198,6 +198,12 @@ def verify_backstage_token(token, auth_jwks, scaffolder_jwks=None, now=None):
 
 # -- Kubernetes and Vault over HTTPS ---------------------------------------------
 
+class HttpError(PortalError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 class Http:
     def __init__(self, base, token="", cafile=None, insecure=False):
         self.base = base.rstrip("/")
@@ -225,7 +231,7 @@ class Http:
             if exc.code == 404 and ok404:
                 return None
             detail = exc.read().decode(errors="replace")[:300]
-            raise PortalError(f"{method} {path}: HTTP {exc.code} {detail}") from None
+            raise HttpError(exc.code, f"{method} {path}: HTTP {exc.code} {detail}") from None
 
 
 def kube():
@@ -337,10 +343,8 @@ def read_request(k8s, ns, name):
 
 
 def requester(data):
-    if os.environ.get("VERIFY_TOKEN", "true") != "true":
-        # Test setups only: trusts the owner the template wrote.
-        log("WARN: VERIFY_TOKEN=false, the request's owner is not checked")
-        return check_user(data.get("owner", ""))
+    """The user a request is for: only ever from its verified Backstage
+    token (there is no switch to trust the form instead)."""
     rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
     insecure = os.environ.get("RHDH_SKIP_VERIFY") == "true"
     auth_jwks = fetch_json(f"{rhdh}/api/auth/.well-known/jwks.json", insecure=insecure)
@@ -366,27 +370,42 @@ def put_configmap(k8s, ns, name, data, labels=None):
     body = {"apiVersion": "v1", "kind": "ConfigMap",
             "metadata": {"name": name, "namespace": ns, "labels": labels or {}}, "data": data}
     path = f"/api/v1/namespaces/{ns}/configmaps"
-    if k8s.call("GET", f"{path}/{name}", ok404=True) is None:
+    # Create, or replace when it exists. Two requests for the same user at
+    # once both end here: the later one wins instead of failing with 409.
+    try:
         k8s.call("POST", path, body)
-    else:
+    except HttpError as exc:
+        if exc.code != 409:
+            raise
         k8s.call("PUT", f"{path}/{name}", body)
 
 
+# Registry entries the last listing skipped (shown on the generator's /healthz).
+BAD_ENTRIES = []
+
+
 def list_workspaces(k8s, ns):
+    """The registry's workspaces. A malformed entry is skipped and logged,
+    so it cannot stop updates to everyone else's workspace. Skipping is safe:
+    the ApplicationSet only creates and updates Applications (an entry that
+    disappears does not delete its Application) and preserves resources on
+    deletion, and the delete pipeline is what removes a workspace."""
     items = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps?labelSelector="
                      + urllib.parse.quote(f"{WORKSPACE_LABEL}=true")).get("items", [])
-    out = []
+    out, bad = [], []
     for cm in items:
-        # A broken entry fails the whole answer: skipping it would read as
-        # "this workspace is gone".
+        name = cm["metadata"]["name"]
         try:
             entry = json.loads((cm.get("data") or {}).get("user.json", ""))
         except ValueError:
-            raise PortalError(f"registry entry {cm['metadata']['name']} has no valid user.json") from None
+            entry = None
         if not (isinstance(entry, dict) and NAME_RE.match(str(entry.get("name", "")))
-                and cm["metadata"]["name"] == f"saw-ws-{entry['name']}"):
-            raise PortalError(f"registry entry {cm['metadata']['name']} is malformed")
+                and name == f"saw-ws-{entry['name']}"):
+            log(f"ERROR: registry entry {name} is malformed (no valid user.json); skipped")
+            bad.append(name)
+            continue
         out.append(entry)
+    BAD_ENTRIES[:] = sorted(bad)
     return sorted(out, key=lambda e: e["name"])
 
 
@@ -560,9 +579,14 @@ def serve():
 
         def do_GET(self):
             if self.path == "/healthz":
-                return self._send(200, {"ok": True})
+                # Still 200 with bad entries: restarting the pod fixes nothing.
+                return self._send(200, {"ok": True, "skippedRegistryEntries": list(BAD_ENTRIES)})
             if self.path != "/catalog.yaml":
                 return self._send(404, {"error": "not found"})
+            # No token on purpose: RHDH's catalog reads it as a plain URL
+            # location. It lists user and profile names only (the same as
+            # the namespace names), and a NetworkPolicy lets only RHDH and
+            # Argo CD reach this pod.
             try:
                 text = entities_yaml(list_workspaces(kube(), ns), catalog,
                                      os.environ.get("CLUSTER_DOMAIN", ""),

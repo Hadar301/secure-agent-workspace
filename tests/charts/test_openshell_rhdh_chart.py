@@ -124,7 +124,10 @@ def test_the_pipeline_task_runs_portal_py(docs):
     step = task["spec"]["steps"][0]
     assert step["command"] == ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.request)"]
     env = {e["name"]: e["value"] for e in step["env"]}
-    assert env["VERIFY_TOKEN"] == "true"
+    # Review (#57): no switch to trust the form's owner instead of the token.
+    assert "VERIFY_TOKEN" not in env
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert "verifyToken" not in values["portal"]
     assert env["RHDH_INTERNAL_URL"] == "http://backstage-developer-hub.rhdh.svc:80"
     assert env["ARGO_NAMESPACE"] == "vp-gitops"
     scripts = one(docs, "ConfigMap", "saw-portal-scripts")
@@ -169,3 +172,25 @@ def test_the_backstage_version_is_the_newest_the_cluster_serves():
     assert version("--api-versions", "rhdh.redhat.com/v1alpha3/Backstage",
                    "--api-versions", "rhdh.redhat.com/v1alpha4/Backstage") == "rhdh.redhat.com/v1alpha4"
     assert version("--set", "rhdh.apiVersion=rhdh.redhat.com/v1alpha3") == "rhdh.redhat.com/v1alpha3"
+
+
+def test_only_rhdh_and_argo_cd_reach_the_generator(docs):
+    """Review (#57): /catalog.yaml has no token, so the pod takes traffic
+    only from RHDH's and Argo CD's namespaces."""
+    policy = one(docs, "NetworkPolicy", "saw-workspaces-generator")
+    assert policy["metadata"]["namespace"] == "saw-portal"
+    assert policy["spec"]["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "saw-workspaces-generator"}}
+    sources = [f["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
+               for f in policy["spec"]["ingress"][0]["from"]]
+    assert sources == ["rhdh", "vp-gitops"]
+    assert policy["spec"]["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 4355}]
+    off = render("--set", "portal.generator.networkPolicy=false")
+    assert not [d for d in off if d["kind"] == "NetworkPolicy"]
+
+
+@pytest.mark.parametrize("name", ["saw-portal-pipelineruns", "saw-portal-requests"])
+def test_admission_checks_updates_too(docs, name):
+    """Review (#57): a later Role change must not let RHDH's account edit a
+    request or a run into another shape."""
+    policy = one(docs, "ValidatingAdmissionPolicy", name)
+    assert policy["spec"]["matchConstraints"]["resourceRules"][0]["operations"] == ["CREATE", "UPDATE"]
