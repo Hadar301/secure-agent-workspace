@@ -40,3 +40,26 @@ def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
     assert got == {"inference": {"secret/data/hub/saw-bob/inference"},
                    "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
                    "openshell-aap-ssh": {"secret/data/hub/ssh"}}
+
+
+def test_the_inference_template_needs_only_what_every_workspace_has():
+    """Found live: a portal workspace (data-science) has no `model` in Vault,
+    and the template's `{{ .model }}` failed the ExternalSecret, so the VM
+    booted without the inference Secret. Only keys every source writes may
+    be required; the others go through `index … | default`."""
+    import json
+    import re
+    out = subprocess.run([HELM, "template", "x", str(CHART)], capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    (es,) = [d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "inference"]
+    required = set()
+    for value in es["spec"]["target"]["template"]["data"].values():
+        required |= set(re.findall(r"\{\{\s*\.(\w+)\s*\}\}", value))
+    assert required == {"provider", "api_key"}
+    # What the portal writes for every profile's inference Secret: the
+    # credential field and the provider it adds.
+    catalog = json.loads((ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json").read_text())
+    for name, profile in catalog["profiles"].items():
+        if "inference" in profile["secrets"]:
+            keys = {f["key"] for f in profile["secrets"]["inference"]["fields"]} | {"provider"}
+            assert required <= keys, name
