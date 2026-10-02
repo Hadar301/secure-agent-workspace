@@ -72,4 +72,7 @@ data:
       {{- if .Values.rhdh.rbac.enabled }}
       - package: ./dynamic-plugins/dist/backstage-community-plugin-rbac
         disabled: false
+      # Keycloak users and groups in the catalog: RBAC gives roles by group.
+      - package: {{ .Values.rhdh.rbac.keycloakCatalogPlugin }}
+        disabled: false
       {{- end }}

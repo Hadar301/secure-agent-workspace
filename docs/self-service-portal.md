@@ -15,7 +15,7 @@ the pattern's current way of creating a workspace, the `saw-users` chart.
 ## How it works
 
 ```
-RHDH  "Create an agent workspace"          (charts/openshell-rhdh)
+RHDH  "Create or update my agent workspace" (charts/openshell-rhdh)
   │  proxy /saw-requests      Secret saw-req-*: the form + the user's Backstage token
   │  proxy /saw-pipelineruns  PipelineRun saw-workspace-create, request=saw-req-*
   ▼
@@ -58,13 +58,13 @@ call the generator's `/status` through the RHDH proxy endpoint `/saw-status`
 
 | Call | Answers |
 |---|---|
-| `GET /status/run/<pipelinerun>[?task=<task>]&wait=50` | the run's phase, each task's state and, for the user it acted for, its log (only once the log shows the request was verified for that user); with `task`, waits for that task |
-| `GET /status/workspace?for=<stage>&wait=50` | the caller's workspace: `registered` (registry entry), `apps` (the four Argo CD applications), `vm` (VirtualMachine defined), `running`, `ready` (every sandbox UI route answers, i.e. the installer finished) |
+| `GET /status/run/<pipelinerun>[?task=<task>]&wait=20` | the run's phase, each task's state and, for the user it acted for, its log (only once the log shows the request was verified for that user); with `task`, waits for that task |
+| `GET /status/workspace?for=<stage>&wait=20` | the caller's workspace: `registered` (registry entry), `apps` (the four Argo CD applications), `vm` (VirtualMachine defined), `running`, `ready` (every sandbox UI route answers, i.e. the installer finished) |
 | `...&assert=1` / `assert=ready` | 422 when the run failed or did not end / the workspace failed or is not ready, so the step fails |
 
 `wait` holds the answer until the stage is reached, a stage fails (Argo CD
 sync `Failed`/`Error`, VM `DataVolumeError`, `CrashLoopBackOff`,
-`ErrorPvcNotFound`) or 50 seconds pass; the template repeats each wait step
+`ErrorPvcNotFound`) or the wait passes (20 s in the templates: they reach RHDH through its route, and the OpenShift router drops a request quiet for 30 s); the template repeats each wait step
 (`each`) up to the task's time limit. The workspace is
 always the caller's own: the token names it, there is no user parameter.
 Status reads accept a token up to two hours after it expires (the token is
@@ -75,6 +75,53 @@ The generator reads, for this: the portal's PipelineRuns and pod logs in
 (get only, cluster-wide since namespaces `saw-<user>` come and go). The same
 status is in each catalog entity's description and the annotation
 `openshell.pattern/status`.
+
+### Administrators
+
+Users in `portal.admins` see two templates and only those: **Create or update
+an agent workspace for a user** (the same form plus a user name, one user at a
+time; the admin enters that user's keys) and **Delete a user's agent
+workspace** (lists every workspace). An administrator who wants a workspace of
+their own enters their own name. The request carries `forUser` (create) or the
+chosen workspace (delete); the pipeline takes the caller from the token as
+always and acts for another user only when the caller is an administrator.
+The run's log says `create request saw-req-… from admin for carol`; the run is
+on carol's Tekton tab, and the admin can follow it (the status endpoint
+answers about another user's workspace for administrators only). The user
+must exist in Keycloak to sign in (`make -f Makefile-quickstart
+keycloak-add-users`).
+
+Create is also update: for a user who has a workspace, it rewrites the
+registry entry and the keys in Vault, and Argo CD applies the new profile.
+
+RHDH RBAC (`rhdh.rbac.enabled`, on) shows each user what applies to them:
+
+| Who | Role (group) | Sees |
+|---|---|---|
+| every user | `saw-user` (Keycloak `saw-users`) | their own workspace; **Create or update my agent workspace** (templates without an audience label) |
+| users without a workspace | `saw-new` (`saw-without-workspace`) | the **Get started** card (label `saw.redhat.com/new-users`) |
+| users with a workspace | `saw-owner` (`saw-workspace-owners`) | **Delete my agent workspace** (label `saw.redhat.com/owners`) |
+| `portal.admins` | `saw-admin` (by user) | every entity but templates, and the admin templates (label `saw.redhat.com/admin`) |
+
+The generator publishes the two workspace groups in its catalog (it reads the
+realm's users from Keycloak with the `rhdh` client's service account; the
+secret comes from Vault as `saw-generator-keycloak`), so they switch within
+about a minute of a create or delete. The **Get started** card
+(Component `saw-get-started`) links to the create action: RHDH's own
+empty-state button leads to `/catalog-import`, a page users may not open. The
+workspace's page links the delete form with the workspace already chosen.
+
+Every user but the administrators gets `saw-user` through the Keycloak group
+`saw-users`: the `saw-rhdh-keycloak-client` job makes it the realm's default
+group, adds the existing users, removes the administrators, and lets the
+`rhdh` client's service account read users and groups, which RHDH's Keycloak
+catalog provider imports every two minutes (a new user sees the portal after
+that). Administrators are kept out of every user group (the job, and the
+generator for its two groups) because RHDH RBAC joins the conditions of all a
+user's roles: in a user group, an administrator would see the user templates
+as well. An administrator added to Keycloak later is in `saw-users` until the
+job runs again (the next sync). The pipeline checks `portal.admins` itself, so
+hiding is not what protects the admin actions.
 
 ### Who a request is for
 
@@ -274,7 +321,8 @@ characters (they name the VM).
 | `portal.pruneOnRemove` | `true` | deleting a workspace deletes its VM and namespace |
 | `portal.deleteVaultSecrets` | `true` | deleting a workspace deletes its keys |
 | `portal.generator.networkPolicy` | `true` | only RHDH and Argo CD may reach the generator |
-| `rhdh.rbac.enabled` | `false` | Backstage RBAC: users see only their own workspace entity |
+| `rhdh.rbac.enabled` | `true` | Backstage RBAC: users see the user actions and their own workspace; admins everything (needs RHDH's Keycloak catalog provider, `rhdh.rbac.keycloakCatalogPlugin`) |
+| `portal.admins` | `admin` | users who may create or delete a workspace for another user (the "… for a user" templates); empty: no admin templates |
 | `rhdh.homePage.enabled` | `true` | home page with only "Actions" (the create and delete templates) and "Workspaces" (the catalog); `rhdh.homePage.titles` renames the sections |
 | `rhdh.hiddenMenuItems` | `default.apis`, `default.learning-path` | sidebar entries hidden (the portal does not use them) |
 | `rhdh.branding.title` | `Secure Agent Workspace Self Service` | product name in the header and browser tab; logo `files/logo-{light,dark}.svg` |
@@ -286,9 +334,9 @@ characters (they name the VM).
 
 ## Limits and open items
 
-- Without RHDH RBAC, every signed-in user sees every workspace entity (names
-  and links only; the UIs admit only their owner), and its Tekton tab: the
-  pipeline runs' logs name users, profiles and Vault paths, never keys.
+- With `rhdh.rbac.enabled=false`, every signed-in user sees every workspace
+  entity and its Tekton tab (names, links and pipeline logs, never keys) and
+  the admin templates (the pipeline refuses them).
 - Any realm user can request a workspace. Users are added by an admin
   (`keycloak-add-users`); to limit the templates further, turn on RHDH RBAC
   and list the users allowed to use them.

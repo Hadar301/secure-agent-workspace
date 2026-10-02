@@ -2,12 +2,12 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
-  name: delete-saw-workspace
-  title: Delete my agent workspace
-  description: 'Removes your Secure Agent Workspace: its VM, its sandboxes and everything in them, and
-    your keys in Vault. This cannot be undone.'
-  tags: [openshell, secure-agent-workspace]
-  labels: {saw.redhat.com/owners: 'true'}
+  name: delete-saw-workspace-for-user
+  title: Delete a user's agent workspace
+  description: 'Administrators: removes a user''s Secure Agent Workspace, its VM, its sandboxes and everything
+    in them, and the user''s keys in Vault. This cannot be undone.'
+  tags: [openshell, secure-agent-workspace, admin]
+  labels: {saw.redhat.com/admin: 'true'}
 spec:
   owner: user:default/admin
   type: agent-workspace
@@ -20,7 +20,7 @@ spec:
       workspace:
         title: Workspace to delete
         type: string
-        ui:field: OwnedEntityPicker
+        ui:field: EntityPicker
         ui:options:
           catalogFilter: {kind: Component, spec.type: agent-workspace}
           defaultKind: Component

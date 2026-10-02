@@ -29,6 +29,8 @@ rhdh:
   hiddenMenuItems:
     - default.apis
     - default.learning-path
+    # appears once users are imported (saw-users); it lists every user
+    - default.my-group
   # The product name in the header and the browser tab, and its logo
   # (files/logo-light.svg, files/logo-dark.svg) instead of Red Hat
   # Developer Hub's.
@@ -55,10 +57,27 @@ rhdh:
       templates.viewAll: "View all {{count}} actions"
       entities.title: Workspaces
       entities.browseTheCatalog: All workspaces
+      entities.description: "Your agent workspaces: their status, their web UIs and their create and delete runs."
+      # RHDH's empty state (only when even the "Get started" card is not
+      # visible, e.g. Keycloak unreachable); its button leads to RHDH's
+      # register page, which is not offered here.
+      entities.empty: No agent workspace yet
+      entities.emptyDescription: "Create one under Actions above."
+  # Backstage RBAC. On: a user sees the user actions and their own
+  # workspace; administrators (portal.admins) also see the admin actions and
+  # every workspace. Every user gets role saw-user through Keycloak group
+  # usersGroup (the realm's default group; the saw-rhdh-keycloak-client job
+  # adds existing users), which RHDH's Keycloak catalog provider imports.
+  # Off: every signed-in user sees everything (the pipeline still refuses
+  # what they may not do).
   rbac:
-    enabled: false
+    enabled: true
+    # Who may manage RBAC in RHDH's Administration page.
     admins:
       - admin
+    usersGroup: saw-users
+    # RHDH's Keycloak catalog provider (users and groups), as RHDH 1.10 lists it.
+    keycloakCatalogPlugin: ./dynamic-plugins/dist/backstage-community-plugin-catalog-backend-module-keycloak-dynamic
   # The Tekton tab on each workspace's catalog page: its create and delete
   # pipeline runs as a graph, with each task's log. Uses RHDH's Kubernetes
   # and Tekton plugins, reading only the portal namespace as the service
@@ -85,6 +104,11 @@ portal:
   pruneOnRemove: true
   # delete also removes the user's keys from Vault.
   deleteVaultSecrets: true
+  # Administrators: they may create or delete a workspace for another user
+  # (the "... for a user" templates). Keycloak user names. Everyone else acts
+  # only for themselves.
+  admins:
+    - admin
   generator:
     port: 4355
     # Only RHDH (catalog) and Argo CD (ApplicationSet plugin) may reach the

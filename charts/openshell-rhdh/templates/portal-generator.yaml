@@ -60,6 +60,24 @@ spec:
               value: {{ include "openshell-rhdh.internalUrl" . }}
             - name: ARGO_NAMESPACE
               value: {{ include "openshell-rhdh.argoNamespace" . }}
+            {{- if .Values.rhdh.rbac.enabled }}
+            # The realm's users (members of usersGroup), for the group of
+            # users without a workspace (RBAC: who sees the create action).
+            - name: KEYCLOAK_URL
+              value: https://{{ include "openshell-rhdh.keycloakHost" . }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.keycloak.realm }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.keycloak.clientId }}
+            - name: KEYCLOAK_SECRET_FILE
+              value: /etc/saw-keycloak/client_secret
+            - name: KEYCLOAK_SKIP_VERIFY
+              value: {{ .Values.keycloak.insecureSkipTlsVerify | toString | quote }}
+            - name: USERS_GROUP
+              value: {{ .Values.rhdh.rbac.usersGroup | quote }}
+            {{- end }}
+            - name: PORTAL_ADMINS
+              value: {{ .Values.portal.admins | default list | join "," | quote }}
             - name: SAW_USERS_VALUES
               value: {{ include "openshell-rhdh.sawUsersValues" . | toJson }}
           readinessProbe:
@@ -71,6 +89,11 @@ spec:
             - name: token
               mountPath: /etc/saw-generator
               readOnly: true
+            {{- if .Values.rhdh.rbac.enabled }}
+            - name: keycloak
+              mountPath: /etc/saw-keycloak
+              readOnly: true
+            {{- end }}
           resources:
             requests: { cpu: 10m, memory: 64Mi }
             limits: { memory: 128Mi }
@@ -86,6 +109,12 @@ spec:
         - name: token
           secret:
             secretName: saw-workspaces-generator
+        {{- if .Values.rhdh.rbac.enabled }}
+        - name: keycloak
+          secret:
+            secretName: saw-generator-keycloak
+            optional: true
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -129,4 +158,31 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+{{- end }}
+{{- if .Values.rhdh.rbac.enabled }}
+---
+# The rhdh client's secret (from Vault, as rhdh-oidc): the generator reads the
+# realm's users with its service account (view-users, query-groups).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: saw-generator-keycloak
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: {{ .Values.oidcSecret.secretStoreRef.name }}
+    kind: {{ .Values.oidcSecret.secretStoreRef.kind }}
+  target:
+    name: saw-generator-keycloak
+    template:
+      type: Opaque
+      engineVersion: v2
+      data:
+        client_secret: {{ printf "{{ .client_secret }}" | quote }}
+  dataFrom:
+    - extract:
+        key: {{ .Values.oidcSecret.vaultKey }}
 {{- end }}

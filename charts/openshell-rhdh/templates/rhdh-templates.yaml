@@ -12,6 +12,13 @@ data:
 {{ .Files.Get "files/create-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
   delete-workspace.yaml: |
 {{ .Files.Get "files/delete-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  {{- if .Values.portal.admins }}
+  # Administrators (portal.admins): a workspace for another user.
+  create-workspace-for-user.yaml: |
+{{ .Files.Get "files/create-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  delete-workspace-for-user.yaml: |
+{{ .Files.Get "files/delete-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  {{- end }}
   {{- if .Values.rhdh.homePage.enabled }}
   # Home page section titles (RHDH i18n overrides, see saw-rhdh-app-config).
   translations.json: |

@@ -83,7 +83,7 @@ sequenceDiagram
   participant A as Argo CD
   participant VM as VM in saw-user
 
-  U->>R: Create > "Create an agent workspace" (profile + keys)
+  U->>R: Create > "Create or update my agent workspace" (profile + keys)
   R->>K: POST Secret saw-req-xxxx (form + user's Backstage token)
   R->>K: POST PipelineRun saw-workspace-create (request=saw-req-xxxx)
   K->>P: run as saw-portal-provisioner
@@ -199,7 +199,7 @@ The catalog is configured by the chart; there is nothing to register by hand.
 
 | Location | Kind | Contents |
 |---|---|---|
-| `/opt/app-root/src/saw/create-workspace.yaml` (ConfigMap `saw-rhdh-templates`) | Template | "Create an agent workspace" |
+| `/opt/app-root/src/saw/create-workspace.yaml` (ConfigMap `saw-rhdh-templates`) | Template | "Create or update my agent workspace" |
 | `/opt/app-root/src/saw/delete-workspace.yaml` | Template | "Delete my agent workspace" |
 | `http://saw-workspaces-generator.saw-portal.svc:4355/catalog.yaml` | Component | One `saw-<user>` per workspace, type `agent-workspace`, owned by `user:default/<user>`, with links to the OpenShell web UI, each sandbox UI and the delete template |
 

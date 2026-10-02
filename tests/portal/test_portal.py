@@ -182,10 +182,20 @@ def test_generator_params_are_one_user_saw_users_values(portal):
     assert json.loads(params["values"]) == {**defaults, "users": [ws]}
 
 
+def entity_docs(text):
+    return [json.loads(part) for part in text.split("\n---\n")]
+
+
+def the_workspace(text):
+    (entity,) = [d for d in entity_docs(text)
+                 if d["kind"] == "Component" and d["spec"]["type"] == "agent-workspace"]
+    return entity
+
+
 def test_entities_link_the_web_uis(portal, catalog):
     text = portal.entities_yaml([{"name": "alice", "profiles": ["data-science"]}], catalog,
                                 "example.com", "https://rhdh.example.com")
-    entity = json.loads(text)
+    entity = the_workspace(text)
     assert entity["spec"]["owner"] == "user:default/alice"
     urls = [link["url"] for link in entity["metadata"]["links"]]
     assert "https://alice-webui-saw-alice.apps.example.com" in urls
@@ -193,7 +203,42 @@ def test_entities_link_the_web_uis(portal, catalog):
 
 
 def test_no_workspaces_is_still_a_valid_location(portal, catalog):
-    assert portal.entities_yaml([], catalog, "example.com", "").startswith("#")
+    docs = entity_docs(portal.entities_yaml([], catalog, "example.com", ""))
+    assert [d["kind"] for d in docs] == ["Group", "Component"] and docs[0]["spec"]["members"] == []
+
+
+def test_users_without_a_workspace_get_a_get_started_card(portal, catalog):
+    """RHDH's empty Workspaces section links to /catalog-import, which the
+    portal does not offer; this card, shown only to saw-without-workspace,
+    links to the create action instead."""
+    docs = entity_docs(portal.entities_yaml([], catalog, "example.com", "https://rhdh.example.com"))
+    (card,) = [d for d in docs if d["metadata"]["name"] == "saw-get-started"]
+    assert card["metadata"]["labels"] == {"saw.redhat.com/new-users": "true"}
+    assert card["spec"]["owner"] == "group:default/saw-without-workspace"
+    assert [l["url"] for l in card["metadata"]["links"]] == \
+        ["https://rhdh.example.com/create/templates/default/create-saw-workspace"]
+
+
+def test_users_see_create_or_delete_by_group(portal, catalog, monkeypatch):
+    """Group saw-workspace-owners (delete) and saw-without-workspace (create),
+    which RHDH RBAC uses so each user sees the action that applies."""
+    text = portal.entities_yaml([{"name": "alice", "profiles": ["data-science"]}], catalog, "example.com",
+                                "https://rhdh.example.com", users=["alice", "bob", "carol"])
+    groups = {d["metadata"]["name"]: d["spec"]["members"] for d in entity_docs(text) if d["kind"] == "Group"}
+    assert groups == {"saw-workspace-owners": ["alice"], "saw-without-workspace": ["bob", "carol"]}
+    delete = [l["url"] for l in the_workspace(text)["metadata"]["links"] if l["title"] == "Delete workspace"]
+    assert delete == ["https://rhdh.example.com/create/templates/default/delete-saw-workspace"
+                      "?formData=%7B%22workspace%22%3A%22component%3Adefault/saw-alice%22%7D"]
+    # administrators are in neither group: RBAC would join the user roles'
+    # conditions to theirs and show them the user templates
+    monkeypatch.setenv("PORTAL_ADMINS", "admin")
+    text = portal.entities_yaml([{"name": "admin", "profiles": ["data-science"]}], catalog, "example.com",
+                                "", users=["alice", "admin"])
+    groups = {d["metadata"]["name"]: d["spec"]["members"] for d in entity_docs(text) if d["kind"] == "Group"}
+    assert groups == {"saw-workspace-owners": [], "saw-without-workspace": ["alice"]}
+    # users unknown (Keycloak unreachable at the first read): no create group at all
+    text = portal.entities_yaml([], catalog, "example.com", "", users=None)
+    assert [d["metadata"]["name"] for d in entity_docs(text)] == ["saw-workspace-owners", "saw-get-started"]
 
 
 # -- end to end against fake Kubernetes and Vault -------------------------------------
@@ -796,7 +841,7 @@ def test_status_follows_a_pipeline_run(status_call):
 def test_the_catalog_shows_each_workspaces_status(generator):
     fake, call = generator
     _, _, body = call("GET", "/catalog.yaml")
-    entity = json.loads(body)
+    entity = the_workspace(body)
     assert entity["metadata"]["annotations"]["openshell.pattern/status"] == "registered"
     assert entity["metadata"]["description"].startswith("Requested: waiting for Argo CD.")
 
@@ -861,7 +906,7 @@ def test_the_catalog_shows_a_workspace_being_deleted(portal, world, catalog):
     assert st["phase"] == "deleting" and "saw-alice" in st["message"]
     text = portal.entities_yaml(portal.list_workspaces(portal.kube(), "saw-portal", deleting=True),
                                 catalog, "example.com", "", {"alice": st})
-    entity = json.loads(text)
+    entity = the_workspace(text)
     assert entity["metadata"]["description"].startswith("Deleting: Argo CD is removing")
     ann = entity["metadata"]["annotations"]
     assert ann["backstage.io/kubernetes-id"] == "saw-alice" and ann["janus-idp.io/tekton"] == "saw-alice"
@@ -879,3 +924,95 @@ def test_status_follows_one_task_of_a_run(status_call):
     assert "--- register ---" in body["text"]
     code, body = get("/status/run/saw-create-t1?task=vm&wait=1")
     assert code == 200 and not body["done"] and body["taskState"] == "Waiting"
+
+
+# -- administrators: one workspace at a time for another user ---------------------------
+
+def test_an_admin_creates_a_workspace_for_another_user(portal, world, monkeypatch, capsys):
+    fake, signer = world
+    monkeypatch.setenv("PORTAL_ADMINS", "admin, ops")
+    fake.request("saw-req-1", {**ds_request(signer), "token": signer.token(sub="user:default/admin"),
+                               "forUser": "carol"})
+    assert portal.main(["create", "saw-req-1"]) == 0
+    entry = json.loads(fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-carol"]["data"]["user.json"])
+    assert entry["name"] == "carol"
+    assert "hub/saw-carol/inference" in fake.vault
+    assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-admin" not in fake.objects
+    log = capsys.readouterr().out
+    assert "create request saw-req-1 from admin for carol" in log
+    assert portal.RUN_USER_RE.search(log).group(1) == "admin"     # the admin sees the run's log
+
+
+def test_only_an_admin_may_act_for_someone_else(portal, world, monkeypatch):
+    fake, signer = world
+    monkeypatch.setenv("PORTAL_ADMINS", "admin")
+    fake.request("saw-req-1", {**ds_request(signer), "forUser": "carol"})      # alice's token
+    assert portal.main(["create", "saw-req-1"]) == 1
+    assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-carol" not in fake.objects
+    fake.request("saw-req-2", {**ds_request(signer), "forUser": "alice"})      # herself: fine
+    assert portal.main(["create", "saw-req-2"]) == 0
+
+
+def test_an_admin_deletes_another_users_workspace(portal, world, monkeypatch):
+    fake, signer = world
+    monkeypatch.setenv("PORTAL_ADMINS", "admin")
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token(sub="user:default/bob"),
+                               "workspace": "component:default/saw-alice"})
+    assert portal.main(["delete", "saw-req-2"]) == 1                     # bob is no admin
+    fake.request("saw-req-3", {"action": "delete", "token": signer.token(sub="user:default/admin"),
+                               "workspace": "component:default/saw-alice"})
+    assert portal.main(["delete", "saw-req-3"]) == 0
+    cm = fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"]
+    assert cm["metadata"]["labels"]["saw.redhat.com/deleting"] == "true"
+
+
+def test_status_of_another_users_workspace_is_for_admins(status_call, monkeypatch):
+    fake, get = status_call
+    monkeypatch.setenv("PORTAL_ADMINS", "admin")
+    assert get("/status/workspace?user=alice", user="bob")[0] == 403
+    code, body = get("/status/workspace?user=alice", user="admin")
+    assert code == 200 and body["user"] == "alice" and body["phase"] == "registered"
+
+
+def test_the_realm_users_come_from_the_keycloak_group(portal, tmp_path, monkeypatch):
+    class KC(BaseHTTPRequestHandler):
+        def _reply(self, code, body):
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_POST(self):
+            form = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+            ok = form == {"grant_type": ["client_credentials"], "client_id": ["rhdh"], "client_secret": ["s3"]}
+            self._reply(200 if ok else 401, {"access_token": "sa-token"} if ok else {})
+
+        def do_GET(self):
+            assert self.headers["Authorization"] == "Bearer sa-token"
+            url = urlsplit(self.path)
+            if url.path.endswith("/groups"):
+                return self._reply(200, [{"id": "g1", "name": "saw-users"}, {"id": "g2", "name": "saw-users-x"}])
+            if url.path.endswith("/groups/g1/members"):
+                return self._reply(200, [{"username": "carol"}, {"username": "alice"},
+                                         {"username": "service-account-rhdh"}])
+            self._reply(404, {})
+
+        def log_message(self, *a):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), KC)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    secret = tmp_path / "secret"
+    secret.write_text("s3\n")
+    for k, v in {"KEYCLOAK_URL": f"http://127.0.0.1:{server.server_address[1]}", "USERS_GROUP": "saw-users",
+                 "KEYCLOAK_REALM": "openshell", "KEYCLOAK_CLIENT_ID": "rhdh",
+                 "KEYCLOAK_SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(k, v)
+    users = portal.RealmUsers()
+    assert users() == ["alice", "carol"]
+    server.shutdown()
+    server.server_close()
+    users.at = 0
+    assert users() == ["alice", "carol"]          # Keycloak gone: the last list is kept

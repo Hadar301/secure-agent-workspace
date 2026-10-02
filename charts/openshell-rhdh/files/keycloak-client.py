@@ -7,8 +7,14 @@ from the rhdh-oidc Secret (from Vault); the Keycloak admin credentials from
 the operator's <keycloak>-initial-admin Secret, read through the Kubernetes
 API with a Role limited to that Secret.
 
+With USERS_GROUP set (RHDH RBAC): the client also gets a service account
+that may read the realm's users and groups (RHDH's Keycloak catalog provider
+imports them), and every user is in group USERS_GROUP: it is the realm's
+default group (new users join it) and existing users are added.
+
 Env: KC_URL, KC_NAMESPACE, KC_NAME, REALM, CLIENT_ID, CLIENT_SECRET,
-     RHDH_URL, INSECURE (true to skip TLS verification of Keycloak).
+     RHDH_URL, INSECURE (true to skip TLS verification of Keycloak),
+     USERS_GROUP (optional), ADMINS (optional: users kept out of USERS_GROUP).
 """
 import base64
 import json
@@ -66,7 +72,7 @@ def main():
         "clientId": client_id, "name": "Red Hat Developer Hub (agent workspaces)", "enabled": True,
         "protocol": "openid-connect", "publicClient": False, "clientAuthenticatorType": "client-secret",
         "secret": secret, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
-        "serviceAccountsEnabled": False,
+        "serviceAccountsEnabled": bool(os.environ.get("USERS_GROUP")),
         "redirectUris": [f"{rhdh}/api/auth/oidc/handler/frame"], "webOrigins": [rhdh],
         "attributes": {"post.logout.redirect.uris": f"{rhdh}/*"},
     }
@@ -81,7 +87,57 @@ def main():
     else:
         call(base, method="POST", body=want, token=token, ctx=ctx)
         print(f"Created Keycloak client {client_id} in realm {realm}")
+    group = os.environ.get("USERS_GROUP", "")
+    if group:
+        admin = f"{kc}/admin/realms/{realm}"
+        client = call(f"{base}?clientId={urllib.parse.quote(client_id)}", token=token, ctx=ctx)[0]
+        grant_catalog_reader(admin, client["id"], token, ctx)
+        everyone_in_group(admin, group, token, ctx)
     return 0
+
+
+# What RHDH's Keycloak catalog provider needs to read users and groups.
+READER_ROLES = ("view-users", "query-users", "query-groups")
+
+
+def grant_catalog_reader(admin, client_uuid, token, ctx):
+    """The client's service account may read the realm's users and groups."""
+    sa = call(f"{admin}/clients/{client_uuid}/service-account-user", token=token, ctx=ctx)
+    rm = call(f"{admin}/clients?clientId=realm-management", token=token, ctx=ctx)[0]
+    roles = [call(f"{admin}/clients/{rm['id']}/roles/{name}", token=token, ctx=ctx) for name in READER_ROLES]
+    call(f"{admin}/users/{sa['id']}/role-mappings/clients/{rm['id']}", method="POST", body=roles,
+         token=token, ctx=ctx)
+    print(f"Service account {sa.get('username')} may read users and groups ({', '.join(READER_ROLES)})")
+
+
+def everyone_in_group(admin, name, token, ctx):
+    """Group `name` exists, is the realm's default group, and holds every
+    user (service accounts aside)."""
+    found = [g for g in call(f"{admin}/groups?search={urllib.parse.quote(name)}&exact=true",
+                             token=token, ctx=ctx) or [] if g["name"] == name]
+    if not found:
+        call(f"{admin}/groups", method="POST", body={"name": name}, token=token, ctx=ctx)
+        found = [g for g in call(f"{admin}/groups?search={urllib.parse.quote(name)}&exact=true",
+                                 token=token, ctx=ctx) if g["name"] == name]
+    gid = found[0]["id"]
+    call(f"{admin}/default-groups/{gid}", method="PUT", token=token, ctx=ctx)
+    # Administrators (ADMINS, comma-separated) are left out: RHDH RBAC joins
+    # the roles' conditions, so the user role would show them the user
+    # templates beside the administrator ones.
+    admins = {a.strip() for a in os.environ.get("ADMINS", "").split(",") if a.strip()}
+    added, first = 0, 0
+    while True:
+        users = call(f"{admin}/users?first={first}&max=100&briefRepresentation=true", token=token, ctx=ctx) or []
+        for user in users:
+            if user["username"] in admins:
+                call(f"{admin}/users/{user['id']}/groups/{gid}", method="DELETE", token=token, ctx=ctx)
+            elif not user["username"].startswith("service-account-"):
+                call(f"{admin}/users/{user['id']}/groups/{gid}", method="PUT", token=token, ctx=ctx)
+                added += 1
+        if len(users) < 100:
+            break
+        first += 100
+    print(f"Group {name}: the realm's default group, {added} user(s)")
 
 
 if __name__ == "__main__":

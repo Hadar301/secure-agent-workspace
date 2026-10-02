@@ -32,6 +32,9 @@ spec:
       mountPath: /opt/app-root/src/saw
       configMaps:
         - name: saw-rhdh-templates
+        {{- if .Values.rhdh.rbac.enabled }}
+        - name: saw-rhdh-rbac
+        {{- end }}
       {{- if .Values.rhdh.tekton.enabled }}
       secrets:
         # `token` of rhdh-kubernetes-reader, read by the Kubernetes plugin
@@ -39,9 +42,6 @@ spec:
         - name: rhdh-kubernetes-reader-token
           key: token
       {{- end }}
-        {{- if .Values.rhdh.rbac.enabled }}
-        - name: saw-rhdh-rbac
-        {{- end }}
     route:
       enabled: true
       {{- if .Values.rhdh.host }}

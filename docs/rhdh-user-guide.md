@@ -145,7 +145,7 @@ workspaces. RHDH reads them every 30 seconds.
 
 Check in RHDH:
 
-1. **Create** (left menu): the templates "Create an agent workspace" and
+1. **Create** (left menu): the templates "Create or update my agent workspace" and
    "Delete my agent workspace".
 2. **Catalog** (Kind **Component**, the default): one entry `saw-<user>` per portal
    workspace (empty until the first request).
@@ -164,7 +164,7 @@ oc logs -n saw-portal deploy/saw-workspaces-generator --tail=20
 
 ## 4. Request a workspace
 
-1. In RHDH: **Create** → **Create an agent workspace** → **Choose**.
+1. In RHDH: **Create** → **Create or update my agent workspace** → **Choose**.
 2. **Profile**: pick one, e.g. `data-science`. The form now asks only for
    that profile's keys:
    - `inference: API key`: the NVIDIA API key (build.nvidia.com);
@@ -301,6 +301,19 @@ server:
 | Request a workspace as alice (declared in `overrides/saw-users.yaml`) | `namespace saw-alice exists and is not managed by the portal` |
 | `oc create secret generic x -n saw-portal --from-literal=a=b --as=system:serviceaccount:rhdh:rhdh-portal` (RHDH's account, a name that is not `saw-req-*`) | denied by admission policy `saw-portal-requests` |
 | Run the delete template for a user who has no portal workspace | `<user> has no portal workspace` |
+
+## 6a. As an administrator
+
+Sign in as `admin` (or a user in `portal.admins`).
+
+1. **Create** → **Create an agent workspace for a user**: enter `dave` (a
+   Keycloak user), pick the profile, enter dave's keys, **Create**. The run
+   page and `saw-dave`'s Tekton tab show the five stages; the log reads
+   `create request … from admin for dave`.
+2. Sign in as dave: `saw-dave` is his, and its UIs admit him (and not admin).
+3. The same template as a non-admin: refused, `… may only create their own
+   workspace`.
+4. **Delete a user's agent workspace** lists every workspace; pick `saw-dave`.
 
 ## 7. Delete the workspace
 

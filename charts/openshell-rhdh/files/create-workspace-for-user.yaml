@@ -2,18 +2,25 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
-  name: create-saw-workspace
-  title: Create or update my agent workspace
-  description: 'Your own Secure Agent Workspace: a VM with OpenShell and the OpenClaw / NemoClaw sandboxes
-    of a SAW-BOM profile. If you have one, this changes its profile or keys. Keys go to Vault, not to
-    Git.'
-  tags: [openshell, openclaw, nemoclaw, secure-agent-workspace]
+  name: create-saw-workspace-for-user
+  title: Create or update an agent workspace for a user
+  description: 'Administrators: a Secure Agent Workspace for a user, yourself included, with the keys
+    you enter for them; for a user who has one, it changes its profile or keys. Keys go to Vault, not
+    to Git.'
+  tags: [openshell, openclaw, nemoclaw, secure-agent-workspace, admin]
+  labels: {saw.redhat.com/admin: 'true'}
 spec:
   owner: user:default/admin
   type: agent-workspace
   parameters:
+  - title: User
+    required: [forUser]
+    properties:
+      forUser: {title: User, type: string, pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', maxLength: 19,
+        'ui:autofocus': true, description: The Keycloak user name the workspace is for (namespace saw-<user>).
+          Administrators only; your own name for your workspace. The user signs in with their own password.}
   - title: Workspace profile
-    description: The workspace is named after you (namespace saw-<your user name>).
+    description: The workspace is named after the user (namespace saw-<user>).
     required: [profile]
     properties:
       profile:
@@ -62,9 +69,9 @@ spec:
           labels: {saw.redhat.com/request: 'true'}
         type: Opaque
         stringData: {action: create, token: '${{ secrets.backstageToken }}', profile: '${{ parameters.profile
-            }}', inference.api_key: '${{ secrets.inference__api_key }}', inference.url: '${{ parameters.inference__url
-            }}', inference.model: '${{ parameters.inference__model }}', web-search.api_key: '${{ secrets.web_search__api_key
-            }}'}
+            }}', forUser: '${{ parameters.forUser }}', inference.api_key: '${{ secrets.inference__api_key
+            }}', inference.url: '${{ parameters.inference__url }}', inference.model: '${{ parameters.inference__model
+            }}', web-search.api_key: '${{ secrets.web_search__api_key }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request
@@ -77,8 +84,8 @@ spec:
         kind: PipelineRun
         metadata:
           generateName: saw-create-
-          labels: {saw.redhat.com/request: 'true', backstage.io/kubernetes-id: 'saw-${{ user.ref | parseEntityRef
-              | pick(''name'') }}'}
+          labels: {saw.redhat.com/request: 'true', backstage.io/kubernetes-id: 'saw-${{ parameters.forUser
+              }}'}
         spec:
           pipelineRef: {name: saw-workspace-create}
           timeouts: {pipeline: 1h30m}
@@ -167,7 +174,7 @@ spec:
     action: http:backstage:request
     input:
       method: GET
-      path: /proxy/saw-status/workspace
+      path: /proxy/saw-status/workspace?user=${{ parameters.forUser }}
       headers: {X-Saw-Token: '${{ secrets.backstageToken }}'}
       timeout: 90000
   - id: status-log
@@ -176,7 +183,6 @@ spec:
     input: {message: '${{ steps[''status''].output.body.text }}'}
   output:
     links:
-    - {title: Your workspace in the catalog, entityRef: 'component:default/saw-${{ user.ref | parseEntityRef
-        | pick(''name'') }}'}
+    - {title: The workspace in the catalog, entityRef: 'component:default/saw-${{ parameters.forUser }}'}
     text:
     - {title: Workspace status, content: '${{ steps.status.output.body.text }}'}

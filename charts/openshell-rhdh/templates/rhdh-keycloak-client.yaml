@@ -85,6 +85,14 @@ spec:
               value: {{ include "openshell-rhdh.url" . }}
             - name: INSECURE
               value: {{ .Values.keycloak.insecureSkipTlsVerify | toString | quote }}
+            {{- if .Values.rhdh.rbac.enabled }}
+            # Every user in this group (RBAC role saw-user); the client's
+            # service account may read users and groups (catalog import).
+            - name: USERS_GROUP
+              value: {{ .Values.rhdh.rbac.usersGroup | quote }}
+            - name: ADMINS
+              value: {{ join "," (.Values.portal.admins | default list) | quote }}
+            {{- end }}
             - name: CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

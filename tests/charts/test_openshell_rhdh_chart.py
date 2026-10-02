@@ -142,11 +142,55 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
 
-def test_rbac_is_optional(docs):
-    assert not [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-rhdh-rbac"]
-    with_rbac = render("--set", "rhdh.rbac.enabled=true")
-    config = yaml.safe_load(one(with_rbac, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+def test_rbac_shows_admin_templates_to_admins_only(docs):
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     assert config["permission"]["enabled"] is True
+    kc = config["catalog"]["providers"]["keycloakOrg"]["default"]
+    assert kc["realm"] == "openshell" and kc["clientId"] == "rhdh"
+    rbac = one(docs, "ConfigMap", "saw-rhdh-rbac")["data"]
+    policy = rbac["rbac-policy.csv"]
+    assert "g, group:default/saw-users, role:default/saw-user" in policy
+    assert "g, user:default/admin, role:default/saw-admin" in policy
+    assert "catalog-entity" not in policy          # catalog reads: conditional only
+    conds = {c["roleEntityRef"]: c["conditions"]
+             for c in yaml.safe_load_all(rbac["rbac-conditional-policies.yaml"])}
+    user_rules = conds["role:default/saw-user"]["anyOf"]
+    assert user_rules[0]["rule"] == "IS_ENTITY_OWNER" and len(user_rules) == 2
+    hidden = [c["not"]["params"]["label"] for c in user_rules[1]["allOf"][1:]]
+    assert hidden == ["saw.redhat.com/admin", "saw.redhat.com/new-users", "saw.redhat.com/owners"]
+    # any kind: the templates and the generator's "Get started" card
+    assert conds["role:default/saw-new"] == {"rule": "HAS_LABEL", "resourceType": "catalog-entity",
+                                             "params": {"label": "saw.redhat.com/new-users"}}
+    assert conds["role:default/saw-owner"]["params"]["label"] == "saw.redhat.com/owners"
+    # admins: every entity but templates, and the admin templates only
+    admin = conds["role:default/saw-admin"]["anyOf"]
+    assert admin[0]["not"] == {"rule": "IS_ENTITY_KIND", "resourceType": "catalog-entity",
+                               "params": {"kinds": ["template"]}}
+    assert admin[1]["params"]["label"] == "saw.redhat.com/admin"
+    job = one(docs, "Job", "saw-rhdh-keycloak-client")["spec"]["template"]["spec"]["containers"][0]
+    assert {e["name"]: e.get("value") for e in job["env"]}["ADMINS"] == "admin"
+    assert "g, group:default/saw-without-workspace, role:default/saw-new" in policy
+    assert "g, group:default/saw-workspace-owners, role:default/saw-owner" in policy
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    for name in ("create-workspace-for-user.yaml", "delete-workspace-for-user.yaml"):
+        assert yaml.safe_load(templates[name])["metadata"]["labels"] == {"saw.redhat.com/admin": "true"}
+    # create or update: every user (no audience label), so not administrators
+    assert "labels" not in yaml.safe_load(templates["create-workspace.yaml"])["metadata"]
+    assert yaml.safe_load(templates["delete-workspace.yaml"])["metadata"]["labels"] == \
+        {"saw.redhat.com/owners": "true"}
+    gen = one(docs, "Deployment", "saw-workspaces-generator")["spec"]["template"]["spec"]
+    genv = {e["name"]: e.get("value") for e in gen["containers"][0]["env"]}
+    assert genv["USERS_GROUP"] == "saw-users" and genv["KEYCLOAK_CLIENT_ID"] == "rhdh"
+    assert one(docs, "ExternalSecret", "saw-generator-keycloak")["metadata"]["namespace"] == "saw-portal"
+    files = one(docs, "Backstage", "developer-hub")["spec"]["application"]["extraFiles"]
+    assert {"name": "saw-rhdh-rbac"} in files["configMaps"]
+    job = one(docs, "Job", "saw-rhdh-keycloak-client")
+    env = {e["name"]: e.get("value") for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["USERS_GROUP"] == "saw-users"
+    off = render("--set", "rhdh.rbac.enabled=false")
+    assert not [d for d in off if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-rhdh-rbac"]
+    assert "keycloakOrg" not in yaml.safe_load(one(off, "ConfigMap", "saw-rhdh-app-config")["data"]
+                                               ["app-config-saw.yaml"])["catalog"].get("providers", {})
 
 
 def test_the_provisioner_may_delete_only_portal_applications(docs):
@@ -237,11 +281,12 @@ def test_the_templates_follow_the_pipeline_tasks(docs):
     assert picker["ui:field"] == "OwnedEntityPicker"
     assert picker["ui:options"]["catalogFilter"] == {"kind": "Component", "spec.type": "agent-workspace"}
     assert delete["spec"]["steps"][0]["input"]["body"]["stringData"]["workspace"] == "${{ parameters.workspace }}"
+    labels = {"create": "saw-${{ user.ref | parseEntityRef | pick('name') }}",
+              "delete": "${{ parameters.workspace | parseEntityRef | pick('name') }}"}
     for template, action in ((create, "create"), (delete, "delete")):
         run = template["spec"]["steps"][1]["input"]["body"]
         # On the workspace's Tekton tab; the first task refuses another user's label.
-        assert run["metadata"]["labels"]["backstage.io/kubernetes-id"] == \
-            "saw-${{ user.ref | parseEntityRef | pick('name') }}"
+        assert run["metadata"]["labels"]["backstage.io/kubernetes-id"] == labels[action]
         assert run["spec"]["pipelineRef"]["name"] == f"saw-workspace-{action}"
         for step in template["spec"]["steps"][2:]:
             if step["action"] == "debug:log":
@@ -251,9 +296,9 @@ def test_the_templates_follow_the_pipeline_tasks(docs):
             # A waiting step carries on so the log and the check run.
             assert step["input"].get("continueOnBadResponse", False) == ("each" in step)
     steps = {s["id"]: s for s in create["spec"]["steps"]}
-    assert steps["task-sandboxes"]["input"]["path"].endswith("?task=sandboxes&wait=50")
+    assert steps["task-sandboxes"]["input"]["path"].endswith("?task=sandboxes&wait=20")
     assert steps["pipeline-check"]["input"]["path"].endswith("?assert=1")
-    assert len(steps["task-sandboxes"]["each"]) * 50 >= 30 * 60
+    assert len(steps["task-sandboxes"]["each"]) * 20 >= 30 * 60
     assert create["spec"]["output"]["text"][0]["content"] == "${{ steps.status.output.body.text }}"
 
 
@@ -295,7 +340,8 @@ def test_the_generator_may_only_read_progress(docs):
 def test_the_sidebar_hides_what_the_portal_does_not_use(docs):
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     items = config["dynamicPlugins"]["frontend"]["default.main-menu-items"]["menuItems"]
-    assert items == {name: {"enabled": False} for name in ("default.apis", "default.learning-path")}
+    assert items == {name: {"enabled": False}
+                     for name in ("default.apis", "default.learning-path", "default.my-group")}
     shown = yaml.safe_load(one(render("--set", "rhdh.hiddenMenuItems=null"), "ConfigMap", "saw-rhdh-app-config")
                            ["data"]["app-config-saw.yaml"])
     assert "dynamicPlugins" not in shown
@@ -306,6 +352,7 @@ def test_the_home_page_has_actions_and_workspaces_only(docs):
     (home,) = [p for p in plugins["plugins"] if "dynamic-home-page" in p["package"]]
     conf = home["pluginConfig"]["dynamicPlugins"]["frontend"]["red-hat-developer-hub.backstage-plugin-dynamic-home-page"]
     # The override replaces the default config: the route must be kept.
+    # No other route: RHDH's own /catalog-import would win anyway.
     assert conf["dynamicRoutes"] == [{"path": "/", "importName": "DynamicHomePage"}]
     cards = [m["importName"] for m in conf["mountPoints"] if m["mountPoint"] == "home.page/cards"]
     assert cards == ["TemplateSection", "EntitySection"]           # no OnboardingSection
@@ -333,3 +380,37 @@ def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     off = {p["package"] for p in plugins["plugins"] if p["disabled"]}
     assert "./dynamic-plugins/dist/backstage-plugin-techdocs" in off
     assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off
+
+
+def test_admins_get_templates_for_another_user(docs):
+    cm = one(docs, "ConfigMap", "saw-rhdh-templates")
+    create = yaml.safe_load(cm["data"]["create-workspace-for-user.yaml"])
+    delete = yaml.safe_load(cm["data"]["delete-workspace-for-user.yaml"])
+    assert create["metadata"]["name"] == "create-saw-workspace-for-user"
+    assert create["spec"]["parameters"][0]["required"] == ["forUser"]
+    body = create["spec"]["steps"][0]["input"]["body"]["stringData"]
+    assert body["forUser"] == "${{ parameters.forUser }}"
+    run = create["spec"]["steps"][1]["input"]["body"]
+    assert run["metadata"]["labels"]["backstage.io/kubernetes-id"] == "saw-${{ parameters.forUser }}"
+    status = next(s for s in create["spec"]["steps"] if s["id"] == "status")
+    assert status["input"]["path"] == "/proxy/saw-status/workspace?user=${{ parameters.forUser }}"
+    assert delete["spec"]["parameters"][0]["properties"]["workspace"]["ui:field"] == "EntityPicker"
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    targets = [loc["target"] for loc in config["catalog"]["locations"]]
+    assert "/opt/app-root/src/saw/create-workspace-for-user.yaml" in targets
+    task = one(docs, "Task", "saw-workspace")
+    env = {e["name"]: e["value"] for e in task["spec"]["steps"][0]["env"]}
+    assert env["PORTAL_ADMINS"] == "admin"
+    none = render("--set", "portal.admins=null")
+    assert "create-workspace-for-user.yaml" not in one(none, "ConfigMap", "saw-rhdh-templates")["data"]
+
+
+def test_no_status_call_outlives_the_router_timeout(docs):
+    """The scaffolder reaches RHDH's proxy through RHDH's route; the OpenShift
+    router drops a request quiet for 30 s (found live: a delete step waiting
+    50 s failed with 'network error')."""
+    import re
+    cm = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    waits = [int(w) for name, text in cm.items() if name.endswith(".yaml")
+             for w in re.findall(r"wait=(\d+)", text)]
+    assert waits and max(waits) < 30

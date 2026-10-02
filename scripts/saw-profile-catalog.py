@@ -31,6 +31,8 @@ CATALOG_OUTPUTS = [ROOT / "charts" / "saw-users" / "files" / "profile-catalog.js
                    ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json"]
 TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace.yaml"
 DELETE_TEMPLATE = ROOT / "charts" / "openshell-rhdh" / "files" / "delete-workspace.yaml"
+ADMIN_TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace-for-user.yaml"
+ADMIN_DELETE_TEMPLATE = ROOT / "charts" / "openshell-rhdh" / "files" / "delete-workspace-for-user.yaml"
 
 
 def load(path):
@@ -117,13 +119,17 @@ def form_name(secret, key):
 # proxy endpoint /saw-status): it answers only about that user.
 STATUS_HEADERS = {"X-Saw-Token": "${{ secrets.backstageToken }}"}
 RUN_NAME = "${{ steps.run.output.body.metadata.name }}"
+# Seconds one status call may wait. The scaffolder reaches RHDH's proxy
+# through RHDH's route, and the OpenShift router drops a request that is
+# quiet for 30 s (its default timeout): stay well below.
+WAIT = 20
 
 
 def status_get(step_id, name, query, each=None, wait=False, check=False):
     """A GET on /proxy/saw-status/<query>. A waiting step is repeated
     (`each`): each call returns as soon as its stage is reached or failed,
-    else after at most 50 s. A check step fails (422) when the stage failed
-    or was not reached."""
+    else after at most WAIT seconds. A check step fails (422) when the stage
+    failed or was not reached."""
     step = {"id": step_id, "name": name, "action": "http:backstage:request",
             "input": {"method": "GET", "path": "/proxy/saw-status/" + query,
                       "headers": dict(STATUS_HEADERS), "timeout": 90000}}
@@ -139,27 +145,29 @@ def log_step(step_id, name, source):
             "input": {"message": "${{ steps['" + source + "'].output.body.text }}"}}
 
 
-# The pipelines' tasks, as the run page's steps: (task, step name, tries of
-# up to 50 s). Each task is one stage (charts/openshell-rhdh portal-pipelines).
+# The pipelines' tasks, as the run page's steps: (task, step name, minutes
+# the page follows it; the pipeline task's own timeout is a little longer).
+# Each task is one stage (charts/openshell-rhdh portal-pipelines).
 CREATE_TASKS = [
-    ("register", "Verify the request, store the keys, register the workspace", 6),
-    ("argo-cd-apps", "Argo CD creates the workspace's applications", 14),
-    ("vm", "Argo CD creates the VM", 14),
-    ("vm-running", "Start the VM", 20),
-    ("sandboxes", "Install OpenShell and the sandboxes (about 10 minutes)", 38),
+    ("register", "Verify the request, store the keys, register the workspace", 5),
+    ("argo-cd-apps", "Argo CD creates the workspace's applications", 12),
+    ("vm", "Argo CD creates the VM", 12),
+    ("vm-running", "Start the VM", 17),
+    ("sandboxes", "Install OpenShell and the sandboxes (about 10 minutes)", 32),
 ]
 DELETE_TASKS = [
-    ("unregister", "Verify the request, delete the Argo CD application", 6),
-    ("argo-cd-removes", "Argo CD removes the namespace and the VM", 26),
-    ("finish", "Remove the registry entry and the keys", 6),
+    ("unregister", "Verify the request, delete the Argo CD application", 5),
+    ("argo-cd-removes", "Argo CD removes the namespace and the VM", 22),
+    ("finish", "Remove the registry entry and the keys", 5),
 ]
 
 
 def pipeline_steps(tasks):
     """One step per pipeline task (it waits for that task to end), then the
     run's log, then a check that fails the run if the pipeline failed."""
-    steps = [status_get(f"task-{task}", name, f"run/{RUN_NAME}?task={task}&wait=50", each=tries, wait=True)
-             for task, name, tries in tasks]
+    steps = [status_get(f"task-{task}", name, f"run/{RUN_NAME}?task={task}&wait={WAIT}",
+                        each=minutes * 60 // WAIT, wait=True)
+             for task, name, minutes in tasks]
     return steps + [
         status_get("pipeline", "Pipeline result", f"run/{RUN_NAME}"),
         log_step("pipeline-log", "Pipeline log", "pipeline"),
@@ -167,13 +175,13 @@ def pipeline_steps(tasks):
     ]
 
 
-def pipeline_run(action):
+def pipeline_run(action, workspace="saw-" + USER_NAME):
     """The PipelineRun the template starts. The label puts it on the
     workspace's Tekton tab (the register task refuses another user's)."""
     return {"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
             "metadata": {"generateName": f"saw-{action}-",
                          "labels": {"saw.redhat.com/request": "true",
-                                    "backstage.io/kubernetes-id": "saw-" + USER_NAME}},
+                                    "backstage.io/kubernetes-id": workspace}},
             "spec": {"pipelineRef": {"name": f"saw-workspace-{action}"},
                      "timeouts": {"pipeline": "1h30m"},
                      "taskRunTemplate": {"serviceAccountName": "__PROVISIONER_SA__"},
@@ -181,7 +189,17 @@ def pipeline_run(action):
                                  "${{ steps.request.output.body.metadata.name }}"}]}}
 
 
-def render_template(cat):
+# The admin templates: a workspace for another user, one at a time. The
+# pipeline refuses them for anyone not in portal.admins.
+FOR_USER = "${{ parameters.forUser }}"
+FOR_USER_FIELD = {"title": "User", "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+                  "maxLength": 19, "ui:autofocus": True,
+                  "description": "The Keycloak user name the workspace is for (namespace saw-<user>). "
+                                 "Administrators only; your own name for your workspace. The user signs in with "
+                                 "their own password."}
+
+
+def render_template(cat, for_user=False):
     """The RHDH scaffolder template for a new workspace.
 
     Step 1 picks a profile; step 2 asks only for the fields that profile's
@@ -194,6 +212,9 @@ def render_template(cat):
     profiles = cat["profiles"]
     one_of, string_data = [], {"action": "create", "token": "${{ secrets.backstageToken }}",
                                "profile": "${{ parameters.profile }}"}
+    if for_user:
+        string_data["forUser"] = FOR_USER
+    who = FOR_USER if for_user else USER_NAME
     for pname, prof in sorted(profiles.items()):
         props, required = {"profile": {"const": pname}}, []
         routes = [f"{sb['name']} ({ws['name']})" for ws in prof["workspaces"] if ws["enabled"]
@@ -226,18 +247,29 @@ def render_template(cat):
         "apiVersion": "scaffolder.backstage.io/v1beta3",
         "kind": "Template",
         "metadata": {
-            "name": "create-saw-workspace",
-            "title": "Create an agent workspace",
-            "description": "Your own Secure Agent Workspace: a VM with OpenShell and the OpenClaw / "
-                           "NemoClaw sandboxes of a SAW-BOM profile. Keys go to Vault, not to Git.",
-            "tags": ["openshell", "openclaw", "nemoclaw", "secure-agent-workspace"],
+            "name": "create-saw-workspace-for-user" if for_user else "create-saw-workspace",
+            "title": ("Create or update an agent workspace for a user" if for_user
+                      else "Create or update my agent workspace"),
+            "description": ("Administrators: a Secure Agent Workspace for a user, yourself included, with "
+                            "the keys you enter for them; for a user who has one, it changes its profile "
+                            "or keys. Keys go to Vault, not to Git." if for_user else
+                            "Your own Secure Agent Workspace: a VM with OpenShell and the OpenClaw / "
+                            "NemoClaw sandboxes of a SAW-BOM profile. If you have one, this changes its "
+                            "profile or keys. Keys go to Vault, not to Git."),
+            "tags": ["openshell", "openclaw", "nemoclaw", "secure-agent-workspace"]
+                    + (["admin"] if for_user else []),
+            # RBAC shows this template to administrators only; the user's to
+            # every user (create or update), but not to administrators.
+            **({"labels": {"saw.redhat.com/admin": "true"}} if for_user else {}),
         },
         "spec": {
             "owner": "user:default/admin",
             "type": "agent-workspace",
-            "parameters": [{
+            "parameters": ([{"title": "User", "required": ["forUser"],
+                             "properties": {"forUser": FOR_USER_FIELD}}] if for_user else []) + [{
                 "title": "Workspace profile",
-                "description": "The workspace is named after you (namespace saw-<your user name>).",
+                "description": ("The workspace is named after the user (namespace saw-<user>)." if for_user
+                                else "The workspace is named after you (namespace saw-<your user name>)."),
                 "required": ["profile"],
                 "properties": {"profile": {
                     "title": "Profile", "type": "string", "enum": names,
@@ -257,33 +289,40 @@ def render_template(cat):
                 {"id": "run", "name": "Start the pipeline", "action": "http:backstage:request",
                  "input": {"method": "POST", "path": "/proxy/saw-pipelineruns",
                            "headers": {"Content-Type": "application/json"},
-                           "body": pipeline_run("create")}},
+                           "body": pipeline_run("create", "saw-" + who)}},
                 *pipeline_steps(CREATE_TASKS),
-                status_get("status", "Workspace status", "workspace"),
+                status_get("status", "Workspace status", "workspace?user=" + who if for_user else "workspace"),
                 log_step("status-log", "Workspace status report", "status"),
             ],
             "output": {
-                "links": [{"title": "Your workspace in the catalog",
-                           "entityRef": "component:default/saw-" + USER_NAME}],
+                "links": [{"title": "The workspace in the catalog" if for_user else "Your workspace in the catalog",
+                           "entityRef": "component:default/saw-" + who}],
                 "text": [{"title": "Workspace status",
                           "content": "${{ steps.status.output.body.text }}"}]},
         },
     }
     return ("# Generated by scripts/saw-profile-catalog.py from charts/saw-bom/profiles; do not edit.\n"
-            + yaml.safe_dump(template, sort_keys=False, width=100))
+            + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None))
 
 
-def render_delete_template():
-    """The RHDH scaffolder template that deletes the user's workspace."""
+def render_delete_template(for_user=False):
+    """The RHDH scaffolder template that deletes the user's workspace (an
+    administrator's: any user's)."""
+    picked = "${{ parameters.workspace | parseEntityRef | pick('name') }}"
     template = {
         "apiVersion": "scaffolder.backstage.io/v1beta3",
         "kind": "Template",
         "metadata": {
-            "name": "delete-saw-workspace",
-            "title": "Delete my agent workspace",
-            "description": "Removes your Secure Agent Workspace: its VM, its sandboxes and everything in "
-                           "them, and your keys in Vault. This cannot be undone.",
-            "tags": ["openshell", "secure-agent-workspace"],
+            "name": "delete-saw-workspace-for-user" if for_user else "delete-saw-workspace",
+            "title": "Delete a user's agent workspace" if for_user else "Delete my agent workspace",
+            "description": ("Administrators: removes a user's Secure Agent Workspace, its VM, its sandboxes "
+                            "and everything in them, and the user's keys in Vault. This cannot be undone."
+                            if for_user else
+                            "Removes your Secure Agent Workspace: its VM, its sandboxes and everything in "
+                            "them, and your keys in Vault. This cannot be undone."),
+            "tags": ["openshell", "secure-agent-workspace"] + (["admin"] if for_user else []),
+            # Administrators only; the user's: users with a workspace.
+            "labels": {"saw.redhat.com/admin" if for_user else "saw.redhat.com/owners": "true"},
         },
         "spec": {
             "owner": "user:default/admin",
@@ -295,10 +334,10 @@ def render_delete_template():
                 "title": "Confirm",
                 "required": ["workspace", "confirm"],
                 "properties": {
-                    # Only the signed-in user's own workspace is listed; the
-                    # pipeline still takes the user from the token.
+                    # The user's form lists only their own workspace; the
+                    # admin's lists all. The pipeline checks either way.
                     "workspace": {"title": "Workspace to delete", "type": "string",
-                                  "ui:field": "OwnedEntityPicker",
+                                  "ui:field": "EntityPicker" if for_user else "OwnedEntityPicker",
                                   "ui:options": {"catalogFilter": {"kind": "Component",
                                                                    "spec.type": "agent-workspace"},
                                                  "defaultKind": "Component",
@@ -320,16 +359,16 @@ def render_delete_template():
                 {"id": "run", "name": "Start the pipeline", "action": "http:backstage:request",
                  "input": {"method": "POST", "path": "/proxy/saw-pipelineruns",
                            "headers": {"Content-Type": "application/json"},
-                           "body": pipeline_run("delete")}},
+                           "body": pipeline_run("delete", picked)}},
                 *pipeline_steps(DELETE_TASKS),
             ],
             "output": {"text": [{"title": "Workspace deleted", "content":
-                                 "Pipeline run **" + RUN_NAME + "** deleted workspace saw-" + USER_NAME
+                                 "Pipeline run **" + RUN_NAME + "** deleted workspace " + picked
                                  + ": its VM, namespace and keys are gone."}]},
         },
     }
     return ("# Generated by scripts/saw-profile-catalog.py; do not edit.\n"
-            + yaml.safe_dump(template, sort_keys=False, width=100))
+            + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None))
 
 
 def main(argv=None):
@@ -340,6 +379,8 @@ def main(argv=None):
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
     outputs.append((DELETE_TEMPLATE, render_delete_template()))
+    outputs.append((ADMIN_TEMPLATE_OUTPUT, render_template(json.loads(text), for_user=True)))
+    outputs.append((ADMIN_DELETE_TEMPLATE, render_delete_template(for_user=True)))
     stale = []
     for path, text in outputs:
         current = path.read_text(encoding="utf-8") if path.exists() else ""

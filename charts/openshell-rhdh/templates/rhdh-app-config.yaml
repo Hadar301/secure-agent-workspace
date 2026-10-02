@@ -71,13 +71,37 @@ data:
           target: /opt/app-root/src/saw/delete-workspace.yaml
           rules:
             - allow: [Template]
+        {{- if .Values.portal.admins }}
+        {{- range list "create-workspace-for-user.yaml" "delete-workspace-for-user.yaml" }}
+        - type: file
+          target: /opt/app-root/src/saw/{{ . }}
+          rules:
+            - allow: [Template]
+        {{- end }}
+        {{- end }}
         # One Component per registered workspace, owned by its user, with
         # links to its web UIs (served by the plugin generator).
         - type: url
           target: http://{{ $gen }}/catalog.yaml
           rules:
-            - allow: [Component]
+            - allow: [Component, Group]
       processingInterval: { seconds: {{ int .Values.rhdh.catalogProcessingSeconds }} }
+      {{- if .Values.rhdh.rbac.enabled }}
+      # Keycloak users and groups (RBAC gives role saw-user by group), read
+      # with the rhdh client's service account.
+      providers:
+        keycloakOrg:
+          default:
+            baseUrl: https://{{ include "openshell-rhdh.keycloakHost" . }}
+            loginRealm: {{ .Values.keycloak.realm }}
+            realm: {{ .Values.keycloak.realm }}
+            clientId: {{ .Values.keycloak.clientId }}
+            clientSecret: ${AUTH_OIDC_CLIENT_SECRET}
+            schedule:
+              frequency: { minutes: 2 }
+              timeout: { minutes: 1 }
+              initialDelay: { seconds: 15 }
+      {{- end }}
       # A deleted workspace (or one that changes kind) is no longer in the
       # generator's catalog.yaml: remove its entity instead of keeping it as
       # an orphan.

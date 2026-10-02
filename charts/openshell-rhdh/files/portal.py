@@ -457,7 +457,30 @@ def sandbox_ui_links(user, profiles, catalog, domain):
     return out
 
 
-def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal"):
+# Groups for RHDH RBAC, so a user sees only the action that applies to them:
+# create (no workspace yet) or delete (they have one).
+OWNERS_GROUP = "saw-workspace-owners"
+NEW_USERS_GROUP = "saw-without-workspace"
+
+
+def audience_groups(owners, users):
+    """Group entities: the users with a workspace, and (when the realm's
+    users are known) the users without one; administrators in neither."""
+    def group(name, title, members):
+        return {"apiVersion": "backstage.io/v1alpha1", "kind": "Group",
+                "metadata": {"name": name, "title": title},
+                "spec": {"type": "team", "children": [], "members": sorted(members)}}
+    # Administrators are in neither: RHDH RBAC joins the roles' conditions,
+    # so these groups' roles would show them the user templates too.
+    staff = set(admins())
+    docs = [group(OWNERS_GROUP, "Users with an agent workspace", set(owners) - staff)]
+    if users is not None:
+        docs.append(group(NEW_USERS_GROUP, "Users without an agent workspace",
+                          set(users) - set(owners) - staff))
+    return docs
+
+
+def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal", users=None):
     """RHDH catalog entities: one Component per workspace (the kind RHDH's
     catalog lists first, and the one its CI tab is made for), owned by its user,
     linking the OpenShell web UI and each sandbox UI route, with the
@@ -469,7 +492,10 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
         links = [{"url": url, "title": title, "icon": "dashboard" if i == 0 else "web"}
                  for i, (title, url) in enumerate(ui_links(user, ws.get("profiles", []), catalog, domain))]
         if rhdh_url:
-            links.append({"url": f"{rhdh_url}/create/templates/default/delete-saw-workspace",
+            # The delete form, with this workspace already chosen.
+            form = urllib.parse.quote(json.dumps({"workspace": f"component:default/saw-{user}"},
+                                                 separators=(",", ":")))
+            links.append({"url": f"{rhdh_url}/create/templates/default/delete-saw-workspace?formData={form}",
                           "title": "Delete workspace", "icon": "delete"})
         description = "Secure Agent Workspace (profiles: " + ", ".join(ws.get("profiles", [])) + ")"
         annotations = {"openshell.pattern/namespace": f"saw-{user}",
@@ -490,9 +516,79 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
                                   "links": links},
                      "spec": {"type": "agent-workspace", "owner": f"user:default/{user}",
                               "lifecycle": "production"}})
-    if not docs:
-        return "# no workspaces yet\n"
+    docs += audience_groups([ws["name"] for ws in workspaces], users)
+    docs.append(get_started(rhdh_url))
     return "\n---\n".join(json.dumps(d, indent=2, sort_keys=True) for d in docs) + "\n"
+
+
+def get_started(rhdh_url):
+    """The card a user without a workspace sees in the home page's Workspaces
+    section (RBAC: label saw.redhat.com/new-users), instead of RHDH's empty
+    state, whose 'register a component' button leads to a page the portal
+    does not offer."""
+    link = f"{rhdh_url}/create/templates/default/create-saw-workspace" if rhdh_url else \
+        "/create/templates/default/create-saw-workspace"
+    return {"apiVersion": "backstage.io/v1alpha1", "kind": "Component",
+            "metadata": {"name": "saw-get-started", "title": "Get started: create your agent workspace",
+                         "description": "You have no agent workspace yet. Use 'Create or update my agent workspace' "
+                                        "under Actions: pick a profile, enter its keys, and it is ready in "
+                                        "about 15 minutes.",
+                         "labels": {"saw.redhat.com/new-users": "true"},
+                         "links": [{"url": link, "title": "Create my agent workspace", "icon": "add"}]},
+            "spec": {"type": "guide", "owner": f"group:default/{NEW_USERS_GROUP}", "lifecycle": "production"}}
+
+
+class RealmUsers:
+    """The realm's users (members of the Keycloak group every user is in),
+    read with the rhdh client's service account. The last good list is kept
+    when Keycloak cannot be reached; None until one has been read."""
+
+    def __init__(self, ttl=60):
+        self.ttl, self.at, self.users = ttl, 0.0, None
+
+    def __call__(self):
+        url, group = os.environ.get("KEYCLOAK_URL", ""), os.environ.get("USERS_GROUP", "")
+        if not url or not group:
+            return None
+        if self.users is not None and time.time() - self.at < self.ttl:
+            return self.users
+        try:
+            self.users = keycloak_group_members(url.rstrip("/"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                                                open(env("KEYCLOAK_SECRET_FILE"), encoding="utf-8").read().strip(),
+                                                group, os.environ.get("KEYCLOAK_SKIP_VERIFY") == "true")
+            self.at = time.time()
+        except (PortalError, OSError, ValueError, KeyError, IndexError) as exc:
+            log(f"WARN: realm users not read ({exc}); keeping {len(self.users or [])} known")
+        return self.users
+
+
+def keycloak_group_members(url, realm, client_id, secret, group, insecure=False):
+    """User names in a Keycloak group, through the admin API as a
+    service account (client credentials)."""
+    req = urllib.request.Request(f"{url}/realms/{realm}/protocol/openid-connect/token", method="POST",
+                                 data=urllib.parse.urlencode({"grant_type": "client_credentials",
+                                                              "client_id": client_id,
+                                                              "client_secret": secret}).encode())
+    ctx = ssl.create_default_context()
+    if insecure:
+        ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=20) as resp:
+            token = json.loads(resp.read())["access_token"]
+    except urllib.error.HTTPError as exc:
+        raise HttpError(exc.code, f"Keycloak token: HTTP {exc.code}") from None
+    kc = Http(f"{url}/admin/realms/{realm}", token, insecure=insecure)
+    found = [g for g in kc.call("GET", "/groups?exact=true&search=" + urllib.parse.quote(group))
+             if g.get("name") == group]
+    if not found:
+        raise PortalError(f"Keycloak group {group} not found")
+    users, first = [], 0
+    while True:
+        page = kc.call("GET", f"/groups/{found[0]['id']}/members?first={first}&max=100&briefRepresentation=true")
+        users += [u["username"] for u in page if not u["username"].startswith("service-account-")]
+        if len(page) < 100:
+            return sorted(users)
+        first += 100
 
 
 # -- progress, for the RHDH template and the catalog --------------------------------
@@ -515,7 +611,8 @@ PHASE_TITLES = {"none": "Not requested", "registered": "Requested", "apps": "Cre
 # VM states that will not get better by waiting.
 VM_FAILED = ("CrashLoopBackOff", "DataVolumeError", "ErrorPvcNotFound", "ErrorDataVolumeNotFound")
 RUN_NAME_RE = re.compile(r"^saw-(create|delete)-[a-z0-9]{1,20}$")
-RUN_USER_RE = re.compile(r"\] (?:create|delete) request saw-req-[a-z0-9]+ from ([a-z0-9-]+)$", re.M)
+RUN_USER_RE = re.compile(
+    r"\] (?:create|delete) request saw-req-[a-z0-9]+ from ([a-z0-9-]+)(?: for [a-z0-9-]+)?$", re.M)
 # The template's token was issued when the run started; status reads (no
 # changes) accept it for this long after it expires, so a slow VM does not
 # turn the run red.
@@ -790,6 +887,36 @@ def vault_client():
     return Vault(env("VAULT_ADDR"), env("VAULT_AUTH_MOUNT"), env("VAULT_ROLE"), env("VAULT_KV_MOUNT", "secret"))
 
 
+def admins():
+    """Users who may create or delete another user's workspace
+    (portal.admins in the chart)."""
+    return {a.strip() for a in os.environ.get("PORTAL_ADMINS", "").split(",") if a.strip()}
+
+
+def workspace_user(ref):
+    """The user of a workspace reference: component:default/saw-carol,
+    resource:default/saw-carol (older entities) or saw-carol."""
+    name = ref.strip().split("/")[-1]
+    if not name.startswith("saw-"):
+        raise PortalError(f"{ref!r} is not an agent workspace (saw-<user>)")
+    return name[len("saw-"):]
+
+
+def target_user(action, data, caller):
+    """Whose workspace a request is for. The caller's own, unless the form
+    names someone else's (create: forUser; delete: the chosen workspace),
+    which only an administrator may do."""
+    asked = (data.get("forUser") or "").strip()
+    if action == "delete" and data.get("workspace", "").strip():
+        asked = workspace_user(data["workspace"])
+    if not asked or asked == caller:
+        return caller
+    if caller not in admins():
+        raise PortalError(f"{caller} may only {action} their own workspace (saw-{caller}); "
+                          f"saw-{asked} needs an administrator")
+    return check_user(asked)
+
+
 def handle(action, request_name):
     ns = env("NAMESPACE")
     k8s = kube()
@@ -802,8 +929,9 @@ def handle(action, request_name):
         if data.get("action", "") != action:
             raise PortalError(f"request {request_name} is a {data.get('action') or '?'} request, "
                               f"not {action}")
-        user = requester(data)
-        log(f"{action} request {request_name} from {user}")
+        caller = requester(data)
+        user = target_user(action, data, caller)
+        log(f"{action} request {request_name} from {caller}" + (f" for {user}" if user != caller else ""))
         check_run_label(k8s, ns, user)
         name = f"saw-ws-{user}"
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
@@ -824,12 +952,6 @@ def handle(action, request_name):
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user})
             log(f"workspace saw-{user} registered with profile {profile}; Argo CD builds it next")
         else:
-            # The form names the workspace (the user's own catalog entity);
-            # it must be the token's user's. Older requests name none.
-            chosen = data.get("workspace", "").strip()
-            if chosen and chosen not in (f"component:default/saw-{user}", f"resource:default/saw-{user}",
-                                         f"saw-{user}"):
-                raise PortalError(f"workspace {chosen} is not {user}'s (yours is saw-{user})")
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
             if cm is None and k8s.call("GET", argo_app, ok404=True) is None:
                 raise PortalError(f"{user} has no portal workspace")
@@ -943,6 +1065,7 @@ def serve():
     argo_ns = env("ARGO_NAMESPACE")
     domain = os.environ.get("CLUSTER_DOMAIN", "")
     jwks = JwksCache()
+    realm_users = RealmUsers()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body):
@@ -984,7 +1107,7 @@ def serve():
                     except PortalError as exc:
                         log(f"WARN: status of saw-{ws['name']}: {exc}")
                 text = entities_yaml(workspaces, catalog, domain,
-                                     os.environ.get("RHDH_BASE_URL", ""), statuses, ns)
+                                     os.environ.get("RHDH_BASE_URL", ""), statuses, ns, realm_users())
             except PortalError as exc:
                 log(f"ERROR: {exc}")
                 return self._send(500, {"error": str(exc)})
@@ -992,7 +1115,7 @@ def serve():
 
         def _status(self, url):
             """GET /status/run/<pipelinerun>[?wait=S][&assert=1]
-            GET /status/workspace[?for=<stage>&wait=S][&assert=ready]
+            GET /status/workspace[?for=<stage>&wait=S][&assert=ready][&user=<u>, admins]
 
             For the caller named by the Backstage token in X-Saw-Token. wait
             holds the answer until the run ends / the stage is reached / it
@@ -1027,7 +1150,10 @@ def serve():
 
                     def reached(st):
                         return st["phase"] in STAGE_IDS and STAGE_IDS.index(st["phase"]) >= target
-                    body = wait_for(lambda: workspace_status(k8s, caller, catalog, ns, argo_ns, domain),
+                    who = arg("user") or caller
+                    if who != caller and caller not in admins():
+                        return self._send(403, {"error": f"{caller} may only see their own workspace"})
+                    body = wait_for(lambda: workspace_status(k8s, who, catalog, ns, argo_ns, domain),
                                     lambda st: st["failed"] or reached(st), wait)
                     bad = bool(arg("assert")) and (body["failed"] or not reached(body))
                     if bad:
