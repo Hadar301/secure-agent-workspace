@@ -319,7 +319,7 @@ spec:
   output:
     links:
     - title: Your workspace in the catalog
-      entityRef: resource:default/saw-${{ user.ref | parseEntityRef | pick('name') }}
+      entityRef: component:default/saw-${{ user.ref | parseEntityRef | pick('name') }}
     text:
     - title: Workspace status
       content: ${{ steps.status.output.body.text }}

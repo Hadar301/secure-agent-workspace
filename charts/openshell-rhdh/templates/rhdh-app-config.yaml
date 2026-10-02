@@ -10,7 +10,12 @@ metadata:
 data:
   app-config-saw.yaml: |
     app:
-      title: Secure Agent Workspace
+      title: {{ .Values.rhdh.branding.title | quote }}
+      branding:
+        fullLogo:
+          light: data:image/svg+xml;base64,{{ .Files.Get "files/logo-light.svg" | b64enc }}
+          dark: data:image/svg+xml;base64,{{ .Files.Get "files/logo-dark.svg" | b64enc }}
+        fullLogoWidth: {{ .Values.rhdh.branding.logoWidth }}
       baseUrl: {{ $url }}
     backend:
       baseUrl: {{ $url }}
@@ -20,6 +25,23 @@ data:
         allow:
           - host: {{ $gen }}
     signInPage: oidc
+    {{- if .Values.rhdh.homePage.enabled }}
+    i18n:
+      locales: [en]
+      defaultLocale: en
+      overrides:
+        - /opt/app-root/src/saw/translations.json
+    {{- end }}
+    {{- with .Values.rhdh.hiddenMenuItems }}
+    dynamicPlugins:
+      frontend:
+        default.main-menu-items:
+          menuItems:
+            {{- range . }}
+            {{ . }}:
+              enabled: false
+            {{- end }}
+    {{- end }}
     auth:
       environment: production
       session:
@@ -39,7 +61,7 @@ data:
                   dangerouslyAllowSignInWithoutUserInCatalog: true
     catalog:
       rules:
-        - allow: [Template, Resource, User, Group, Location]
+        - allow: [Template, Component, User, Group, Location]
       locations:
         - type: file
           target: /opt/app-root/src/saw/create-workspace.yaml
@@ -49,13 +71,17 @@ data:
           target: /opt/app-root/src/saw/delete-workspace.yaml
           rules:
             - allow: [Template]
-        # One Resource per registered workspace, owned by its user, with
+        # One Component per registered workspace, owned by its user, with
         # links to its web UIs (served by the plugin generator).
         - type: url
           target: http://{{ $gen }}/catalog.yaml
           rules:
-            - allow: [Resource]
+            - allow: [Component]
       processingInterval: { seconds: {{ int .Values.rhdh.catalogProcessingSeconds }} }
+      # A deleted workspace (or one that changes kind) is no longer in the
+      # generator's catalog.yaml: remove its entity instead of keeping it as
+      # an orphan.
+      orphanStrategy: delete
     # The only two cluster calls the templates make, with the rhdh-portal
     # service account's token: create a request Secret, and start one of
     # the two portal pipelines. Admission policies (portal namespace) pin

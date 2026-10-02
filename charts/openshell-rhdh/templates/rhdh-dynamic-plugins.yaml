@@ -20,6 +20,55 @@ data:
         disabled: false
       {{- end }}
       {{- end }}
+      {{- if .Values.rhdh.homePage.enabled }}
+      # The home page: Actions (templates) and Workspaces (catalog) only. This
+      # replaces the package's whole default configuration, so the route and
+      # the visit listener are repeated here.
+      - package: {{ .Values.rhdh.homePage.package }}
+        disabled: false
+        pluginConfig:
+          dynamicPlugins:
+            frontend:
+              red-hat-developer-hub.backstage-plugin-dynamic-home-page:
+                dynamicRoutes:
+                  - path: /
+                    importName: DynamicHomePage
+                mountPoints:
+                  - mountPoint: application/listener
+                    importName: VisitListener
+                  - mountPoint: home.page/cards
+                    importName: TemplateSection
+                    config:
+                      id: saw-actions
+                      layouts:
+                        xl: { w: 12, h: 5 }
+                        lg: { w: 12, h: 5 }
+                        md: { w: 12, h: 5 }
+                        sm: { w: 12, h: 5 }
+                        xs: { w: 12, h: 7.5 }
+                        xxs: { w: 12, h: 13.5 }
+                  - mountPoint: home.page/cards
+                    importName: EntitySection
+                    config:
+                      id: saw-workspaces
+                      layouts:
+                        xl: { w: 12, h: 7 }
+                        lg: { w: 12, h: 7 }
+                        md: { w: 12, h: 8 }
+                        sm: { w: 12, h: 9 }
+                        xs: { w: 12, h: 11 }
+                        xxs: { w: 12, h: 15 }
+                # The section titles come from the plugin's translations;
+                # the overrides are in saw-rhdh-templates (translations.json).
+                translationResources:
+                  - module: Alpha
+                    importName: homepageTranslations
+                    ref: homepageTranslationRef
+      {{- end }}
+      {{- range .Values.rhdh.disabledPlugins }}
+      - package: {{ . }}
+        disabled: true
+      {{- end }}
       {{- if .Values.rhdh.rbac.enabled }}
       - package: ./dynamic-plugins/dist/backstage-community-plugin-rbac
         disabled: false

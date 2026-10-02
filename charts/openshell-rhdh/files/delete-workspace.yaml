@@ -28,9 +28,9 @@ spec:
         ui:field: OwnedEntityPicker
         ui:options:
           catalogFilter:
-            kind: Resource
+            kind: Component
             spec.type: agent-workspace
-          defaultKind: Resource
+          defaultKind: Component
           allowArbitraryValues: false
       confirm:
         title: I understand that this workspace, its VM and its data are deleted

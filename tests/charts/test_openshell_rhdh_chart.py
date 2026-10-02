@@ -235,7 +235,7 @@ def test_the_templates_follow_the_pipeline_tasks(docs):
     assert delete["spec"]["presentation"]["buttonLabels"]["createButtonText"] == "Delete workspace"
     picker = delete["spec"]["parameters"][0]["properties"]["workspace"]
     assert picker["ui:field"] == "OwnedEntityPicker"
-    assert picker["ui:options"]["catalogFilter"] == {"kind": "Resource", "spec.type": "agent-workspace"}
+    assert picker["ui:options"]["catalogFilter"] == {"kind": "Component", "spec.type": "agent-workspace"}
     assert delete["spec"]["steps"][0]["input"]["body"]["stringData"]["workspace"] == "${{ parameters.workspace }}"
     for template, action in ((create, "create"), (delete, "delete")):
         run = template["spec"]["steps"][1]["input"]["body"]
@@ -290,3 +290,46 @@ def test_the_generator_may_only_read_progress(docs):
     env = {e["name"]: e["value"] for e in one(docs, "Deployment", "saw-workspaces-generator")
            ["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")
+
+
+def test_the_sidebar_hides_what_the_portal_does_not_use(docs):
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    items = config["dynamicPlugins"]["frontend"]["default.main-menu-items"]["menuItems"]
+    assert items == {name: {"enabled": False} for name in ("default.apis", "default.learning-path")}
+    shown = yaml.safe_load(one(render("--set", "rhdh.hiddenMenuItems=null"), "ConfigMap", "saw-rhdh-app-config")
+                           ["data"]["app-config-saw.yaml"])
+    assert "dynamicPlugins" not in shown
+
+
+def test_the_home_page_has_actions_and_workspaces_only(docs):
+    plugins = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-dynamic-plugins")["data"]["dynamic-plugins.yaml"])
+    (home,) = [p for p in plugins["plugins"] if "dynamic-home-page" in p["package"]]
+    conf = home["pluginConfig"]["dynamicPlugins"]["frontend"]["red-hat-developer-hub.backstage-plugin-dynamic-home-page"]
+    # The override replaces the default config: the route must be kept.
+    assert conf["dynamicRoutes"] == [{"path": "/", "importName": "DynamicHomePage"}]
+    cards = [m["importName"] for m in conf["mountPoints"] if m["mountPoint"] == "home.page/cards"]
+    assert cards == ["TemplateSection", "EntitySection"]           # no OnboardingSection
+    titles = json.loads(one(docs, "ConfigMap", "saw-rhdh-templates")["data"]["translations.json"])
+    assert titles["plugin.homepage"]["en"]["templates.title"] == "Actions"
+    assert titles["plugin.homepage"]["en"]["entities.title"] == "Workspaces"
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    assert config["i18n"]["overrides"] == ["/opt/app-root/src/saw/translations.json"]
+    default = render("--set", "rhdh.homePage.enabled=false")
+    plugins = yaml.safe_load(one(default, "ConfigMap", "saw-rhdh-dynamic-plugins")["data"]["dynamic-plugins.yaml"])
+    assert not [p for p in plugins["plugins"] if "dynamic-home-page" in p["package"]]
+    assert "translations.json" not in one(default, "ConfigMap", "saw-rhdh-templates")["data"]
+
+
+def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
+    import base64
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    assert config["app"]["title"] == "Secure Agent Workspace Self Service"
+    assert config["catalog"]["orphanStrategy"] == "delete"
+    for mode in ("light", "dark"):
+        uri = config["app"]["branding"]["fullLogo"][mode]
+        assert uri.startswith("data:image/svg+xml;base64,")
+        assert b"Secure Agent Workspace" in base64.b64decode(uri.split(",", 1)[1])
+    plugins = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-dynamic-plugins")["data"]["dynamic-plugins.yaml"])
+    off = {p["package"] for p in plugins["plugins"] if p["disabled"]}
+    assert "./dynamic-plugins/dist/backstage-plugin-techdocs" in off
+    assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off

@@ -23,6 +23,38 @@ rhdh:
   # Backstage RBAC. Off: every signed-in realm user may use the templates and
   # read the catalog. What a request may do is enforced by the pipeline, which
   # acts only for the user whose Backstage token signed the request.
+  # Sidebar entries to hide: the portal is for agent workspaces, so APIs,
+  # Learning Paths and Docs (TechDocs) are left out. Names as RHDH knows them
+  # (default.* for its own entries, a plugin's route path otherwise).
+  hiddenMenuItems:
+    - default.apis
+    - default.learning-path
+  # The product name in the header and the browser tab, and its logo
+  # (files/logo-light.svg, files/logo-dark.svg) instead of Red Hat
+  # Developer Hub's.
+  branding:
+    title: Secure Agent Workspace Self Service
+    logoWidth: 250
+  # RHDH plugins the portal does not use, turned off: TechDocs (the Docs
+  # entry) and the admin quickstart drawer ("Let's get you started").
+  # Package names as RHDH 1.10 lists them.
+  disabledPlugins:
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs-module-addons-contrib
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs-backend-dynamic
+    - ./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart
+  # The home page: what a user comes for. "Actions" (the create and delete
+  # templates) and "Workspaces" (the catalog: each workspace, its status and
+  # links), without RHDH's onboarding section. Off: RHDH's default home page.
+  homePage:
+    enabled: true
+    # RHDH's dynamic home page plugin (the package name RHDH 1.10 lists).
+    package: ./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-dynamic-home-page
+    titles:
+      templates.title: Actions
+      templates.viewAll: "View all {{count}} actions"
+      entities.title: Workspaces
+      entities.browseTheCatalog: All workspaces
   rbac:
     enabled: false
     admins:

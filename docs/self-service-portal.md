@@ -36,7 +36,7 @@ saw-users → namespace saw-<user> (label saw.redhat.com/portal=true)
 The generator also serves the RHDH catalog (`/catalog.yaml`, without a
 token: RHDH reads it as a plain catalog location; it lists user and profile
 names only, and a NetworkPolicy lets only RHDH's and Argo CD's namespaces
-reach the generator): one `Resource` per workspace,
+reach the generator): one `Component` per workspace,
 owned by its user, with its status (below), links to the OpenShell web UI,
 each sandbox web UI, and the delete template.
 
@@ -275,6 +275,11 @@ characters (they name the VM).
 | `portal.deleteVaultSecrets` | `true` | deleting a workspace deletes its keys |
 | `portal.generator.networkPolicy` | `true` | only RHDH and Argo CD may reach the generator |
 | `rhdh.rbac.enabled` | `false` | Backstage RBAC: users see only their own workspace entity |
+| `rhdh.homePage.enabled` | `true` | home page with only "Actions" (the create and delete templates) and "Workspaces" (the catalog); `rhdh.homePage.titles` renames the sections |
+| `rhdh.hiddenMenuItems` | `default.apis`, `default.learning-path` | sidebar entries hidden (the portal does not use them) |
+| `rhdh.branding.title` | `Secure Agent Workspace Self Service` | product name in the header and browser tab; logo `files/logo-{light,dark}.svg` |
+| `rhdh.disabledPlugins` | TechDocs, quickstart | RHDH plugins turned off (the Docs entry, the "Let's get you started" drawer) |
+| `rhdh.tekton.enabled` | `true` | the Tekton tab on each workspace (RHDH Kubernetes and Tekton plugins) |
 | `vault.addr`, `vault.authMount`, `vault.role` | `https://vault.vault.svc:8200`, `hub`, `saw-portal-writer` | |
 | `applicationSet.namespace` | `global.vpArgoNamespace` | where the ApplicationSet lives |
 | `sawUsers` | `{}` | extra `saw-users` values for portal workspaces |

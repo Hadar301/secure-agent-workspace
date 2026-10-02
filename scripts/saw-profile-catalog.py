@@ -264,7 +264,7 @@ def render_template(cat):
             ],
             "output": {
                 "links": [{"title": "Your workspace in the catalog",
-                           "entityRef": "resource:default/saw-" + USER_NAME}],
+                           "entityRef": "component:default/saw-" + USER_NAME}],
                 "text": [{"title": "Workspace status",
                           "content": "${{ steps.status.output.body.text }}"}]},
         },
@@ -299,9 +299,9 @@ def render_delete_template():
                     # pipeline still takes the user from the token.
                     "workspace": {"title": "Workspace to delete", "type": "string",
                                   "ui:field": "OwnedEntityPicker",
-                                  "ui:options": {"catalogFilter": {"kind": "Resource",
+                                  "ui:options": {"catalogFilter": {"kind": "Component",
                                                                    "spec.type": "agent-workspace"},
-                                                 "defaultKind": "Resource",
+                                                 "defaultKind": "Component",
                                                  "allowArbitraryValues": False}},
                     "confirm": {"title": "I understand that this workspace, its VM and its data are deleted",
                                 "type": "boolean", "const": True}},

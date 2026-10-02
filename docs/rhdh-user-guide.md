@@ -147,7 +147,7 @@ Check in RHDH:
 
 1. **Create** (left menu): the templates "Create an agent workspace" and
    "Delete my agent workspace".
-2. **Catalog**, Kind **Resource**: one entry `saw-<user>` per portal
+2. **Catalog** (Kind **Component**, the default): one entry `saw-<user>` per portal
    workspace (empty until the first request).
 
 If the templates are missing, look at the RHDH logs:
@@ -234,7 +234,7 @@ Follow the VM's installer until `apply: Done` (about 10 minutes):
 make -f Makefile-quickstart openshell-saw-logs OPENSHELL_SAW_NAME=carol
 ```
 
-In RHDH, **Catalog** → Kind **Resource** lists `saw-carol` ("Agent
+In RHDH, **Catalog** lists `saw-carol` ("Agent
 workspace: carol") as soon as the pipeline has registered it, owned by
 carol. Its description starts with the status: `Requested`, `Creating`,
 `Starting the VM`, `Installing`, `Ready` or `Failed` (also in the annotation

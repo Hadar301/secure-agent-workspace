@@ -458,7 +458,8 @@ def sandbox_ui_links(user, profiles, catalog, domain):
 
 
 def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal"):
-    """RHDH catalog entities: one Resource per workspace, owned by its user,
+    """RHDH catalog entities: one Component per workspace (the kind RHDH's
+    catalog lists first, and the one its CI tab is made for), owned by its user,
     linking the OpenShell web UI and each sandbox UI route, with the
     workspace's status (workspace_status) when known. JSON documents (valid
     YAML) separated by ---."""
@@ -482,7 +483,7 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
         if status:
             description = f"{status['title']}: {status['message']}. {description}"
             annotations["openshell.pattern/status"] = status["phase"]
-        docs.append({"apiVersion": "backstage.io/v1alpha1", "kind": "Resource",
+        docs.append({"apiVersion": "backstage.io/v1alpha1", "kind": "Component",
                      "metadata": {"name": f"saw-{user}", "title": f"Agent workspace: {user}",
                                   "description": description,
                                   "annotations": annotations,
@@ -826,7 +827,8 @@ def handle(action, request_name):
             # The form names the workspace (the user's own catalog entity);
             # it must be the token's user's. Older requests name none.
             chosen = data.get("workspace", "").strip()
-            if chosen and chosen not in (f"resource:default/saw-{user}", f"saw-{user}"):
+            if chosen and chosen not in (f"component:default/saw-{user}", f"resource:default/saw-{user}",
+                                         f"saw-{user}"):
                 raise PortalError(f"workspace {chosen} is not {user}'s (yours is saw-{user})")
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
             if cm is None and k8s.call("GET", argo_app, ok404=True) is None:

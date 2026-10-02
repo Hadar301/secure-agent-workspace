@@ -399,7 +399,8 @@ def test_delete_of_someone_elses_workspace_is_impossible(portal, world):
     assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" in fake.objects
 
 
-@pytest.mark.parametrize("workspace, ok", [("resource:default/saw-alice", True), ("saw-alice", True),
+@pytest.mark.parametrize("workspace, ok", [("component:default/saw-alice", True), ("resource:default/saw-alice", True),
+                                           ("saw-alice", True),
                                            ("resource:default/saw-bob", False)])
 def test_delete_checks_the_workspace_the_form_names(portal, world, workspace, ok):
     fake, signer = world
