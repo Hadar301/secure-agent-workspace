@@ -237,7 +237,10 @@ def test_add_users_creates_them_with_generated_passwords_and_roles(tmp_path, key
     carol, dave = users["carol"], users["dave"]
     assert carol["credentials"] == [{"type": "password", "value": passwords["carol"], "temporary": False}]
     assert carol["email"] == "carol@example.com" and carol["emailVerified"] is True
-    assert dave["credentials"][0]["temporary"] is True and "email" not in dave
+    assert dave["credentials"][0]["temporary"] is True
+    # Found live: without an email Keycloak's user profile stopped the first
+    # sign-in at "Update Account Information".
+    assert dave["email"] == "dave@openshell.local" and dave["emailVerified"] is True
     assert carol["roles"] == ["openshell-user"] and dave["roles"] == ["openshell-admin", "openshell-user"]
     for pw in passwords.values():
         assert len(pw) >= 20 and pw in result.stdout       # printed for the admin

@@ -22,7 +22,7 @@
 #
 # FILE entries (extra keys, e.g. saw-users' profiles, are ignored):
 #   - name: carol                # or username:; a lowercase DNS label, at most 19 characters
-#     email: carol@example.com   # optional, as are firstName and lastName
+#     email: carol@example.com   # optional (default <name>@openshell.local), as are firstName and lastName
 #     roles: [openshell-user]    # realm roles; default [openshell-user]
 #
 # add-users, reset-password and harden use the Keycloak admin Secret
@@ -275,8 +275,11 @@ for i, u in enumerate(users):
     unknown = [r for r in roles if r not in known_roles]
     if unknown:
         errors.append(f"{where}: unknown roles {unknown} (realm roles: {sorted(known_roles)})")
-    email = u.get("email") or ""
-    if email and not EMAIL.match(email):
+    # Keycloak's user profile requires an email: without one, the user is
+    # stopped at "Update Account Information" on first sign-in (found live).
+    # Same default as the realm import's test users.
+    email = u.get("email") or f"{name}@openshell.local"
+    if not EMAIL.match(email):
         errors.append(f"{where}: email {email!r} is not an address")
     if not isinstance(u.get("temporaryPassword", False), bool):
         errors.append(f"{where}: temporaryPassword must be true or false")
@@ -306,9 +309,9 @@ add_users() {
     fi
     pw="$(new_password)"
     body="$(jq --arg pw "${pw}" '{username, firstName, lastName, enabled: true,
-        emailVerified: (.email != ""), requiredActions: [],
+        emailVerified: true, requiredActions: [],
         credentials: [{type: "password", value: $pw, temporary: .temporary}]}
-      + (if .email != "" then {email} else {} end)' <<< "${u}")"
+      + {email}' <<< "${u}")"
     code="$(api_code POST "/users" "${body}")"
     if [[ "${code}" != 201 ]]; then
       echo "  ${name}: not created (HTTP ${code})" >&2
