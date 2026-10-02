@@ -3499,6 +3499,12 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
             *token_auth,
             "fi",
         ]
+    # NemoClaw's image sets OpenClaw's managed proxy to 10.200.0.1:3128,
+    # the explicit egress proxy of OpenShell 0.0.x. OpenShell 0.1.x proxies
+    # transparently and refuses that address (found live: connect EACCES, so
+    # every LLM call failed with "network connection error"). Unset, OpenClaw
+    # connects directly and the sandbox's own proxy applies the policy.
+    lines.append("openclaw config unset proxy >/dev/null 2>&1 || true")
     origins = sandbox_ui_origins(cfg, workspace, sandbox)
     if origins:
         # The control UI is reached through a route, so the browser's Origin

@@ -542,3 +542,14 @@ def test_start_openclaw_runs_the_gateway_script(ab, fake_env, config, profiles, 
                if c[:2] == ["sandbox", "exec"] and c[3] == "notebook"]
     run = next(s for s in scripts if "openclaw gateway run" in s)
     assert "gateway.auth.mode '\"trusted-proxy\"'" in run
+
+
+def test_the_gateway_does_not_use_nemoclaws_explicit_proxy(ab):
+    """Found live: NemoClaw's image points OpenClaw at 10.200.0.1:3128
+    (OpenShell 0.0.x's explicit proxy); OpenShell 0.1.x refuses it, so every
+    LLM call failed. The script removes that setting before the gateway
+    starts, in every mode."""
+    for cfg, ws, sb in [(ui_config(), "default", "notebook"), (ui_config(), "cuda-dev", "cuda-sandbox")]:
+        script = ab.openclaw_gateway_script(cfg, ws, sb, "OPENCLAW_HOME=/sandbox")
+        assert "openclaw config unset proxy >/dev/null 2>&1 || true" in script
+        assert script.index("openclaw config unset proxy") < script.index("openclaw gateway run")
