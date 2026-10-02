@@ -78,6 +78,9 @@ spec:
             {{- end }}
             - name: PORTAL_ADMINS
               value: {{ .Values.portal.admins | default list | join "," | quote }}
+            # Without pruning, a deleted workspace's namespace stays.
+            - name: PRUNE_ON_REMOVE
+              value: {{ .Values.portal.pruneOnRemove | toString | quote }}
             - name: SAW_USERS_VALUES
               value: {{ include "openshell-rhdh.sawUsersValues" . | toJson }}
           readinessProbe:

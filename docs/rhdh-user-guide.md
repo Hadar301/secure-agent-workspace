@@ -306,12 +306,13 @@ server:
 
 Sign in as `admin` (or a user in `portal.admins`).
 
-1. **Create** → **Create an agent workspace for a user**: enter `dave` (a
+1. **Create** → **Create or update an agent workspace for a user**: enter `dave` (a
    Keycloak user), pick the profile, enter dave's keys, **Create**. The run
    page and `saw-dave`'s Tekton tab show the five stages; the log reads
    `create request … from admin for dave`.
 2. Sign in as dave: `saw-dave` is his, and its UIs admit him (and not admin).
-3. The same template as a non-admin: refused, `… may only create their own
+3. Non-admins do not see the admin templates. A request for another user
+   that reaches the pipeline anyway is refused: `… may only create their own
    workspace`.
 4. **Delete a user's agent workspace** lists every workspace; pick `saw-dave`.
 
@@ -347,7 +348,7 @@ The catalog entry disappears at the next refresh.
 | 5 | Keycloak sign-in page | no Register link |
 | 6 | RHDH sign-in as carol | home page |
 | 7 | Create menu | both templates |
-| 8 | Workspace request | run page green to "Check the workspace"; pipeline log names carol; registry entry, keys in Vault |
+| 8 | Workspace request | run page green to "Check the pipeline"; pipeline log names carol; registry entry, keys in Vault |
 | 9 | Argo CD | `portal-ws-carol` and the three `saw-carol*` apps healthy |
 | 10 | VM installer | `apply: Done` |
 | 11 | Catalog | `saw-carol` "Ready: …" with UI links |

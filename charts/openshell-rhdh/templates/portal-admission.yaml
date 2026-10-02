@@ -25,7 +25,14 @@ spec:
   validations:
     - expression: "has(object.spec.pipelineRef) && !has(object.spec.pipelineSpec) && object.spec.pipelineRef.name in ['saw-workspace-create', 'saw-workspace-delete'] && !has(object.spec.pipelineRef.resolver)"
       message: "only the saw-workspace-create and saw-workspace-delete pipelines may be run"
-    - expression: "has(object.spec.taskRunTemplate) && object.spec.taskRunTemplate.serviceAccountName == '{{ .Values.portal.provisionerServiceAccount }}' && !has(object.spec.taskRunSpecs) && !has(object.spec.workspaces)"
+    # A field list, not a deny list: taskRunTemplate.podTemplate alone could
+    # add host aliases (the token check's JWKS host) or environment
+    # variables (PORTAL_ADMINS) to the provisioner's pods. Tekton adds a
+    # podTemplate only when the cluster sets a default pod template; such a
+    # cluster refuses portal runs until this list allows it.
+    - expression: "object.spec.all(k, k in ['pipelineRef', 'params', 'taskRunTemplate', 'timeouts'])"
+      message: "portal pipeline runs set only pipelineRef, params, taskRunTemplate and timeouts"
+    - expression: "has(object.spec.taskRunTemplate) && object.spec.taskRunTemplate.all(k, k == 'serviceAccountName') && object.spec.taskRunTemplate.serviceAccountName == '{{ .Values.portal.provisionerServiceAccount }}'"
       message: "portal pipeline runs use the provisioner service account and nothing else"
     - expression: "has(object.spec.params) && size(object.spec.params) == 1 && object.spec.params[0].name == 'request' && string(object.spec.params[0].value).matches('^saw-req-[a-z0-9]{1,20}$')"
       message: "portal pipeline runs take exactly one parameter, request=saw-req-*"

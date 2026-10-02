@@ -58,7 +58,7 @@ call the generator's `/status` through the RHDH proxy endpoint `/saw-status`
 
 | Call | Answers |
 |---|---|
-| `GET /status/run/<pipelinerun>[?task=<task>]&wait=20` | the run's phase, each task's state and, for the user it acted for, its log (only once the log shows the request was verified for that user); with `task`, waits for that task |
+| `GET /status/run/<pipelinerun>[?task=<task>]&wait=20` | the run's phase, each task's state and its log, for the user who made the request and for administrators (once the log shows who that was; anyone else gets 404); with `task`, waits for that task |
 | `GET /status/workspace?for=<stage>&wait=20` | the caller's workspace: `registered` (registry entry), `apps` (the four Argo CD applications), `vm` (VirtualMachine defined), `running`, `ready` (every sandbox UI route answers, i.e. the installer finished) |
 | `...&assert=1` / `assert=ready` | 422 when the run failed or did not end / the workspace failed or is not ready, so the step fails |
 
@@ -66,7 +66,8 @@ call the generator's `/status` through the RHDH proxy endpoint `/saw-status`
 sync `Failed`/`Error`, VM `DataVolumeError`, `CrashLoopBackOff`,
 `ErrorPvcNotFound`) or the wait passes (20 s in the templates: they reach RHDH through its route, and the OpenShift router drops a request quiet for 30 s); the template repeats each wait step
 (`each`) up to the task's time limit. The workspace is
-always the caller's own: the token names it, there is no user parameter.
+the caller's own (the token names it); only administrators may add
+`&user=<name>` to read another user's.
 Status reads accept a token up to two hours after it expires (the token is
 issued when the run starts; reads change nothing).
 
@@ -337,9 +338,16 @@ characters (they name the VM).
 - With `rhdh.rbac.enabled=false`, every signed-in user sees every workspace
   entity and its Tekton tab (names, links and pipeline logs, never keys) and
   the admin templates (the pipeline refuses them).
-- Any realm user can request a workspace. Users are added by an admin
-  (`keycloak-add-users`); to limit the templates further, turn on RHDH RBAC
-  and list the users allowed to use them.
+- Any realm user can request a workspace: with RBAC on, every member of
+  `saw-users` (the realm's default group) gets the user role. Users are
+  added by an admin (`keycloak-add-users`).
+- Every user can read every portal pipeline run and its log through the
+  Kubernetes plugin's proxy (`kubernetes.proxy`, which the Tekton tab needs
+  for logs): RBAC cannot narrow the reader to one user's runs. The logs name
+  users, profiles and Vault paths, never keys. Remove `kubernetes.proxy`
+  from `saw-user` to trade the Tekton tab's logs for that.
+- With pruneOnRemove off, a delete waits for the Argo CD applications only;
+  namespace `saw-<user>` and its VM stay.
 - A request's keys pass through a Kubernetes Secret in `saw-portal` for the
   seconds the pipeline takes; only the provisioner and RHDH's create-only
   service account can reach it.

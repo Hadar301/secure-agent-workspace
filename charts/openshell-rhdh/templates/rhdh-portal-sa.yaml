@@ -54,9 +54,10 @@ subjects:
 {{- if .Values.rhdh.tekton.enabled }}
 ---
 # rhdh-kubernetes-reader: what RHDH's Kubernetes and Tekton plugins read the
-# portal's pipeline runs as. Read only, the portal namespace only. Without
-# RHDH RBAC any signed-in user can read through it (the runs' logs name users,
-# profiles and Vault paths, never keys).
+# portal's pipeline runs as. Read only, the portal namespace only. RBAC
+# does not narrow it to one user: anyone with kubernetes.proxy (every user,
+# for the Tekton tab's logs) can read every portal run and its log, which
+# name users, profiles and Vault paths, never keys.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -248,6 +248,7 @@ class Fake:
 
     def __init__(self):
         self.objects = {}      # path -> object
+        self.rv = 0            # last resourceVersion handed out
         self.deleted = []
         self.vault = {}        # kv path -> data
         self.logins = []
@@ -296,11 +297,20 @@ class Fake:
                 path = f"{self.path}/{body['metadata']['name']}"
                 if path in fake.objects:
                     return self._reply(409, {"reason": "AlreadyExists"})
+                fake.rv += 1
+                body.setdefault("metadata", {})["resourceVersion"] = str(fake.rv)
                 fake.objects[path] = body
                 self._reply(201, body)
 
             def do_PUT(self):
-                fake.objects[self.path] = self._body()
+                body = self._body()
+                want = (body.get("metadata") or {}).get("resourceVersion")
+                have = ((fake.objects.get(self.path) or {}).get("metadata") or {}).get("resourceVersion")
+                if want and want != have:
+                    return self._reply(409, {"reason": "Conflict"})
+                fake.rv += 1
+                body.setdefault("metadata", {})["resourceVersion"] = str(fake.rv)
+                fake.objects[self.path] = body
                 self._reply(200, fake.objects[self.path])
 
             def do_DELETE(self):
@@ -736,15 +746,20 @@ ALICE_LOG = ("[saw-portal] create request saw-req-abc from alice\n"
              "[saw-portal] ERROR: profile 'data-science' needs: inference.api_key\n")
 
 
-def test_a_run_log_is_shown_to_its_user_only(portal, world):
+def test_a_run_log_is_shown_to_its_user_only(portal, world, monkeypatch):
+    """Review: another user's run (its form, its log) is not theirs to read;
+    administrators read every run."""
+    monkeypatch.setenv("PORTAL_ADMINS", "admin")
     fake = world[0]
     add_run(fake, "saw-create-x1", False, ALICE_LOG)
     mine = portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "alice")
     assert mine["failed"] and mine["done"]
     assert mine["message"] == "profile 'data-science' needs: inference.api_key"
     assert "from alice" in mine["text"]
-    theirs = portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "bob")
-    assert "inference" not in theirs["text"] and "only to the user" in theirs["log"]
+    with pytest.raises(portal.HttpError) as refused:
+        portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "bob")
+    assert refused.value.code == 404
+    assert "from alice" in portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "admin")["text"]
     add_run(fake, "saw-create-x2", False, "[saw-portal] ERROR: the user token: expired\n")
     early = portal.run_status(portal.kube(), "saw-portal", "saw-create-x2", "alice")
     assert "expired" not in early["text"] and "before it was verified" in early["log"]
@@ -758,8 +773,8 @@ def test_waiting_stops_when_done_or_out_of_time(portal):
     clock = lambda: now[0]  # noqa: E731
     sleep = lambda s: now.__setitem__(0, now[0] + s)  # noqa: E731
     assert portal.wait_for(lambda: next(results), lambda r: r == 3, 50, sleep, clock) == 3
-    assert portal.wait_for(lambda: next(results), lambda r: False, 999, sleep, clock) == 4 + 10
-    assert now[0] == 10 + 50   # capped at WAIT_LIMIT, one check every 5 s
+    assert portal.wait_for(lambda: next(results), lambda r: False, 999, sleep, clock) == 4 + 5
+    assert now[0] == 10 + 25   # capped at WAIT_LIMIT, one check every 5 s
     assert portal.wait_for(lambda: 0, lambda r: False, 0, sleep, clock) == 0
 
 
@@ -1016,3 +1031,48 @@ def test_the_realm_users_come_from_the_keycloak_group(portal, tmp_path, monkeypa
     server.server_close()
     users.at = 0
     assert users() == ["alice", "carol"]          # Keycloak gone: the last list is kept
+
+
+def test_a_create_does_not_undo_a_delete_that_marked_the_entry_meanwhile(portal, world):
+    """Review: create read the entry, a delete marked it deleting, then the
+    create's replace dropped the mark and Argo CD rebuilt the workspace."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    path = "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"
+    read = dict(fake.objects[path]["metadata"])
+    fake.objects[path]["metadata"]["resourceVersion"] = "changed"     # the delete's mark
+    with pytest.raises(portal.PortalError, match="changed while this request ran"):
+        portal.put_configmap(portal.kube(), "saw-portal", "saw-ws-alice", {}, {},
+                             resource_version=read["resourceVersion"])
+
+
+def test_without_pruning_a_delete_does_not_wait_for_the_namespace(portal, world, monkeypatch):
+    """Review: with pruneOnRemove off the namespace stays, so waiting for it
+    never ended and the entry stayed 'deleting' for good."""
+    fake = world[0]
+    fake.objects["/api/v1/namespaces/saw-alice"] = {"metadata": {"name": "saw-alice"}}
+    monkeypatch.setenv("PRUNE_ON_REMOVE", "true")
+    assert portal.removal_status(portal.kube(), "alice", "vp-gitops")[0] is False
+    monkeypatch.setenv("PRUNE_ON_REMOVE", "false")
+    assert portal.removal_status(portal.kube(), "alice", "vp-gitops") == (True, "removed")
+
+
+def test_an_unreachable_keycloak_is_tried_once_per_ttl(portal, monkeypatch, tmp_path):
+    """Review: every catalog read waited for the failing Keycloak again."""
+    secret = tmp_path / "secret"
+    secret.write_text("s3\n")
+    for k, v in {"KEYCLOAK_URL": "http://127.0.0.1:9", "USERS_GROUP": "saw-users",
+                 "KEYCLOAK_REALM": "openshell", "KEYCLOAK_CLIENT_ID": "rhdh",
+                 "KEYCLOAK_SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(k, v)
+    calls = []
+
+    def failing(*args, **kwargs):
+        calls.append(args)
+        raise OSError("connection refused")
+    monkeypatch.setattr(portal, "keycloak_group_members", failing)
+    users = portal.RealmUsers()
+    users.users = ["alice"]
+    assert users() == ["alice"] and users() == ["alice"]
+    assert len(calls) == 1

@@ -95,6 +95,10 @@ def test_admission_pins_the_pipeline_runs(docs):
         assert needle in exprs
     assert policy["spec"]["matchConditions"][0]["expression"] == \
         "request.userInfo.username == 'system:serviceaccount:rhdh:rhdh-portal'"
+    # Review: a field list, so taskRunTemplate.podTemplate (host aliases,
+    # environment) cannot reach the provisioner's pods.
+    assert "object.spec.all(k, k in ['pipelineRef', 'params', 'taskRunTemplate', 'timeouts'])" in exprs
+    assert "object.spec.taskRunTemplate.all(k, k == 'serviceAccountName')" in exprs
 
 
 def test_the_applicationset_renders_saw_users_per_workspace(docs):
@@ -153,7 +157,8 @@ def test_rbac_shows_admin_templates_to_admins_only(docs):
     assert "g, user:default/admin, role:default/saw-admin" in policy
     assert "catalog-entity" not in policy          # catalog reads: conditional only
     conds = {c["roleEntityRef"]: c["conditions"]
-             for c in yaml.safe_load_all(rbac["rbac-conditional-policies.yaml"])}
+             for c in yaml.safe_load_all(rbac["rbac-conditional-policies.yaml"])
+             if c["resourceType"] == "catalog-entity"}
     user_rules = conds["role:default/saw-user"]["anyOf"]
     assert user_rules[0]["rule"] == "IS_ENTITY_OWNER" and len(user_rules) == 2
     hidden = [c["not"]["params"]["label"] for c in user_rules[1]["allOf"][1:]]
@@ -162,6 +167,14 @@ def test_rbac_shows_admin_templates_to_admins_only(docs):
     assert conds["role:default/saw-new"] == {"rule": "HAS_LABEL", "resourceType": "catalog-entity",
                                              "params": {"label": "saw.redhat.com/new-users"}}
     assert conds["role:default/saw-owner"]["params"]["label"] == "saw.redhat.com/owners"
+    # users read and cancel only their own scaffolder tasks; admins all
+    tasks = [c for c in yaml.safe_load_all(rbac["rbac-conditional-policies.yaml"])
+             if c["resourceType"] == "scaffolder-task"]
+    assert [(t["roleEntityRef"], t["conditions"]) for t in tasks] == [
+        ("role:default/saw-user", {"rule": "IS_TASK_OWNER", "resourceType": "scaffolder-task",
+                                   "params": {"createdBy": ["$currentUser"]}})]
+    assert "role:default/saw-user, scaffolder.task.read" not in policy
+    assert "p, role:default/saw-admin, scaffolder.task.read, read, allow" in policy
     # admins: every entity but templates, and the admin templates only
     admin = conds["role:default/saw-admin"]["anyOf"]
     assert admin[0]["not"] == {"rule": "IS_ENTITY_KIND", "resourceType": "catalog-entity",

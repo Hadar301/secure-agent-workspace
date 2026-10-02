@@ -392,10 +392,21 @@ def registry_entry(user, profile):
             "pruneOnRemove": os.environ.get("PRUNE_ON_REMOVE", "true") == "true"}
 
 
-def put_configmap(k8s, ns, name, data, labels=None):
+def put_configmap(k8s, ns, name, data, labels=None, resource_version=None):
     body = {"apiVersion": "v1", "kind": "ConfigMap",
             "metadata": {"name": name, "namespace": ns, "labels": labels or {}}, "data": data}
     path = f"/api/v1/namespaces/{ns}/configmaps"
+    if resource_version:
+        # Replace the version that was read: a delete that marked the entry
+        # meanwhile makes this fail (409) instead of being undone.
+        body["metadata"]["resourceVersion"] = resource_version
+        try:
+            k8s.call("PUT", f"{path}/{name}", body)
+        except HttpError as exc:
+            if exc.code != 409:
+                raise
+            raise PortalError(f"{name} changed while this request ran (a delete?); request it again") from None
+        return
     # Create, or replace when it exists. Two requests for the same user at
     # once both end here: the later one wins instead of failing with 409.
     try:
@@ -558,6 +569,9 @@ class RealmUsers:
                                                 group, os.environ.get("KEYCLOAK_SKIP_VERIFY") == "true")
             self.at = time.time()
         except (PortalError, OSError, ValueError, KeyError, IndexError) as exc:
+            # Wait a full TTL before trying again: an unreachable Keycloak
+            # must not slow every catalog read.
+            self.at = time.time()
             log(f"WARN: realm users not read ({exc}); keeping {len(self.users or [])} known")
         return self.users
 
@@ -617,7 +631,7 @@ RUN_USER_RE = re.compile(
 # changes) accept it for this long after it expires, so a slow VM does not
 # turn the run red.
 STATUS_TOKEN_LEEWAY = 2 * 3600
-WAIT_LIMIT = 50            # seconds one status call may wait
+WAIT_LIMIT = 25            # seconds one status call may wait (the router cuts at 30)
 POLL_SECONDS = 5
 
 
@@ -734,19 +748,22 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
 
 def removal_status(k8s, user, argo_ns):
     """(gone, what is left) of a workspace being deleted: its Argo CD
-    applications and namespace saw-<user>."""
+    applications and, with pruneOnRemove, namespace saw-<user> (without it
+    the namespace and the VM stay on purpose)."""
     left = [a for a in (f"portal-ws-{user}", f"saw-{user}", f"saw-{user}-bom", f"saw-{user}-secrets")
             if k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo_ns}/applications/{a}",
                         ok404=True) is not None]
-    ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True)
+    prune = os.environ.get("PRUNE_ON_REMOVE", "true") == "true"
+    ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True) if prune else None
     if ns is not None:
         left.append(f"namespace saw-{user} ({(ns.get('status') or {}).get('phase', 'Active')})")
     return not left, ("removed" if not left else "Argo CD is removing " + ", ".join(left))
 
 
 def run_status(k8s, ns, name, caller, task=None):
-    """A portal PipelineRun's state, each task's state, and, for the user
-    it acted for, its log. With `task`, `done` means that task ended."""
+    """A portal PipelineRun's state, each task's state and its log, for the
+    user who made the request and for administrators. With `task`, `done`
+    means that task ended."""
     if not RUN_NAME_RE.match(name):
         raise HttpError(404, f"{name!r} is not a portal pipeline run")
     run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{ns}/pipelineruns/{name}", ok404=True)
@@ -772,10 +789,10 @@ def run_status(k8s, ns, name, caller, task=None):
         if out.strip():
             text += f"--- {tname} ---\n{out.rstrip()}\n"
     owner = RUN_USER_RE.search(text)
-    if owner and owner.group(1) == caller:
+    if owner and owner.group(1) != caller and caller not in admins():
+        raise HttpError(404, f"{name} is not a run you requested")
+    if owner:
         log_text = text.strip()
-    elif owner:
-        log_text = "(the log is shown only to the user the request was for)"
     elif status == "False":
         log_text = (f"(the request failed before it was verified; an administrator can see "
                     f"PipelineRun {name} in namespace {ns})")
@@ -949,7 +966,8 @@ def handle(action, request_name):
                 log(f"Vault: {vault_prefix(user)}/{secret} ({', '.join(sorted(values))})")
             entry = registry_entry(user, profile)
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
-                          {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user})
+                          {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
+                          resource_version=cm["metadata"].get("resourceVersion") if cm else None)
             log(f"workspace saw-{user} registered with profile {profile}; Argo CD builds it next")
         else:
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
@@ -1153,6 +1171,10 @@ def serve():
                     who = arg("user") or caller
                     if who != caller and caller not in admins():
                         return self._send(403, {"error": f"{caller} may only see their own workspace"})
+                    try:
+                        who = check_user(who)
+                    except PortalError as exc:
+                        return self._send(400, {"error": str(exc)})
                     body = wait_for(lambda: workspace_status(k8s, who, catalog, ns, argo_ns, domain),
                                     lambda st: st["failed"] or reached(st), wait)
                     bad = bool(arg("assert")) and (body["failed"] or not reached(body))

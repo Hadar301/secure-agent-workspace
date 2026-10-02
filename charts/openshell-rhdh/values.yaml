@@ -63,11 +63,12 @@ rhdh:
       # register page, which is not offered here.
       entities.empty: No agent workspace yet
       entities.emptyDescription: "Create one under Actions above."
-  # Backstage RBAC. On: a user sees the user actions and their own
-  # workspace; administrators (portal.admins) also see the admin actions and
-  # every workspace. Every user gets role saw-user through Keycloak group
-  # usersGroup (the realm's default group; the saw-rhdh-keycloak-client job
-  # adds existing users), which RHDH's Keycloak catalog provider imports.
+  # Backstage RBAC. On: a user sees the user actions, their own workspace
+  # and their own scaffolder tasks; administrators (portal.admins) see only
+  # the admin actions, and every workspace. Every user but the administrators
+  # gets role saw-user through Keycloak group usersGroup (the realm's default
+  # group; the saw-rhdh-keycloak-client job adds existing users and removes
+  # administrators), which RHDH's Keycloak catalog provider imports.
   # Off: every signed-in user sees everything (the pipeline still refuses
   # what they may not do).
   rbac:
