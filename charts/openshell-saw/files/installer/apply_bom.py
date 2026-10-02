@@ -3447,6 +3447,16 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
     `openclaw agent`) use the same secret as gateway.auth.password."""
     q = shlex.quote
     users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
+    run = ("nohup openclaw gateway run --allow-unconfigured "
+           "--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &")
+    token_auth = [
+        # JSON-quoted: `config set` parses values as JSON5, and a bare hex
+        # secret of digits only would become a number.
+        "openclaw config set gateway.auth.mode '\"token\"'",
+        'openclaw config set gateway.auth.token "\\"$secret\\""',
+        "openclaw config unset gateway.auth.trustedProxy >/dev/null 2>&1 || true",
+        "openclaw config unset gateway.trustedProxies >/dev/null 2>&1 || true",
+    ]
     lines = [
         "set -u",
         f"export {oc_env}",
@@ -3454,47 +3464,60 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
         f'[ -n "$secret" ] || secret=$(node -e {q(_NEW_SECRET_JS)})',
     ]
     if users is None:
-        # JSON-quoted: `config set` parses values as JSON5, and a bare hex
-        # secret of digits only would become a number.
-        lines += [
-            "openclaw config set gateway.auth.mode '\"token\"'",
-            'openclaw config set gateway.auth.token "\\"$secret\\""',
-            "openclaw config unset gateway.auth.trustedProxy >/dev/null 2>&1 || true",
-            "openclaw config unset gateway.trustedProxies >/dev/null 2>&1 || true",
-        ]
+        lines += token_auth
     else:
         tp = cfg["sandboxUiProxy"]["trustedProxy"]
         cidrs = tp.get("cidrs") or TRUSTED_PROXY_CIDRS
-        trusted = {
-            "userHeader": TRUSTED_PROXY_USER_HEADER,
-            "allowUsers": users,
-            "allowLoopback": any(ipaddress.ip_network(c, strict=False).is_loopback for c in cidrs),
-            "deviceAutoApprove": {"enabled": bool(tp.get("deviceAutoApprove", True)),
-                                  "scopes": TRUSTED_PROXY_SCOPES},
-        }
-        # The mode after its settings: it is only valid once they are there.
+        basic = {"userHeader": TRUSTED_PROXY_USER_HEADER, "allowUsers": users}
+        loopback = {**basic, "allowLoopback": any(ipaddress.ip_network(c, strict=False).is_loopback
+                                                  for c in cidrs)}
+        full = {**loopback, "deviceAutoApprove": {"enabled": bool(tp.get("deviceAutoApprove", True)),
+                                                  "scopes": TRUSTED_PROXY_SCOPES}}
+        # Older OpenClaw releases (found live: the NemoClaw image's 2026.7.1)
+        # refuse the newer keys, and a refused `config set` left the mode
+        # trusted-proxy without its settings: the gateway did not start. So
+        # each smaller form is tried in turn, and the mode is switched only
+        # once one was saved; otherwise the sandbox keeps token auth.
         lines += [
             f"openclaw config set gateway.trustedProxies {q(json.dumps(cidrs))}",
-            f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(trusted))}",
+            "trusted=0",
+            f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(full))} && trusted=1",
+        ]
+        for what, value in (("deviceAutoApprove", loopback), ("allowLoopback", basic)):
+            lines += [
+                'if [ "$trusted" = 0 ]; then',
+                f'echo "WARN: this OpenClaw refused the trusted-proxy settings; trying without {what}"',
+                f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(value))} && trusted=1",
+                "fi",
+            ]
+        lines += [
+            # The mode after its settings: it is only valid once they are there.
+            'if [ "$trusted" = 1 ]; then',
             "openclaw config set gateway.auth.mode '\"trusted-proxy\"'",
+            "else",
+            'echo "WARN: this OpenClaw refused every trusted-proxy form; the UI keeps token auth"',
+            *token_auth,
+            "fi",
         ]
     origins = sandbox_ui_origins(cfg, workspace, sandbox)
     if origins:
         # The control UI is reached through a route, so the browser's Origin
         # is the route's https URL.
         lines.append(f"openclaw config set gateway.controlUi.allowedOrigins {q(json.dumps(origins))}")
-    if users is not None:
-        # After the last `config set`, which would remove it again.
-        lines.append(f'SAW_GATEWAY_SECRET="$secret" node -e {q(_WRITE_PASSWORD_JS)} {OPENCLAW_CONFIG} '
-                     '|| echo "WARN: could not set gateway.auth.password; the CLI needs a paired device"')
-    lines += [
-        _STOP_GATEWAY_SH,
-        ('OPENCLAW_GATEWAY_TOKEN="$secret" nohup openclaw gateway run --allow-unconfigured '
-         '--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &'
-         if users is None else
-         'OPENCLAW_GATEWAY_PASSWORD="$secret" nohup openclaw gateway run --allow-unconfigured '
-         '--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &'),
-    ]
+    lines.append(_STOP_GATEWAY_SH)
+    if users is None:
+        lines.append(f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}')
+    else:
+        lines += [
+            'if [ "$trusted" = 1 ]; then',
+            # After the last `config set`, which would remove it again.
+            f'SAW_GATEWAY_SECRET="$secret" node -e {q(_WRITE_PASSWORD_JS)} {OPENCLAW_CONFIG} '
+            '|| echo "WARN: could not set gateway.auth.password; the CLI needs a paired device"',
+            f'OPENCLAW_GATEWAY_PASSWORD="$secret" {run}',
+            "else",
+            f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}',
+            "fi",
+        ]
     return "\n".join(lines) + "\n"
 
 

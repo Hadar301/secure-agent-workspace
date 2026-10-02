@@ -385,13 +385,14 @@ def test_start_openclaw_sets_the_origins(ab, fake_env, config, profiles, creds):
 
 
 def config_sets(script):
-    """{path: value} of the script's `openclaw config set` lines."""
+    """{path: value} of the script's `openclaw config set` lines (the first
+    one per path: later ones are fallbacks)."""
     import shlex
     out = {}
     for line in script.splitlines():
         if line.startswith("openclaw config set "):
-            _, _, _, path, value = shlex.split(line)
-            out[path] = value
+            _, _, _, path, value = shlex.split(line)[:5]
+            out.setdefault(path, value)
     return out
 
 
@@ -413,7 +414,55 @@ def test_a_ui_sandbox_trusts_the_proxy(ab):
     lines = script.splitlines()
     assert lines.index(next(l for l in lines if "gateway.auth.mode" in l)) > \
         lines.index(next(l for l in lines if "gateway.auth.trustedProxy" in l)), "the mode comes last"
-    assert "OPENCLAW_GATEWAY_TOKEN" not in script
+
+
+def run_gateway_script(tmp_path, script, refuse):
+    """Runs the script with fake `openclaw` (refusing a trustedProxy value
+    that contains `refuse`) and `node`; returns the config calls and the
+    gateway's environment."""
+    import os
+    import subprocess
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    (bin_dir / "openclaw").write_text(f"""#!/bin/sh
+echo "$*" >> {calls}
+case "$*" in
+  "config set gateway.auth.trustedProxy "*{refuse}*) echo "Invalid config: unrecognized key" >&2; exit 1;;
+  "gateway run"*) env | grep -E "^OPENCLAW_GATEWAY_(TOKEN|PASSWORD)=" | cut -d= -f1 >> {calls};;
+esac
+""")
+    (bin_dir / "node").write_text("#!/bin/sh\necho s3cret\n")
+    for f in ("openclaw", "node"):
+        (bin_dir / f).chmod(0o755)
+    stop = next(l for l in script.splitlines() if l.startswith("for d in /proc/"))
+    script = script.replace(stop, ":").replace("nohup ", "")
+    subprocess.run(["sh", "-c", script], check=True, timeout=30,
+                   env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    import time
+    time.sleep(0.5)
+    return calls.read_text().splitlines()
+
+
+def test_an_older_openclaw_gets_the_trusted_proxy_form_it_accepts(ab, tmp_path):
+    """Found live: the NemoClaw image's OpenClaw 2026.7.1 refused the full
+    trustedProxy value, the mode was set anyway and the gateway did not
+    start (502). Smaller forms are tried; the mode follows a saved one."""
+    script = ab.openclaw_gateway_script(ui_config(), "default", "notebook", "OPENCLAW_HOME=/sandbox")
+    calls = run_gateway_script(tmp_path, script, refuse="deviceAutoApprove")
+    sets = [c for c in calls if c.startswith("config set gateway.auth.trustedProxy")]
+    assert len(sets) == 2 and "allowLoopback" in sets[1] and "deviceAutoApprove" not in sets[1]
+    assert "config set gateway.auth.mode \"trusted-proxy\"" in calls
+    assert calls[-1] == "OPENCLAW_GATEWAY_PASSWORD"
+
+
+def test_an_openclaw_without_trusted_proxy_keeps_token_auth(ab, tmp_path):
+    script = ab.openclaw_gateway_script(ui_config(), "default", "notebook", "OPENCLAW_HOME=/sandbox")
+    calls = run_gateway_script(tmp_path, script, refuse="userHeader")
+    assert len([c for c in calls if c.startswith("config set gateway.auth.trustedProxy")]) == 3
+    assert "config set gateway.auth.mode \"trusted-proxy\"" not in calls
+    assert "config set gateway.auth.mode \"token\"" in calls
+    assert calls[-1] == "OPENCLAW_GATEWAY_TOKEN"
 
 
 def test_the_cli_password_survives_config_set(ab):
