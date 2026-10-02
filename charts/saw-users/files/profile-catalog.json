@@ -127,7 +127,7 @@
               "enabled": true,
               "name": "cuda-sandbox",
               "type": "nemoclaw",
-              "uiRoute": false
+              "uiRoute": true
             },
             {
               "enabled": false,

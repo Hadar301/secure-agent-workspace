@@ -1076,3 +1076,42 @@ def test_an_unreachable_keycloak_is_tried_once_per_ttl(portal, monkeypatch, tmp_
     users.users = ["alice"]
     assert users() == ["alice"] and users() == ["alice"]
     assert len(calls) == 1
+
+
+def test_portal_workspaces_get_their_owners_keycloak_id(portal, monkeypatch, tmp_path):
+    """OpenShell's web UI lists only the workspaces the user is a member of;
+    the installer adds ownerSubject (the user's Keycloak id), which a portal
+    registry entry does not have. The generator fills it in."""
+    secret = tmp_path / "secret"
+    secret.write_text("s3\n")
+    for k, v in {"KEYCLOAK_URL": "https://kc.example.com", "KEYCLOAK_REALM": "openshell",
+                 "KEYCLOAK_CLIENT_ID": "rhdh", "KEYCLOAK_SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(k, v)
+    asked = []
+
+    def ids(url, realm, client_id, secret, names, insecure=False):
+        asked.append(list(names))
+        return {n: f"id-{n}" for n in names if n != "ghost"}
+    monkeypatch.setattr(portal, "keycloak_user_ids", ids)
+    subjects = portal.OwnerSubjects()
+    ws = [{"name": "carol", "ownerSubject": ""}, {"name": "alice", "ownerSubject": "set-in-git"},
+          {"name": "ghost", "ownerSubject": ""}]
+    filled = subjects.fill(ws)
+    assert [w["ownerSubject"] for w in filled] == ["id-carol", "set-in-git", ""]
+    assert asked == [["carol", "ghost"]]
+    subjects.fill(ws)
+    assert asked == [["carol", "ghost"]]           # carol kept, ghost not asked again before the TTL
+    monkeypatch.delenv("KEYCLOAK_URL")
+    assert portal.OwnerSubjects().fill(ws) == ws    # RBAC off: entries as they are
+
+
+def test_keycloak_user_ids_match_the_exact_user_name(portal, monkeypatch):
+    calls = []
+
+    class KC:
+        def call(self, method, path):
+            calls.append(path)
+            return [{"username": "carol2", "id": "x"}, {"username": "carol", "id": "c-1"}]
+    monkeypatch.setattr(portal, "keycloak_admin", lambda *a, **k: KC())
+    assert portal.keycloak_user_ids("https://kc", "openshell", "rhdh", "s", ["carol"]) == {"carol": "c-1"}
+    assert calls == ["/users?exact=true&briefRepresentation=true&username=carol"]

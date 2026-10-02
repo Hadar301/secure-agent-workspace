@@ -240,8 +240,10 @@ carol. Its description starts with the status: `Requested`, `Creating`,
 `Starting the VM`, `Installing`, `Ready` or `Failed` (also in the annotation
 `openshell.pattern/status`; RHDH refreshes it every 30 seconds). Links:
 
-- **OpenShell web UI**
-- **notebook UI (default)**
+- **OpenShell web UI**: lists carol's OpenShell workspaces (`default`,
+  `cuda-dev`) and their sandboxes;
+- **notebook UI (default)** and **cuda-sandbox UI (cuda-dev)**: the
+  OpenClaw control UI of the notebook and of the NemoClaw sandbox;
 - **Delete workspace**
 
 ## 5. Open the sandbox

@@ -37,7 +37,10 @@ The generator also serves the RHDH catalog (`/catalog.yaml`, without a
 token: RHDH reads it as a plain catalog location; it lists user and profile
 names only, and a NetworkPolicy lets only RHDH's and Argo CD's namespaces
 reach the generator): one `Component` per workspace,
-owned by its user, with its status (below), links to the OpenShell web UI,
+owned by its user, with its status (below), links to the OpenShell web UI
+(which lists the OpenShell workspaces the user is a member of: the
+generator fills a portal entry's `ownerSubject` with the user's Keycloak id,
+and the installer adds that subject to each workspace),
 each sandbox web UI, and the delete template.
 
 ### Progress

@@ -576,9 +576,9 @@ class RealmUsers:
         return self.users
 
 
-def keycloak_group_members(url, realm, client_id, secret, group, insecure=False):
-    """User names in a Keycloak group, through the admin API as a
-    service account (client credentials)."""
+def keycloak_admin(url, realm, client_id, secret, insecure=False):
+    """The realm's admin API as the client's service account (client
+    credentials)."""
     req = urllib.request.Request(f"{url}/realms/{realm}/protocol/openid-connect/token", method="POST",
                                  data=urllib.parse.urlencode({"grant_type": "client_credentials",
                                                               "client_id": client_id,
@@ -591,7 +591,12 @@ def keycloak_group_members(url, realm, client_id, secret, group, insecure=False)
             token = json.loads(resp.read())["access_token"]
     except urllib.error.HTTPError as exc:
         raise HttpError(exc.code, f"Keycloak token: HTTP {exc.code}") from None
-    kc = Http(f"{url}/admin/realms/{realm}", token, insecure=insecure)
+    return Http(f"{url}/admin/realms/{realm}", token, insecure=insecure)
+
+
+def keycloak_group_members(url, realm, client_id, secret, group, insecure=False):
+    """User names in a Keycloak group."""
+    kc = keycloak_admin(url, realm, client_id, secret, insecure)
     found = [g for g in kc.call("GET", "/groups?exact=true&search=" + urllib.parse.quote(group))
              if g.get("name") == group]
     if not found:
@@ -603,6 +608,49 @@ def keycloak_group_members(url, realm, client_id, secret, group, insecure=False)
         if len(page) < 100:
             return sorted(users)
         first += 100
+
+
+def keycloak_user_ids(url, realm, client_id, secret, names, insecure=False):
+    """{user name: Keycloak user id} for the names the realm has. The id is
+    the `sub` of the user's tokens, which OpenShell knows them by."""
+    kc = keycloak_admin(url, realm, client_id, secret, insecure)
+    out = {}
+    for name in names:
+        users = kc.call("GET", "/users?exact=true&briefRepresentation=true&username="
+                        + urllib.parse.quote(name)) or []
+        out.update({u["username"]: u["id"] for u in users if u.get("username") == name and u.get("id")})
+    return out
+
+
+class OwnerSubjects:
+    """Fills a portal workspace's ownerSubject (empty in its registry
+    entry) with the user's Keycloak id, so the installer makes them a member
+    of their OpenShell workspaces and OpenShell's web UI lists them. Ids do
+    not change: kept once found; a user not found is asked again after
+    `ttl`. Without Keycloak settings (RBAC off) entries stay as they are."""
+
+    def __init__(self, ttl=60):
+        self.ttl, self.ids, self.tried = ttl, {}, {}
+
+    def fill(self, workspaces):
+        url = os.environ.get("KEYCLOAK_URL", "")
+        if not url:
+            return workspaces
+        now = time.time()
+        missing = [w["name"] for w in workspaces if not w.get("ownerSubject") and w["name"] not in self.ids
+                   and now - self.tried.get(w["name"], 0) >= self.ttl]
+        if missing:
+            for name in missing:
+                self.tried[name] = now
+            try:
+                self.ids.update(keycloak_user_ids(
+                    url.rstrip("/"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                    open(env("KEYCLOAK_SECRET_FILE"), encoding="utf-8").read().strip(), missing,
+                    os.environ.get("KEYCLOAK_SKIP_VERIFY") == "true"))
+            except (PortalError, OSError, ValueError, KeyError) as exc:
+                log(f"WARN: Keycloak ids not read ({exc}); {', '.join(missing)} not members yet")
+        return [{**w, "ownerSubject": self.ids[w["name"]]}
+                if not w.get("ownerSubject") and w["name"] in self.ids else w for w in workspaces]
 
 
 # -- progress, for the RHDH template and the catalog --------------------------------
@@ -1084,6 +1132,7 @@ def serve():
     domain = os.environ.get("CLUSTER_DOMAIN", "")
     jwks = JwksCache()
     realm_users = RealmUsers()
+    owner_subjects = OwnerSubjects()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body):
@@ -1196,7 +1245,7 @@ def serve():
             if self.headers.get("Authorization", "") != f"Bearer {token}":
                 return self._send(403, {"error": "forbidden"})
             try:
-                params = generator_params(list_workspaces(kube(), ns), defaults)
+                params = generator_params(owner_subjects.fill(list_workspaces(kube(), ns)), defaults)
             except PortalError as exc:
                 log(f"ERROR: {exc}")
                 return self._send(500, {"error": str(exc)})

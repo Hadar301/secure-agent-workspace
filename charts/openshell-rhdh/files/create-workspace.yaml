@@ -40,7 +40,7 @@ spec:
         - properties:
             profile: {const: data-science}
             uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
-                signed in with Keycloak, for you only: notebook (default)'}
+                signed in with Keycloak, for you only: notebook (default), cuda-sandbox (cuda-dev)'}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider nvidia)}
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored

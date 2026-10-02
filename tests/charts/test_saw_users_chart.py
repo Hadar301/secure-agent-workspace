@@ -307,10 +307,13 @@ def test_the_profile_catalog_is_current():
 
 
 def test_ui_routes_come_from_the_profiles(tmp_path):
-    """data-science flags the default workspace's notebook (ui.route: true)."""
+    """data-science flags the default workspace's notebook and the cuda-dev
+    workspace's NemoClaw sandbox (ui.route: true)."""
     values = helm_values(app(docs_from(render_file(tmp_path, [ALICE])), "saw-alice"))
-    assert values["sandboxUi"] == [{"workspace": "default", "sandbox": "notebook",
-                                    "proxyPort": 4201, "forwardPort": 14201}]
+    assert values["sandboxUi"] == [{"workspace": "cuda-dev", "sandbox": "cuda-sandbox",
+                                    "proxyPort": 4201, "forwardPort": 14201},
+                                   {"workspace": "default", "sandbox": "notebook",
+                                    "proxyPort": 4202, "forwardPort": 14202}]
 
 
 def test_ui_routes_are_sorted_and_numbered(tmp_path):
