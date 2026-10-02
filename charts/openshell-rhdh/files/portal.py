@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Self-service workspaces for the Secure Agent Workspace pattern.
 
-Standard library only; one file, three uses:
+Standard library only; one file:
 
-  portal.py create REQUEST   (Tekton, pipeline saw-workspace-create)
-  portal.py delete REQUEST   (Tekton, pipeline saw-workspace-delete)
-  portal.py serve            (the ApplicationSet plugin generator)
-  portal.py cleanup          (CronJob: requests nobody handled)
+  portal.py create REQUEST        pipeline saw-workspace-create, task register
+  portal.py wait-<stage> USER [S] its later tasks: wait for apps, vm, running,
+                                  ready (the sandbox UIs answer)
+  portal.py delete REQUEST        pipeline saw-workspace-delete, task unregister
+  portal.py wait-gone USER [S]    then: wait until Argo CD removed the workspace
+  portal.py finish-delete USER    then: the registry entry and the Vault keys
+  portal.py serve                 the ApplicationSet plugin generator
+  portal.py cleanup               CronJob: requests nobody handled
 
 A request is a Secret the RHDH template creates in the portal namespace. It
 holds the user's Backstage token and the form: the profile and the values of
@@ -20,14 +24,19 @@ create  checks the request against the profile catalog, writes each Secret
         copies them into namespace saw-<user>), then writes the workspace
         registry entry: ConfigMap saw-ws-<user>, label
         saw.redhat.com/workspace=true.
-delete  removes the registry entry (and the user's Vault entries).
+delete  marks the registry entry as deleting (the ApplicationSet stops
+        getting it) and deletes the user's Application; finish-delete
+        removes the entry and the user's Vault entries once Argo CD has
+        removed the workspace.
 serve   answers Argo CD's ApplicationSet plugin generator: one parameter set
         per registry entry, `values` being the saw-users chart values for
         that one user. The generated Application renders saw-users, so a
         portal workspace is built exactly like one in overrides/saw-users.yaml.
 
 The generator also serves GET /catalog.yaml, the RHDH catalog entities of
-the registered workspaces (an RHDH url location). create and delete always
+the registered workspaces with their status (an RHDH url location), and
+GET /status/..., the progress of a pipeline run and of the caller's
+workspace, which the create template waits on. create and delete always
 delete the request Secret.
 """
 import base64
@@ -49,6 +58,13 @@ NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 NAME_LIMIT = 19            # the VM name, and OpenShell's name limit
 WORKSPACE_LABEL = "saw.redhat.com/workspace"
 REQUEST_LABEL = "saw.redhat.com/request"
+# A registry entry being deleted: the ApplicationSet no longer gets it (so
+# it does not rebuild the Application), the catalog still shows it until the
+# delete pipeline has removed the workspace.
+DELETING_LABEL = "saw.redhat.com/deleting"
+# RHDH's Kubernetes and Tekton plugins find a workspace's pipeline runs by
+# this label (the catalog entity's backstage.io/kubernetes-id).
+KUBERNETES_ID_LABEL = "backstage.io/kubernetes-id"
 REQUEST_MAX_AGE = 3600     # seconds a request Secret stays valid
 REQUEST_NAME_RE = re.compile(r"^saw-req-[a-z0-9]{1,20}$")
 # The Applications saw-users makes for user <u> are saw-<u>, saw-<u>-bom and
@@ -144,8 +160,9 @@ def decode_jwt(token):
         raise PortalError("the request's Backstage token is not a JWT") from None
 
 
-def verify_jwt(token, jwks, what, now=None):
-    """The (header, payload) of a token signed by a key of `jwks`, not expired."""
+def verify_jwt(token, jwks, what, now=None, leeway=0):
+    """The (header, payload) of a token signed by a key of `jwks`, not
+    expired (more than `leeway` seconds ago)."""
     header, payload, signed, signature = decode_jwt(token)
     if header.get("alg") != "ES256":
         raise PortalError(f"{what}: unsupported algorithm {header.get('alg')!r} (expected ES256)")
@@ -156,7 +173,7 @@ def verify_jwt(token, jwks, what, now=None):
     pub = (int.from_bytes(b64url(keys[0]["x"]), "big"), int.from_bytes(b64url(keys[0]["y"]), "big"))
     if not es256_verify(pub, signed, signature):
         raise PortalError(f"{what}: the signature is not valid")
-    if payload.get("exp", 0) < (now or time.time()):
+    if payload.get("exp", 0) + leeway < (now or time.time()):
         raise PortalError(f"{what}: expired")
     return header, payload
 
@@ -165,7 +182,7 @@ PLUGIN_TYP = "vnd.backstage.plugin"
 USER_TYPS = ("vnd.backstage.user", "vnd.backstage.limited-user")
 
 
-def verify_backstage_token(token, auth_jwks, scaffolder_jwks=None, now=None):
+def verify_backstage_token(token, auth_jwks, scaffolder_jwks=None, now=None, leeway=0):
     """The user name ("alice" for user:default/alice) a request is for.
 
     The scaffolder's `secrets.backstageToken` is, on the new backend, a
@@ -180,14 +197,14 @@ def verify_backstage_token(token, auth_jwks, scaffolder_jwks=None, now=None):
     if header.get("typ") == PLUGIN_TYP:
         if scaffolder_jwks is None:
             raise PortalError("a plugin token needs the scaffolder's JWKS")
-        _, outer = verify_jwt(token, scaffolder_jwks, "the scaffolder token", now)
+        _, outer = verify_jwt(token, scaffolder_jwks, "the scaffolder token", now, leeway)
         if outer.get("sub") != "scaffolder" or outer.get("aud") != "catalog":
             raise PortalError(f"the plugin token is from {outer.get('sub')!r} for {outer.get('aud')!r}, "
                               "not the scaffolder for the catalog")
         user_token = outer.get("obo") or ""
         if not user_token:
             raise PortalError("the scaffolder token does not act for a user (no obo)")
-    uheader, payload = verify_jwt(user_token, auth_jwks, "the user token", now)
+    uheader, payload = verify_jwt(user_token, auth_jwks, "the user token", now, leeway)
     if uheader.get("typ", USER_TYPS[0]) not in USER_TYPS:
         raise PortalError(f"the user token has type {uheader.get('typ')!r}")
     sub = payload.get("sub", "")
@@ -213,7 +230,7 @@ class Http:
             self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_NONE
 
-    def call(self, method, path, body=None, headers=None, ok404=False):
+    def call(self, method, path, body=None, headers=None, ok404=False, raw=False, timeout=30):
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method=method)
         req.add_header("Accept", "application/json")
@@ -224,9 +241,11 @@ class Http:
         for k, v in (headers or {}).items():
             req.add_header(k, v)
         try:
-            with urllib.request.urlopen(req, context=self.ctx, timeout=30) as resp:
-                raw = resp.read()
-                return json.loads(raw) if raw else {}
+            with urllib.request.urlopen(req, context=self.ctx, timeout=timeout) as resp:
+                data = resp.read()
+                if raw:
+                    return data.decode("utf-8", errors="replace")
+                return json.loads(data) if data else {}
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and ok404:
                 return None
@@ -342,17 +361,24 @@ def read_request(k8s, ns, name):
     return decode_secret(obj)
 
 
+def token_user(token, jwks=None, leeway=0):
+    """The user a Backstage token is for, after checking it against RHDH's
+    published keys. `jwks(path)` fetches a JWKS (the generator caches)."""
+    if jwks is None:
+        rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
+        insecure = os.environ.get("RHDH_SKIP_VERIFY") == "true"
+        jwks = lambda path: fetch_json(rhdh + path, insecure=insecure)  # noqa: E731
+    scaffolder_jwks = None
+    if decode_jwt(token)[0].get("typ") == PLUGIN_TYP:
+        scaffolder_jwks = jwks("/api/scaffolder/.backstage/auth/v1/jwks.json")
+    return check_user(verify_backstage_token(token, jwks("/api/auth/.well-known/jwks.json"),
+                                             scaffolder_jwks, leeway=leeway))
+
+
 def requester(data):
     """The user a request is for: only ever from its verified Backstage
     token (there is no switch to trust the form instead)."""
-    rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
-    insecure = os.environ.get("RHDH_SKIP_VERIFY") == "true"
-    auth_jwks = fetch_json(f"{rhdh}/api/auth/.well-known/jwks.json", insecure=insecure)
-    token = data.get("token", "")
-    scaffolder_jwks = None
-    if decode_jwt(token)[0].get("typ") == PLUGIN_TYP:
-        scaffolder_jwks = fetch_json(f"{rhdh}/api/scaffolder/.backstage/auth/v1/jwks.json", insecure=insecure)
-    return check_user(verify_backstage_token(token, auth_jwks, scaffolder_jwks))
+    return token_user(data.get("token", ""))
 
 
 def vault_prefix(user):
@@ -384,10 +410,11 @@ def put_configmap(k8s, ns, name, data, labels=None):
 BAD_ENTRIES = []
 
 
-def list_workspaces(k8s, ns):
-    """The registry's workspaces. A malformed entry is skipped and logged,
-    so it cannot stop updates to everyone else's workspace. Skipping is safe:
-    the ApplicationSet only creates and updates Applications (an entry that
+def list_workspaces(k8s, ns, deleting=False):
+    """The registry's workspaces (with deleting=True also those being
+    deleted). A malformed entry is skipped and logged, so it cannot stop
+    updates to everyone else's workspace. Skipping is safe: the
+    ApplicationSet only creates and updates Applications (an entry that
     disappears does not delete its Application) and preserves resources on
     deletion, and the delete pipeline is what removes a workspace."""
     items = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps?labelSelector="
@@ -404,42 +431,299 @@ def list_workspaces(k8s, ns):
             log(f"ERROR: registry entry {name} is malformed (no valid user.json); skipped")
             bad.append(name)
             continue
+        if (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true" and not deleting:
+            continue
         out.append(entry)
     BAD_ENTRIES[:] = sorted(bad)
     return sorted(out, key=lambda e: e["name"])
 
 
-def entities_yaml(workspaces, catalog, domain, rhdh_url):
+def ui_links(user, profiles, catalog, domain):
+    """(title, url) of the OpenShell web UI and each sandbox UI route."""
+    if not domain:
+        return []
+    links = [("OpenShell web UI", f"https://{user}-webui-saw-{user}.apps.{domain}")]
+    return links + sandbox_ui_links(user, profiles, catalog, domain)
+
+
+def sandbox_ui_links(user, profiles, catalog, domain):
+    out = []
+    for profile in profiles:
+        for w in catalog.get(profile, {}).get("workspaces", []):
+            for sb in w.get("sandboxes", []):
+                if w.get("enabled") and sb.get("enabled") and sb.get("uiRoute"):
+                    out.append((f"{sb['name']} UI ({w['name']})",
+                                f"https://{user}-{w['name']}-{sb['name']}-ui.apps.{domain}"))
+    return out
+
+
+def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal"):
     """RHDH catalog entities: one Resource per workspace, owned by its user,
-    linking the OpenShell web UI and each sandbox UI route. JSON documents
-    (valid YAML) separated by ---."""
+    linking the OpenShell web UI and each sandbox UI route, with the
+    workspace's status (workspace_status) when known. JSON documents (valid
+    YAML) separated by ---."""
     docs = []
     for ws in workspaces:
         user = ws["name"]
-        links = []
-        if domain:
-            links.append({"url": f"https://{user}-webui-saw-{user}.apps.{domain}",
-                          "title": "OpenShell web UI", "icon": "dashboard"})
-            for profile in ws.get("profiles", []):
-                for w in catalog.get(profile, {}).get("workspaces", []):
-                    for sb in w.get("sandboxes", []):
-                        if w.get("enabled") and sb.get("enabled") and sb.get("uiRoute"):
-                            links.append({"url": f"https://{user}-{w['name']}-{sb['name']}-ui.apps.{domain}",
-                                          "title": f"{sb['name']} UI ({w['name']})", "icon": "web"})
+        links = [{"url": url, "title": title, "icon": "dashboard" if i == 0 else "web"}
+                 for i, (title, url) in enumerate(ui_links(user, ws.get("profiles", []), catalog, domain))]
         if rhdh_url:
             links.append({"url": f"{rhdh_url}/create/templates/default/delete-saw-workspace",
                           "title": "Delete workspace", "icon": "delete"})
+        description = "Secure Agent Workspace (profiles: " + ", ".join(ws.get("profiles", [])) + ")"
+        annotations = {"openshell.pattern/namespace": f"saw-{user}",
+                       # The Tekton tab: the create and delete pipeline runs
+                       # labelled with this id in the portal namespace.
+                       "backstage.io/kubernetes-id": f"saw-{user}",
+                       "backstage.io/kubernetes-namespace": portal_ns,
+                       "janus-idp.io/tekton": f"saw-{user}",
+                       "tekton.dev/cicd": "true"}
+        status = (statuses or {}).get(user)
+        if status:
+            description = f"{status['title']}: {status['message']}. {description}"
+            annotations["openshell.pattern/status"] = status["phase"]
         docs.append({"apiVersion": "backstage.io/v1alpha1", "kind": "Resource",
                      "metadata": {"name": f"saw-{user}", "title": f"Agent workspace: {user}",
-                                  "description": "Secure Agent Workspace (profiles: "
-                                                 + ", ".join(ws.get("profiles", [])) + ")",
-                                  "annotations": {"openshell.pattern/namespace": f"saw-{user}"},
+                                  "description": description,
+                                  "annotations": annotations,
                                   "links": links},
                      "spec": {"type": "agent-workspace", "owner": f"user:default/{user}",
                               "lifecycle": "production"}})
     if not docs:
         return "# no workspaces yet\n"
     return "\n---\n".join(json.dumps(d, indent=2, sort_keys=True) for d in docs) + "\n"
+
+
+# -- progress, for the RHDH template and the catalog --------------------------------
+#
+# The create template waits on these (through the RHDH proxy endpoint
+# /saw-status, which passes the user's Backstage token in X-Saw-Token) so
+# its run page shows each stage, and the catalog shows each workspace's
+# status. A caller sees only their own workspace and their own pipeline log.
+
+# Stages of a new workspace, in order: (id, title).
+STAGES = (("registered", "Workspace registered"),
+          ("apps", "Argo CD applications created"),
+          ("vm", "VM defined"),
+          ("running", "VM running"),
+          ("ready", "OpenShell and the sandboxes installed"))
+STAGE_IDS = tuple(s for s, _ in STAGES)
+PHASE_TITLES = {"none": "Not requested", "registered": "Requested", "apps": "Creating",
+                "vm": "Starting the VM", "running": "Installing", "ready": "Ready", "failed": "Failed",
+                "deleting": "Deleting"}
+# VM states that will not get better by waiting.
+VM_FAILED = ("CrashLoopBackOff", "DataVolumeError", "ErrorPvcNotFound", "ErrorDataVolumeNotFound")
+RUN_NAME_RE = re.compile(r"^saw-(create|delete)-[a-z0-9]{1,20}$")
+RUN_USER_RE = re.compile(r"\] (?:create|delete) request saw-req-[a-z0-9]+ from ([a-z0-9-]+)$", re.M)
+# The template's token was issued when the run started; status reads (no
+# changes) accept it for this long after it expires, so a slow VM does not
+# turn the run red.
+STATUS_TOKEN_LEEWAY = 2 * 3600
+WAIT_LIMIT = 50            # seconds one status call may wait
+POLL_SECONDS = 5
+
+
+def ping_url(url, timeout=3):
+    """True when the URL answers with a non-5xx status. The router answers
+    503 until the VM's UI proxy listens. No credentials are sent, so the
+    route's certificate is not checked (often the cluster's own CA)."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), context=ctx,
+                                    timeout=timeout) as resp:
+            return resp.status < 500
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500
+    except (OSError, ValueError):
+        return False
+
+
+def app_summary(app):
+    st = app.get("status") or {}
+    sync = (st.get("sync") or {}).get("status") or "Unknown"
+    health = (st.get("health") or {}).get("status") or "Unknown"
+    return f"{app['metadata']['name']} {sync}/{health}"
+
+
+def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
+    """Where a workspace is: each stage done, active, waiting or failed.
+
+    `phase` is the last stage reached in order ("none" before the registry
+    entry exists, "failed" when a stage failed); `text` is a short report
+    for the template's log and output."""
+    ping = ping or ping_url
+    reached, details, failure = {}, {}, ""
+    cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
+    try:
+        entry = json.loads(((cm or {}).get("data") or {}).get("user.json", "")) if cm else {}
+    except ValueError:
+        entry = {}
+    profiles = entry.get("profiles", []) if isinstance(entry, dict) else []
+    if cm is not None and (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true":
+        gone, detail = removal_status(k8s, user, argo_ns)
+        return {"user": user, "phase": "deleting", "title": PHASE_TITLES["deleting"],
+                "message": detail, "ready": False, "failed": False, "steps": [], "links": [],
+                "text": f"Deleting: {detail}"}
+    reached["registered"] = cm is not None
+    details["registered"] = (f"ConfigMap saw-ws-{user}, profile {', '.join(profiles)}" if cm
+                             else f"no registry entry saw-ws-{user} yet")
+
+    apps, missing = [], []
+    for name in (f"portal-ws-{user}", f"saw-{user}-secrets", f"saw-{user}-bom", f"saw-{user}"):
+        app = k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo_ns}/applications/{name}",
+                       ok404=True)
+        if app is None:
+            missing.append(name)
+            continue
+        apps.append(app_summary(app))
+        op = (app.get("status") or {}).get("operationState") or {}
+        if op.get("phase") in ("Failed", "Error"):
+            failure = failure or f"Argo CD could not sync {name}: {(op.get('message') or '').strip()[:300]}"
+    reached["apps"] = not missing
+    details["apps"] = ", ".join(apps + [f"{m} not created yet" for m in missing])
+
+    vm = k8s.call("GET", f"/apis/kubevirt.io/v1/namespaces/saw-{user}/virtualmachines/{user}", ok404=True)
+    vm_state = ((vm or {}).get("status") or {}).get("printableStatus") or ("Unknown" if vm else "")
+    reached["vm"] = vm is not None
+    details["vm"] = f"VirtualMachine {user} in saw-{user}" if vm else "not created yet"
+    reached["running"] = vm_state == "Running"
+    details["running"] = vm_state or "no VM yet"
+    if vm_state in VM_FAILED:
+        failure = failure or f"VM {user} is {vm_state}"
+
+    uis = sandbox_ui_links(user, profiles, catalog, domain)
+    if not reached["running"]:
+        reached["ready"] = False
+        details["ready"] = "after the VM starts (about 10 minutes)"
+    elif not uis:
+        reached["ready"] = True
+        details["ready"] = "no sandbox UI to check (see the OpenShell web UI)"
+    else:
+        down = [title for title, url in uis if not ping(url)]
+        reached["ready"] = not down
+        details["ready"] = ("UIs answer: " + ", ".join(t for t, _ in uis) if not down else
+                            "installing; waiting for " + ", ".join(down))
+
+    phase = "none"
+    for stage in STAGE_IDS:
+        if not reached[stage]:
+            break
+        phase = stage
+    steps = []
+    for i, (stage, title) in enumerate(STAGES):
+        current = STAGE_IDS.index(phase) + 1 if phase != "none" else 0
+        state = ("done" if i < current else
+                 ("failed" if failure else "active") if i == current else "waiting")
+        steps.append({"id": stage, "title": title, "state": state, "detail": details[stage]})
+    if failure:
+        phase = "failed"
+    message = (failure or {"none": "not registered", "registered": "waiting for Argo CD",
+                           "apps": "Argo CD is creating the VM", "vm": f"VM {vm_state or 'starting'}",
+                           "running": "installing OpenShell and the sandboxes",
+                           "ready": "all sandbox UIs answer"}[phase])
+    links = [{"title": t, "url": u} for t, u in ui_links(user, profiles, catalog, domain)]
+    marks = {"done": "[x]", "active": "[ ]", "waiting": "[ ]", "failed": "[!]"}
+    lines = [f"{PHASE_TITLES[phase]}: {message}", ""]
+    lines += [f"- {marks[s['state']]} {s['title']}: {s['detail']}" for s in steps]
+    if links and phase == "ready":
+        lines += ["", "Open: " + ", ".join(f"[{l['title']}]({l['url']})" for l in links)]
+    return {"user": user, "phase": phase, "title": PHASE_TITLES[phase], "message": message,
+            "ready": phase == "ready", "failed": bool(failure), "steps": steps, "links": links,
+            "text": "\n".join(lines)}
+
+
+def removal_status(k8s, user, argo_ns):
+    """(gone, what is left) of a workspace being deleted: its Argo CD
+    applications and namespace saw-<user>."""
+    left = [a for a in (f"portal-ws-{user}", f"saw-{user}", f"saw-{user}-bom", f"saw-{user}-secrets")
+            if k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo_ns}/applications/{a}",
+                        ok404=True) is not None]
+    ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True)
+    if ns is not None:
+        left.append(f"namespace saw-{user} ({(ns.get('status') or {}).get('phase', 'Active')})")
+    return not left, ("removed" if not left else "Argo CD is removing " + ", ".join(left))
+
+
+def run_status(k8s, ns, name, caller, task=None):
+    """A portal PipelineRun's state, each task's state, and, for the user
+    it acted for, its log. With `task`, `done` means that task ended."""
+    if not RUN_NAME_RE.match(name):
+        raise HttpError(404, f"{name!r} is not a portal pipeline run")
+    run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{ns}/pipelineruns/{name}", ok404=True)
+    if run is None:
+        return {"run": name, "phase": "NotFound", "done": True, "failed": True, "tasks": {},
+                "message": f"pipeline run {name} not found", "log": "", "text": f"Pipeline run {name} not found"}
+    cond = next((c for c in (run.get("status") or {}).get("conditions") or []
+                 if c.get("type") == "Succeeded"), {})
+    status = cond.get("status", "Unknown")
+    phase = {"True": "Succeeded", "False": "Failed"}.get(status, cond.get("reason") or "Pending")
+    pods = k8s.call("GET", f"/api/v1/namespaces/{ns}/pods?labelSelector="
+                    + urllib.parse.quote(f"tekton.dev/pipelineRun={name}")).get("items", [])
+    pods.sort(key=lambda p: p["metadata"].get("creationTimestamp", ""))
+    tasks, text = {}, ""
+    for pod in pods:
+        tname = (pod["metadata"].get("labels") or {}).get("tekton.dev/pipelineTask", pod["metadata"]["name"])
+        tasks[tname] = (pod.get("status") or {}).get("phase", "Pending")
+        try:
+            out = k8s.call("GET", f"/api/v1/namespaces/{ns}/pods/{pod['metadata']['name']}/log"
+                           "?container=step-run&tailLines=200", raw=True)
+        except HttpError:
+            out = ""            # not started yet
+        if out.strip():
+            text += f"--- {tname} ---\n{out.rstrip()}\n"
+    owner = RUN_USER_RE.search(text)
+    if owner and owner.group(1) == caller:
+        log_text = text.strip()
+    elif owner:
+        log_text = "(the log is shown only to the user the request was for)"
+    elif status == "False":
+        log_text = (f"(the request failed before it was verified; an administrator can see "
+                    f"PipelineRun {name} in namespace {ns})")
+    else:
+        log_text = ""
+    message = cond.get("message", "") if status == "False" else ""
+    errors = [l.split("ERROR: ", 1)[1] for l in log_text.splitlines() if "ERROR: " in l]
+    if errors:
+        message = errors[-1]
+    summary = f"Pipeline run {name}: {phase}" + (f" - {message}" if message else "")
+    run_done = status in ("True", "False")
+    body = {"run": name, "phase": phase, "done": run_done, "failed": status == "False",
+            "tasks": tasks, "message": message, "log": log_text,
+            "text": summary + ("\n\n" + log_text if log_text else "")}
+    if task:
+        state = tasks.get(task, "Waiting")
+        body["task"], body["taskState"] = task, state
+        body["done"] = run_done or state in ("Succeeded", "Failed")
+    return body
+
+
+def wait_for(check, done, seconds, sleep=time.sleep, clock=time.monotonic):
+    """check() until done(result) or `seconds` pass; the last result."""
+    deadline = clock() + max(0, min(seconds, WAIT_LIMIT))
+    result = check()
+    while not done(result) and clock() < deadline:
+        sleep(min(POLL_SECONDS, max(0.0, deadline - clock())))
+        result = check()
+    return result
+
+
+class JwksCache:
+    """RHDH's JWKS documents, refetched every few minutes."""
+
+    def __init__(self, ttl=300):
+        self.ttl, self.docs = ttl, {}
+
+    def __call__(self, path):
+        now = time.time()
+        hit = self.docs.get(path)
+        if hit and now - hit[0] < self.ttl:
+            return hit[1]
+        rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
+        doc = fetch_json(rhdh + path, insecure=os.environ.get("RHDH_SKIP_VERIFY") == "true")
+        self.docs[path] = (now, doc)
+        return doc
 
 
 PORTAL_NS_LABEL = "saw.redhat.com/portal"
@@ -478,6 +762,33 @@ def delete_application(k8s, user):
         log(f"Application portal-ws-{user} deleted; Argo CD removes the workspace")
 
 
+def write_result(user):
+    """The user, as the Tekton result the pipeline's later tasks read."""
+    path = os.environ.get("RESULT_PATH")
+    if path:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(user)
+
+
+def check_run_label(k8s, ns, user):
+    """The PipelineRun's backstage.io/kubernetes-id label puts it on a
+    workspace's Tekton tab. The template sets it to the user's workspace;
+    a run labelled with someone else's is refused, so it cannot pose as
+    theirs."""
+    run = os.environ.get("PIPELINE_RUN")
+    if not run:
+        return
+    obj = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{ns}/pipelineruns/{run}", ok404=True) or {}
+    label = ((obj.get("metadata") or {}).get("labels") or {}).get(KUBERNETES_ID_LABEL)
+    if label and label != f"saw-{user}":
+        raise PortalError(f"pipeline run {run} is labelled {KUBERNETES_ID_LABEL}={label}, "
+                          f"not saw-{user}")
+
+
+def vault_client():
+    return Vault(env("VAULT_ADDR"), env("VAULT_AUTH_MOUNT"), env("VAULT_ROLE"), env("VAULT_KV_MOUNT", "secret"))
+
+
 def handle(action, request_name):
     ns = env("NAMESPACE")
     k8s = kube()
@@ -492,13 +803,18 @@ def handle(action, request_name):
                               f"not {action}")
         user = requester(data)
         log(f"{action} request {request_name} from {user}")
+        check_run_label(k8s, ns, user)
         name = f"saw-ws-{user}"
+        cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
+        deleting = cm is not None and (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true"
         if action == "create":
+            if deleting:
+                raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
+                                  "the delete pipeline has finished")
             profile, secrets = parse_request(data, catalog)
             check_namespace_is_ours(k8s, user)
             check_applications_are_ours(k8s, user)
-            vault = Vault(env("VAULT_ADDR"), env("VAULT_AUTH_MOUNT"), env("VAULT_ROLE"),
-                          env("VAULT_KV_MOUNT", "secret"))
+            vault = vault_client()
             for secret, values in secrets.items():
                 vault.write(f"{vault_prefix(user)}/{secret}", values)
                 log(f"Vault: {vault_prefix(user)}/{secret} ({', '.join(sorted(values))})")
@@ -507,29 +823,84 @@ def handle(action, request_name):
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user})
             log(f"workspace saw-{user} registered with profile {profile}; Argo CD builds it next")
         else:
+            # The form names the workspace (the user's own catalog entity);
+            # it must be the token's user's. Older requests name none.
+            chosen = data.get("workspace", "").strip()
+            if chosen and chosen not in (f"resource:default/saw-{user}", f"saw-{user}"):
+                raise PortalError(f"workspace {chosen} is not {user}'s (yours is saw-{user})")
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
-            if (k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True) is None
-                    and k8s.call("GET", argo_app, ok404=True) is None):
+            if cm is None and k8s.call("GET", argo_app, ok404=True) is None:
                 raise PortalError(f"{user} has no portal workspace")
-            # The entry first: if deleting the Application then fails, the
-            # ApplicationSet (create and update only) leaves it alone and a
-            # re-run finishes; the other way round, a surviving entry would
-            # rebuild a fresh VM after the old one was deleted.
-            k8s.call("DELETE", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
-            log(f"workspace saw-{user} removed from the registry")
+            # Mark the entry first: the ApplicationSet (create and update
+            # only) then stops getting it, so it does not rebuild the
+            # Application, while the catalog keeps showing the workspace
+            # (Deleting) until finish-delete removes the entry.
+            if cm is not None and not deleting:
+                cm["metadata"].setdefault("labels", {})[DELETING_LABEL] = "true"
+                k8s.call("PUT", f"/api/v1/namespaces/{ns}/configmaps/{name}", cm)
+            log(f"workspace saw-{user} marked for deletion")
             delete_application(k8s, user)
-            if os.environ.get("DELETE_VAULT_SECRETS", "true") == "true":
-                vault = Vault(env("VAULT_ADDR"), env("VAULT_AUTH_MOUNT"), env("VAULT_ROLE"),
-                              env("VAULT_KV_MOUNT", "secret"))
-                for secret in sorted({s for p in catalog.values() for s in p.get("secrets", {})}):
-                    vault.destroy(f"{vault_prefix(user)}/{secret}")
-                log(f"Vault: {vault_prefix(user)}/* deleted")
+        write_result(user)
     except NotARequest:
         raise
     except BaseException:
         k8s.call("DELETE", path, ok404=True)
         raise
     k8s.call("DELETE", path, ok404=True)
+
+
+def finish_delete(user):
+    """The delete pipeline's last task, once the workspace is gone: the
+    registry entry and (by default) the user's keys in Vault."""
+    ns = env("NAMESPACE")
+    check_user(user)
+    k8s = kube()
+    catalog = load_catalog(env("CATALOG_PATH"))
+    k8s.call("DELETE", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
+    log(f"workspace saw-{user} removed from the registry")
+    if os.environ.get("DELETE_VAULT_SECRETS", "true") == "true":
+        vault = vault_client()
+        for secret in sorted({s for p in catalog.values() for s in p.get("secrets", {})}):
+            vault.destroy(f"{vault_prefix(user)}/{secret}")
+        log(f"Vault: {vault_prefix(user)}/* deleted")
+    write_result(user)
+
+
+def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, ping=None):
+    """A create pipeline task: wait until the workspace reaches `stage`
+    (or, for "gone", until Argo CD has removed it), logging each change.
+    Fails when a stage fails or `timeout` seconds pass."""
+    ns, argo_ns = env("NAMESPACE"), env("ARGO_NAMESPACE")
+    check_user(user)
+    k8s = kube()
+    catalog = load_catalog(env("CATALOG_PATH"))
+    domain = os.environ.get("CLUSTER_DOMAIN", "")
+    if stage != "gone" and stage not in STAGE_IDS:
+        raise PortalError(f"unknown stage {stage}; one of {', '.join(STAGE_IDS)}, gone")
+    deadline, last = clock() + timeout, None
+    while True:
+        if stage == "gone":
+            done, detail = removal_status(k8s, user, argo_ns)
+            failed = False
+        else:
+            st = workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping)
+            current = next((x for x in st["steps"] if x["id"] == stage), {})
+            detail = current.get("detail") or st["message"]
+            done = current.get("state") == "done"
+            failed = st["failed"]
+            if failed:
+                detail = st["message"]
+        if detail != last:
+            log(("done: " if done else "") + detail)
+            last = detail
+        if done:
+            write_result(user)
+            return
+        if failed:
+            raise PortalError(detail)
+        if clock() >= deadline:
+            raise PortalError(f"not done after {timeout // 60} minutes: {detail}")
+        sleep(POLL_SECONDS * 2)
 
 
 def cleanup(max_age=REQUEST_MAX_AGE):
@@ -567,6 +938,9 @@ def serve():
     ns = env("NAMESPACE")
     defaults = json.loads(os.environ.get("SAW_USERS_VALUES", "{}"))
     catalog = load_catalog(env("CATALOG_PATH"))
+    argo_ns = env("ARGO_NAMESPACE")
+    domain = os.environ.get("CLUSTER_DOMAIN", "")
+    jwks = JwksCache()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body):
@@ -577,29 +951,94 @@ def serve():
             self.end_headers()
             self.wfile.write(raw)
 
-        def do_GET(self):
-            if self.path == "/healthz":
-                # Still 200 with bad entries: restarting the pod fixes nothing.
-                return self._send(200, {"ok": True, "skippedRegistryEntries": list(BAD_ENTRIES)})
-            if self.path != "/catalog.yaml":
-                return self._send(404, {"error": "not found"})
-            # No token on purpose: RHDH's catalog reads it as a plain URL
-            # location. It lists user and profile names only (the same as
-            # the namespace names), and a NetworkPolicy lets only RHDH and
-            # Argo CD reach this pod.
-            try:
-                text = entities_yaml(list_workspaces(kube(), ns), catalog,
-                                     os.environ.get("CLUSTER_DOMAIN", ""),
-                                     os.environ.get("RHDH_BASE_URL", ""))
-            except PortalError as exc:
-                log(f"ERROR: {exc}")
-                return self._send(500, {"error": str(exc)})
+        def _send_text(self, code, text, ctype):
             raw = text.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/yaml")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+
+        def do_GET(self):
+            url = urllib.parse.urlsplit(self.path)
+            if url.path == "/healthz":
+                # Still 200 with bad entries: restarting the pod fixes nothing.
+                return self._send(200, {"ok": True, "skippedRegistryEntries": list(BAD_ENTRIES)})
+            if url.path.startswith("/status/"):
+                return self._status(url)
+            if url.path != "/catalog.yaml":
+                return self._send(404, {"error": "not found"})
+            # No token on purpose: RHDH's catalog reads it as a plain URL
+            # location. It lists user and profile names and each workspace's
+            # stage (the same as the namespace names), and a NetworkPolicy
+            # lets only RHDH and Argo CD reach this pod.
+            try:
+                k8s = kube()
+                workspaces = list_workspaces(k8s, ns, deleting=True)
+                statuses = {}
+                for ws in workspaces:
+                    try:
+                        statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain)
+                    except PortalError as exc:
+                        log(f"WARN: status of saw-{ws['name']}: {exc}")
+                text = entities_yaml(workspaces, catalog, domain,
+                                     os.environ.get("RHDH_BASE_URL", ""), statuses, ns)
+            except PortalError as exc:
+                log(f"ERROR: {exc}")
+                return self._send(500, {"error": str(exc)})
+            self._send_text(200, text, "application/yaml")
+
+        def _status(self, url):
+            """GET /status/run/<pipelinerun>[?wait=S][&assert=1]
+            GET /status/workspace[?for=<stage>&wait=S][&assert=ready]
+
+            For the caller named by the Backstage token in X-Saw-Token. wait
+            holds the answer until the run ends / the stage is reached / it
+            fails (at most WAIT_LIMIT s). assert answers 422 when the run
+            failed or did not end / the workspace failed or is not ready, so
+            a template step fails with it."""
+            query = urllib.parse.parse_qs(url.query)
+            arg = lambda k, d="": (query.get(k) or [d])[0]  # noqa: E731
+            try:
+                caller = token_user(self.headers.get("X-Saw-Token", ""), jwks, STATUS_TOKEN_LEEWAY)
+            except PortalError as exc:
+                return self._send(401, {"error": str(exc)})
+            try:
+                wait = int(arg("wait", "0") or 0)
+            except ValueError:
+                return self._send(400, {"error": "wait must be a number of seconds"})
+            try:
+                k8s = kube()
+                parts = url.path.split("/")
+                if len(parts) == 4 and parts[2] == "run":
+                    task = arg("task") or None
+                    body = wait_for(lambda: run_status(k8s, ns, parts[3], caller, task),
+                                    lambda r: r["done"], wait)
+                    bad = bool(arg("assert")) and (body["failed"] or not body["done"])
+                    if bad:
+                        body["error"] = body["message"] or f"pipeline run {body['run']} is {body['phase']}"
+                elif url.path == "/status/workspace":
+                    stage = arg("for", "ready")
+                    if stage not in STAGE_IDS:
+                        return self._send(400, {"error": f"for must be one of {', '.join(STAGE_IDS)}"})
+                    target = STAGE_IDS.index(stage)
+
+                    def reached(st):
+                        return st["phase"] in STAGE_IDS and STAGE_IDS.index(st["phase"]) >= target
+                    body = wait_for(lambda: workspace_status(k8s, caller, catalog, ns, argo_ns, domain),
+                                    lambda st: st["failed"] or reached(st), wait)
+                    bad = bool(arg("assert")) and (body["failed"] or not reached(body))
+                    if bad:
+                        body["error"] = (body["message"] if body["failed"] else
+                                         f"the workspace is not {stage} yet: {body['message']}")
+                else:
+                    return self._send(404, {"error": "not found"})
+            except HttpError as exc:
+                return self._send(exc.code if exc.code == 404 else 502, {"error": str(exc)})
+            except PortalError as exc:
+                log(f"ERROR: {exc}")
+                return self._send(500, {"error": str(exc)})
+            self._send(422 if bad else 200, body)
 
         def do_POST(self):
             if self.path != "/api/v1/getparams.execute":
@@ -622,6 +1061,9 @@ def serve():
 
 
 def main(argv):
+    argv = list(argv)
+    while argv and argv[-1] == "":     # an unset optional Tekton parameter
+        argv.pop()
     try:
         if argv[:1] == ["serve"]:
             serve()
@@ -629,6 +1071,10 @@ def main(argv):
             cleanup()
         elif len(argv) == 2 and argv[0] in ("create", "delete"):
             handle(argv[0], argv[1])
+        elif len(argv) == 2 and argv[0] == "finish-delete":
+            finish_delete(argv[1])
+        elif len(argv) in (2, 3) and argv[0].startswith("wait-"):
+            wait_stage(argv[0][len("wait-"):], argv[1], int(argv[2]) if len(argv) == 3 else 1800)
         else:
             print(__doc__, file=sys.stderr)
             return 2

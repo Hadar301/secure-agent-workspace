@@ -37,8 +37,44 @@ The generator also serves the RHDH catalog (`/catalog.yaml`, without a
 token: RHDH reads it as a plain catalog location; it lists user and profile
 names only, and a NetworkPolicy lets only RHDH's and Argo CD's namespaces
 reach the generator): one `Resource` per workspace,
-owned by its user, with links to the OpenShell web UI, each sandbox web UI,
-and the delete template.
+owned by its user, with its status (below), links to the OpenShell web UI,
+each sandbox web UI, and the delete template.
+
+### Progress
+
+Each pipeline is the whole life of the request, one task per stage (Argo CD
+still does the building and the removing; the tasks after the first only
+wait for it): create `register` → `argo-cd-apps` → `vm` → `vm-running` →
+`sandboxes`; delete `unregister` → `argo-cd-removes` → `finish`. The first
+task hands the user to the others as the Tekton result `user`. Runs are
+labelled `backstage.io/kubernetes-id: saw-<user>`, so RHDH's Tekton tab on
+the workspace's catalog page (Kubernetes and Tekton plugins,
+`rhdh.tekton`, as `rhdh-kubernetes-reader`: read only, `saw-portal` only)
+shows them. The first task refuses a run labelled for another user.
+
+The templates' run pages show one step per task, then the log. The steps
+call the generator's `/status` through the RHDH proxy endpoint `/saw-status`
+(GET only), with the user's Backstage token in `X-Saw-Token`:
+
+| Call | Answers |
+|---|---|
+| `GET /status/run/<pipelinerun>[?task=<task>]&wait=50` | the run's phase, each task's state and, for the user it acted for, its log (only once the log shows the request was verified for that user); with `task`, waits for that task |
+| `GET /status/workspace?for=<stage>&wait=50` | the caller's workspace: `registered` (registry entry), `apps` (the four Argo CD applications), `vm` (VirtualMachine defined), `running`, `ready` (every sandbox UI route answers, i.e. the installer finished) |
+| `...&assert=1` / `assert=ready` | 422 when the run failed or did not end / the workspace failed or is not ready, so the step fails |
+
+`wait` holds the answer until the stage is reached, a stage fails (Argo CD
+sync `Failed`/`Error`, VM `DataVolumeError`, `CrashLoopBackOff`,
+`ErrorPvcNotFound`) or 50 seconds pass; the template repeats each wait step
+(`each`) up to the task's time limit. The workspace is
+always the caller's own: the token names it, there is no user parameter.
+Status reads accept a token up to two hours after it expires (the token is
+issued when the run starts; reads change nothing).
+
+The generator reads, for this: the portal's PipelineRuns and pod logs in
+`saw-portal`, Applications in the Argo CD namespace, and VirtualMachines
+(get only, cluster-wide since namespaces `saw-<user>` come and go). The same
+status is in each catalog entity's description and the annotation
+`openshell.pattern/status`.
 
 ### Who a request is for
 
@@ -246,7 +282,8 @@ characters (they name the VM).
 ## Limits and open items
 
 - Without RHDH RBAC, every signed-in user sees every workspace entity (names
-  and links only; the UIs admit only their owner).
+  and links only; the UIs admit only their owner), and its Tekton tab: the
+  pipeline runs' logs name users, profiles and Vault paths, never keys.
 - Any realm user can request a workspace. Users are added by an admin
   (`keycloak-add-users`); to limit the templates further, turn on RHDH RBAC
   and list the users allowed to use them.

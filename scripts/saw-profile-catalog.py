@@ -12,6 +12,8 @@ Helm chart can only read its own files:
   charts/openshell-rhdh/files/create-workspace.yaml the RHDH template: the
                                                    profiles to pick from, and
                                                    the fields each one needs
+  charts/openshell-rhdh/files/delete-workspace.yaml the delete template (the
+                                                   same pipeline steps)
 
     scripts/saw-profile-catalog.py            write both files
     scripts/saw-profile-catalog.py --check    fail when they are stale (CI)
@@ -28,6 +30,7 @@ PROFILES = ROOT / "charts" / "saw-bom" / "profiles"
 CATALOG_OUTPUTS = [ROOT / "charts" / "saw-users" / "files" / "profile-catalog.json",
                    ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json"]
 TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace.yaml"
+DELETE_TEMPLATE = ROOT / "charts" / "openshell-rhdh" / "files" / "delete-workspace.yaml"
 
 
 def load(path):
@@ -110,6 +113,74 @@ def form_name(secret, key):
     return f"{secret}__{key}".replace("-", "_").replace(".", "_")
 
 
+# The user's Backstage token, for the generator's /status (through the RHDH
+# proxy endpoint /saw-status): it answers only about that user.
+STATUS_HEADERS = {"X-Saw-Token": "${{ secrets.backstageToken }}"}
+RUN_NAME = "${{ steps.run.output.body.metadata.name }}"
+
+
+def status_get(step_id, name, query, each=None, wait=False, check=False):
+    """A GET on /proxy/saw-status/<query>. A waiting step is repeated
+    (`each`): each call returns as soon as its stage is reached or failed,
+    else after at most 50 s. A check step fails (422) when the stage failed
+    or was not reached."""
+    step = {"id": step_id, "name": name, "action": "http:backstage:request",
+            "input": {"method": "GET", "path": "/proxy/saw-status/" + query,
+                      "headers": dict(STATUS_HEADERS), "timeout": 90000}}
+    if wait:
+        step["input"]["continueOnBadResponse"] = True
+    if each:
+        step["each"] = list(range(1, each + 1))
+    return step
+
+
+def log_step(step_id, name, source):
+    return {"id": step_id, "name": name, "action": "debug:log",
+            "input": {"message": "${{ steps['" + source + "'].output.body.text }}"}}
+
+
+# The pipelines' tasks, as the run page's steps: (task, step name, tries of
+# up to 50 s). Each task is one stage (charts/openshell-rhdh portal-pipelines).
+CREATE_TASKS = [
+    ("register", "Verify the request, store the keys, register the workspace", 6),
+    ("argo-cd-apps", "Argo CD creates the workspace's applications", 14),
+    ("vm", "Argo CD creates the VM", 14),
+    ("vm-running", "Start the VM", 20),
+    ("sandboxes", "Install OpenShell and the sandboxes (about 10 minutes)", 38),
+]
+DELETE_TASKS = [
+    ("unregister", "Verify the request, delete the Argo CD application", 6),
+    ("argo-cd-removes", "Argo CD removes the namespace and the VM", 26),
+    ("finish", "Remove the registry entry and the keys", 6),
+]
+
+
+def pipeline_steps(tasks):
+    """One step per pipeline task (it waits for that task to end), then the
+    run's log, then a check that fails the run if the pipeline failed."""
+    steps = [status_get(f"task-{task}", name, f"run/{RUN_NAME}?task={task}&wait=50", each=tries, wait=True)
+             for task, name, tries in tasks]
+    return steps + [
+        status_get("pipeline", "Pipeline result", f"run/{RUN_NAME}"),
+        log_step("pipeline-log", "Pipeline log", "pipeline"),
+        status_get("pipeline-check", "Check the pipeline", f"run/{RUN_NAME}?assert=1", check=True),
+    ]
+
+
+def pipeline_run(action):
+    """The PipelineRun the template starts. The label puts it on the
+    workspace's Tekton tab (the register task refuses another user's)."""
+    return {"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
+            "metadata": {"generateName": f"saw-{action}-",
+                         "labels": {"saw.redhat.com/request": "true",
+                                    "backstage.io/kubernetes-id": "saw-" + USER_NAME}},
+            "spec": {"pipelineRef": {"name": f"saw-workspace-{action}"},
+                     "timeouts": {"pipeline": "1h30m"},
+                     "taskRunTemplate": {"serviceAccountName": "__PROVISIONER_SA__"},
+                     "params": [{"name": "request", "value":
+                                 "${{ steps.request.output.body.metadata.name }}"}]}}
+
+
 def render_template(cat):
     """The RHDH scaffolder template for a new workspace.
 
@@ -117,7 +188,9 @@ def render_template(cat):
     Secrets need (JSON Schema dependencies). API keys use the Secret field,
     so they reach the request as ${{ secrets.* }} and are not stored with
     the task. The steps create the request Secret (with the user's Backstage
-    token, which the pipeline verifies) and start saw-workspace-create."""
+    token, which the pipeline verifies) and start saw-workspace-create, then
+    follow it on the run page, one step per pipeline task (each a stage of
+    the workspace, until its sandbox UIs answer), then the pipeline's log."""
     profiles = cat["profiles"]
     one_of, string_data = [], {"action": "create", "token": "${{ secrets.backstageToken }}",
                                "profile": "${{ parameters.profile }}"}
@@ -181,25 +254,81 @@ def render_template(cat):
                                     "metadata": {"generateName": "saw-req-",
                                                  "labels": {"saw.redhat.com/request": "true"}},
                                     "type": "Opaque", "stringData": string_data}}},
-                {"id": "run", "name": "Create the workspace", "action": "http:backstage:request",
+                {"id": "run", "name": "Start the pipeline", "action": "http:backstage:request",
                  "input": {"method": "POST", "path": "/proxy/saw-pipelineruns",
                            "headers": {"Content-Type": "application/json"},
-                           "body": {"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
-                                    "metadata": {"generateName": "saw-create-",
-                                                 "labels": {"saw.redhat.com/request": "true"}},
-                                    "spec": {"pipelineRef": {"name": "saw-workspace-create"},
-                                             "taskRunTemplate": {"serviceAccountName": "__PROVISIONER_SA__"},
-                                             "params": [{"name": "request", "value":
-                                                         "${{ steps.request.output.body.metadata.name }}"}]}}}},
+                           "body": pipeline_run("create")}},
+                *pipeline_steps(CREATE_TASKS),
+                status_get("status", "Workspace status", "workspace"),
+                log_step("status-log", "Workspace status report", "status"),
             ],
-            "output": {"text": [{"title": "Workspace requested", "content":
-                                 "Pipeline run **${{ steps.run.output.body.metadata.name }}** registers "
-                                 "your workspace; Argo CD then creates namespace saw-" + USER_NAME + " "
-                                 "and its VM (about 10 minutes). It appears in the catalog as "
-                                 "saw-" + USER_NAME + ", with links to its web UIs."}]},
+            "output": {
+                "links": [{"title": "Your workspace in the catalog",
+                           "entityRef": "resource:default/saw-" + USER_NAME}],
+                "text": [{"title": "Workspace status",
+                          "content": "${{ steps.status.output.body.text }}"}]},
         },
     }
     return ("# Generated by scripts/saw-profile-catalog.py from charts/saw-bom/profiles; do not edit.\n"
+            + yaml.safe_dump(template, sort_keys=False, width=100))
+
+
+def render_delete_template():
+    """The RHDH scaffolder template that deletes the user's workspace."""
+    template = {
+        "apiVersion": "scaffolder.backstage.io/v1beta3",
+        "kind": "Template",
+        "metadata": {
+            "name": "delete-saw-workspace",
+            "title": "Delete my agent workspace",
+            "description": "Removes your Secure Agent Workspace: its VM, its sandboxes and everything in "
+                           "them, and your keys in Vault. This cannot be undone.",
+            "tags": ["openshell", "secure-agent-workspace"],
+        },
+        "spec": {
+            "owner": "user:default/admin",
+            "type": "agent-workspace",
+            # The form's last button says "Create" unless told otherwise.
+            "presentation": {"buttonLabels": {"reviewButtonText": "Review",
+                                              "createButtonText": "Delete workspace"}},
+            "parameters": [{
+                "title": "Confirm",
+                "required": ["workspace", "confirm"],
+                "properties": {
+                    # Only the signed-in user's own workspace is listed; the
+                    # pipeline still takes the user from the token.
+                    "workspace": {"title": "Workspace to delete", "type": "string",
+                                  "ui:field": "OwnedEntityPicker",
+                                  "ui:options": {"catalogFilter": {"kind": "Resource",
+                                                                   "spec.type": "agent-workspace"},
+                                                 "defaultKind": "Resource",
+                                                 "allowArbitraryValues": False}},
+                    "confirm": {"title": "I understand that this workspace, its VM and its data are deleted",
+                                "type": "boolean", "const": True}},
+            }],
+            "steps": [
+                {"id": "request", "name": "Submit the request", "action": "http:backstage:request",
+                 "input": {"method": "POST", "path": "/proxy/saw-requests",
+                           "headers": {"Content-Type": "application/json"},
+                           "body": {"apiVersion": "v1", "kind": "Secret",
+                                    "metadata": {"generateName": "saw-req-",
+                                                 "labels": {"saw.redhat.com/request": "true"}},
+                                    "type": "Opaque",
+                                    "stringData": {"action": "delete",
+                                                   "token": "${{ secrets.backstageToken }}",
+                                                   "workspace": "${{ parameters.workspace }}"}}}},
+                {"id": "run", "name": "Start the pipeline", "action": "http:backstage:request",
+                 "input": {"method": "POST", "path": "/proxy/saw-pipelineruns",
+                           "headers": {"Content-Type": "application/json"},
+                           "body": pipeline_run("delete")}},
+                *pipeline_steps(DELETE_TASKS),
+            ],
+            "output": {"text": [{"title": "Workspace deleted", "content":
+                                 "Pipeline run **" + RUN_NAME + "** deleted workspace saw-" + USER_NAME
+                                 + ": its VM, namespace and keys are gone."}]},
+        },
+    }
+    return ("# Generated by scripts/saw-profile-catalog.py; do not edit.\n"
             + yaml.safe_dump(template, sort_keys=False, width=100))
 
 
@@ -210,6 +339,7 @@ def main(argv=None):
     text = render()
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
+    outputs.append((DELETE_TEMPLATE, render_delete_template()))
     stale = []
     for path, text in outputs:
         current = path.read_text(encoding="utf-8") if path.exists() else ""

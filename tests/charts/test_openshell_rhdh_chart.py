@@ -64,7 +64,11 @@ def test_every_form_field_reaches_the_request(docs):
 
 def test_proxy_endpoints_only_post_to_the_portal_namespace(docs):
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
-    endpoints = config["proxy"]["endpoints"]
+    endpoints = dict(config["proxy"]["endpoints"])
+    status = endpoints.pop("/saw-status")
+    assert status["target"] == "http://saw-workspaces-generator.saw-portal.svc:4355/status"
+    assert status["allowedMethods"] == ["GET"] and status["allowedHeaders"] == ["X-Saw-Token"]
+    assert status["credentials"] == "require" and "headers" not in status
     assert set(endpoints) == {"/saw-requests", "/saw-pipelineruns"}
     for ep in endpoints.values():
         assert ep["allowedMethods"] == ["POST"]
@@ -122,7 +126,9 @@ def test_the_generator_gets_valid_saw_users_defaults(docs):
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
     step = task["spec"]["steps"][0]
-    assert step["command"] == ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.request)"]
+    assert step["command"] == ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)",
+                               "$(params.timeout)"]
+    assert [r["name"] for r in task["spec"]["results"]] == ["user"]
     env = {e["name"]: e["value"] for e in step["env"]}
     # Review (#57): no switch to trust the form's owner instead of the token.
     assert "VERIFY_TOKEN" not in env
@@ -130,6 +136,8 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert "verifyToken" not in values["portal"]
     assert env["RHDH_INTERNAL_URL"] == "http://backstage-developer-hub.rhdh.svc:80"
     assert env["ARGO_NAMESPACE"] == "vp-gitops"
+    assert env["RESULT_PATH"] == "$(results.user.path)"
+    assert env["PIPELINE_RUN"] == "$(context.pipelineRun.name)"
     scripts = one(docs, "ConfigMap", "saw-portal-scripts")
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
@@ -194,3 +202,91 @@ def test_admission_checks_updates_too(docs, name):
     request or a run into another shape."""
     policy = one(docs, "ValidatingAdmissionPolicy", name)
     assert policy["spec"]["matchConstraints"]["resourceRules"][0]["operations"] == ["CREATE", "UPDATE"]
+
+
+CREATE_TASKS = ["register", "argo-cd-apps", "vm", "vm-running", "sandboxes"]
+DELETE_TASKS = ["unregister", "argo-cd-removes", "finish"]
+
+
+def test_each_stage_is_a_pipeline_task(docs):
+    """The Tekton tab draws these: the first task acts, the others wait for
+    Argo CD (which still builds and removes the workspace), in order."""
+    for action, tasks, acts in (("create", CREATE_TASKS, ["create", "wait-apps", "wait-vm", "wait-running",
+                                                           "wait-ready"]),
+                                ("delete", DELETE_TASKS, ["delete", "wait-gone", "finish-delete"])):
+        spec = one(docs, "Pipeline", f"saw-workspace-{action}")["spec"]
+        assert [t["name"] for t in spec["tasks"]] == tasks
+        assert [t.get("runAfter") for t in spec["tasks"]] == [None] + [[t] for t in tasks[:-1]]
+        params = [{p["name"]: p["value"] for p in t["params"]} for t in spec["tasks"]]
+        assert [p["action"] for p in params] == acts
+        assert params[0]["arg"] == "$(params.request)"
+        assert {p["arg"] for p in params[1:]} == {f"$(tasks.{tasks[0]}.results.user)"}
+
+
+def test_the_templates_follow_the_pipeline_tasks(docs):
+    cm = one(docs, "ConfigMap", "saw-rhdh-templates")
+    create = yaml.safe_load(cm["data"]["create-workspace.yaml"])
+    delete = yaml.safe_load(cm["data"]["delete-workspace.yaml"])
+    tail = ["pipeline", "pipeline-log", "pipeline-check"]
+    assert [s["id"] for s in delete["spec"]["steps"]] == \
+        ["request", "run", *[f"task-{t}" for t in DELETE_TASKS], *tail]
+    assert [s["id"] for s in create["spec"]["steps"]] == \
+        ["request", "run", *[f"task-{t}" for t in CREATE_TASKS], *tail, "status", "status-log"]
+    assert delete["spec"]["presentation"]["buttonLabels"]["createButtonText"] == "Delete workspace"
+    picker = delete["spec"]["parameters"][0]["properties"]["workspace"]
+    assert picker["ui:field"] == "OwnedEntityPicker"
+    assert picker["ui:options"]["catalogFilter"] == {"kind": "Resource", "spec.type": "agent-workspace"}
+    assert delete["spec"]["steps"][0]["input"]["body"]["stringData"]["workspace"] == "${{ parameters.workspace }}"
+    for template, action in ((create, "create"), (delete, "delete")):
+        run = template["spec"]["steps"][1]["input"]["body"]
+        # On the workspace's Tekton tab; the first task refuses another user's label.
+        assert run["metadata"]["labels"]["backstage.io/kubernetes-id"] == \
+            "saw-${{ user.ref | parseEntityRef | pick('name') }}"
+        assert run["spec"]["pipelineRef"]["name"] == f"saw-workspace-{action}"
+        for step in template["spec"]["steps"][2:]:
+            if step["action"] == "debug:log":
+                continue
+            assert step["input"]["path"].startswith("/proxy/saw-status/")
+            assert step["input"]["headers"] == {"X-Saw-Token": "${{ secrets.backstageToken }}"}
+            # A waiting step carries on so the log and the check run.
+            assert step["input"].get("continueOnBadResponse", False) == ("each" in step)
+    steps = {s["id"]: s for s in create["spec"]["steps"]}
+    assert steps["task-sandboxes"]["input"]["path"].endswith("?task=sandboxes&wait=50")
+    assert steps["pipeline-check"]["input"]["path"].endswith("?assert=1")
+    assert len(steps["task-sandboxes"]["each"]) * 50 >= 30 * 60
+    assert create["spec"]["output"]["text"][0]["content"] == "${{ steps.status.output.body.text }}"
+
+
+def test_the_tekton_tab_reads_only_the_portal_namespace(docs):
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    k8s = config["kubernetes"]
+    assert k8s["objectTypes"] == ["pods"]
+    assert {c["plural"] for c in k8s["customResources"]} == {"pipelineruns", "taskruns"}
+    assert k8s["clusterLocatorMethods"][0]["clusters"][0]["serviceAccountToken"] == \
+        {"$file": "/opt/app-root/src/saw/token"}
+    role = one(docs, "Role", "rhdh-kubernetes-reader")
+    assert role["metadata"]["namespace"] == "saw-portal"
+    assert {v for r in role["rules"] for v in r["verbs"]} == {"get", "list", "watch"}
+    assert not [d for d in docs if d["kind"] == "ClusterRoleBinding"
+                and any(s["name"] == "rhdh-kubernetes-reader" for s in d["subjects"])]
+    plugins = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-dynamic-plugins")["data"]["dynamic-plugins.yaml"])
+    assert any("tekton" in p["package"] for p in plugins["plugins"])
+    files = one(docs, "Backstage", "developer-hub")["spec"]["application"]["extraFiles"]
+    assert files["secrets"] == [{"name": "rhdh-kubernetes-reader-token", "key": "token"}]
+    off = render("--set", "rhdh.tekton.enabled=false")
+    assert "kubernetes" not in yaml.safe_load(
+        one(off, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+
+
+def test_the_generator_may_only_read_progress(docs):
+    roles = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-workspaces-generator"]
+    verbs = {(r["metadata"]["namespace"], g, res, v) for r in roles for rule in r["rules"]
+             for g in rule["apiGroups"] for res in rule["resources"] for v in rule["verbs"]}
+    vm = one(docs, "ClusterRole", "saw-workspaces-generator-vm-reader")["rules"]
+    assert vm == [{"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines"], "verbs": ["get"]}]
+    assert verbs == {("saw-portal", "", "configmaps", "get"), ("saw-portal", "", "configmaps", "list"),
+                     ("saw-portal", "tekton.dev", "pipelineruns", "get"), ("saw-portal", "", "pods", "list"),
+                     ("saw-portal", "", "pods/log", "get"), ("vp-gitops", "argoproj.io", "applications", "get")}
+    env = {e["name"]: e["value"] for e in one(docs, "Deployment", "saw-workspaces-generator")
+           ["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")

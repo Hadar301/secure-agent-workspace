@@ -6,6 +6,7 @@ Backstage tokens signed by a throwaway P-256 key.
 import base64
 import importlib.util
 import json
+import os
 import sys
 import threading
 import time
@@ -205,6 +206,7 @@ class Fake:
         self.deleted = []
         self.vault = {}        # kv path -> data
         self.logins = []
+        self.logs = {}         # pod log path -> text
 
     def serve(self):
         fake = self
@@ -223,7 +225,13 @@ class Fake:
 
             def do_GET(self):
                 url = urlsplit(self.path)
-                if (url.path.endswith("/configmaps") or url.path.endswith("/secrets")) and "labelSelector" in url.query:
+                if url.path in fake.logs:
+                    raw = fake.logs[url.path].encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    return self.wfile.write(raw)
+                if "labelSelector" in url.query:
                     sel = parse_qs(url.query)["labelSelector"][0].split("=")
                     items = [o for p, o in fake.objects.items() if p.startswith(url.path + "/")
                              and (o["metadata"].get("labels") or {}).get(sel[0]) == sel[1]]
@@ -369,8 +377,15 @@ def test_delete_removes_the_entry_and_the_keys(portal, world):
     portal.main(["create", "saw-req-1"])
     fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
     assert portal.main(["delete", "saw-req-2"]) == 0
-    assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" not in fake.objects
+    cm = fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"]
+    assert cm["metadata"]["labels"]["saw.redhat.com/deleting"] == "true"
     assert "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/portal-ws-alice" in fake.deleted
+    assert fake.vault != {}                 # kept until the workspace is gone
+    assert [w["name"] for w in portal.list_workspaces(portal.kube(), "saw-portal")] == []
+    assert [w["name"] for w in portal.list_workspaces(portal.kube(), "saw-portal", deleting=True)] == ["alice"]
+    assert portal.main(["wait-gone", "alice", "60"]) == 0
+    assert portal.main(["finish-delete", "alice"]) == 0
+    assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" not in fake.objects
     assert fake.vault == {}
 
 
@@ -382,6 +397,18 @@ def test_delete_of_someone_elses_workspace_is_impossible(portal, world):
     fake.request("saw-req-2", {"action": "delete", "token": signer.token(sub="user:default/bob")})
     assert portal.main(["delete", "saw-req-2"]) == 1
     assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" in fake.objects
+
+
+@pytest.mark.parametrize("workspace, ok", [("resource:default/saw-alice", True), ("saw-alice", True),
+                                           ("resource:default/saw-bob", False)])
+def test_delete_checks_the_workspace_the_form_names(portal, world, workspace, ok):
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token(), "workspace": workspace})
+    assert portal.main(["delete", "saw-req-2"]) == (0 if ok else 1)
+    cm = fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"]
+    assert ("saw.redhat.com/deleting" in cm["metadata"]["labels"]) == ok
 
 
 def test_the_generator_lists_the_registry(portal, world):
@@ -548,16 +575,25 @@ def test_cleanup_deletes_only_stale_requests(portal, world):
     assert "/api/v1/namespaces/saw-portal/secrets/saw-req-new" in fake.objects
 
 
-def test_delete_removes_the_entry_before_the_application(portal, world):
-    """A surviving entry would make the ApplicationSet rebuild a fresh VM."""
+def test_delete_takes_the_entry_off_the_applicationset_first(portal, world, monkeypatch):
+    """An entry the ApplicationSet still got would rebuild a fresh VM: it is
+    marked deleting before the Application goes, and a create waits."""
     fake, signer = world
     fake.request("saw-req-1", ds_request(signer))
     portal.main(["create", "saw-req-1"])
+    order = []
+    real = portal.Http.call
+
+    def spy(self, method, path, *a, **kw):
+        if method in ("PUT", "DELETE") and "saw-req-" not in path:
+            order.append((method, path.rsplit("/", 1)[1]))
+        return real(self, method, path, *a, **kw)
+    monkeypatch.setattr(portal.Http, "call", spy)
     fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
     portal.main(["delete", "saw-req-2"])
-    cm = "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"
-    app = "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/portal-ws-alice"
-    assert fake.deleted.index(cm) < fake.deleted.index(app)
+    assert order == [("PUT", "saw-ws-alice"), ("DELETE", "portal-ws-alice")]
+    fake.request("saw-req-3", ds_request(signer))
+    assert portal.main(["create", "saw-req-3"]) == 1    # being deleted
 
 
 def test_a_half_done_delete_can_be_run_again(portal, world):
@@ -568,3 +604,277 @@ def test_a_half_done_delete_can_be_run_again(portal, world):
     fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
     assert portal.main(["delete", "saw-req-2"]) == 0
     assert "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/portal-ws-alice" not in fake.objects
+
+
+# -- progress: the generator's /status and the catalog's status -------------------------
+
+ARGO = "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications"
+VM = "/apis/kubevirt.io/v1/namespaces/saw-alice/virtualmachines/alice"
+
+
+def add_apps(fake, user="alice", op_phase="Succeeded", message=""):
+    for name in (f"portal-ws-{user}", f"saw-{user}-secrets", f"saw-{user}-bom", f"saw-{user}"):
+        fake.objects[f"{ARGO}/{name}"] = {
+            "metadata": {"name": name, "labels": {"openshell.pattern/owner": user}},
+            "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"},
+                       "operationState": {"phase": op_phase, "message": message}}}
+
+
+def add_vm(fake, state):
+    fake.objects[VM] = {"metadata": {"name": "alice"}, "status": {"printableStatus": state}}
+
+
+def created(portal, world):
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    return fake
+
+
+def status(portal, catalog, up=False):
+    return portal.workspace_status(portal.kube(), "alice", catalog, "saw-portal", "vp-gitops",
+                                   "example.com", ping=lambda url: up)
+
+
+def states(st):
+    return {s["id"]: s["state"] for s in st["steps"]}
+
+
+def test_a_workspace_goes_through_its_stages(portal, world, catalog):
+    fake = world[0]
+    st = status(portal, catalog)
+    assert (st["phase"], st["title"]) == ("none", "Not requested")
+    fake = created(portal, world)
+    st = status(portal, catalog)
+    assert st["phase"] == "registered" and states(st)["apps"] == "active"
+    assert "saw-alice not created yet" in st["text"]
+    add_apps(fake)
+    assert status(portal, catalog)["phase"] == "apps"
+    add_vm(fake, "Starting")
+    st = status(portal, catalog)
+    assert st["phase"] == "vm" and st["message"] == "VM Starting"
+    add_vm(fake, "Running")
+    st = status(portal, catalog)
+    assert (st["phase"], st["title"]) == ("running", "Installing")
+    assert "waiting for notebook UI (default)" in st["text"] and not st["ready"]
+    st = status(portal, catalog, up=True)
+    assert st["ready"] and set(states(st).values()) == {"done"}
+    assert "https://alice-default-notebook-ui.apps.example.com" in st["text"]
+
+
+@pytest.mark.parametrize("setup, message", [
+    (lambda f: (add_apps(f), add_vm(f, "CrashLoopBackOff")), "VM alice is CrashLoopBackOff"),
+    (lambda f: add_apps(f, op_phase="Failed", message="one or more objects failed"),
+     "Argo CD could not sync portal-ws-alice: one or more objects failed"),
+])
+def test_a_failed_stage_is_reported(portal, world, catalog, setup, message):
+    fake = created(portal, world)
+    setup(fake)
+    st = status(portal, catalog)
+    assert st["failed"] and st["phase"] == "failed" and st["message"] == message
+    assert "failed" in states(st).values()
+
+
+def add_run(fake, name, ok, log):
+    cond = {"type": "Succeeded", "status": {True: "True", False: "False", None: "Unknown"}[ok],
+            "reason": "Running" if ok is None else "", "message": "Tasks Completed: 1 (Failed: 1)"}
+    fake.objects[f"/apis/tekton.dev/v1/namespaces/saw-portal/pipelineruns/{name}"] = {
+        "metadata": {"name": name}, "status": {"conditions": [cond]}}
+    pod = f"{name}-create-pod"
+    fake.objects[f"/api/v1/namespaces/saw-portal/pods/{pod}"] = {
+        "metadata": {"name": pod, "labels": {"tekton.dev/pipelineRun": name}}}
+    fake.logs[f"/api/v1/namespaces/saw-portal/pods/{pod}/log"] = log
+
+
+ALICE_LOG = ("[saw-portal] create request saw-req-abc from alice\n"
+             "[saw-portal] ERROR: profile 'data-science' needs: inference.api_key\n")
+
+
+def test_a_run_log_is_shown_to_its_user_only(portal, world):
+    fake = world[0]
+    add_run(fake, "saw-create-x1", False, ALICE_LOG)
+    mine = portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "alice")
+    assert mine["failed"] and mine["done"]
+    assert mine["message"] == "profile 'data-science' needs: inference.api_key"
+    assert "from alice" in mine["text"]
+    theirs = portal.run_status(portal.kube(), "saw-portal", "saw-create-x1", "bob")
+    assert "inference" not in theirs["text"] and "only to the user" in theirs["log"]
+    add_run(fake, "saw-create-x2", False, "[saw-portal] ERROR: the user token: expired\n")
+    early = portal.run_status(portal.kube(), "saw-portal", "saw-create-x2", "alice")
+    assert "expired" not in early["text"] and "before it was verified" in early["log"]
+    with pytest.raises(portal.HttpError):
+        portal.run_status(portal.kube(), "saw-portal", "kube-system-thing", "alice")
+
+
+def test_waiting_stops_when_done_or_out_of_time(portal):
+    now = [0.0]
+    results = __import__("itertools").count(1)
+    clock = lambda: now[0]  # noqa: E731
+    sleep = lambda s: now.__setitem__(0, now[0] + s)  # noqa: E731
+    assert portal.wait_for(lambda: next(results), lambda r: r == 3, 50, sleep, clock) == 3
+    assert portal.wait_for(lambda: next(results), lambda r: False, 999, sleep, clock) == 4 + 10
+    assert now[0] == 10 + 50   # capped at WAIT_LIMIT, one check every 5 s
+    assert portal.wait_for(lambda: 0, lambda r: False, 0, sleep, clock) == 0
+
+
+def test_status_reads_accept_a_recently_expired_token(portal):
+    auth, scaffolder = Signer("auth"), Signer("scaffolder")
+    old = plugin_token(scaffolder, auth.limited(exp=int(time.time()) - 600))
+    with pytest.raises(portal.PortalError, match="expired"):
+        portal.verify_backstage_token(old, auth.jwks(), scaffolder.jwks())
+    assert portal.verify_backstage_token(old, auth.jwks(), scaffolder.jwks(), leeway=3600) == "alice"
+
+
+@pytest.fixture
+def status_call(generator, world, portal, monkeypatch):
+    import urllib.error
+    import urllib.request
+    fake, call = generator
+    monkeypatch.setattr(portal, "ping_url", lambda url, timeout=3: True)
+    tokens = world[1]
+
+    def get(path, user="alice"):
+        port = int(os.environ["PORT"])
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
+        if user:
+            req.add_header("X-Saw-Token", tokens.token(sub=f"user:default/{user}"))
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+    return fake, get
+
+
+def test_status_needs_the_users_token(status_call):
+    _, get = status_call
+    assert get("/status/workspace", user=None)[0] == 401
+
+
+def test_status_reports_the_callers_workspace(status_call):
+    fake, get = status_call
+    code, body = get("/status/workspace")
+    assert code == 200 and body["user"] == "alice" and body["phase"] == "registered"
+    code, body = get("/status/workspace?for=ready&assert=ready")
+    assert code == 422 and "not ready yet" in body["error"]
+    add_apps(fake)
+    add_vm(fake, "Running")
+    code, body = get("/status/workspace?for=ready&wait=5&assert=ready")
+    assert code == 200 and body["ready"]
+    # bob has no workspace: he never sees alice's
+    code, body = get("/status/workspace", user="bob")
+    assert code == 200 and body["user"] == "bob" and body["phase"] == "none"
+    assert get("/status/workspace?for=nonsense")[0] == 400
+
+
+def test_a_failed_workspace_ends_the_wait_at_once(status_call):
+    fake, get = status_call
+    add_apps(fake)
+    add_vm(fake, "DataVolumeError")
+    started = time.time()
+    code, body = get("/status/workspace?for=ready&wait=50")
+    assert code == 200 and body["failed"] and time.time() - started < 5
+    assert get("/status/workspace?assert=ready")[0] == 422
+
+
+def test_status_follows_a_pipeline_run(status_call):
+    fake, get = status_call
+    add_run(fake, "saw-create-r1", True, "[saw-portal] create request saw-req-abc from alice\n")
+    code, body = get("/status/run/saw-create-r1?wait=50&assert=1")
+    assert code == 200 and body["phase"] == "Succeeded" and "from alice" in body["text"]
+    add_run(fake, "saw-create-r2", False, ALICE_LOG)
+    code, body = get("/status/run/saw-create-r2?assert=1")
+    assert code == 422 and body["error"] == "profile 'data-science' needs: inference.api_key"
+    add_run(fake, "saw-create-r3", None, "")
+    code, body = get("/status/run/saw-create-r3?assert=1")
+    assert code == 422 and body["phase"] == "Running"
+    assert get("/status/run/not-a-run")[0] == 404
+    assert get("/status/nothing")[0] == 404
+
+
+def test_the_catalog_shows_each_workspaces_status(generator):
+    fake, call = generator
+    _, _, body = call("GET", "/catalog.yaml")
+    entity = json.loads(body)
+    assert entity["metadata"]["annotations"]["openshell.pattern/status"] == "registered"
+    assert entity["metadata"]["description"].startswith("Requested: waiting for Argo CD.")
+
+
+# -- the pipelines' tasks: results, waits, the Tekton tab's label ---------------------
+
+def test_the_first_task_hands_the_user_to_the_next(portal, world, tmp_path, monkeypatch):
+    fake, signer = world
+    result = tmp_path / "user"
+    monkeypatch.setenv("RESULT_PATH", str(result))
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    assert result.read_text() == "alice"
+
+
+@pytest.mark.parametrize("label, ok", [(None, True), ("saw-alice", True), ("saw-bob", False)])
+def test_a_run_labelled_for_someone_elses_tab_is_refused(portal, world, monkeypatch, label, ok):
+    fake, signer = world
+    meta = {"name": "saw-create-l1", "labels": {"backstage.io/kubernetes-id": label} if label else {}}
+    fake.objects["/apis/tekton.dev/v1/namespaces/saw-portal/pipelineruns/saw-create-l1"] = {"metadata": meta}
+    monkeypatch.setenv("PIPELINE_RUN", "saw-create-l1")
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == (0 if ok else 1)
+
+
+def test_a_wait_task_logs_each_change_and_ends_when_reached(portal, world, capsys, monkeypatch):
+    fake = created(portal, world)
+    ticks = []
+
+    def sleep(_):
+        ticks.append(1)
+        if len(ticks) == 1:
+            add_apps(fake)
+        elif len(ticks) == 2:
+            add_vm(fake, "Starting")
+        else:
+            add_vm(fake, "Running")
+    portal.wait_stage("running", "alice", 600, sleep=sleep, clock=lambda: 0)
+    out = capsys.readouterr().out
+    assert "no VM yet" in out and "Starting" in out and "done: Running" in out
+
+
+def test_a_wait_task_fails_on_a_failed_stage_or_timeout(portal, world):
+    fake = created(portal, world)
+    add_apps(fake)
+    add_vm(fake, "DataVolumeError")
+    with pytest.raises(portal.PortalError, match="DataVolumeError"):
+        portal.wait_stage("running", "alice", 600, sleep=lambda s: None, clock=lambda: 0)
+    add_vm(fake, "Starting")
+    now = [0]
+    with pytest.raises(portal.PortalError, match="not done after 10 minutes"):
+        portal.wait_stage("running", "alice", 600, sleep=lambda s: now.__setitem__(0, now[0] + s),
+                          clock=lambda: now[0])
+
+
+def test_the_catalog_shows_a_workspace_being_deleted(portal, world, catalog):
+    fake = created(portal, world)
+    add_apps(fake)
+    fake.request("saw-req-2", {"action": "delete", "token": world[1].token()})
+    portal.main(["delete", "saw-req-2"])
+    st = status(portal, catalog)
+    assert st["phase"] == "deleting" and "saw-alice" in st["message"]
+    text = portal.entities_yaml(portal.list_workspaces(portal.kube(), "saw-portal", deleting=True),
+                                catalog, "example.com", "", {"alice": st})
+    entity = json.loads(text)
+    assert entity["metadata"]["description"].startswith("Deleting: Argo CD is removing")
+    ann = entity["metadata"]["annotations"]
+    assert ann["backstage.io/kubernetes-id"] == "saw-alice" and ann["janus-idp.io/tekton"] == "saw-alice"
+    assert ann["backstage.io/kubernetes-namespace"] == "saw-portal"
+
+
+def test_status_follows_one_task_of_a_run(status_call):
+    fake, get = status_call
+    add_run(fake, "saw-create-t1", None, "[saw-portal] create request saw-req-abc from alice\n")
+    pod = "/api/v1/namespaces/saw-portal/pods/saw-create-t1-create-pod"
+    fake.objects[pod]["metadata"]["labels"]["tekton.dev/pipelineTask"] = "register"
+    fake.objects[pod]["status"] = {"phase": "Succeeded"}
+    code, body = get("/status/run/saw-create-t1?task=register&wait=50")
+    assert code == 200 and body["done"] and body["taskState"] == "Succeeded"
+    assert "--- register ---" in body["text"]
+    code, body = get("/status/run/saw-create-t1?task=vm&wait=1")
+    assert code == 200 and not body["done"] and body["taskState"] == "Waiting"

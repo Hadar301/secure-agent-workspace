@@ -80,6 +80,41 @@ data:
           allowedHeaders: ['Content-Type']
           headers:
             Authorization: Bearer ${token}
+        # Progress for the create template's run page (GET only). The
+        # template sends the user's Backstage token in X-Saw-Token; the
+        # generator answers only about that user's run and workspace.
+        /saw-status:
+          target: http://{{ $gen }}/status
+          changeOrigin: true
+          credentials: require
+          allowedMethods: ['GET']
+          allowedHeaders: ['X-Saw-Token']
+    {{- if .Values.rhdh.tekton.enabled }}
+    # The Tekton tab: each workspace entity names its pipeline runs by
+    # label (backstage.io/kubernetes-id) in the portal namespace
+    # (backstage.io/kubernetes-namespace). Pods only, plus the runs.
+    kubernetes:
+      serviceLocatorMethod:
+        type: multiTenant
+      clusterLocatorMethods:
+        - type: config
+          clusters:
+            - name: local
+              url: https://kubernetes.default.svc
+              authProvider: serviceAccount
+              skipTLSVerify: true
+              skipMetricsLookup: true
+              serviceAccountToken:
+                $file: /opt/app-root/src/saw/token
+      objectTypes: [pods]
+      customResources:
+        - group: tekton.dev
+          apiVersion: v1
+          plural: pipelineruns
+        - group: tekton.dev
+          apiVersion: v1
+          plural: taskruns
+    {{- end }}
     {{- if .Values.rhdh.rbac.enabled }}
     permission:
       enabled: true

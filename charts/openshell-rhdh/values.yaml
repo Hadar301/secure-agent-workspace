@@ -27,6 +27,20 @@ rhdh:
     enabled: false
     admins:
       - admin
+  # The Tekton tab on each workspace's catalog page: its create and delete
+  # pipeline runs as a graph, with each task's log. Uses RHDH's Kubernetes
+  # and Tekton plugins, reading only the portal namespace as the service
+  # account rhdh-kubernetes-reader. The package names must match the RHDH
+  # release's default list, which RHDH 1.10 takes from its plugin catalog
+  # index image; see them with
+  #   oc logs -n rhdh <pod> -c install-dynamic-plugins | grep -iE "kubernetes|tekton"
+  # (these are RHDH 1.10's).
+  tekton:
+    enabled: true
+    plugins:
+      - ./dynamic-plugins/dist/backstage-plugin-kubernetes-backend-dynamic
+      - ./dynamic-plugins/dist/backstage-plugin-kubernetes
+      - oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/backstage-community-plugin-tekton@sha256:49093c5f91e6d46c7b43a9efe26e1705ee501dee2766578b04a9745775bffe60
 
 # The portal namespace: request Secrets, the Tekton pipelines, the workspace
 # registry (ConfigMaps saw-ws-<user>) and the ApplicationSet plugin generator.

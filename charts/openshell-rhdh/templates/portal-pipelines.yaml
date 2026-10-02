@@ -1,4 +1,7 @@
-{{- /* Two pipelines, one task: portal.py create|delete <request Secret>. */ -}}
+{{- /* Two pipelines, one task (portal.py <action> <arg> [timeout]). The
+first task of each verifies the request and hands the user to the others as
+the result `user`; each later task is one stage the workspace goes through,
+so RHDH's Tekton tab draws a workspace's create and delete as a pipeline. */ -}}
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -10,8 +13,16 @@ spec:
   params:
     - name: action
       type: string
-    - name: request
+    - name: arg
       type: string
+      description: The request Secret (create, delete) or the user (the waits, finish-delete).
+    - name: timeout
+      type: string
+      default: ""
+      description: Seconds a wait may take.
+  results:
+    - name: user
+      description: The user the request was for.
   volumes:
     - name: scripts
       configMap:
@@ -19,7 +30,7 @@ spec:
   steps:
     - name: run
       image: {{ .Values.portal.image }}
-      command: ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.request)"]
+      command: ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)", "$(params.timeout)"]
       volumeMounts:
         - name: scripts
           mountPath: /opt/saw
@@ -27,6 +38,12 @@ spec:
       env:
         - name: NAMESPACE
           value: {{ .Values.portal.namespace }}
+        - name: PIPELINE_RUN
+          value: $(context.pipelineRun.name)
+        - name: RESULT_PATH
+          value: $(results.user.path)
+        - name: CLUSTER_DOMAIN
+          value: {{ .Values.global.clusterDomain | quote }}
         - name: CATALOG_PATH
           value: /opt/saw/profile-catalog.json
         - name: RHDH_INTERNAL_URL
@@ -54,6 +71,17 @@ spec:
         runAsNonRoot: true
         capabilities: { drop: [ALL] }
         seccompProfile: { type: RuntimeDefault }
+{{- $stages := dict
+  "create" (list
+    (dict "name" "register" "action" "create" "timeout" "5m0s")
+    (dict "name" "argo-cd-apps" "action" "wait-apps" "seconds" "600" "timeout" "12m0s")
+    (dict "name" "vm" "action" "wait-vm" "seconds" "600" "timeout" "12m0s")
+    (dict "name" "vm-running" "action" "wait-running" "seconds" "900" "timeout" "17m0s")
+    (dict "name" "sandboxes" "action" "wait-ready" "seconds" "1800" "timeout" "32m0s"))
+  "delete" (list
+    (dict "name" "unregister" "action" "delete" "timeout" "5m0s")
+    (dict "name" "argo-cd-removes" "action" "wait-gone" "seconds" "1200" "timeout" "22m0s")
+    (dict "name" "finish" "action" "finish-delete" "timeout" "5m0s")) }}
 {{- range $action := list "create" "delete" }}
 ---
 apiVersion: tekton.dev/v1
@@ -69,12 +97,28 @@ spec:
       type: string
       description: The request Secret the RHDH template created (saw-req-*).
   tasks:
-    - name: {{ $action }}
+    {{- $prev := "" }}
+    {{- range $i, $t := index $stages $action }}
+    - name: {{ $t.name }}
       taskRef:
         name: saw-workspace
+      timeout: {{ $t.timeout }}
+      {{- if $prev }}
+      runAfter: [{{ $prev }}]
+      {{- end }}
       params:
         - name: action
-          value: {{ $action }}
-        - name: request
+          value: {{ $t.action }}
+        - name: arg
+          {{- if eq $i 0 }}
           value: $(params.request)
+          {{- else }}
+          value: $(tasks.{{ (index (index $stages $action) 0).name }}.results.user)
+          {{- end }}
+        {{- if $t.seconds }}
+        - name: timeout
+          value: {{ $t.seconds | quote }}
+        {{- end }}
+    {{- $prev = $t.name }}
+    {{- end }}
 {{- end }}

@@ -17,11 +17,12 @@ This page explains the parts and how they connect. To try it, follow the
 |---|---|---|
 | Red Hat Developer Hub | namespace `rhdh`, `Backstage` CR `developer-hub` (RHDH operator) | The portal. Shows the two templates (create, delete) and one catalog entry per workspace. Users sign in with Keycloak. |
 | Keycloak realm `openshell` | namespace `saw-keycloak` | One identity for RHDH, the OpenShell gateway and the sandbox UIs. No self-registration; an admin adds users with generated passwords. Client `rhdh` (confidential) for RHDH, `openshell-dashboard` (public, PKCE) for the web UIs. |
-| Request API | RHDH proxy endpoints `/saw-requests`, `/saw-pipelineruns` | The only cluster calls the templates make: create a request Secret, start a pipeline. They use RHDH's service account `rhdh-portal`, which can only *create* those two kinds in `saw-portal`. |
-| Portal pipelines | namespace `saw-portal`, Tekton `saw-workspace-create` / `saw-workspace-delete` | Run `portal.py` as service account `saw-portal-provisioner`: verify who the request is for, write the keys to Vault, write or delete the registry entry. |
+| Request API | RHDH proxy endpoints `/saw-requests`, `/saw-pipelineruns` | The only cluster changes the templates make: create a request Secret, start a pipeline. They use RHDH's service account `rhdh-portal`, which can only *create* those two kinds in `saw-portal`. A third endpoint, `/saw-status` (GET), reads progress from the generator. |
+| Portal pipelines | namespace `saw-portal`, Tekton `saw-workspace-create` / `saw-workspace-delete` | Run `portal.py` as service account `saw-portal-provisioner`. The first task verifies who the request is for and writes the keys and the registry entry (or marks it for deletion and deletes the Application); each later task waits for one stage of what Argo CD does, so a workspace's whole life shows as one pipeline. |
+| Tekton tab | RHDH Kubernetes and Tekton plugins, service account `rhdh-kubernetes-reader` | Each workspace's catalog page shows its create and delete pipeline runs (label `backstage.io/kubernetes-id: saw-<user>`) as a graph with each task's log. Reads only `saw-portal`. |
 | Admission policies | `ValidatingAdmissionPolicy` `saw-portal-*` | Pin what `rhdh-portal` may create (Secrets `saw-req-*`, PipelineRuns of the two pipelines with one parameter) and which Argo CD applications the provisioner may delete (`portal-ws-*`, labelled as the portal's). |
 | Workspace registry | ConfigMaps `saw-ws-<user>` in `saw-portal` (label `saw.redhat.com/workspace=true`) | One entry per workspace: user name, profile, values for the `saw-users` chart. |
-| Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token) and the RHDH catalog (`/catalog.yaml`, no token); a NetworkPolicy admits only RHDH and Argo CD. |
+| Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token), the RHDH catalog with each workspace's status (`/catalog.yaml`, no token) and the progress the create template follows (`/status`, the user's Backstage token, through the RHDH proxy endpoint `/saw-status`); a NetworkPolicy admits only RHDH and Argo CD. |
 | ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. |
 | `saw-users` → `openshell-saw` | namespace `saw-<user>` | The same charts as a Git-declared user in `overrides/saw-users.yaml`: External Secrets for the user's keys, the BOM, the VM, the gateway and UI routes. |
 | Vault | `secret/data/hub/saw-<user>/<secret>` | The user's keys. The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
@@ -94,18 +95,38 @@ sequenceDiagram
   A->>K: ApplicationSet asks the generator for workspaces
   A->>A: Application portal-ws-user (charts/saw-users)
   A->>VM: namespace, ExternalSecrets, BOM, VM, routes
+  P->>K: tasks argo-cd-apps, vm, vm-running: wait for each
   VM->>VM: installer creates sandboxes, starts OpenClaw, UI proxy
-  R->>K: catalog refresh: Resource saw-user with UI links
+  P->>VM: task sandboxes: wait until every sandbox UI route answers
+  R->>K: catalog refresh: Resource saw-user with status and UI links
+  loop run page, one step per pipeline task
+    R->>K: GET /saw-status (generator): task state, then the pipeline's log
+  end
 ```
 
-The VM and its sandboxes take about 10 to 15 minutes after the pipeline
-finishes.
+Argo CD still builds the workspace; the pipeline only watches it after its
+first task. Its tasks are the stages:
 
-Deleting is the mirror image: the template "Delete my agent workspace" runs
-`saw-workspace-delete`, which removes the registry entry first (so the
-ApplicationSet does not recreate the Application), then deletes Application
-`portal-ws-<user>` and, by default, the user's keys in Vault. Argo CD then
-deletes the namespace and the VM (`portal.pruneOnRemove`).
+| Pipeline | Tasks |
+|---|---|
+| `saw-workspace-create` | `register` (verify, Vault, registry entry) → `argo-cd-apps` → `vm` → `vm-running` → `sandboxes` (every sandbox UI route answers: the installer finished) |
+| `saw-workspace-delete` | `unregister` (verify, mark the entry deleting, delete Application `portal-ws-<user>`) → `argo-cd-removes` (apps and namespace gone) → `finish` (registry entry, Vault keys) |
+
+A wait task logs each change and fails on a failed Argo CD sync, a VM that
+cannot start, or its time limit (30 minutes for `sandboxes`). The run is
+labelled `backstage.io/kubernetes-id: saw-<user>`, so RHDH's Tekton tab on
+the workspace's catalog page draws it with each task's log; the first task
+refuses a run labelled with another user's workspace. The template's run
+page shows the same tasks as steps, then the log. The catalog entry shows
+the status (`Requested`, `Creating`, `Starting the VM`, `Installing`,
+`Ready`, `Failed`, `Deleting`).
+
+While a workspace is deleted its registry entry stays, labelled
+`saw.redhat.com/deleting=true`: the ApplicationSet no longer gets it (so it
+does not recreate the Application), the catalog still shows it (Deleting,
+with its Tekton tab), and a new create for that user is refused until the
+`finish` task removes it. Argo CD deletes the namespace and the VM
+(`portal.pruneOnRemove`).
 
 ## Who a request is for
 

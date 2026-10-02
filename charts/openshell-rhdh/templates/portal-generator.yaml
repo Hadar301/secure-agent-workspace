@@ -55,6 +55,11 @@ spec:
               value: {{ .Values.global.clusterDomain | quote }}
             - name: RHDH_BASE_URL
               value: {{ include "openshell-rhdh.url" . }}
+            # /status checks the caller's Backstage token against RHDH's keys.
+            - name: RHDH_INTERNAL_URL
+              value: {{ include "openshell-rhdh.internalUrl" . }}
+            - name: ARGO_NAMESPACE
+              value: {{ include "openshell-rhdh.argoNamespace" . }}
             - name: SAW_USERS_VALUES
               value: {{ include "openshell-rhdh.sawUsersValues" . | toJson }}
           readinessProbe:
@@ -99,7 +104,8 @@ spec:
 {{- if .Values.portal.generator.networkPolicy }}
 ---
 # The generator answers two callers only: RHDH's backend (/catalog.yaml, no
-# token) and the ApplicationSet controller (plugin API, token).
+# token; /status, the user's Backstage token) and the ApplicationSet
+# controller (plugin API, token).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

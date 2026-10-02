@@ -13,6 +13,13 @@ data:
       # http:backstage:request, which the workspace templates use.
       - package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-module-http-request-dynamic
         disabled: false
+      {{- if .Values.rhdh.tekton.enabled }}
+      # The Tekton tab (with the Kubernetes backend it reads through).
+      {{- range .Values.rhdh.tekton.plugins }}
+      - package: {{ . }}
+        disabled: false
+      {{- end }}
+      {{- end }}
       {{- if .Values.rhdh.rbac.enabled }}
       - package: ./dynamic-plugins/dist/backstage-community-plugin-rbac
         disabled: false

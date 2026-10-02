@@ -174,8 +174,32 @@ oc logs -n saw-portal deploy/saw-workspaces-generator --tail=20
    (`notebook (default)`).
 3. **Review** → **Create**.
 
-The run page shows two steps, "Submit the request" and "Create the
-workspace", then "Workspace requested" with the pipeline run's name.
+Argo CD builds the workspace as before; pipeline `saw-workspace-create`
+follows it, one task per stage, and the run page shows one step per task
+(about 15 minutes in all):
+
+| Pipeline task (run page step) | Done when |
+|---|---|
+| `register` (Verify the request, store the keys, register the workspace) | the token is verified, keys are in Vault, registry entry `saw-ws-carol` written |
+| `argo-cd-apps` | `portal-ws-carol` and the three `saw-carol*` apps exist |
+| `vm` | VirtualMachine `carol` exists |
+| `vm-running` | the VM is `Running` |
+| `sandboxes` (Install OpenShell and the sandboxes) | every sandbox UI route answers (the installer finished) |
+
+Then "Pipeline log" shows each task's log (who the request is for, the Vault
+paths, each stage as it changed) and "Check the pipeline" turns the run red
+if a task failed, with its error: a missing key, a failed Argo CD sync, a VM
+that cannot start (`DataVolumeError`, `CrashLoopBackOff`), or a task's time
+limit. The output panel has a checklist and links. You can close the page.
+
+The same run is on the workspace's catalog page: open `saw-carol` → the
+**CI** / **Tekton** tab: the pipeline graph with each task's status and log
+(the tab appears once the catalog lists `saw-carol`, right after `register`).
+
+The installer inside the VM cannot report to the cluster, so a failure there
+(for example a missing key) shows as the `sandboxes` task running to its
+30-minute limit. The installer's log says why (next section:
+`openshell-saw-logs`).
 
 ### Check what happened
 
@@ -210,8 +234,11 @@ Follow the VM's installer until `apply: Done` (about 10 minutes):
 make -f Makefile-quickstart openshell-saw-logs OPENSHELL_SAW_NAME=carol
 ```
 
-In RHDH, **Catalog** → Kind **Resource** now lists `saw-carol` ("Agent
-workspace: carol"), owned by carol, with links:
+In RHDH, **Catalog** → Kind **Resource** lists `saw-carol` ("Agent
+workspace: carol") as soon as the pipeline has registered it, owned by
+carol. Its description starts with the status: `Requested`, `Creating`,
+`Starting the VM`, `Installing`, `Ready` or `Failed` (also in the annotation
+`openshell.pattern/status`; RHDH refreshes it every 30 seconds). Links:
 
 - **OpenShell web UI**
 - **notebook UI (default)**
@@ -278,7 +305,12 @@ server:
 ## 7. Delete the workspace
 
 1. In RHDH open `saw-carol` → **Delete workspace** (or **Create** → "Delete
-   my agent workspace"), confirm, **Create**.
+   my agent workspace"), pick `saw-carol` (only your own is listed),
+   confirm, **Delete workspace**. Pipeline `saw-workspace-delete` runs
+   `unregister` → `argo-cd-removes` (Argo CD deletes the apps, namespace and
+   VM) → `finish` (registry entry and keys); the run page and the
+   workspace's Tekton tab show each task. Until `finish`, the catalog shows
+   `saw-carol` as "Deleting".
 2. Check:
 
 ```bash
@@ -302,10 +334,10 @@ The catalog entry disappears at the next refresh.
 | 5 | Keycloak sign-in page | no Register link |
 | 6 | RHDH sign-in as carol | home page |
 | 7 | Create menu | both templates |
-| 8 | Workspace request | pipeline run Succeeded, registry entry, keys in Vault |
+| 8 | Workspace request | run page green to "Check the workspace"; pipeline log names carol; registry entry, keys in Vault |
 | 9 | Argo CD | `portal-ws-carol` and the three `saw-carol*` apps healthy |
 | 10 | VM installer | `apply: Done` |
-| 11 | Catalog | `saw-carol` with UI links |
+| 11 | Catalog | `saw-carol` "Ready: …" with UI links |
 | 12 | notebook UI as carol | OpenClaw connects, no token |
 | 13 | notebook UI as bob | 403 |
 | 14 | `openclaw-tui` | connects |
