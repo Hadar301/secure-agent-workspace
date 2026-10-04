@@ -1241,6 +1241,13 @@ MANAGED_LABEL_KEY = "saw.redhat.com/managed"
 # `Labels: key=value, ...`.
 _MANAGED_LABEL_RE = re.compile(
     r"(?:^|[\s,])saw\.redhat\.com/managed\s*[:=]\s*true\b")
+# A missing sandbox, workspace, or provider. Matches the short CLI line
+# (`sandbox 'name' not found`) and tonic's `status: NotFound, message: "..."`.
+# "provider profile 'x' was not found" is a catalog miss, not a missing object.
+_RESOURCE_NOT_FOUND_RE = re.compile(
+    r"status:\s*notfound\b"
+    r"|\b(?:sandbox|workspace|provider)\s+(?:'[^']*'\s+)?(?:was\s+)?not\s+found\b",
+    re.IGNORECASE)
 PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
 
 
@@ -1260,6 +1267,9 @@ def _managed_label_from_json(text):
         return None
     if not isinstance(doc, dict):
         return False
+    # Top-level `labels` is the OpenShell 0.1.2 `sandbox get --output json`
+    # shape (labels["saw.redhat.com/managed"] == "true"). Read that key on
+    # purpose so a later CLI that nests labels elsewhere is an explicit change.
     labels = doc.get("labels") or {}
     if not isinstance(labels, dict):
         return False
@@ -1267,9 +1277,18 @@ def _managed_label_from_json(text):
 
 
 def _cli_rejected_output_flag(text):
+    """True only for Clap's `unexpected argument '--output'` rejection.
+
+    A broader match (any error that mentions "output") would treat an
+    unrelated CLI failure as a missing `--output` flag and fall back to text.
+    """
     low = _strip_ansi(text).lower()
-    return "output" in low and (
-        "unexpected argument" in low or "unrecognized" in low or "unknown argument" in low)
+    return "unexpected argument '--output'" in low
+
+
+def _resource_not_found(text):
+    """True when the CLI says this sandbox, workspace, or provider is gone."""
+    return _RESOURCE_NOT_FOUND_RE.search(_strip_ansi(text)) is not None
 
 
 class Ledger:
@@ -1740,19 +1759,25 @@ class ProfileApplier:
         self.prune()
 
     def managed_label_ok(self, kind, workspace, name, entry):
-        """Workspaces and sandboxes also carry saw.redhat.com/managed=true.
+        """True when the object may be pruned, False when it must be kept.
 
-        Adopted objects predate that label, so the ledger alone allows them.
-        Providers cannot be labeled. A missing object or a get that fails
-        for any other reason stays unlabeled: prune keeps it rather than
-        deleting something it could not identify.
+        None means get reported the object already gone, so the caller drops
+        the ledger entry instead of logging "not labeled" forever.
+
+        Adopted objects predate the managed label, so the ledger alone allows
+        them. Providers cannot be labeled. A get that fails for any other
+        reason (auth, a gateway error) stays unlabeled: prune keeps it rather
+        than deleting something it could not identify.
         """
         if entry.get("adopted") or kind not in ("workspace", "sandbox"):
             return True
         if kind == "sandbox":
             return self._sandbox_labeled(workspace, name)
         got = self.cli("workspace", "get", name, check=False, quiet=True)
-        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
 
     def _sandbox_labeled(self, workspace, name):
         got = self.cli("sandbox", "get", name, *ws_args(workspace),
@@ -1762,14 +1787,19 @@ class ProfileApplier:
             if parsed is None:
                 return _managed_label_in_text(got.out + "\n" + got.err)
             return parsed
-        # A CLI that predates `--output` rejects the flag. Retry the human
-        # text, which is `key: value`. Any other failure (not found, auth)
-        # is unlabeled.
         blob = got.out + "\n" + got.err
+        # Gone already. Do not confuse that with Clap rejecting `--output`.
+        if _resource_not_found(blob):
+            return None
+        # A CLI that predates `--output` rejects the flag. Retry the human
+        # text, which is `key: value`. Any other failure stays unlabeled.
         if not _cli_rejected_output_flag(blob):
             return False
         got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
-        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
 
     def workspace_contents(self, name):
         """Sandboxes and providers still in the workspace, used to decide
@@ -1801,11 +1831,16 @@ class ProfileApplier:
         return contents
 
     def delete_managed(self, kind, workspace, name):
-        """Delete one ledger object. False leaves it in the ledger.
+        """Delete one ledger object.
+
+        True: the CLI deleted it. ``"missing"``: the CLI says it is already
+        gone. False: leave it in the ledger.
 
         A failed CLI delete must not look like success: prune() would log
         `deleted`, record it in lastPrune (and therefore status.json), and
         drop the ledger entry while the object is still on the gateway.
+        A not-found result is the exception: the object is already gone, so
+        the caller drops the ledger entry and logs ``not found``.
         """
         if kind == "sandbox":
             result = self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
@@ -1826,10 +1861,33 @@ class ProfileApplier:
             log(f"WARN: keeping {kind} '{name}': unknown kind; leaving it in the ledger")
             return False
         if not result.ok:
+            # sandbox/provider delete pass allow_missing on OpenShell 0.1.2, so
+            # they succeed when the object is already gone. workspace delete
+            # does not: a workspace removed by hand fails here. That is gone,
+            # not a referential-integrity failure, so the caller drops it.
+            if _resource_not_found(result.out + "\n" + result.err):
+                return "missing"
             where = f" in '{workspace}'" if workspace else ""
             log(f"WARN: keeping {kind} '{name}'{where}: delete failed; leaving it in the ledger")
             return False
         return True
+
+    def _forget_missing(self, kind, workspace, name, label, pruned, would):
+        """Drop a ledger entry the gateway no longer has.
+
+        `on` removes it so the next reconcile does not retry. `report` only
+        records the would-be cleanup.
+        """
+        if self.prune_mode == "report":
+            log(f"would delete {label}: not found")
+            would.append(label)
+            return
+        if self.prune_mode != "on":
+            return
+        where = f" in '{workspace}'" if workspace else ""
+        log(f"{kind} '{name}'{where}: not found; removing it from the ledger")
+        pruned.append(label)
+        self.ledger.drop(kind, workspace, name)
 
     def kept_sandbox_providers(self):
         """(workspace, provider-name) pairs, and workspaces, still needed by
@@ -1883,17 +1941,24 @@ class ProfileApplier:
                     log(f"keeping provider '{name}' in '{workspace}': a sandbox this apply "
                         "is keeping still uses it")
                     continue
-                if not self.managed_label_ok(kind, workspace, name, obj):
+                label = f"{kind} {workspace or '-'}/{name}"
+                labeled = self.managed_label_ok(kind, workspace, name, obj)
+                if labeled is None:
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                    continue
+                if not labeled:
                     log(f"keeping {kind} '{name}': not labeled {MANAGED_LABEL}")
                     continue
-                label = f"{kind} {workspace or '-'}/{name}"
                 if self.prune_mode == "report":
                     log(f"would delete {label}")
                     would.append(label)
                     continue
                 if self.prune_mode != "on":
                     continue
-                if self.delete_managed(kind, workspace, name):
+                outcome = self.delete_managed(kind, workspace, name)
+                if outcome == "missing":
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                elif outcome:
                     log(f"deleted {label}")
                     pruned.append(label)
                     self.ledger.drop(kind, workspace, name)

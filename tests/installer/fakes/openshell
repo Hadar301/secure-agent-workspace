@@ -137,9 +137,13 @@ elif op == "workspace create":
     state["workspaces"].append(name)
     remember_labels("workspace", "", name)
 elif op == "workspace delete":
+    # OpenShell 0.1.2 does not pass allow_missing here (sandbox delete and
+    # provider delete do). Deleting a workspace the user already removed fails.
     name = head[2]
     if name == "default":
         fail("Error: cannot delete the default workspace")
+    if name not in state["workspaces"]:
+        fail(f"Error: workspace '{name}' not found")
     state["workspaces"] = [w for w in state["workspaces"] if w != name]
 elif op == "workspace member":
     member = [opt("--workspace"), opt("--subject"), opt("--role")]
@@ -229,7 +233,7 @@ elif op == "sandbox get":
         fail("error: unexpected argument '--output' found")
     sb = state["sandboxes"].get(f"{ws}/{name}")
     if not sb:
-        fail("Error: sandbox not found")
+        fail(f"Error: sandbox '{name}' not found")
     labels = labels_dict("sandbox", ws, name)
     if fmt == "json":
         print(json.dumps({"name": name, "phase": sb["phase"], "workspace": ws, "labels": labels}))
