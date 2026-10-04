@@ -47,6 +47,19 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 {{- end }}
 
 {{/*
+Hostname of the Keycloak route, taken from the issuer URL. The egress
+firewall allows this host so the VM can fetch OIDC keys. Empty when the
+issuer URL is not known yet.
+*/}}
+{{- define "openshell-sandbox.keycloakRouteHost" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $hostpath := regexReplaceAll "^https?://" $issuer "" -}}
+{{- regexReplaceAll "/.*$" $hostpath "" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate a Kubernetes secret name (RFC 1123 subdomain).
 */}}
 {{- define "openshell-sandbox.validateSecretName" -}}

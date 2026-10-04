@@ -403,6 +403,126 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
         installer_data(docs)["gateway.env"]
 
 
+DEFAULT_EGRESS_HOSTS = [
+    "integrate.api.nvidia.com",
+    "api.search.brave.com",
+    "quay.io",
+    "cdn.quay.io",
+    "cdn01.quay.io",
+    "cdn02.quay.io",
+    "cdn03.quay.io",
+    "cdn04.quay.io",
+    "cdn05.quay.io",
+    "cdn06.quay.io",
+    "registry.fedoraproject.org",
+]
+
+
+def _egress_names(docs):
+    firewalls = [d for (kind, _), d in docs.items() if kind == "EgressFirewall"]
+    assert len(firewalls) == 1
+    assert firewalls[0]["metadata"]["name"] == "default"
+    assert firewalls[0]["apiVersion"] == "k8s.ovn.org/v1"
+    rules = firewalls[0]["spec"]["egress"]
+    return rules, [r["to"]["dnsName"] for r in rules if r["to"].get("dnsName")]
+
+
+def _assert_safe_order(rules):
+    """Allows come first. Both IP families are denied, and nothing is an allow-all."""
+    types = [r["type"] for r in rules]
+    assert types[0] == "Allow"
+    assert "Deny" in types
+    assert types[types.index("Deny"):] == ["Deny", "Deny"]
+    assert rules[-2] == {"type": "Deny", "to": {"cidrSelector": "0.0.0.0/0"}}
+    assert rules[-1] == {"type": "Deny", "to": {"cidrSelector": "::/0"}}
+    for rule in rules:
+        assert set(rule["to"]) <= {"dnsName", "cidrSelector", "nodeSelector"}
+        assert len(rule["to"]) == 1
+        if rule["type"] == "Allow" and "cidrSelector" in rule["to"]:
+            assert rule["to"]["cidrSelector"] not in {"0.0.0.0/0", "::/0"}
+
+
+def test_egress_firewall_denies_undeclared_hosts(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    _assert_safe_order(rules)
+    assert rules[0]["to"]["nodeSelector"]["matchLabels"] == {"kubernetes.io/os": "linux"}
+    assert "ports" not in rules[0]
+    assert allowed == DEFAULT_EGRESS_HOSTS
+    assert all(r["ports"] == [{"protocol": "TCP", "port": 443}] for r in rules if "dnsName" in r["to"])
+    assert all(h.strip() and "*" not in h and "/" not in h for h in allowed)
+
+
+def test_egress_firewall_allows_keycloak_and_extra_hosts():
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "vllm.example.net" in allowed
+    assert "openshell-keycloak-ingress-saw-keycloak.apps.example.com" in allowed
+    assert "example.com" not in allowed
+
+
+def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
+    host = "openshell-keycloak-ingress-saw-keycloak.apps.example.com"
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", f"egress.extraAllow[0]={host}")
+    _, allowed = _egress_names(docs)
+    assert allowed.count(host) == 1
+
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell")
+    _, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert not any("://" in h or "/" in h for h in allowed)
+
+
+def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    assert all(allowed)
+    assert not any(rule["to"] == {} for rule in rules)
+
+
+def test_egress_custom_allow_list_cannot_drop_the_deny():
+    docs = render("--set-string", "egress.allow[0]=only.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "only.example.net" in allowed
+
+
+def test_egress_firewall_can_be_disabled():
+    docs = render("--set", "egress.enabled=false")
+    assert not any(kind == "EgressFirewall" for kind, _ in docs)
+    assert any(kind == "VirtualMachine" for kind, _ in docs)
+
+
+@pytest.mark.parametrize("host", [
+    "*.quay.io",
+    "quay.io.*",
+    "cdn.*.quay.io",
+    "*",
+    "https://example.com",
+    "example.com:443",
+    "example.com/v1",
+    "Example.COM",
+    "1.2.3.4",
+    "10.0.0.0/8",
+    "localhost",
+    "user@example.com",
+    "-bad.example.com",
+    "example..com",
+    " example.com",
+])
+def test_egress_rejects_unsafe_hosts(host):
+    result = helm_template(CHART, "--set", "sandboxName=saw-test",
+                           "--set-string", f"egress.extraAllow[0]={host}")
+    assert result.returncode != 0, host
+    assert "egress host" in result.stderr
+
+
+def test_egress_rejects_an_issuer_host_with_a_port():
+    err = render_error("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
+    assert "egress host" in err
+
+
 # -- installer ConfigMap -----------------------------------------------------
 
 def test_installer_configmap_ships_the_real_files(default_docs, ab):

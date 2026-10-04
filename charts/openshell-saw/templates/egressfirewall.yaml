@@ -1,0 +1,58 @@
+{{- define "openshell-sandbox.validateEgressHost" -}}
+{{- if contains "*" . }}
+{{- fail (printf "egress host %q uses a wildcard; list the exact hostname (DNSNameResolver is not enabled)" .) }}
+{{- end }}
+{{- if regexMatch "^[0-9.]+$" . }}
+{{- fail (printf "egress host %q is an IP address; a dnsName rule does not match an address, so list a hostname" .) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" .) }}
+{{- fail (printf "egress host %q must be a lowercase DNS name, with no scheme, port, or path" .) }}
+{{- end }}
+{{- end }}
+{{- if .Values.egress.enabled }}
+{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) }}
+{{- range $hosts }}
+{{- include "openshell-sandbox.validateEgressHost" . }}
+{{- end }}
+{{- $keycloak := include "openshell-sandbox.keycloakRouteHost" . | trim }}
+{{- if $keycloak }}
+{{- include "openshell-sandbox.validateEgressHost" $keycloak }}
+{{- end }}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata:
+  name: default
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  egress:
+    # The API server and the ingress router are reached on node addresses.
+    # This does not allow the public internet.
+    - type: Allow
+      to:
+        nodeSelector:
+          matchLabels:
+            kubernetes.io/os: linux
+    {{- range $hosts }}
+    - type: Allow
+      to:
+        dnsName: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- if and $keycloak (not (has $keycloak $hosts)) }}
+    - type: Allow
+      to:
+        dnsName: {{ $keycloak | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    - type: Deny
+      to:
+        cidrSelector: 0.0.0.0/0
+    - type: Deny
+      to:
+        cidrSelector: "::/0"
+{{- end }}

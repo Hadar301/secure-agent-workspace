@@ -248,6 +248,24 @@ sandboxes.
 | `<name>-dashboard` | 18789 | Edge | OpenClaw agent web UI; the dashboard Route does not reach the OpenClaw UI on OpenShell 0.1.x, see [OpenClaw UI and the dashboard Route](#openclaw-ui-and-the-dashboard-route) |
 | `<name>-webui` | 8080 | Edge | OpenShell Dashboard (via oauth2-proxy) |
 
+### Egress from the VM
+
+Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`) rendered by the `openshell-saw` chart. It is independent of OpenShell's sandbox allowlist: a process on the VM that skips the sandbox proxy still cannot open a connection to a host that is not listed.
+
+The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). The chart also allows the Keycloak route host taken from the OIDC issuer URL, and traffic to cluster node addresses (the API server and the ingress router). Everything else on the public internet is denied. Pods and services inside the cluster, including DNS, the governance interceptor, and the internal registry, are not filtered by this object.
+
+Hostnames are exact. A name such as `*.quay.io` is rejected at render time, because matching a wildcard needs the `DNSNameResolver` feature gate.
+
+To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs no entry.
+
+```yaml
+egress:
+  extraAllow:
+    - vllm.example.net
+```
+
+`egress.enabled: false` removes the firewall. Leave it on.
+
 ### Internal Connectivity
 
 | From | To | Protocol | Purpose |
