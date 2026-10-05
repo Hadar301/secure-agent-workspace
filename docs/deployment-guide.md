@@ -237,3 +237,20 @@ make governance-create-profile OPENSHELL_SAW_NAME=my-saw \
 ```bash
 make test                    # Headless E2E test
 ```
+
+## Quickstart notes
+
+### Operators for the quickstart
+
+The quickstart installs operators from OperatorHub. OpenShift Virtualization needs one extra resource: after its operator is running, create a `HyperConverged` so the operator deploys the virtualization components and a node can run VMs. Option A (the validated pattern) creates this for you; the quickstart does not.
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec: {}
+```
+
+External Secrets is only required for Option A, which syncs the pattern's secrets from Vault; the quickstart sets its secrets directly and does not use it.

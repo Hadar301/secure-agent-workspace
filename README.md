@@ -137,7 +137,9 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Red Hat Build of Keycloak operator | stable-v26 channel |
 | Helm CLI | 3.x |
 | oc CLI | matching cluster version |
-| openshell CLI | [latest release](https://github.com/NVIDIA/OpenShell/releases) |
+| openshell CLI | [a release from the gateway's release series](https://github.com/NVIDIA/OpenShell/releases) (0.1.x for this BOM) |
+| jq, curl, openssl | required by `make login` |
+| python3 | required by `make openshell-saw-create` |
 
 ### Required user permissions
 
@@ -215,7 +217,7 @@ Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from 
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `saw-keycloak` namespace (set `KEYCLOAK_NS` to use another one, e.g. `KEYCLOAK_NS=keycloak` for a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
+Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
 
 ```bash
 # 1. Clone the repository
@@ -224,72 +226,78 @@ cd secure-agent-workspace
 
 # 2. Log in to OpenShift with cluster-admin
 oc login --server=https://api.<cluster>:6443 -u <user>
+# Lab clusters with a self-signed API certificate: add --insecure-skip-tls-verify (disposable clusters only)
 
-# 3. Verify prerequisites
+# 3. Set the variables the following targets read (set them again in every new terminal)
+export KEYCLOAK_NS=saw-keycloak     # or the namespace of a Keycloak your cluster already runs
+export OPENSHELL_SAW_NAME=alice     # the user VM, deployed into namespace saw-alice
+
+# 4. Verify prerequisites
 make check-prereqs
+# also enables the internal image registry's default route if it is off
 
-# 4. Generate SSH keys
+# 5. Generate SSH keys
 make generate-keys
 
-# 5. Copy pre-built images to the cluster
+# 6. Copy pre-built images to the cluster
 make copy-images
 
-# 6. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
-#    you are asked before the OpenShell realm is imported into it)
+# 7. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
+#    you are asked before the OpenShell realm is imported into it;
+#    set USE_EXISTING_KEYCLOAK=yes to import the realm without the prompt)
 make keycloak
 
-# 7. Verify Keycloak (realm, openshell-cli client, roles)
+# 8. Verify Keycloak (realm, openshell-cli client, roles)
 make keycloak-check
 make keycloak-issuer
 
-# 8. Deploy governance interceptor
+# 9. Deploy governance interceptor
 helm upgrade --install governance-policy charts/governance-policy \
   --namespace openshell-agents
 helm upgrade --install governance-interceptor charts/governance-interceptor \
   --namespace openshell-agents
 
-# 9. Authenticate
+# 10. Authenticate
 make login                    # Opens browser → login with alice / alice
 make whoami                   # Verify identity
 
-# 10. Create a sandbox (deploys into namespace saw-alice)
-export OPENSHELL_SAW_NAME=alice
+# 11. Create a sandbox (deploys into namespace saw-alice)
 make openshell-saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3-super-120b-a12b \
   API_KEY=<your-api-key>
 
-# 11. Follow the in-VM installer (in another terminal)
+# 12. Follow the in-VM installer (in another terminal)
 make openshell-saw-logs
 
-# 12. Check status
+# 13. Check status
 make openshell-saw-list
 make status
 
-# 13. Wait for the installer to finish
+# 14. Wait for the installer to finish
 make openshell-saw-status
 # Wait for "install" and "apply" to show "phase": "Done"
 
-# 14. Configure the openshell CLI
+# 15. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 15. Authenticate CLI with the gateway
+# 16. Authenticate CLI with the gateway
 openshell gateway login $OPENSHELL_SAW_NAME
 # Log in as alice / alice in the browser
 
-# 16. Verify sandboxes
+# 17. Verify sandboxes
 # sandbox list without --workspace only shows workspace "default"
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 
-# 17. Launch TUI (pick one)
+# 18. Launch TUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 make nemoclaw-tui # NemoClaw
 SANDBOX_NAME=notebook \
 make openclaw-tui # OpenClaw
 
-# 18. Launch GUI (pick one)
+# 19. Launch GUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
