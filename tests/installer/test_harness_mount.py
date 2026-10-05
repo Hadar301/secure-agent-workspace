@@ -576,8 +576,20 @@ def test_the_gateway_is_restarted_before_a_fresh_run(ab, fake_env, config, profi
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
-    assert "pkill -f 'openclaw gateway run'" in scripts
-    assert "openclaw gateway run" in scripts
+    assert "pkill -f '[o]penclaw gateway run'" in scripts
+    assert "nohup openclaw gateway run" in scripts
+
+
+def test_the_pkill_pattern_does_not_match_its_own_shell():
+    """Regression: 'openclaw gateway run' as a literal pkill/pgrep pattern
+    also matches the `sh -c "...openclaw gateway run..."` wrapper it runs
+    in, so pkill kills that shell before nohup starts the gateway. The
+    bracketed '[o]penclaw' form must not self-match."""
+    import subprocess
+    script = ("pkill -f '[o]penclaw gateway run' || true; sleep 1; "
+              "echo reached")
+    result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
+    assert result.stdout.strip() == "reached"
 
 
 def test_a_shape_change_unsets_the_stale_config_key(ab, fake_env, config, profiles, creds):

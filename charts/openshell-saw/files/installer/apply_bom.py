@@ -2007,6 +2007,7 @@ class ProfileApplier:
         self.volumes = HarnessVolume(shell)
         self.catalogs = {}            # workspace -> {profile id: endpoint hosts}
         self.harness_info = {}        # (workspace, sandbox) -> describe_harness_tree()
+        self.harness_refilled = {}    # (workspace, sandbox) -> volume was (re)filled this apply
         self.harness_volumes = set()  # volumes this apply wants to keep
         self.harness_digests = {}     # volume -> trusted tree digest, this apply
         self.sandbox_failures = []    # "sandbox '<name>': <error>" kept for the raise at end
@@ -2422,6 +2423,7 @@ class ProfileApplier:
                                  f"sandbox '{sb.name}' runs openclaw")
         self.check_harness_governance(ws, sb, info)
         self.harness_info[(ws.name, sb.name)] = info
+        self.harness_refilled[(ws.name, sb.name)] = not current
         if self.sh.dry_run:
             log(f"Harness {source} for sandbox '{sb.name}' in volume {volume} (dry run)")
             return info
@@ -2618,14 +2620,20 @@ class ProfileApplier:
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw config set gateway.controlUi.allowedOrigins {origins}",
                      check=False)
+        refilled = self.harness_refilled.get((ws.name, sb.name), False)
         self.cli(*exec_cmd, "sh", "-c",
                  f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && "
-                 # A refilled harness needs a fresh gateway process; unconditional
-                 # is simpler than threading a "was refilled" flag, and is a
-                 # no-op on create (nothing is running yet).
-                 "pkill -f 'openclaw gateway run' || true; sleep 1; "
+                 # Restart only if the harness volume was refilled (its config
+                 # changes with it) or no gateway is running yet (create, or a
+                 # prior crash); otherwise leave a live gateway alone so a
+                 # routine reconcile does not cut running agent sessions.
+                 # The bracket in '[o]penclaw' keeps pkill/pgrep from matching
+                 # their own argv, which would otherwise kill this very shell.
+                 f"if [ {'1' if refilled else '0'} = 1 ] || "
+                 "! pgrep -f '[o]penclaw gateway run' > /dev/null; then "
+                 "pkill -f '[o]penclaw gateway run' || true; sleep 1; "
                  "nohup openclaw gateway run --allow-unconfigured --bind lan --port 18789 "
-                 "> /tmp/openclaw-gateway.log 2>&1 &",
+                 "> /tmp/openclaw-gateway.log 2>&1 & fi",
                  check=False)
         self.install_keepalive(ws, sb)
 
@@ -2844,6 +2852,15 @@ class ProfileApplier:
                 "(gateway briefly missing a provider profile for their type)")
             self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": [],
                                              "skipped": "providers were skipped this run"}
+            self.ledger.save()
+            return
+        if self.sandbox_failures:
+            # A sandbox that failed this run (governance refusal, transient
+            # registry/cosign error) was never remember()ed: the desired
+            # state this run is incomplete, not smaller on purpose.
+            log(f"WARN: not pruning this run: {len(self.sandbox_failures)} sandbox(es) failed to apply")
+            self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": [],
+                                             "skipped": "sandboxes failed this run"}
             self.ledger.save()
             return
         self.prune()
