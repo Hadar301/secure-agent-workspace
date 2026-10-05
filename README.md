@@ -289,8 +289,8 @@ make openshell-saw-list
 make status
 
 # 14. Wait for the installer to finish
-#     openshell-saw-status reaches the VM over SSH and first adds your public
-#     key to the VM's access Secret.
+#     openshell-saw-status adds your public key to the VM's access Secret,
+#     then reaches the VM over SSH to read the installer status.
 make openshell-saw-status
 # Wait for "install" and "apply" to show "phase": "Done"
 

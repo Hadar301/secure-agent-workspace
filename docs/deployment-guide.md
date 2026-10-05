@@ -75,6 +75,7 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 - **Clients:**
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
+    (effective lifetime capped to 10h by the realm's SSO Session Max)
   - `openshell-dashboard` — public client, PKCE, redirect URIs registered dynamically per sandbox
 - **Users:** developer, admin, alice, bob (test accounts)
 - **Roles:** `openshell-user`, `openshell-admin`
