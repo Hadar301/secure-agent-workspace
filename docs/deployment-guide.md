@@ -264,7 +264,9 @@ External Secrets is only required for Option A, which syncs the pattern's secret
 
 ### OpenClaw UI and the dashboard Route
 
-The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which runs with no network namespace of its own (`netns` mode `none`, no port mappings) on OpenShell 0.1.x. The Route therefore does not reach the OpenClaw UI and answers 503. Use `make openclaw-gui` (or `make nemoclaw-gui`), which port-forwards to the sandbox UI instead.
+The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which on OpenShell 0.1.x runs in its own network namespace with only loopback (network mode `none`, no port mappings). The Route therefore does not reach the OpenClaw UI and answers 503. Each sandbox has its own namespace, so several OpenClaw sandboxes all listen on 18789 without conflict.
+
+On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route instead, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. It reaches OpenClaw through `openshell forward`, so it works on 0.1.x; see [Opening a sandbox UI](rhdh-architecture.md#opening-a-sandbox-ui). On the quickstart path (Option B) no such Routes are created: use `make openclaw-gui` (or `make nemoclaw-gui`), which port-forwards to the sandbox UI.
 
 ### Web search in the default sandbox
 
