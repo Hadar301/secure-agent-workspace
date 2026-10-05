@@ -357,7 +357,9 @@ three registration IDs stayed the same. The guest state stayed present,
 stayed unset. That same enrollment was still present at 2026-10-05T07:09:09Z.
 
 The first disablement pass used only `identity-q`. It revoked that VM's
-identity. It is not full disabled-mode acceptance. At 2026-10-05T07:10:02Z
+identity. The fresh disabled install on `identity-s` and the disablement of
+the already enrolled `identity-t` are recorded below. Together those are the
+disabled-mode checks for this revision. Re-enable was not tested. At 2026-10-05T07:10:02Z
 `saw-bom` revision 2 replaced the profile with workspaces whose provider lists
 are empty. At 2026-10-05T07:10:08Z `identity-q` revision 3 set
 `spiffe.enabled=false`. The SPIFFE label and the registrar finalizer were
@@ -492,23 +494,32 @@ the agent context is `system_u:system_r:saw_spire_agent_t:s0`. Agent config
 default sandbox `cb59f124-04fb-4548-a5ef-e2078e52cc63`
 (`/saw/saw-idpat/idpat/ws/default/sandbox/agent`). That agent is not banned.
 `recovery-attempts` is unset. The deployed values set `serverTransport=tcp`.
-`idpat` was not added to the demo allowlist, so no
-protected grant was issued and the demo signing key was not rotated.
 
-The `idpat` Application is Healthy and its last sync succeeded, and it is
-still OutOfSync. The only listed resource in that state is VirtualMachine
-`idpat`. Rendered commit `3b040d06` with namespace `saw-idpat` matches the
-live installer checksum `c1d650d0e6d27157` and cloud-init checksum
-`4b6af389ec264962`. The chart sets `firmware.bootloader.efi.secureBoot`.
-The live VM also has firmware `serial` and `uuid`, `machine`,
-`architecture`, the interface MAC, `kubevirt.io/pci-topology-version`, the
-MAC-pool timestamp, KubeVirt API-version annotations, and finalizers. A
-server-side diff of that rendered VM does not remove those fields. The only
-churn in that diff is the MAC-pool timestamp, which the pool rewrites on its
-own. Route `idpat-webui` exists because
-`route.webui` defaults to true; the Application values set `route.enabled`
-and `route.dashboard` false and did not set `route.webui`. That route does
-not adopt the SPIRE server.
+At 2026-10-05T09:23:12Z Applications `idpat` and `idpat-bom` were Synced and
+Healthy at commit `113781e`. VirtualMachine `idpat` stayed UID
+`f5e24257-6717-41e2-b241-99fb334e5580`. Generation became 2. Ready stayed
+true and `RestartRequired` stayed unset. The live installer checksum is
+`cfe0b7edd07a0a48` and the cloud-init checksum is `4b6af389ec264962`, matching
+that commit rendered for namespace `saw-idpat`. The Application
+`ignoreDifferences` cover the controller-written firmware `serial` and
+`uuid`, machine type, architecture, interface MAC, PCI topology annotation,
+MAC-pool timestamp, KubeVirt API-version annotations, and finalizers.
+`alice` stayed UID `4d9604bb-4ebc-438a-a4e2-85175a744328`, Running, with no
+SPIFFE label. Helm `saw-spire` stayed revision 15. `spire-server-0` stayed
+UID `c25daa63-085b-4216-a328-633658ea1e83`.
+
+Helm `identity-demo` revision 7 at 2026-10-05T09:24:29Z added the `idpat`
+prefix. That recreated the signer as `identity-demo-cc776b5d8-hx4wh` at
+2026-10-05T09:25:07Z. Tokens from `identity-demo-6dd56b8475-slcpw` do not
+belong to this key. The protected request from sandbox `agent` was HTTP 200,
+curl exit 0, audience `saw-protected-service`, with
+`spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-idpat/idpat/ws/default/sandbox/agent`
+in `sub`, `azp`, and `client_id`, expiring at 2026-10-05T09:31:00Z. The
+allowlist is in `examples/agent-identity/demo-values.yaml`.
+
+Route `idpat-webui` exists because `route.webui` defaults to true; the
+Application values set `route.enabled` and `route.dashboard` false and did
+not set `route.webui`. That route does not adopt the SPIRE server.
 
 `identity-s` and `idpat` were left in place after this evidence. `identity-q`
 stays the disabled canary. `identity-c`, `identity-d`, and `identity-e` were
@@ -621,22 +632,6 @@ These items remain:
   claims. The supervisor was not patched.
 - Re-enable of a disabled VM. Retained join-token and agent state were not
   exercised. The disablement results do not support re-enable.
-- Pattern sync. `idpat` enrolled against the existing server. The Application
-  is Healthy and its last sync succeeded, and it is still OutOfSync on
-  VirtualMachine `idpat` at commit `3b040d06`. The chart-owned checksums
-  match that commit. Rendering this working tree changes the installer
-  checksum to `96e0428a7bb9951f` and replaces `identity.py` and
-  `apply_bom.py` in ConfigMap `idpat-installer`. The cloud-init checksum
-  stays `4b6af389ec264962`. A server-side diff of that rendered VM bumps
-  generation from 1 to 2 and does not change firmware, the MAC, machine
-  type, or architecture. The live object also has controller-written
-  firmware `uuid` and `serial`, `machine`, `architecture`, the interface
-  MAC, the PCI topology annotation, the MAC-pool timestamp, KubeVirt
-  API-version annotations, and finalizers. Healthy is not that
-  reconciliation. The Application manifest records `ignoreDifferences` for
-  those controller fields. It has not been applied yet.
-- A protected grant for `idpat`. Extending the demo allowlist would rotate
-  the signing key, so it was not done.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
@@ -755,7 +750,16 @@ SPIFFE label, registrar entries, and agent unit. The join-token Secret,
 `/etc/spire/agent.conf`, `/etc/spire/trust-domain`, and `/var/lib/spire` are
 retained, as recorded for `identity-q`. Providers that leave the profile stay
 until something else deletes them. A disable BOM that still lists dynamic
-providers fails apply. `identity-q`, `identity-s`, and `idpat` are still on
-the cluster. `identity-c`, `identity-d`, and `identity-e` stay as isolation
-and migration baselines. Restore run-owned virtualization settings only after
-confirming no remaining consumer needs them.
+providers fails apply. After the evidence above was recorded, Helm releases
+`identity-q`, `identity-s`, `identity-t`, and their `saw-bom` releases were
+uninstalled, Applications `idpat` and `idpat-bom` were deleted, and
+namespaces `saw-identity-q`, `saw-identity-s`, `saw-identity-t`, and
+`saw-idpat` were removed by 2026-10-05T09:35:39Z. Their registrations were already gone before the
+namespaces were deleted. BuildConfig `saw-registrar-ttl` was removed. The
+registrar image digest used by Helm `saw-spire` revision 15 remains.
+`identity-a`, `identity-c`, `identity-d`, and `identity-e` stay as the
+diagnostic, isolation, and migration baselines. `alice` and the shared SPIRE
+server were not removed. `identity-demo` stays because those baselines still
+use it. The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
+already synced `113781e`, which is the chart revision those Applications
+deployed, before these objects were deleted.
