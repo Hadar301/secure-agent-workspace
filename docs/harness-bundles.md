@@ -272,7 +272,7 @@ OpenClaw config (values only, never bundle bytes through `exec`):
 |---|---|
 | First apply | Read, govern, fill volume, create sandbox with mount, configure OpenClaw |
 | Re-apply, unchanged | Volume intact: no pull/write; sandbox kept |
-| New digest / edited inline | Volume refilled in place (briefly empty mid-import); sandbox kept |
+| New digest / edited inline | Volume refilled in place (briefly empty mid-import); sandbox kept; its OpenClaw gateway restarts so new plugin code loads (live sessions reconnect) |
 | Sandbox created before `harnessRef` | Recreated with the mount |
 | Volume edited on the VM | Verify fails; next apply refills |
 | `harnessRef` removed | Sandbox recreated without the mount; volume removed when unused |

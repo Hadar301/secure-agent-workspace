@@ -18,6 +18,9 @@ through the mount.
 """
 import hashlib
 import json
+import os
+import subprocess
+import time
 
 import pytest
 import yaml
@@ -670,14 +673,6 @@ def test_openclaw_loads_the_bundle_from_the_mount(ab, fake_env, config, profiles
     assert "base64 -d" not in scripts, "bundle files never go through exec"
 
 
-def test_the_gateway_is_restarted_before_a_fresh_run(ab, fake_env, config, profiles, creds):
-    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
-    make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
-    scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
-    assert "pkill -f '[o]penclaw gateway run'" in scripts
-    assert "nohup openclaw gateway run" in scripts
-
-
 def test_the_auth_token_is_only_rewritten_alongside_a_restart(ab, fake_env, config, profiles, creds):
     """Regression: a live gateway keeps authenticating with the token it was
     launched with, so writing a new token to config without restarting would
@@ -694,16 +689,90 @@ def test_the_auth_token_is_only_rewritten_alongside_a_restart(ab, fake_env, conf
                    for s in scripts)
 
 
-def test_the_pkill_pattern_does_not_match_its_own_shell():
-    """Regression: 'openclaw gateway run' as a literal pkill/pgrep pattern
-    also matches the `sh -c "...openclaw gateway run..."` wrapper it runs
-    in, so pkill kills that shell before nohup starts the gateway. The
-    bracketed '[o]penclaw' form must not self-match."""
-    import subprocess
-    script = ("pkill -f '[o]penclaw gateway run' || true; sleep 1; "
-              "echo reached")
-    result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
-    assert result.stdout.strip() == "reached"
+class FakeGateway:
+    """A fake `openclaw` on PATH for running a gateway script with a real sh:
+    `gateway run` stays up like the real gateway and records each start."""
+
+    def __init__(self, tmp_path):
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        self.starts = tmp_path / "starts"
+        exe = self.bin / "openclaw"
+        exe.write_text('#!/bin/sh\n'
+                       'case "$*" in\n'
+                       f'  "gateway run"*) echo "$$" >> {self.starts}; sleep 60;;\n'
+                       'esac\n')
+        exe.chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}"}
+        self.procs = []
+
+    def start_running(self):
+        """A gateway already up before the script runs."""
+        proc = subprocess.Popen([str(self.bin / "openclaw"), "gateway", "run", "--port", "18789"],
+                                env=self.env)
+        self.procs.append(proc)
+        time.sleep(0.3)
+        return proc
+
+    def run(self, script):
+        result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
+        time.sleep(1.5)
+        return result.returncode
+
+    def started(self):
+        return self.starts.read_text().split() if self.starts.exists() else []
+
+    def stop(self):
+        for proc in self.procs:
+            proc.kill()
+        subprocess.run(["pkill", "-f", f"{self.bin}/openclaw"], check=False)
+
+
+@pytest.fixture
+def gateway(tmp_path):
+    g = FakeGateway(tmp_path)
+    yield g
+    g.stop()
+
+
+@pytest.mark.parametrize("sandbox", ["notebook", "cuda-sandbox"])
+def test_every_openclaw_sandbox_ends_up_with_a_gateway(
+        ab, fake_env, config, profiles, creds, gateway, sandbox):
+    """Regression (found in review): the script also contains the text
+    `openclaw gateway run`, so `pkill -f`/`pgrep -f` patterns, bracketed or
+    not, matched the script's own shell. The harness sandbox (refilled)
+    killed its shell before nohup; the one without a harness concluded a
+    gateway was already running. Neither got a gateway. This runs the exact
+    script start_openclaw sends with a real sh, nothing running yet."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+    script = next(c[-1] for c in fake_env.openshell_calls()
+                  if c[:2] == ["sandbox", "exec"] and c[3] == sandbox
+                  and "nohup openclaw gateway run" in c[-1])
+    assert gateway.run(script) == 0, "the script's shell must not kill itself"
+    assert len(gateway.started()) == 1
+
+
+def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway):
+    old = gateway.start_running()
+    assert gateway.run(ab.gateway_start_script(False, "tok", "OPENCLAW_HOME=/sandbox")) == 0
+    assert old.poll() is None, "a live gateway (and its sessions) is left alone"
+    assert len(gateway.started()) == 1, "no second gateway"
+
+
+def test_a_refill_replaces_the_running_gateway(ab, gateway):
+    old = gateway.start_running()
+    assert gateway.run(ab.gateway_start_script(True, "tok", "OPENCLAW_HOME=/sandbox")) == 0
+    assert old.poll() is not None, "the old gateway is stopped"
+    assert len(gateway.started()) == 2, "and a new one started"
+
+
+def test_the_gateway_check_does_not_count_the_script_itself(ab, tmp_path):
+    """gateway_pids must not list the sh -c running it, even though that
+    shell's command line contains `openclaw gateway run`."""
+    script = ab._GATEWAY_PIDS_SH + "\n# nohup openclaw gateway run\ngateway_pids | wc -l"
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10)
+    assert out.stdout.strip() == "0"
 
 
 def test_a_shape_change_unsets_the_stale_config_key(ab, fake_env, config, profiles, creds):
