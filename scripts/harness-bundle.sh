@@ -23,7 +23,8 @@ local_tag="saw-harness-$bundle:dev"
 CHECK="$ROOT/charts/openshell-saw/files/installer/apply_bom.py"
 
 build() {
-  python "$CHECK" check-bundle "$dir"
+  python3 -c "import yaml" 2>/dev/null || { echo "PyYAML is required: pip install pyyaml" >&2; exit 1; }
+  python3 "$CHECK" check-bundle "$dir"
   COPYFILE_DISABLE=1 "$ENGINE" build -q -f "$ROOT/harness-bundles/Containerfile" -t "$local_tag" "$dir" >/dev/null
   echo "built $local_tag"
 }

@@ -45,7 +45,8 @@ without one.
 | `stdio` | `command` (a bare name or `./`-relative), `args`, `env`, `cwd` | inside the sandbox |
 | `streamable-http`, `sse` | `url`, `headers` | elsewhere; the sandbox connects to it |
 
-The only placeholders are `${PLUGIN_ROOT}` and `${PLUGIN_DATA}`, and a
+The only path placeholders are `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` (a
+credential placeholder like `${BRAVE_API_KEY}` is separate, see below); a
 bundle never holds a key. The agent sees a server's tools as
 `<server>__<tool>`, e.g. `local-mcp__search`.
 

@@ -69,9 +69,10 @@ jobs:
       - name: Check the bundle
         run: |
           set -euo pipefail
+          pip install -q pyyaml
           # Same describe_harness_tree rules the installer uses (types, secrets,
           # plugin.json, symlinks).
-          python charts/openshell-saw/files/installer/apply_bom.py check-bundle \
+          python3 charts/openshell-saw/files/installer/apply_bom.py check-bundle \
             "harness-bundles/${{ matrix.bundle }}"
 
       - uses: docker/setup-buildx-action@v3
