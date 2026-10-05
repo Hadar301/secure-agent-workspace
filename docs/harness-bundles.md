@@ -188,13 +188,14 @@ harnessRef:
 ```
 
 The bundle lives in `charts/saw-bom/harness/<bundle>/` and ships in the
-profiles ConfigMap. Limits:
+profiles ConfigMap. Each file's ConfigMap key is a hash of its relpath
+(`harness__<bundle>__<hash>`), not the relpath itself, with a
+`harness__<bundle>__map` key carrying the hash -> relpath mapping; this keeps
+any file layout under the ISO 9660/Joliet 64-character filename limit of the
+disk KubeVirt makes from the ConfigMap, so there is no path-length or `__`
+restriction on a bundle's files. Limits:
 
 - the 1 MiB ConfigMap size;
-- 64-character file keys (`harness__<bundle>__<path>`, the ISO 9660/Joliet
-  limit of the disk KubeVirt makes from the ConfigMap);
-- no `__` in any path segment (it is the key separator), so a Python package
-  (`__init__.py`) cannot ship inline;
 - no file modes: a stdio server must run a bundled file through its
   interpreter (`command: node`, `args: ["${PLUGIN_ROOT}/mcp/server.mjs"]`).
 

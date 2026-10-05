@@ -38,30 +38,41 @@
 {{- $harness := dict }}
 {{- $digestLines := dict }}
 {{- $payload := 0 }}
+{{- $pathMaps := dict }}
 {{- range $path, $_ := $.Files.Glob "harness/**" }}
 {{- $content := $.Files.Get $path }}
 {{- $parts := splitList "/" $path }}
 {{- if lt (len $parts) 3 }}
 {{- fail (printf "harness file %q is not inside a bundle directory; expected harness/<bundle>/<path>" $path) }}
 {{- end }}
-{{- range $seg := (slice $parts 1) }}
-{{- if contains "__" $seg }}
-{{- fail (printf "harness path segment %q contains \"__\", the flat-key separator" $seg) }}
-{{- end }}
-{{- end }}
 {{- $bundle := index $parts 1 }}
 {{- if hasKey $wanted $bundle }}
 {{- $rel := join "/" (slice $parts 2) }}
-{{- $key := printf "harness__%s" (join "__" (slice $parts 1)) }}
-{{- /* KubeVirt renders this ConfigMap as an iso9660 disk; Joliet caps
-     filenames at 64 characters. */ -}}
+{{- /* Content-addressed key: the ConfigMap key is a hash of the relpath, not
+     the relpath itself, so a bundle's file layout never hits the iso9660/
+     Joliet 64-character filename limit KubeVirt's rendered disk imposes.
+     harness__<bundle>__map carries the hash -> relpath mapping the installer
+     needs to rebuild the tree (see parse_harness_files). */ -}}
+{{- $hash := trunc 16 (sha256sum $rel) }}
+{{- $key := printf "harness__%s__%s" $bundle $hash }}
 {{- if gt (len $key) 64 }}
-{{- fail (printf "harness ConfigMap key is %d chars (iso9660/Joliet limit is 64): %s" (len $key) $key) }}
+{{- fail (printf "harness ConfigMap key is %d chars (iso9660/Joliet limit is 64); shorten bundle name %q" (len $key) $bundle) }}
 {{- end }}
+{{- $map := get $pathMaps $bundle | default dict }}
+{{- if and (hasKey $map $hash) (ne (get $map $hash) $rel) }}
+{{- fail (printf "harness bundle %q: path hash collision between %q and %q; rename one file" $bundle (get $map $hash) $rel) }}
+{{- end }}
+{{- $_ := set $map $hash $rel }}
+{{- $_ := set $pathMaps $bundle $map }}
 {{- $_ := set $harness $key (b64enc $content) }}
 {{- $payload = add $payload (len (b64enc $content)) }}
 {{- $_ := set $digestLines $bundle (printf "%s%s\x00%s\n" (default "" (get $digestLines $bundle)) $rel (sha256sum $content)) }}
 {{- end }}
+{{- end }}
+{{- range $bundle, $map := $pathMaps }}
+{{- $mapJSON := toJson $map }}
+{{- $_ := set $harness (printf "harness__%s__map" $bundle) (b64enc $mapJSON) }}
+{{- $payload = add $payload (len (b64enc $mapJSON)) }}
 {{- end }}
 {{- $digests := dict }}
 {{- range $bundle, $text := $digestLines }}

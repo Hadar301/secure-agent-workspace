@@ -873,22 +873,42 @@ def openclaw_harness_config(info):
 
 
 def parse_harness_files(files):
-    """Build bundles from flat ConfigMap keys harness__<bundle>__<relpath>.
+    """Build bundles from flat ConfigMap keys harness__<bundle>__<hash>, plus
+    one harness__<bundle>__map key per bundle mapping each hash to its
+    relpath (content-addressed: the key no longer encodes the path, so it
+    never hits the iso9660/Joliet 64-character filename limit regardless of
+    how deep or long a bundle's paths are; see templates/configmap-bom.yaml).
 
     The digest is computed, never authored here: the pin lives in
-    sandbox.yaml harnessRef, outside the hashed tree. Relpaths get the same
-    .. / empty / absolute checks as read_harness_tar.
+    sandbox.yaml harnessRef, outside the hashed tree. Relpaths from the map
+    get the same .. / empty / absolute checks as read_harness_tar.
     """
-    trees = {}
+    raw_by_bundle, maps = {}, {}
     for key, raw in files.items():
         parts = key.split("__")
-        if len(parts) < 3 or parts[0] != "harness":
+        if len(parts) != 3 or parts[0] != "harness":
             raise InstallerError(f"unexpected harness file name: {key}")
-        rel = safe_rel_path("/".join(parts[2:]), f"harness key {key}")
-        trees.setdefault(parts[1], {})[rel] = raw
+        bundle, token = parts[1], parts[2]
+        if token == "map":
+            try:
+                maps[bundle] = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise InstallerError(
+                    f"harness bundle {bundle!r}: map is not valid JSON ({exc})") from None
+        else:
+            raw_by_bundle.setdefault(bundle, {})[token] = raw
     bundles = {}
-    for name in sorted(trees):
-        tree = trees[name]
+    for name in sorted(raw_by_bundle):
+        path_map = maps.get(name)
+        if path_map is None:
+            raise InstallerError(f"harness bundle {name!r} has no path map (harness__{name}__map)")
+        tree = {}
+        for hash_, raw in raw_by_bundle[name].items():
+            rel = path_map.get(hash_)
+            if rel is None:
+                raise InstallerError(
+                    f"harness bundle {name!r}: key 'harness__{name}__{hash_}' is not in its path map")
+            tree[safe_rel_path(rel, f"harness bundle {name!r} path map")] = raw
         if "harness.yaml" not in tree:
             raise InstallerError(f"harness bundle {name!r} has no harness.yaml")
         doc = _yaml(tree["harness.yaml"].decode("utf-8"), f"harness/{name}/harness.yaml")
@@ -907,8 +927,8 @@ def read_profile_files(directory):
 
     Returns (profile files as text, harness files as bytes, harness index).
     Profile keys are profiles__<profile>__<ws>__<file>.yaml; harness keys are
-    harness__<bundle>__<relpath> and hold base64 (see the digest contract in
-    templates/configmap-bom.yaml).
+    harness__<bundle>__<hash-or-"map"> and hold base64 (see the digest
+    contract in templates/configmap-bom.yaml and parse_harness_files).
     """
     directory = Path(directory)
     if not directory.is_dir():

@@ -75,13 +75,20 @@ HARNESS = ROOT / "charts" / "saw-bom" / "harness"
 
 
 def harness_files():
-    """Flatten charts/saw-bom/harness exactly like templates/configmap-bom.yaml,
-    but as raw bytes (the ConfigMap value is the base64 of these bytes)."""
+    """Flatten charts/saw-bom/harness exactly like templates/configmap-bom.yaml
+    (content-addressed keys plus a path map per bundle), but as raw bytes (the
+    ConfigMap value is the base64 of these bytes)."""
     files = {}
+    maps = {}
     for path in sorted(HARNESS.rglob("*")):
         if path.is_file():
-            rel = str(path.relative_to(HARNESS)).replace("/", "__")
-            files[f"harness__{rel}"] = path.read_bytes()
+            parts = path.relative_to(HARNESS).parts
+            bundle, rel = parts[0], "/".join(parts[1:])
+            key = f"harness__{bundle}__{hashlib.sha256(rel.encode()).hexdigest()[:16]}"
+            files[key] = path.read_bytes()
+            maps.setdefault(bundle, {})[key.rsplit("__", 1)[1]] = rel
+    for bundle, path_map in maps.items():
+        files[f"harness__{bundle}__map"] = json.dumps(path_map).encode()
     return files
 
 

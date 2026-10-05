@@ -16,6 +16,7 @@ their openshell.ai/* labels, reports their `.Mounts` and volume labels, and
 refuses to remove a volume a sandbox mounts; `sandbox exec cat` reads
 through the mount.
 """
+import hashlib
 import json
 
 import pytest
@@ -82,7 +83,14 @@ def mcp_tree(url, profile="brave"):
 
 
 def _inline(ab, name, tree):
-    files = {f"harness__{name}__{rel.replace('/', '__')}": text.encode() for rel, text in tree.items()}
+    """Build content-addressed harness__<name>__<hash> keys plus the
+    harness__<name>__map key, exactly like templates/configmap-bom.yaml."""
+    files, path_map = {}, {}
+    for rel, text in tree.items():
+        key = f"harness__{name}__{hashlib.sha256(rel.encode()).hexdigest()[:16]}"
+        files[key] = text.encode()
+        path_map[key.rsplit('__', 1)[1]] = rel
+    files[f"harness__{name}__map"] = json.dumps(path_map).encode()
     return {"bundles": ab.parse_harness_files(files)}
 
 

@@ -4,6 +4,7 @@ Needs `helm` on PATH (CI installs it).
 """
 
 import base64
+import hashlib
 import importlib.util
 import shutil
 import subprocess
@@ -59,6 +60,12 @@ def bom_data(**kwargs):
     return docs[("ConfigMap", "saw-bom-profiles")]["data"]
 
 
+def harness_key(bundle, rel):
+    """The content-addressed ConfigMap key configmap-bom.yaml derives for
+    `rel` inside `bundle`: harness__<bundle>__<sha256(rel)[:16]>."""
+    return f"harness__{bundle}__{hashlib.sha256(rel.encode()).hexdigest()[:16]}"
+
+
 def ds_default_digest(ab):
     files = {str(p.relative_to(HARNESS / "ds-default")): p.read_bytes()
              for p in sorted((HARNESS / "ds-default").rglob("*")) if p.is_file()}
@@ -77,7 +84,8 @@ def test_demo_harness_is_off_by_default():
 def test_demo_harness_true_ships_the_bundle_and_ref():
     data = bom_data(demo_harness=True)
     assert "harnessRef" in data["profiles__data-science__default__sandbox.yaml"]
-    assert "harness__ds-default__harness.yaml" in data
+    assert harness_key("ds-default", "harness.yaml") in data
+    assert "harness__ds-default__map" in data
     assert "harness-index.yaml" in data
 
 
@@ -92,7 +100,7 @@ def test_no_governance_list_is_kept_in_the_chart():
 
 def test_configmap_ships_the_harness_manifest_byte_for_byte():
     data = bom_data()
-    key = "harness__ds-default__harness.yaml"
+    key = harness_key("ds-default", "harness.yaml")
     assert key in data
     on_disk = (HARNESS / "ds-default" / "harness.yaml").read_bytes()
     assert base64.b64decode(data[key]) == on_disk
@@ -118,7 +126,7 @@ def test_harness_ref_digest_mismatch_fails_the_render(tmp_path):
 def test_harness_ref_without_a_digest_renders(tmp_path):
     """The digest pin is optional: bundle and pin ship in the same chart."""
     docs = render()
-    assert "harness__ds-default__harness.yaml" in docs[("ConfigMap", "saw-bom-profiles")]["data"]
+    assert harness_key("ds-default", "harness.yaml") in docs[("ConfigMap", "saw-bom-profiles")]["data"]
 
 
 def _with_ref(tmp_path, ref):
@@ -144,11 +152,31 @@ def test_an_unpinned_oci_harness_ref_fails_the_render(tmp_path):
     assert "pinned by digest" in err
 
 
-def test_bundle_key_over_the_joliet_limit_fails_the_render(tmp_path):
+def test_a_long_bundle_name_over_the_joliet_limit_fails_the_render(tmp_path):
+    """Keys are content-addressed (harness__<bundle>__<hash>), so a deep or
+    long path no longer matters; only a long bundle *name* can still overflow
+    the fixed-width key."""
+    copy = tmp_path / "saw-bom"
+    shutil.copytree(CHART, copy)
+    long_bundle = "x" * 40
+    bundle_dir = copy / "harness" / long_bundle
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "harness.yaml").write_text("metadata:\n  name: x\n")
+    sandbox_path = copy / "profiles" / "data-science" / "default" / "sandbox.yaml"
+    doc = yaml.safe_load(sandbox_path.read_text())
+    doc["spec"]["sandboxes"][0]["harnessRef"] = {"name": long_bundle}
+    sandbox_path.write_text(yaml.safe_dump(doc))
+    err = render_error(copy)
+    assert "Joliet" in err
+
+
+def test_a_deep_bundle_path_under_the_joliet_limit_renders(tmp_path):
+    """A path that would have overflowed the old path-derived key now fits,
+    since the ConfigMap key is a hash of the relpath, not the relpath."""
     copy = tmp_path / "saw-bom"
     shutil.copytree(CHART, copy)
     long_dir = copy / "harness" / "ds-default" / "skills" / ("x" * 40)
     long_dir.mkdir(parents=True)
     (long_dir / "SKILL.md").write_text("x\n")
-    err = render_error(copy)
-    assert "Joliet" in err
+    data = bom_data(chart=copy)
+    assert harness_key("ds-default", f"skills/{'x' * 40}/SKILL.md") in data

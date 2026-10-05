@@ -1,6 +1,7 @@
 """Harness bundle contract: digest, parsing, packaging invariants."""
 
 import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -40,20 +41,25 @@ def test_bundle_files_are_utf8_text():
             p.read_text(encoding="utf-8")
 
 
-def test_bundle_keys_fit_the_iso9660_joliet_limit():
-    """KubeVirt renders the ConfigMap as an iso9660 disk; Joliet caps
-    filenames at 64 characters."""
-    for p in HARNESS.rglob("*"):
-        if p.is_file():
-            key = "harness__" + str(p.relative_to(HARNESS)).replace("/", "__")
-            assert len(key) <= 64, key
+def _inline_files(bundle, rels_to_bytes):
+    """Build harness__<bundle>__<hash> + harness__<bundle>__map keys for
+    `rels_to_bytes`, exactly like templates/configmap-bom.yaml."""
+    files, path_map = {}, {}
+    for rel, raw in rels_to_bytes.items():
+        key = f"harness__{bundle}__{hashlib.sha256(rel.encode()).hexdigest()[:16]}"
+        files[key] = raw
+        path_map[key.rsplit('__', 1)[1]] = rel
+    files[f"harness__{bundle}__map"] = json.dumps(path_map).encode()
+    return files
 
 
-def test_bundle_path_segments_have_no_double_underscore():
-    """`__` is the flat-key separator; a segment containing it is ambiguous."""
-    for p in HARNESS.rglob("*"):
-        for part in p.relative_to(HARNESS).parts:
-            assert "__" not in part, p
+def test_a_long_bundle_name_can_still_overflow_the_fixed_width_key():
+    """Content-addressed keys are a fixed length (harness__<bundle>__<16 hex
+    chars>); only a long bundle *name* can still hit the iso9660/Joliet
+    64-character filename limit KubeVirt's rendered disk imposes. Guarded at
+    render time in configmap-bom.yaml; this just pins the arithmetic."""
+    assert len(f"harness__{'x' * 38}__{'0' * 16}") == 65
+    assert len(f"harness__{'x' * 37}__{'0' * 16}") == 64
 
 
 def test_parse_harness_files_reads_the_tree_and_the_manifest(ab):
@@ -62,9 +68,9 @@ def test_parse_harness_files_reads_the_tree_and_the_manifest(ab):
     manifest = yaml.safe_dump({
         "apiVersion": "saw.redhat.com/v1alpha1", "kind": "HarnessBundle",
         "metadata": {"name": "demo"}, "spec": {"agent": "openclaw"}})
-    bundles = ab.parse_harness_files({
-        "harness__demo__harness.yaml": manifest.encode(),
-        "harness__demo__skills__s1__SKILL.md": b"x\n"})
+    bundles = ab.parse_harness_files(_inline_files("demo", {
+        "harness.yaml": manifest.encode(),
+        "skills/s1/SKILL.md": b"x\n"}))
     assert set(bundles) == {"demo"}
     assert bundles["demo"].agent == "openclaw"
     assert bundles["demo"].digest.startswith("sha256:")
@@ -73,17 +79,23 @@ def test_parse_harness_files_reads_the_tree_and_the_manifest(ab):
 
 def test_parse_harness_files_rejects_a_bundle_without_a_manifest(ab):
     with pytest.raises(ab.InstallerError, match="stray.*harness.yaml"):
-        ab.parse_harness_files({"harness__stray__skills__s__SKILL.md": b"x\n"})
+        ab.parse_harness_files(_inline_files("stray", {"skills/s/SKILL.md": b"x\n"}))
 
 
-@pytest.mark.parametrize("key", [
-    "harness__demo__..__escape",           # ../escape
-    "harness__demo__a__..__..__b",         # a/../../b
-    "harness__demo__skills____x",          # skills//x (empty segment)
+def test_parse_harness_files_rejects_a_bundle_with_no_path_map(ab):
+    with pytest.raises(ab.InstallerError, match="no path map"):
+        ab.parse_harness_files({"harness__demo__0000000000000000": b"a: 1\n"})
+
+
+@pytest.mark.parametrize("rel", [
+    "../escape",
+    "a/../../b",
+    "skills//x",   # empty segment
 ])
-def test_parse_harness_files_rejects_an_unsafe_relpath(ab, key):
+def test_parse_harness_files_rejects_an_unsafe_relpath(ab, rel):
+    files = _inline_files("demo", {"harness.yaml": b"a: 1\n", rel: b"a: 1\n"})
     with pytest.raises(ab.InstallerError, match="unsafe path"):
-        ab.parse_harness_files({key: b"a: 1\n", "harness__demo__harness.yaml": b"a: 1\n"})
+        ab.parse_harness_files(files)
 
 
 def test_shipped_bundle_parses(ab, shipped_harness_files):
