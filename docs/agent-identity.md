@@ -11,6 +11,12 @@ correlated audit remain open and are retained
 as blockers. The live runner executes compatibility probes and reports the
 remaining scenarios as blocked.
 
+The live identity evidence below used OpenShell `0.0.116-rhaiv.0`. The merge
+from `main` on 2026-10-05 pins OpenShell `0.1.2-rhaiv.0` and changes installer
+staging and signing. The merged build has local checks, but its VM identity,
+grant, and audit behavior has not been revalidated on the cluster. Earlier
+live results do not establish acceptance for this new dependency build.
+
 ## Architecture
 
 `charts/spire-identity` installs the ZTWIM subscription and its SPIRE server,
@@ -641,13 +647,15 @@ These items remain:
   `c25daa63-085b-4216-a328-633658ea1e83`.
 - Correlated audit acceptance. This remains a mandatory blocker. The pinned
   supervisor `243a410b48a9760e7c90abe98a4b1b67414bc1d6` emits grant success
-  and failure in `inject_if_needed` without sandbox identity. The smallest
-  dependency change is to return the Workload API JWT-SVID `sub` alongside
-  the access token from `obtain_provider_token`, including cache hits, and
-  to put that SPIFFE ID on both OCSF events. Decode `azp` or `client_id`
-  from an access token only as an unverified hint, and omit it when the
-  token is opaque. Do not log token values. No image has been built and no
-  issue or pull request has been opened.
+  and failure in `inject_if_needed` without sandbox identity. The pinned
+  token cache returns the access token before fetching an SVID on a cache hit;
+  it stores no subject. An upstream change must carry the Workload API SVID
+  subject through fresh grants, cache hits, and failures after attestation,
+  then attach it to the correlated OCSF events. That subject does not verify
+  the injected access token's `azp` or `client_id`; opaque tokens have no
+  locally inspectable claims. Do not log token values. The source review and
+  acceptance contract are in `docs/issues/agent-identity-audit-blocker.md`.
+  No image has been built and no issue or pull request has been opened.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
