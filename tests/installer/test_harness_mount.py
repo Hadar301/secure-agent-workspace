@@ -678,6 +678,22 @@ def test_the_gateway_is_restarted_before_a_fresh_run(ab, fake_env, config, profi
     assert "nohup openclaw gateway run" in scripts
 
 
+def test_the_auth_token_is_only_rewritten_alongside_a_restart(ab, fake_env, config, profiles, creds):
+    """Regression: a live gateway keeps authenticating with the token it was
+    launched with, so writing a new token to config without restarting would
+    desync the two. The token-set must be inside the same restart-conditional
+    as pkill/nohup, not a separate unconditional call."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+    scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    restart_script = next(s for s in scripts if "nohup openclaw gateway run" in s)
+    assert "gateway.auth.token" in restart_script
+    assert restart_script.index("if [") < restart_script.index("gateway.auth.token") \
+        < restart_script.index("nohup")
+    assert not any("gateway.auth.token" in s and "nohup openclaw gateway run" not in s
+                   for s in scripts)
+
+
 def test_the_pkill_pattern_does_not_match_its_own_shell():
     """Regression: 'openclaw gateway run' as a literal pkill/pgrep pattern
     also matches the `sh -c "...openclaw gateway run..."` wrapper it runs

@@ -46,6 +46,9 @@
 {{- fail (printf "harness file %q is not inside a bundle directory; expected harness/<bundle>/<path>" $path) }}
 {{- end }}
 {{- $bundle := index $parts 1 }}
+{{- if contains "__" $bundle }}
+{{- fail (printf "harness bundle name %q contains \"__\", the flat-key separator" $bundle) }}
+{{- end }}
 {{- if hasKey $wanted $bundle }}
 {{- $rel := join "/" (slice $parts 2) }}
 {{- /* Content-addressed key: the ConfigMap key is a hash of the relpath, not

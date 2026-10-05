@@ -2702,9 +2702,6 @@ class ProfileApplier:
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
-        self.cli(*exec_cmd, "sh", "-c",
-                 f"{oc_env} openclaw config set gateway.auth.token {shlex.quote(token)}",
-                 check=False)
         self.configure_harness(ws, sb, exec_cmd, oc_env)
         route = self.cfg.get("sandboxDashboardRoute")
         if route:
@@ -2714,15 +2711,16 @@ class ProfileApplier:
                      check=False)
         refilled = self.harness_refilled.get((ws.name, sb.name), False)
         self.cli(*exec_cmd, "sh", "-c",
-                 f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && "
-                 # Restart only if the harness volume was refilled (its config
-                 # changes with it) or no gateway is running yet (create, or a
-                 # prior crash); otherwise leave a live gateway alone so a
-                 # routine reconcile does not cut running agent sessions.
-                 # The bracket in '[o]penclaw' keeps pkill/pgrep from matching
-                 # their own argv, which would otherwise kill this very shell.
+                 # Restart (and rotate the token with it) only on refill or if
+                 # no gateway is running; otherwise an unconditional restart
+                 # would cut live sessions, and a token rewrite without one
+                 # would desync config from what the running gateway accepts.
+                 # '[o]penclaw' keeps pkill/pgrep from matching their own argv
+                 # and killing this shell.
                  f"if [ {'1' if refilled else '0'} = 1 ] || "
                  "! pgrep -f '[o]penclaw gateway run' > /dev/null; then "
+                 f"{oc_env} openclaw config set gateway.auth.token {shlex.quote(token)} && "
+                 f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && "
                  "pkill -f '[o]penclaw gateway run' || true; sleep 1; "
                  "nohup openclaw gateway run --allow-unconfigured --bind lan --port 18789 "
                  "> /tmp/openclaw-gateway.log 2>&1 & fi",

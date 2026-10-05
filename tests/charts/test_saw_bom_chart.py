@@ -180,3 +180,16 @@ def test_a_deep_bundle_path_under_the_joliet_limit_renders(tmp_path):
     (long_dir / "SKILL.md").write_text("x\n")
     data = bom_data(chart=copy)
     assert harness_key("ds-default", f"skills/{'x' * 40}/SKILL.md") in data
+
+
+def test_a_bundle_name_with_a_double_underscore_fails_the_render(tmp_path):
+    """The bundle name is still a flat-key segment (harness__<bundle>__<hash>);
+    parse_harness_files requires exactly 3 "__"-separated parts, so a bundle
+    named e.g. "my__bundle" would render but break the installer."""
+    copy = tmp_path / "saw-bom"
+    shutil.copytree(CHART, copy)
+    bundle_dir = copy / "harness" / "my__bundle"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "harness.yaml").write_text("metadata:\n  name: x\n")
+    err = render_error(copy)
+    assert "contains \"__\"" in err
