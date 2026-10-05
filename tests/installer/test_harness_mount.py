@@ -673,18 +673,16 @@ def test_openclaw_loads_the_bundle_from_the_mount(ab, fake_env, config, profiles
     assert "base64 -d" not in scripts, "bundle files never go through exec"
 
 
-def test_the_auth_token_is_only_rewritten_alongside_a_restart(ab, fake_env, config, profiles, creds):
-    """Regression: a live gateway keeps authenticating with the token it was
-    launched with, so writing a new token to config without restarting would
-    desync the two. The token-set must be inside the same restart-conditional
-    as pkill/nohup, not a separate unconditional call."""
+def test_the_gateway_secret_is_never_rotated_by_the_installer(ab, fake_env, config, profiles, creds):
+    """Regression: a live gateway keeps authenticating with the secret it was
+    launched with. The secret is the one kept in the sandbox's config, so
+    rewriting the settings on every run never desyncs it from a gateway
+    that is left running."""
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
     restart_script = next(s for s in scripts if "nohup openclaw gateway run" in s)
-    assert "gateway.auth.token" in restart_script
-    assert restart_script.index("if [") < restart_script.index("gateway.auth.token") \
-        < restart_script.index("nohup")
+    assert 'openclaw config set gateway.auth.token "\\"$secret\\""' in restart_script
     assert not any("gateway.auth.token" in s and "nohup openclaw gateway run" not in s
                    for s in scripts)
 
@@ -718,6 +716,10 @@ class FakeGateway:
         result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
         time.sleep(1.5)
         return result.returncode
+
+    def running(self):
+        return [pid for pid in self.started() if os.path.exists(f"/proc/{pid}")
+                and "gateway" in open(f"/proc/{pid}/cmdline").read()]
 
     def started(self):
         return self.starts.read_text().split() if self.starts.exists() else []
@@ -753,18 +755,43 @@ def test_every_openclaw_sandbox_ends_up_with_a_gateway(
     assert len(gateway.started()) == 1
 
 
-def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway):
-    old = gateway.start_running()
-    assert gateway.run(ab.gateway_start_script(False, "tok", "OPENCLAW_HOME=/sandbox")) == 0
-    assert old.poll() is None, "a live gateway (and its sessions) is left alone"
-    assert len(gateway.started()) == 1, "no second gateway"
+def gateway_script(ab, home, refilled=False, cfg=None):
+    (home / ".openclaw").mkdir(exist_ok=True)
+    return ab.openclaw_gateway_script(cfg or {}, "default", "notebook",
+                                      f"OPENCLAW_HOME={home}", refilled=refilled)
 
 
-def test_a_refill_replaces_the_running_gateway(ab, gateway):
+def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
+    assert gateway.run(gateway_script(ab, tmp_path)) == 0
+    assert len(gateway.started()) == 1
+    assert gateway.run(gateway_script(ab, tmp_path)) == 0
+    assert len(gateway.started()) == 1, "a live gateway (and its sessions) is left alone"
+
+
+def test_a_running_gateway_without_a_fingerprint_is_replaced(ab, gateway, tmp_path):
+    """A gateway started before the fingerprint existed (or by hand) may run
+    other settings: it is replaced once."""
     old = gateway.start_running()
-    assert gateway.run(ab.gateway_start_script(True, "tok", "OPENCLAW_HOME=/sandbox")) == 0
-    assert old.poll() is not None, "the old gateway is stopped"
-    assert len(gateway.started()) == 2, "and a new one started"
+    assert gateway.run(gateway_script(ab, tmp_path)) == 0
+    assert old.poll() is not None
+    assert len(gateway.started()) == 2
+
+
+def test_a_refill_replaces_the_running_gateway(ab, gateway, tmp_path):
+    assert gateway.run(gateway_script(ab, tmp_path)) == 0
+    assert gateway.run(gateway_script(ab, tmp_path, refilled=True)) == 0
+    assert len(gateway.started()) == 2, "the old gateway is stopped and a new one started"
+    assert len(gateway.running()) == 1
+
+
+def test_changed_settings_replace_the_running_gateway(ab, gateway, tmp_path):
+    """A new UI origin or auth setting only applies after a restart."""
+    assert gateway.run(gateway_script(ab, tmp_path)) == 0
+    cfg = {"sandboxUi": [{"workspace": "default", "sandbox": "notebook",
+                          "host": "alice-default-notebook-ui.apps.example.com"}]}
+    assert gateway.run(gateway_script(ab, tmp_path, cfg=cfg)) == 0
+    assert len(gateway.started()) == 2
+    assert len(gateway.running()) == 1
 
 
 def test_the_gateway_check_does_not_count_the_script_itself(ab, tmp_path):

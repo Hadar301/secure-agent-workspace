@@ -297,6 +297,7 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     assert config["ownerSubject"] == ""
 
 
+
 # -- profile catalog: sandbox UI routes and the Secrets to sync ----------------
 
 def test_the_profile_catalog_is_current():

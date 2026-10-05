@@ -435,8 +435,7 @@ esac
     (bin_dir / "node").write_text("#!/bin/sh\necho s3cret\n")
     for f in ("openclaw", "node"):
         (bin_dir / f).chmod(0o755)
-    stop = next(l for l in script.splitlines() if l.startswith("for d in /proc/"))
-    script = script.replace(stop, ":").replace("nohup ", "")
+    script = script.replace("nohup ", "")
     subprocess.run(["sh", "-c", script], check=True, timeout=30,
                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
     import time
@@ -514,25 +513,6 @@ def test_the_gateway_secret_is_kept_and_stays_in_the_sandbox(ab):
     assert "/sandbox/.openclaw/openclaw.json" in script
     assert '[ -n "$secret" ] || secret=$(node -e' in script
     assert "randomBytes" in script
-
-
-def test_a_rerun_restarts_the_gateway(ab, tmp_path):
-    """A running gateway is stopped first, so new settings apply; the stop
-    loop skips shells (this script's own sh -c contains the pattern)."""
-    import subprocess
-    import sys
-    script = ab.openclaw_gateway_script(ui_config(), "default", "notebook", "OPENCLAW_HOME=/sandbox")
-    stop = next(l for l in script.splitlines() if l.startswith("for d in /proc/"))
-    assert script.index(stop) < script.index("nohup openclaw gateway run")
-    gateway = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
-                                "openclaw", "gateway", "run"])
-    try:
-        done = subprocess.run(["sh", "-c", stop.replace("sleep 2", "sleep 0.2") + "; echo alive"],
-                              capture_output=True, text=True, timeout=30)
-        assert done.stdout.strip() == "alive"
-        assert gateway.wait(timeout=10) != 0
-    finally:
-        gateway.kill()
 
 
 def test_start_openclaw_runs_the_gateway_script(ab, fake_env, config, profiles, creds):

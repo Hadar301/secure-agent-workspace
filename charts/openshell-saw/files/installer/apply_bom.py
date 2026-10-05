@@ -2001,24 +2001,6 @@ _GATEWAY_PIDS_SH = (
     'done; }')
 
 
-def gateway_start_script(refilled, token, oc_env):
-    """The sandbox script that (re)starts OpenClaw's gateway: always when
-    the harness was refilled, otherwise only when none is running."""
-    q = shlex.quote
-    return "\n".join([
-        _GATEWAY_PIDS_SH,
-        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(gateway_pids)" ]; then',
-        f"  {oc_env} openclaw config set gateway.auth.token {q(token)} "
-        '|| echo "WARN: could not set gateway.auth.token"',
-        f"  export OPENCLAW_GATEWAY_TOKEN={q(token)} {oc_env}",
-        '  for p in $(gateway_pids); do kill "$p" 2>/dev/null; done',
-        "  sleep 1",
-        "  nohup openclaw gateway run --allow-unconfigured --bind lan --port 18789 "
-        "> /tmp/openclaw-gateway.log 2>&1 &",
-        "fi",
-    ]) + "\n"
-
-
 class HarnessVolume:
     """A sandbox's podman named volume holding its harness bundle tree
     unchanged, plus a marker with the source and tree digest. An unchanged,
@@ -2396,6 +2378,24 @@ class ProfileApplier:
             return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
+    # Found live after a VM restart: a sandbox reports an error for a while
+    # as its supervisor reconnects, then recovers. Recreating it would lose
+    # /sandbox, so a broken sandbox gets this long to come back first.
+    BROKEN_GRACE_SECONDS = 90
+    # `sandbox delete` only accepts the deletion; creating the same name
+    # before the cleanup finishes fails with "already exists".
+    DELETE_WAIT_SECONDS = 300
+    POLL_SECONDS = 5
+
+    def wait_sandbox(self, ws, sb, until, seconds):
+        """Poll sandbox_state until until(state) or the time is up; the last state."""
+        state = self.sandbox_state(ws, sb)
+        deadline = time.monotonic() + (0 if self.sh.dry_run else seconds)
+        while not until(state) and time.monotonic() < deadline:
+            time.sleep(self.POLL_SECONDS)
+            state = self.sandbox_state(ws, sb)
+        return state
+
     def harness_source(self, sb):
         """(source id, inline bundle) for a sandbox's harnessRef, or (None, None).
 
@@ -2668,24 +2668,6 @@ class ProfileApplier:
             time.sleep(delay)
         raise InstallerError(f"could not remove harness volume {volume} to relabel it")
 
-    # Found live after a VM restart: a sandbox reports an error for a while
-    # as its supervisor reconnects, then recovers. Recreating it would lose
-    # /sandbox, so a broken sandbox gets this long to come back first.
-    BROKEN_GRACE_SECONDS = 90
-    # `sandbox delete` only accepts the deletion; creating the same name
-    # before the cleanup finishes fails with "already exists".
-    DELETE_WAIT_SECONDS = 300
-    POLL_SECONDS = 5
-
-    def wait_sandbox(self, ws, sb, until, seconds):
-        """Poll sandbox_state until until(state) or the time is up; the last state."""
-        state = self.sandbox_state(ws, sb)
-        deadline = time.monotonic() + (0 if self.sh.dry_run else seconds)
-        while not until(state) and time.monotonic() < deadline:
-            time.sleep(self.POLL_SECONDS)
-            state = self.sandbox_state(ws, sb)
-        return state
-
     def create_sandbox(self, ws, sb, configure_harness=True):
         """configure_harness=False: the caller runs start_openclaw right
         after this, which configures the harness itself; skip the redundant
@@ -2864,10 +2846,12 @@ class ProfileApplier:
                      check=False)
         self.configure_harness(ws, sb, exec_cmd, oc_env)
         # One script: the gateway secret is made and kept inside the sandbox
-        # (the installer never sees it), and the gateway is restarted so a
-        # changed auth mode or origin list takes effect. Origins include the
-        # sandbox UI route and the legacy dashboard route.
-        self.cli(*exec_cmd, "sh", "-c", openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env),
+        # (the installer never sees it). The gateway is restarted only when
+        # the harness was refilled, none is running, or its settings (auth
+        # mode, users, origins) changed: a restart cuts live sessions.
+        refilled = self.harness_refilled.get((ws.name, sb.name), False)
+        self.cli(*exec_cmd, "sh", "-c",
+                 openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled),
                  check=False)
         self.install_keepalive(ws, sb)
 
@@ -3416,17 +3400,9 @@ _WRITE_PASSWORD_JS = ('const fs=require("fs"),f=process.argv[1];const c=JSON.par
                       'c.gateway.auth.password=process.env.SAW_GATEWAY_SECRET;'
                       'fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600})')
 _NEW_SECRET_JS = 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))'
-# Stops a running gateway (a re-run must apply the new config). /proc, not
-# pkill: the sandbox image need not have procps. Shells are skipped: this
-# script's own `sh -c` (and any wrapper running it) contains the pattern.
-_STOP_GATEWAY_SH = (
-    'for d in /proc/[0-9]*; do c=$(tr "\\000" " " < "$d/cmdline" 2>/dev/null) || continue; '
-    'case "$c" in *"sh -c "*) continue;; esac; '
-    'case "$c" in *"openclaw gateway run"*|openclaw-gateway*) kill "${d#/proc/}" 2>/dev/null;; esac; '
-    'done; sleep 2')
 
 
-def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
+def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
     """The sandbox shell script that configures and (re)starts OpenClaw's
     gateway on 0.0.0.0:18789.
 
@@ -3444,7 +3420,13 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
     the browser sent. (Found live: its X-Forwarded-User is the Keycloak
     subject, a UUID.) allowUsers is the same list the proxy admits, and their
     UI devices are approved without pairing. Local clients (the CLI, the TUI,
-    `openclaw agent`) use the same secret as gateway.auth.password."""
+    `openclaw agent`) use the same secret as gateway.auth.password.
+
+    The settings are written on every run (the secret is the kept one, so a
+    running gateway and its config never disagree on it). The gateway is
+    restarted only when the harness was refilled, none is running, or the
+    settings differ from the ones it was started with (a fingerprint kept
+    next to the config): a restart cuts live UI and CLI sessions."""
     q = shlex.quote
     users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
     run = ("nohup openclaw gateway run --allow-unconfigured "
@@ -3510,20 +3492,34 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
         # The control UI is reached through a route, so the browser's Origin
         # is the route's https URL.
         lines.append(f"openclaw config set gateway.controlUi.allowedOrigins {q(json.dumps(origins))}")
-    lines.append(_STOP_GATEWAY_SH)
-    if users is None:
-        lines.append(f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}')
-    else:
+    # Every setting above is fixed text (the secret stays "$secret"), so
+    # their digest says whether the running gateway has them.
+    fingerprint = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    fp_file = '"${OPENCLAW_HOME:-/sandbox}/.openclaw/saw-gateway.sha256"'
+    if users is not None:
         lines += [
             'if [ "$trusted" = 1 ]; then',
-            # After the last `config set`, which would remove it again.
+            # After the last `config set`, which would remove it again; on
+            # every run, as every run does `config set`.
             f'SAW_GATEWAY_SECRET="$secret" node -e {q(_WRITE_PASSWORD_JS)} {OPENCLAW_CONFIG} '
             '|| echo "WARN: could not set gateway.auth.password; the CLI needs a paired device"',
-            f'OPENCLAW_GATEWAY_PASSWORD="$secret" {run}',
-            "else",
-            f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}',
             "fi",
         ]
+    lines += [
+        _GATEWAY_PIDS_SH,
+        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(gateway_pids)" ] || '
+        f'[ "$(cat {fp_file} 2>/dev/null)" != {fingerprint} ]; then',
+        '  for p in $(gateway_pids); do kill "$p" 2>/dev/null; done',
+        "  sleep 1",
+        *([f'  OPENCLAW_GATEWAY_TOKEN="$secret" {run}'] if users is None else [
+            '  if [ "$trusted" = 1 ]; then',
+            f'  OPENCLAW_GATEWAY_PASSWORD="$secret" {run}',
+            "  else",
+            f'  OPENCLAW_GATEWAY_TOKEN="$secret" {run}',
+            "  fi"]),
+        f"  echo {fingerprint} 2>/dev/null > {fp_file} || true",
+        "fi",
+    ]
     return "\n".join(lines) + "\n"
 
 
