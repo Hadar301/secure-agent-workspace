@@ -72,7 +72,14 @@ This SAW task is constrained to current builds. Do not patch or replace the
 supervisor here, use protected-service logs as a substitute, or mark the full
 agent-identity ticket complete while this dependency remains unresolved.
 
-The 2026-10-05 merge from `main` updates the SAW BOM to OpenShell
-`0.1.2-rhaiv.0`. The source findings above apply to the previously tested
-`0.0.116-rhaiv.0` supervisor. Recheck the new pinned supervisor's audit path
-and repeat live audit acceptance before treating this blocker as resolved.
+The 2026-10-05 merge from `main` pins OpenShell `0.1.2-rhaiv.0`:
+`quay.io/opendatahub/odh-openshell-supervisor@sha256:0179eb17dcc0098d3fce360035c0be0c26a39949ce09a397c7c259bf728170ff`.
+The matching public source is
+https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-supervisor-network/src/l7/token_grant_injection.rs.
+Tag `v0.1.2` still emits the same success and failure events: provider name,
+destination, and outcome, with no sandbox SPIFFE ID and no `azp` or
+`client_id`. `obtain_provider_token` still returns only `Result<String>`, and
+the cache-hit path returns that string before another SVID fetch.
+`v0.1.3-pre.3` and `main`, checked the same day, do not add those fields
+either. This source recheck does not replace live proxy output. The blocker
+remains open, and no upstream issue or pull request has been opened.
