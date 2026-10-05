@@ -60,10 +60,10 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 
 The `openshell-gateway-image` BuildConfig creates a Fedora 44 qcow2 image with:
 
-- Docker CE (podman removed), Node.js, Python3, cloud-init, openssh, qemu-guest-agent
-- `cloud-user` with sudo access and Docker group membership
+- Podman by default (`containerRuntime: podman`), or Docker CE with `containerRuntime: docker`; plus Node.js, Python3, cloud-init, openssh, qemu-guest-agent. See [Container runtime support](container-runtime.md).
+- `cloud-user` with sudo access (and the `docker` group only in the Docker variant)
 - Systemd user service for the OpenShell gateway (`openshell-gateway.service`)
-- First-boot setup service (`openshell-gateway-setup.service`) that starts Docker, enables the gateway, and configures mTLS certs
+- First-boot setup service (`openshell-gateway-setup.service`) that starts the container runtime, enables the gateway, and configures mTLS certs
 
 The image is pushed to an internal ImageStream (`openshell-gateway:latest`) and used as a DataSource for cloning VM disks.
 
@@ -75,6 +75,7 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 - **Clients:**
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
+    (effective lifetime capped to 10h by the realm's SSO Session Max)
   - `openshell-dashboard` — public client, PKCE, redirect URIs registered dynamically per sandbox
 - **Users:** developer, admin, alice, bob (test accounts)
 - **Roles:** `openshell-user`, `openshell-admin`
@@ -158,7 +159,7 @@ sandboxes.
 | Route | Target Port | TLS | Purpose |
 | --- | --- | --- | --- |
 | `<name>-gateway` | 17670 | Passthrough | gRPC gateway (CLI + API) |
-| `<name>-dashboard` | 18789 | Passthrough | Openclaw agent web UI |
+| `<name>-dashboard` | 18789 | Edge | OpenClaw agent web UI; the dashboard Route does not reach the OpenClaw UI on OpenShell 0.1.x, see [OpenClaw UI and the dashboard Route](#openclaw-ui-and-the-dashboard-route) |
 | `<name>-webui` | 8080 | Edge | OpenShell Dashboard (via oauth2-proxy) |
 
 ### Internal Connectivity
@@ -172,7 +173,7 @@ sandboxes.
 
 ### Authentication Flows
 
-- **CLI:** `openshell gateway login` triggers OIDC device code flow via Keycloak. Token is cached locally and sent as a bearer token on gRPC calls.
+- **CLI:** `openshell gateway login` uses the browser flow by default, or the OIDC device-code flow when `OPENSHELL_NO_BROWSER=1` is set, authenticating against Keycloak. The token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
 - **In-guest installer:** its own mTLS client certificate, `CN=saw-installer` and `OU=openshell-admin`, registered as the `saw-installer` gateway entry. Users still use OIDC.
 
@@ -232,8 +233,48 @@ make governance-create-profile OPENSHELL_SAW_NAME=my-saw \
   PROFILE_NAME=jira PROFILE_FILE=/path/to/jira.yaml
 ```
 
+The `add`, `remove`, and `create` targets edit `charts/governance-policy/profiles/`, commit, and run `git push origin HEAD`, then wait for Argo CD to sync the `governance-policy` application. On the quickstart path, where governance-policy is installed with Helm rather than Argo CD, edit the profiles and re-run `helm upgrade --install governance-policy charts/governance-policy --namespace openshell-agents` instead. `OPENSHELL_SAW_NAME` selects the gateway that `governance-list-profiles` queries (default `openshell-saw`). See [governance-interceptor.md](governance-interceptor.md#applying-profile-changes).
+
 ### Testing
 
 ```bash
 make test                    # Headless E2E test
+```
+
+## Quickstart notes
+
+### Operators for the quickstart
+
+The quickstart installs operators from OperatorHub. OpenShift Virtualization needs one extra resource: after its operator is running, create a `HyperConverged` so the operator deploys the virtualization components and a node can run VMs. Option A (the validated pattern) creates this for you; the quickstart does not.
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec: {}
+```
+
+External Secrets is only required for Option A, which syncs the pattern's secrets from Vault; the quickstart sets its secrets directly and does not use it.
+
+### Golden image tag
+
+`make copy-images` mirrors the prebuilt images into the cluster. For each image it tries the `OPENSHELL_VERSION` tag first, then `v<version>`, and finally falls back to the `latest` tag, using the first that exists and storing it under the requested version (it also tags the result `latest`). If the golden image predates bundle signing, as the prebuilt images do, it ships no `verify-bundle`, so `saw-stage-installer` stages the installer tree without verification; the default signing mode `warn` still boots the VM, while `enforce` would refuse.
+
+### OpenClaw UI and the dashboard Route
+
+The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which runs with no network namespace of its own (`netns` mode `none`, no port mappings) on OpenShell 0.1.x. The Route therefore does not reach the OpenClaw UI and answers 503. Use `make openclaw-gui` (or `make nemoclaw-gui`), which port-forwards to the sandbox UI instead.
+
+### Web search in the default sandbox
+
+The `notebook` sandbox attaches only the NVIDIA provider, and its policy allows only that provider's endpoints, so the agent's web search and web fetch calls fail. Attaching the `brave` provider to the sandbox in the BOM profile (`charts/saw-bom/profiles/data-science/default/sandbox.yaml`) opens its endpoints; note that the default profile already creates a `brave` provider but attaches it to no sandbox, which is why step 11 still needs `WEB_SEARCH_API_KEY`. A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's synthetic DNS answers, so enabling web search may take more than the provider change.
+
+### Shell access
+
+`openshell sandbox connect` attaches to the sandbox's main process. In SAW sandboxes that process is `sleep infinity`, started without a terminal, so `connect` shows nothing. To get an interactive shell, use `openshell sandbox exec`:
+
+```bash
+openshell sandbox exec -n notebook -- sh
+openshell sandbox exec -n cuda-sandbox --workspace cuda-dev -- sh
 ```
