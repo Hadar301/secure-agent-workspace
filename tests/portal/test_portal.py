@@ -299,6 +299,7 @@ class Fake:
                     return self._reply(409, {"reason": "AlreadyExists"})
                 fake.rv += 1
                 body.setdefault("metadata", {})["resourceVersion"] = str(fake.rv)
+                body["metadata"]["uid"] = f"uid-{fake.rv}"
                 fake.objects[path] = body
                 self._reply(201, body)
 
@@ -317,6 +318,10 @@ class Fake:
                 if self.path.startswith("/v1/secret/metadata/"):
                     fake.vault.pop(self.path[len("/v1/secret/metadata/"):], None)
                     return self._reply(204)
+                pre = (self._body() or {}).get("preconditions") or {}
+                meta = (fake.objects.get(self.path) or {}).get("metadata") or {}
+                if any(meta.get(k) != v for k, v in pre.items()) and self.path in fake.objects:
+                    return self._reply(409, {"reason": "Conflict"})
                 fake.deleted.append(self.path)
                 self._reply(200 if fake.objects.pop(self.path, None) else 404, {})
 
@@ -652,6 +657,108 @@ def test_delete_takes_the_entry_off_the_applicationset_first(portal, world, monk
     assert portal.main(["create", "saw-req-3"]) == 1    # being deleted
 
 
+REGISTRY = "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"
+
+
+def test_the_deletion_mark_stays_until_the_keys_are_gone(portal, world, monkeypatch):
+    """Review of #57: finish-delete removed the entry before destroying the
+    keys, so a create in between registered a replacement whose new keys the
+    delete then destroyed. The keys go first, while the mark still refuses
+    a create; a create after the cleanup keeps its keys."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    racing = []
+    real = portal.Vault.destroy
+
+    def destroy(self, path):
+        if not racing:
+            fake.request("saw-req-3", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
+            racing.append(portal.main(["create", "saw-req-3"]))
+        real(self, path)
+    monkeypatch.setattr(portal.Vault, "destroy", destroy)
+    assert portal.main(["finish-delete", "alice"]) == 0
+    assert racing == [1], "a create during the cleanup is refused"
+    assert REGISTRY not in fake.objects and fake.vault == {}
+    monkeypatch.setattr(portal.Vault, "destroy", real)
+    fake.request("saw-req-4", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
+    assert portal.main(["create", "saw-req-4"]) == 0
+    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-new"
+
+
+def test_a_stale_cleanup_leaves_a_replacement_alone(portal, world, monkeypatch):
+    """A finish-delete that runs again after the workspace was re-created
+    (a retried or duplicated task) changes nothing: the entry is no longer
+    its deletion."""
+    fake, signer = world
+    monkeypatch.setenv("PIPELINE_RUN", "saw-workspace-delete-a")
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    assert portal.main(["finish-delete", "alice"]) == 0
+    monkeypatch.setenv("PIPELINE_RUN", "saw-workspace-create-b")
+    fake.request("saw-req-3", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
+    assert portal.main(["create", "saw-req-3"]) == 0
+    monkeypatch.setenv("PIPELINE_RUN", "saw-workspace-delete-a")
+    assert portal.main(["finish-delete", "alice"]) == 1
+    assert REGISTRY in fake.objects
+    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-new"
+
+
+def test_only_the_delete_that_owns_the_mark_cleans_up(portal, world, monkeypatch):
+    """A delete run again takes the mark over; the first run's cleanup then
+    leaves it to the second."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
+    for run, req in (("delete-a", "saw-req-2"), ("delete-b", "saw-req-3")):
+        monkeypatch.setenv("PIPELINE_RUN", run)
+        fake.request(req, {"action": "delete", "token": signer.token()})
+        assert portal.main(["delete", req]) == 0
+    assert fake.objects[REGISTRY]["metadata"]["annotations"]["saw.redhat.com/deletion"] == "delete-b"
+    monkeypatch.setenv("PIPELINE_RUN", "delete-a")
+    assert portal.main(["finish-delete", "alice"]) == 1
+    assert REGISTRY in fake.objects and fake.vault != {}
+    monkeypatch.setenv("PIPELINE_RUN", "delete-b")
+    assert portal.main(["finish-delete", "alice"]) == 0
+    assert REGISTRY not in fake.objects and fake.vault == {}
+
+
+def test_the_entry_is_removed_only_in_the_version_checked(portal, world, monkeypatch):
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    portal.main(["delete", "saw-req-2"])
+    real = portal.Vault.destroy
+
+    def destroy(self, path):
+        fake.objects[REGISTRY]["metadata"]["resourceVersion"] = "changed"
+        real(self, path)
+    monkeypatch.setattr(portal.Vault, "destroy", destroy)
+    assert portal.main(["finish-delete", "alice"]) == 1
+    assert REGISTRY in fake.objects
+
+
+def test_a_stale_create_does_not_clear_a_deletion_mark(portal, world):
+    """Review of #57: a create that found no entry, then hit 409 on POST,
+    replaced the entry unconditionally and so cleared a deletion mark made
+    meanwhile. It now reads the entry again and refuses a deleting one."""
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    portal.main(["create", "saw-req-1"])
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    portal.main(["delete", "saw-req-2"])
+    with pytest.raises(portal.PortalError, match="changed while this request ran"):
+        portal.put_configmap(portal.kube(), "saw-portal", "saw-ws-alice",
+                             {"user.json": json.dumps(portal.registry_entry("alice", "data-science"))},
+                             {"saw.redhat.com/workspace": "true"})    # no resourceVersion: it read nothing
+    assert fake.objects[REGISTRY]["metadata"]["labels"]["saw.redhat.com/deleting"] == "true"
+
+
 def test_a_half_done_delete_can_be_run_again(portal, world):
     """Entry gone, Application still there: a second delete finishes."""
     fake, signer = world
@@ -660,6 +767,10 @@ def test_a_half_done_delete_can_be_run_again(portal, world):
     fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
     assert portal.main(["delete", "saw-req-2"]) == 0
     assert "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/portal-ws-alice" not in fake.objects
+    # A mark stands in for the entry: a create waits, and the cleanup runs.
+    assert fake.objects[REGISTRY]["metadata"]["labels"]["saw.redhat.com/deleting"] == "true"
+    assert portal.main(["finish-delete", "alice"]) == 0
+    assert REGISTRY not in fake.objects
 
 
 # -- progress: the generator's /status and the catalog's status -------------------------
@@ -1115,3 +1226,26 @@ def test_keycloak_user_ids_match_the_exact_user_name(portal, monkeypatch):
     monkeypatch.setattr(portal, "keycloak_admin", lambda *a, **k: KC())
     assert portal.keycloak_user_ids("https://kc", "openshell", "rhdh", "s", ["carol"]) == {"carol": "c-1"}
     assert calls == ["/users?exact=true&briefRepresentation=true&username=carol"]
+
+
+def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
+    """files/ca-bundle.py: system CAs, then the cluster's, the extra ones;
+    a missing source is skipped (no service account here)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ca_bundle", PORTAL.parent / "ca-bundle.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    pem = "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n"
+    (tmp_path / "system.crt").write_text(pem.format("SYSTEM"))
+    (tmp_path / "trusted.crt").write_text(pem.format("TRUSTED"))
+    (tmp_path / "extra.crt").write_text(pem.format("EXTRA"))
+    monkeypatch.setattr(mod, "SYSTEM", (str(tmp_path / "system.crt"),))
+    monkeypatch.setattr(mod, "SA", str(tmp_path / "no-sa"))
+    monkeypatch.setenv("TRUSTED_CA_FILE", str(tmp_path / "trusted.crt"))
+    monkeypatch.setenv("EXTRA_CA_FILE", str(tmp_path / "extra.crt"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    out = tmp_path / "bundle.crt"
+    assert mod.main(str(out)) == 0
+    text = out.read_text()
+    assert text.index("SYSTEM") < text.index("TRUSTED") < text.index("EXTRA")
+    assert text.count("BEGIN CERTIFICATE") == 3

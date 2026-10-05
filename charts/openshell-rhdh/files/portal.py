@@ -24,10 +24,12 @@ create  checks the request against the profile catalog, writes each Secret
         copies them into namespace saw-<user>), then writes the workspace
         registry entry: ConfigMap saw-ws-<user>, label
         saw.redhat.com/workspace=true.
-delete  marks the registry entry as deleting (the ApplicationSet stops
-        getting it) and deletes the user's Application; finish-delete
-        removes the entry and the user's Vault entries once Argo CD has
-        removed the workspace.
+delete  marks the registry entry as deleting, owned by its pipeline run
+        (the ApplicationSet stops getting it, and a create is refused), and
+        deletes the user's Application; finish-delete, once Argo CD has
+        removed the workspace, destroys the user's Vault entries and only
+        then removes the entry, and only if it is still that run's: a
+        replacement workspace or a newer delete is left alone.
 serve   answers Argo CD's ApplicationSet plugin generator: one parameter set
         per registry entry, `values` being the saw-users chart values for
         that one user. The generated Application renders saw-users, so a
@@ -62,6 +64,9 @@ REQUEST_LABEL = "saw.redhat.com/request"
 # it does not rebuild the Application), the catalog still shows it until the
 # delete pipeline has removed the workspace.
 DELETING_LABEL = "saw.redhat.com/deleting"
+# The delete pipeline run that owns a deleting entry: only its finish-delete
+# may destroy the keys and remove the entry.
+DELETION_ANNOTATION = "saw.redhat.com/deletion"
 # RHDH's Kubernetes and Tekton plugins find a workspace's pipeline runs by
 # this label (the catalog entity's backstage.io/kubernetes-id).
 KUBERNETES_ID_LABEL = "backstage.io/kubernetes-id"
@@ -407,14 +412,29 @@ def put_configmap(k8s, ns, name, data, labels=None, resource_version=None):
                 raise
             raise PortalError(f"{name} changed while this request ran (a delete?); request it again") from None
         return
-    # Create, or replace when it exists. Two requests for the same user at
-    # once both end here: the later one wins instead of failing with 409.
+    # Create. Two requests for the same user at once can both end here; the
+    # later one finds the entry and replaces it, but only after checking it
+    # again and only the version it checked: a delete may have marked it
+    # since this request first looked.
     try:
         k8s.call("POST", path, body)
+        return
     except HttpError as exc:
         if exc.code != 409:
             raise
-        k8s.call("PUT", f"{path}/{name}", body)
+    current = k8s.call("GET", f"{path}/{name}", ok404=True)
+    if current is None or is_deleting(current):
+        raise PortalError(f"{name} changed while this request ran (a delete?); request it again")
+    put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"])
+
+
+def is_deleting(cm):
+    return (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true"
+
+
+def pipeline_run():
+    """This task's pipeline run (the lifecycle id of a delete), or "manual"."""
+    return os.environ.get("PIPELINE_RUN") or "manual"
 
 
 # Registry entries the last listing skipped (shown on the generator's /healthz).
@@ -583,7 +603,8 @@ def keycloak_admin(url, realm, client_id, secret, insecure=False):
                                  data=urllib.parse.urlencode({"grant_type": "client_credentials",
                                                               "client_id": client_id,
                                                               "client_secret": secret}).encode())
-    ctx = ssl.create_default_context()
+    cafile = os.environ.get("KEYCLOAK_CA_FILE") or None
+    ctx = ssl.create_default_context(cafile=cafile)
     if insecure:
         ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
     try:
@@ -591,7 +612,7 @@ def keycloak_admin(url, realm, client_id, secret, insecure=False):
             token = json.loads(resp.read())["access_token"]
     except urllib.error.HTTPError as exc:
         raise HttpError(exc.code, f"Keycloak token: HTTP {exc.code}") from None
-    return Http(f"{url}/admin/realms/{realm}", token, insecure=insecure)
+    return Http(f"{url}/admin/realms/{realm}", token, cafile=cafile, insecure=insecure)
 
 
 def keycloak_group_members(url, realm, client_id, secret, group, insecure=False):
@@ -1000,7 +1021,7 @@ def handle(action, request_name):
         check_run_label(k8s, ns, user)
         name = f"saw-ws-{user}"
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
-        deleting = cm is not None and (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true"
+        deleting = cm is not None and is_deleting(cm)
         if action == "create":
             if deleting:
                 raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
@@ -1024,11 +1045,31 @@ def handle(action, request_name):
             # Mark the entry first: the ApplicationSet (create and update
             # only) then stops getting it, so it does not rebuild the
             # Application, while the catalog keeps showing the workspace
-            # (Deleting) until finish-delete removes the entry.
-            if cm is not None and not deleting:
+            # (Deleting) until finish-delete removes the entry. The mark
+            # names this run: finish-delete of an older or a later run
+            # leaves the entry (and the keys) alone. A delete run again
+            # takes over. Without an entry (a half-done delete), a mark is
+            # made, so a create waits and finish-delete still cleans up.
+            run = pipeline_run()
+            if cm is None:
+                marker = {"apiVersion": "v1", "kind": "ConfigMap",
+                          "metadata": {"name": name, "namespace": ns,
+                                       "labels": {WORKSPACE_LABEL: "true", DELETING_LABEL: "true",
+                                                  "openshell.pattern/owner": user},
+                                       "annotations": {DELETION_ANNOTATION: run}},
+                          "data": {"user.json": json.dumps({"name": user, "profiles": []})}}
+                put = ("POST", f"/api/v1/namespaces/{ns}/configmaps", marker)
+            else:
                 cm["metadata"].setdefault("labels", {})[DELETING_LABEL] = "true"
-                k8s.call("PUT", f"/api/v1/namespaces/{ns}/configmaps/{name}", cm)
-            log(f"workspace saw-{user} marked for deletion")
+                cm["metadata"].setdefault("annotations", {})[DELETION_ANNOTATION] = run
+                put = ("PUT", f"/api/v1/namespaces/{ns}/configmaps/{name}", cm)  # cm has its resourceVersion
+            try:
+                k8s.call(*put)
+            except HttpError as exc:
+                if exc.code != 409:
+                    raise
+                raise PortalError(f"{name} changed while this request ran (a create?); request it again") from None
+            log(f"workspace saw-{user} marked for deletion by {run}")
             delete_application(k8s, user)
         write_result(user)
     except NotARequest:
@@ -1041,18 +1082,45 @@ def handle(action, request_name):
 
 def finish_delete(user):
     """The delete pipeline's last task, once the workspace is gone: the
-    registry entry and (by default) the user's keys in Vault."""
+    user's keys in Vault (by default), then the registry entry.
+
+    The entry stays marked deleting until the keys are gone, so no create
+    can register a replacement and write new keys in between. Only the run
+    that marked it cleans up (DELETION_ANNOTATION): an entry that was
+    re-created, or that a later delete took over, is left alone with its
+    keys, and the entry is removed only in the version that was checked."""
     ns = env("NAMESPACE")
     check_user(user)
     k8s = kube()
     catalog = load_catalog(env("CATALOG_PATH"))
-    k8s.call("DELETE", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
-    log(f"workspace saw-{user} removed from the registry")
+    name = f"saw-ws-{user}"
+    cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
+    if cm is None:
+        log(f"no registry entry {name}: already cleaned up; the keys are left alone")
+        write_result(user)
+        return
+    run = pipeline_run()
+    owner = (cm["metadata"].get("annotations") or {}).get(DELETION_ANNOTATION)
+    if not is_deleting(cm) or (owner is not None and owner != run):
+        raise PortalError(f"{name} is not this run's deletion any more "
+                          f"({'re-created' if not is_deleting(cm) else 'taken over by ' + owner}); "
+                          "its entry and keys are left alone")
     if os.environ.get("DELETE_VAULT_SECRETS", "true") == "true":
         vault = vault_client()
         for secret in sorted({s for p in catalog.values() for s in p.get("secrets", {})}):
             vault.destroy(f"{vault_prefix(user)}/{secret}")
         log(f"Vault: {vault_prefix(user)}/* deleted")
+    meta = cm["metadata"]
+    try:
+        k8s.call("DELETE", f"/api/v1/namespaces/{ns}/configmaps/{name}",
+                 {"apiVersion": "v1", "kind": "DeleteOptions",
+                  "preconditions": {k: meta[k] for k in ("uid", "resourceVersion") if meta.get(k)}},
+                 ok404=True)
+    except HttpError as exc:
+        if exc.code != 409:
+            raise
+        raise PortalError(f"{name} changed during the cleanup; left in place") from None
+    log(f"workspace saw-{user} removed from the registry")
     write_result(user)
 
 

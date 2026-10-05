@@ -110,7 +110,7 @@ first task. Its tasks are the stages:
 | Pipeline | Tasks |
 |---|---|
 | `saw-workspace-create` | `register` (verify, Vault, registry entry) → `argo-cd-apps` → `vm` → `vm-running` → `sandboxes` (every sandbox UI route answers: the installer finished) |
-| `saw-workspace-delete` | `unregister` (verify, mark the entry deleting, delete Application `portal-ws-<user>`) → `argo-cd-removes` (apps and namespace gone) → `finish` (registry entry, Vault keys) |
+| `saw-workspace-delete` | `unregister` (verify, mark the entry deleting, delete Application `portal-ws-<user>`) → `argo-cd-removes` (apps and namespace gone) → `finish` (Vault keys, then the registry entry) |
 
 A wait task logs each change and fails on a failed Argo CD sync, a VM that
 cannot start, or its time limit (30 minutes for `sandboxes`). The run is
@@ -127,6 +127,30 @@ does not recreate the Application), the catalog still shows it (Deleting,
 with its Tekton tab), and a new create for that user is refused until the
 `finish` task removes it. Argo CD deletes the namespace and the VM
 (`portal.pruneOnRemove`).
+
+The mark names the delete run (annotation `saw.redhat.com/deletion`), and
+`finish` destroys the Vault keys first and removes the entry last, only if
+it is still that run's mark and only in the version it checked. So a create
+cannot slip in between and have its new keys destroyed, and a retried or
+stale `finish` leaves a re-created workspace, or a later delete's mark,
+alone. A create that finds the entry only on its second look (two requests
+at once) reads it again and replaces it conditionally, never over a
+deletion mark.
+
+## TLS
+
+Every connection the portal makes is verified. RHDH, the generator and the
+Keycloak setup Job build a CA bundle when their pod starts
+(`files/ca-bundle.py`, an init container): the image's system CAs, the
+cluster's trusted CA bundle (`config.openshift.io/inject-trusted-cabundle`:
+proxy CAs), the Kubernetes API and service CAs, the router's CA
+(`openshift-config-managed/default-ingress-cert`, for Keycloak's route when
+the default ingress certificate is self-signed) and `tls.extraCaBundle`.
+RHDH's Node runtime adds it with `NODE_EXTRA_CA_CERTS`; its proxy endpoints
+(`secure: true`) and Kubernetes plugin (`caFile`, the service account's CA)
+verify. The pipeline checks Vault's certificate against the service CA.
+`tls.insecureSkipVerify: true` turns all of it off, for a throwaway test
+cluster only.
 
 ## Who a request is for
 
