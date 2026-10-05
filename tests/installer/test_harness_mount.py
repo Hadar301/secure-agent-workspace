@@ -397,6 +397,22 @@ def test_a_tampered_inline_volume_is_reported_and_refilled(ab, fake_env, config,
     assert applier.verify(profiles) == []
 
 
+def test_a_planted_symlink_is_treated_as_drift_and_refilled(ab, fake_env, config, profiles, creds):
+    """A symlink added through a writable mount (e.g. from a second sandbox)
+    carries no file content, so the tree digest alone would not notice it.
+    It must still force a refill, same as an edited file."""
+    use_ref(profiles, {"name": "demo"})
+    harness = _inline(ab, "demo", V1)
+    make_applier(ab, config, creds, harness=harness).apply(profiles)
+    volume = fake_env.state / "volumes" / volume_name(ab)
+    (volume / "plugins" / "evil").symlink_to(volume / "skills")
+    applier = make_applier(ab, config, creds, harness=harness)
+    assert applier.verify(profiles), "verify must notice the planted symlink"
+    applier.apply(profiles)
+    assert not (volume / "plugins" / "evil").exists(), "the symlink must not survive a refill"
+    assert applier.verify(profiles) == []
+
+
 def test_an_inline_forged_marker_does_not_pass_verify(ab, fake_env, config, profiles, creds):
     """Rewriting the tree and the in-volume marker together must still fail:
     the ConfigMap digest is the trust anchor, not the marker."""

@@ -648,15 +648,30 @@ def harness_tree_digest(files):
     return tree_digest({rel: data for rel, (data, _) in files.items()})
 
 
+class VolumeDrift(Exception):
+    """A harness volume holds a symlink or other non-regular entry.
+
+    A writable mount from a second sandbox (or anything else with access to
+    the volume) can plant a symlink without changing the tree digest, since
+    it carries no file content; silently skipping it would leave `current()`
+    reporting the volume intact while OpenClaw loads whatever it points at.
+    """
+
+
 def read_volume_tree(root):
-    """{relpath: (bytes, executable)} of a filled volume, without the marker."""
+    """{relpath: (bytes, executable)} of a filled volume, without the marker.
+
+    Raises VolumeDrift on a symlink or other non-regular entry.
+    """
     root = Path(root)
     files = {}
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
         rel = path.relative_to(root).as_posix()
-        if rel != HARNESS_MARKER:
+        if path.is_symlink():
+            raise VolumeDrift(f"{rel!r} is a symlink")
+        if not path.is_file() and not path.is_dir():
+            raise VolumeDrift(f"{rel!r} is not a regular file or directory")
+        if path.is_file() and rel != HARNESS_MARKER:
             files[rel] = (path.read_bytes(), bool(path.stat().st_mode & 0o111))
     return files
 
@@ -1930,7 +1945,11 @@ class HarnessVolume:
         if expected_digest is None:
             # No trusted digest yet (image bundle, no ledger): refill.
             return None, marker
-        tree = read_volume_tree(mountpoint)
+        try:
+            tree = read_volume_tree(mountpoint)
+        except VolumeDrift as exc:
+            log(f"WARN: harness volume drift ({exc}); refilling")
+            return None, marker
         if harness_tree_digest(tree) != expected_digest:
             return None, marker
         return tree, marker
