@@ -254,3 +254,24 @@ spec: {}
 ```
 
 External Secrets is only required for Option A, which syncs the pattern's secrets from Vault; the quickstart sets its secrets directly and does not use it.
+
+### Golden image tag
+
+`make copy-images` mirrors the prebuilt images into the cluster. For each image it tries the `OPENSHELL_VERSION` tag first, then `v<version>`, and finally falls back to the `latest` tag, using the first that exists and storing it under the requested version (it also tags the result `latest`). If the golden image predates bundle signing, as the prebuilt images do, it ships no `verify-bundle`, so `saw-stage-installer` stages the installer tree without verification; the default signing mode `warn` still boots the VM, while `enforce` would refuse.
+
+### OpenClaw UI and the dashboard Route
+
+The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which runs with no network namespace of its own (`netns` mode `none`, no port mappings) on OpenShell 0.1.x. The Route therefore does not reach the OpenClaw UI and answers 503. Use `make openclaw-gui` (or `make nemoclaw-gui`), which port-forwards to the sandbox UI instead.
+
+### Web search in the default sandbox
+
+The `notebook` sandbox attaches only the NVIDIA provider, and its policy allows only that provider's endpoints, so the agent's web search and web fetch calls fail. Attaching the `brave` provider to the sandbox in the BOM profile (`charts/saw-bom/profiles/data-science/default/sandbox.yaml`) opens its endpoints; note that the default profile already creates a `brave` provider but attaches it to no sandbox, which is why step 11 still needs `WEB_SEARCH_API_KEY`. A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's synthetic DNS answers, so enabling web search may take more than the provider change.
+
+### Shell access
+
+`openshell sandbox connect` attaches to the sandbox's main process. In SAW sandboxes that process is `sleep infinity`, started without a terminal, so `connect` shows nothing. To get an interactive shell, use `openshell sandbox exec`:
+
+```bash
+openshell sandbox exec -n notebook -- sh
+openshell sandbox exec -n cuda-sandbox --workspace cuda-dev -- sh
+```
