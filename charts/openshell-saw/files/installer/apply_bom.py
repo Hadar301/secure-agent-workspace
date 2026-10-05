@@ -3563,6 +3563,10 @@ ANSWER_WAIT = 2.0       # seconds to wait for a first answer byte before giving 
 IDLE_PREEMPT = 2.0      # seconds an answered keep-alive connection may hold a slot others wait for
 HEDGES = 2              # extra connections for a repeatable request that gets no answer
 HEDGE_TOTAL = 25.0      # seconds before giving up on such a request (the router allows 30)
+# For a request that is not safe to send again and lost its answer.
+_AMBIGUOUS_BODY = b"The sandbox closed the connection; the request may have been processed.\n"
+AMBIGUOUS_ANSWER = (b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(_AMBIGUOUS_BODY)) + _AMBIGUOUS_BODY
 
 
 class Conn:
@@ -3590,12 +3594,36 @@ class Conn:
 
 
 class Slots:
-    """MAX connections at a time; idle keep-alive ones give way."""
+    """MAX upstream connections at a time; idle keep-alive ones give way.
+
+    A client connection holds one slot for its upstream connection. A hedge
+    (an extra connection for a repeatable request that got no answer) takes
+    a slot of its own, only when one is free, and gives it back as soon as
+    it is closed or becomes the connection that answered."""
 
     def __init__(self, limit):
         self.limit = limit
         self.active = set()
+        self.extra = 0          # hedge connections open now
         self.cond = asyncio.Condition()
+
+    def in_use(self):
+        return len(self.active) + self.extra
+
+    def try_extra(self):
+        """Take a slot for a hedge connection if one is free; never waits.
+        (No await: atomic within the event loop.)"""
+        if self.in_use() >= self.limit:
+            return False
+        self.extra += 1
+        return True
+
+    async def release_extra(self, count=1):
+        if count <= 0:
+            return
+        async with self.cond:
+            self.extra = max(0, self.extra - count)
+            self.cond.notify(count)
 
     def victim(self):
         idle = [c for c in self.active
@@ -3606,14 +3634,14 @@ class Slots:
         ws = sum(1 for c in self.active if c.websocket)
         busy = sum(1 for c in self.active if not c.websocket and not c.answered)
         idle = sorted(round(c.idle_for(), 1) for c in self.active if not c.websocket and c.answered)
-        return (f"{len(self.active)}/{self.limit} in use: {ws} websocket, {busy} awaiting an answer, "
-                f"{len(idle)} answered (idle s: {idle})")
+        return (f"{self.in_use()}/{self.limit} in use: {ws} websocket, {busy} awaiting an answer, "
+                f"{len(idle)} answered (idle s: {idle}), {self.extra} hedge")
 
     async def acquire(self, conn):
         start = time.monotonic()
         logged = 0.0
         async with self.cond:
-            while len(self.active) >= self.limit:
+            while self.in_use() >= self.limit:
                 v = self.victim()
                 if v is not None:
                     log(f"closing a keep-alive connection idle {v.idle_for():.1f}s to make room")
@@ -3655,9 +3683,19 @@ async def relay(reader, writer, conn, answered):
         pass
 
 
-async def open_answering(upstream, sent):
-    """Connect to the forward and send the client's first bytes; retry when
-    the forward closes or resets the connection without answering."""
+class Ambiguous(Exception):
+    """The request reached the forward, but no answer came back: it may or
+    may not have been processed, so it is not sent again."""
+
+
+async def open_answering(upstream, sent, slots):
+    """Connect to the forward and send the client's first bytes.
+
+    Retries when nothing was sent (the connection failed), and, for a
+    request that is safe to send again (replayable), when the forward
+    closes or resets the connection without answering: that is how it
+    refuses a connection past its limit. Any other request may already
+    have been processed by then, so it is not sent again: Ambiguous."""
     for attempt in range(RETRIES + 1):
         try:
             ureader, uwriter = await asyncio.open_connection("127.0.0.1", upstream)
@@ -3675,60 +3713,85 @@ async def open_answering(upstream, sent):
             if not hedgeable(sent):
                 log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); relaying without retries")
                 return ureader, uwriter, b""
-            return await hedge(upstream, sent, ureader, uwriter)
+            return await hedge(upstream, sent, ureader, uwriter, slots)
         except (ConnectionError, OSError):
             first = b""
         if first:
             return ureader, uwriter, first
         uwriter.close()
+        if not replayable(sent):
+            raise Ambiguous()
         await asyncio.sleep(min(1.0, 0.2 * (attempt + 1)))
     return None, None, b""
 
 
-def hedgeable(sent):
-    """A complete GET/HEAD request without a body, not a WebSocket upgrade:
-    safe to send again on another connection."""
+def replayable(sent):
+    """A complete GET/HEAD/OPTIONS request without a body (a WebSocket
+    upgrade included: no answer means no upgrade): sending it again cannot
+    repeat a change."""
     head = sent.split(b"\r\n\r\n", 1)
-    return (len(head) == 2 and not head[1] and sent.split(b" ", 1)[0] in (b"GET", b"HEAD")
-            and b"upgrade: websocket" not in sent.lower())
+    return len(head) == 2 and not head[1] and sent.split(b" ", 1)[0] in (b"GET", b"HEAD", b"OPTIONS")
 
 
-async def hedge(upstream, sent, ureader, uwriter):
+def hedgeable(sent):
+    """A replayable request that is not a WebSocket upgrade: safe to send
+    again on another connection while the first is still open."""
+    return replayable(sent) and b"upgrade: websocket" not in sent.lower()
+
+
+async def hedge(upstream, sent, ureader, uwriter, slots):
     """Found live: a request through the forward sometimes got no answer at
     all (no error, nothing in the forward's log) and the browser saw a 504.
     For a request that is safe to repeat, send it again on new connections
-    and keep whichever answers first."""
+    and keep whichever answers first. Each extra connection needs a free
+    slot (Slots.try_extra); without one, the request just keeps waiting on
+    the connections it has."""
     pending = {asyncio.ensure_future(ureader.read(65536)): (ureader, uwriter)}
+    extras = 0
     deadline = time.monotonic() + HEDGE_TOTAL
-    for extra in range(HEDGES + 1):
-        if extra < HEDGES:
-            log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); sending it again ({extra + 1})")
-            try:
-                r, w = await asyncio.open_connection("127.0.0.1", upstream)
-                w.write(sent)
-                await w.drain()
-                pending[asyncio.ensure_future(r.read(65536))] = (r, w)
-            except (ConnectionError, OSError):
-                pass
-        wait = ANSWER_WAIT * 2 if extra < HEDGES else max(0.0, deadline - time.monotonic())
-        done, _ = await asyncio.wait(pending, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            r, w = pending.pop(task)
-            try:
-                data = task.result()
-            except (ConnectionError, OSError):
-                data = b""
-            if data:
-                for other, (_, ow) in pending.items():
-                    other.cancel()
-                    ow.close()
-                return r, w, data
-            w.close()
-    for other, (_, ow) in pending.items():
-        other.cancel()
-        ow.close()
-    log(f"no answer on {HEDGES + 1} connections ({sent[:60]!r})")
-    return None, None, b""
+    try:
+        for extra in range(HEDGES + 1):
+            if extra < HEDGES:
+                if slots.try_extra():
+                    extras += 1
+                    log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); "
+                        f"sending it again ({extra + 1})")
+                    try:
+                        r, w = await asyncio.open_connection("127.0.0.1", upstream)
+                        w.write(sent)
+                        await w.drain()
+                        pending[asyncio.ensure_future(r.read(65536))] = (r, w)
+                    except (ConnectionError, OSError):
+                        pass
+                else:
+                    log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); "
+                        "no free slot to send it again")
+            wait = ANSWER_WAIT * 2 if extra < HEDGES else max(0.0, deadline - time.monotonic())
+            done, _ = await asyncio.wait(pending, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                r, w = pending.pop(task)
+                try:
+                    data = task.result()
+                except (ConnectionError, OSError):
+                    data = b""
+                if data:
+                    for other, (_, ow) in pending.items():
+                        other.cancel()
+                        ow.close()
+                    pending.clear()
+                    return r, w, data
+                w.close()
+            if not pending:
+                break
+        for other, (_, ow) in pending.items():
+            other.cancel()
+            ow.close()
+        log(f"no answer on {extras + 1} connections ({sent[:60]!r})")
+        return None, None, b""
+    finally:
+        # The connection that answered (if any) runs on the client's own
+        # slot; every extra one taken here is closed by now.
+        await slots.release_extra(extras)
 
 
 def handler(upstream, slots):
@@ -3743,7 +3806,14 @@ def handler(upstream, slots):
             conn = Conn(b"upgrade: websocket" in sent.lower())
             conn.writers.append(cwriter)
             await slots.acquire(conn)
-            ureader, uwriter, first = await open_answering(upstream, sent)
+            try:
+                ureader, uwriter, first = await open_answering(upstream, sent, slots)
+            except Ambiguous:
+                log(f"the forward closed without an answer ({sent[:60]!r}); "
+                    "not sending it again, it may have been processed")
+                cwriter.write(AMBIGUOUS_ANSWER)
+                await cwriter.drain()
+                return
             if ureader is None:
                 log("the forward refused the connection on every retry")
                 return

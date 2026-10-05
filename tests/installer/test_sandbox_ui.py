@@ -270,6 +270,104 @@ def test_only_repeatable_requests_are_sent_again(ab):
     assert not relay.hedgeable(b"GET / HTTP/1.1\r\nHost: x\r\n")      # headers not complete
 
 
+def test_a_write_that_lost_its_answer_is_not_sent_again(ab):
+    """Review of #57: a POST the forward read and then dropped without an
+    answer may have been processed; sending it again could repeat it. The
+    client gets a 502 instead, and the forward sees the POST once."""
+    import asyncio
+    relay = _relay_module(ab)
+
+    async def scenario():
+        seen = []
+
+        async def upstream(reader, writer):
+            head = await reader.readuntil(b"\r\n\r\n")
+            await reader.readexactly(int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0]))
+            seen.append(head.split(b" ")[0])
+            writer.close()                      # processed, answer lost
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        front = await asyncio.start_server(relay.handler(up.sockets[0].getsockname()[1], relay.Slots(4)),
+                                           "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection("127.0.0.1", front.sockets[0].getsockname()[1])
+        writer.write(b"POST /api HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nab")
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(), 10)
+        await asyncio.sleep(0.5)                # a replay would arrive by now
+        up.close()
+        front.close()
+        return data, seen
+
+    data, seen = asyncio.run(scenario())
+    assert data.startswith(b"HTTP/1.1 502")
+    assert seen == [b"POST"]
+
+
+def test_replayable_requests(ab):
+    relay = _relay_module(ab)
+    assert relay.replayable(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert relay.replayable(b"GET /ws HTTP/1.1\r\nUpgrade: websocket\r\n\r\n")
+    assert not relay.replayable(b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\nab")
+    assert not relay.replayable(b"DELETE /x HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert not relay.replayable(b"GET / HTTP/1.1\r\nHost: x\r\n")    # not complete
+
+
+def test_hedges_stay_within_the_connection_budget(ab):
+    """Review of #57: hedge connections took no slot, so a two-slot relay
+    opened six upstream connections for two stalled GETs. Every upstream
+    connection, hedges included, now counts against the limit."""
+    import asyncio
+    relay = _relay_module(ab)
+    relay.ANSWER_WAIT = 0.1
+    relay.HEDGE_TOTAL = 1.0
+
+    async def scenario():
+        state = {"open": 0, "max": 0}
+
+        async def upstream(reader, writer):
+            state["open"] += 1
+            state["max"] = max(state["max"], state["open"])
+            try:
+                await reader.read()             # never answers
+            finally:
+                state["open"] -= 1
+                writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        slots = relay.Slots(2)
+        front = await asyncio.start_server(relay.handler(up.sockets[0].getsockname()[1], slots),
+                                           "127.0.0.1", 0)
+        port = front.sockets[0].getsockname()[1]
+
+        async def client():
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.read(), 10)
+            writer.close()
+
+        await asyncio.gather(client(), client())
+        await asyncio.sleep(0.2)
+        up.close()
+        front.close()
+        return state["max"], slots.in_use()
+
+    peak, left = asyncio.run(scenario())
+    assert peak <= 2
+    assert left == 0, "every slot, hedges included, is given back"
+
+
+def test_a_lone_request_may_hedge_into_free_slots(ab):
+    relay = _relay_module(ab)
+    slots = relay.Slots(3)
+    slots.active.add(object())
+    assert slots.try_extra() and slots.try_extra()
+    assert not slots.try_extra()
+    import asyncio
+    asyncio.run(slots.release_extra(2))
+    assert slots.in_use() == 1
+
+
 def test_the_relay_passes_a_slow_request_body(ab):
     """A request still being sent gets no answer yet: after a short wait the
     relay stops holding it for a retry and relays it whole."""
