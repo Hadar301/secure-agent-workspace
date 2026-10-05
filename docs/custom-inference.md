@@ -25,9 +25,9 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
      - custom-inference
    ```
 
-2. Put the endpoint in the `inference` Secret (pattern: `~/values-secret-*.yaml`,
-   see `values-secret.yaml.template`). With the quickstart, one command does
-   steps 1 and 2:
+2. Put the endpoint in the `inference` Secret (in `~/values-secret-secure-agent-workspace.yaml`,
+   which the pattern reads before `~/values-secret.yaml`; see `values-secret.yaml.template`).
+   With the quickstart, one command does steps 1 and 2:
 
    ```bash
    make openshell-saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \

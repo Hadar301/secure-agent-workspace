@@ -103,11 +103,13 @@ in [Versioned BOM installer](versioned-bom-installer.md).
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │  Routes (OpenShift)                                            │  │
 │  │  ├── openshell-saw-gateway  → VM:17670  (OpenShell API)        │  │
-│  │  ├── openshell-saw-dashboard → VM:8090  (Dashboard UI)         │  │
+│  │  ├── openshell-saw-dashboard → VM:18789 (OpenClaw UI)          │  │
 │  │  └── openshell-saw-webui    → VM:8080  (OAuth2 Proxy)          │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+The `openshell-saw-dashboard` Route maps to VM port 18789, the OpenClaw UI, which is not reachable on OpenShell 0.1.x (see [OpenClaw UI and the dashboard Route](deployment-guide.md#openclaw-ui-and-the-dashboard-route)). The `openshell-saw-webui` Route maps to VM port 8080, the oauth2-proxy in front of the OpenShell Dashboard.
 
 ## BOM Profile Structure
 

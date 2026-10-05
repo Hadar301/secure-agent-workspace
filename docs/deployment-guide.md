@@ -60,10 +60,10 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 
 The `openshell-gateway-image` BuildConfig creates a Fedora 44 qcow2 image with:
 
-- Docker CE (podman removed), Node.js, Python3, cloud-init, openssh, qemu-guest-agent
-- `cloud-user` with sudo access and Docker group membership
+- Podman by default (`containerRuntime: podman`), or Docker CE with `containerRuntime: docker`; plus Node.js, Python3, cloud-init, openssh, qemu-guest-agent. See [Container runtime support](container-runtime.md).
+- `cloud-user` with sudo access (and the `docker` group only in the Docker variant)
 - Systemd user service for the OpenShell gateway (`openshell-gateway.service`)
-- First-boot setup service (`openshell-gateway-setup.service`) that starts Docker, enables the gateway, and configures mTLS certs
+- First-boot setup service (`openshell-gateway-setup.service`) that starts the container runtime, enables the gateway, and configures mTLS certs
 
 The image is pushed to an internal ImageStream (`openshell-gateway:latest`) and used as a DataSource for cloning VM disks.
 
@@ -158,7 +158,7 @@ sandboxes.
 | Route | Target Port | TLS | Purpose |
 | --- | --- | --- | --- |
 | `<name>-gateway` | 17670 | Passthrough | gRPC gateway (CLI + API) |
-| `<name>-dashboard` | 18789 | Passthrough | Openclaw agent web UI |
+| `<name>-dashboard` | 18789 | Edge | OpenClaw agent web UI; the dashboard Route does not reach the OpenClaw UI on OpenShell 0.1.x, see [OpenClaw UI and the dashboard Route](#openclaw-ui-and-the-dashboard-route) |
 | `<name>-webui` | 8080 | Edge | OpenShell Dashboard (via oauth2-proxy) |
 
 ### Internal Connectivity
@@ -172,7 +172,7 @@ sandboxes.
 
 ### Authentication Flows
 
-- **CLI:** `openshell gateway login` triggers OIDC device code flow via Keycloak. Token is cached locally and sent as a bearer token on gRPC calls.
+- **CLI:** `openshell gateway login` uses the browser flow by default, or the OIDC device-code flow when `OPENSHELL_NO_BROWSER=1` is set, authenticating against Keycloak. The token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
 - **In-guest installer:** its own mTLS client certificate, `CN=saw-installer` and `OU=openshell-admin`, registered as the `saw-installer` gateway entry. Users still use OIDC.
 
@@ -231,6 +231,8 @@ make governance-remove-profile OPENSHELL_SAW_NAME=my-saw PROFILE_NAME=github
 make governance-create-profile OPENSHELL_SAW_NAME=my-saw \
   PROFILE_NAME=jira PROFILE_FILE=/path/to/jira.yaml
 ```
+
+The `add`, `remove`, and `create` targets edit `charts/governance-policy/profiles/`, commit, and run `git push origin HEAD`, then wait for Argo CD to sync the `governance-policy` application. On the quickstart path, where governance-policy is installed with Helm rather than Argo CD, edit the profiles and re-run `helm upgrade --install governance-policy charts/governance-policy --namespace openshell-agents` instead. `OPENSHELL_SAW_NAME` selects the gateway that `governance-list-profiles` queries (default `openshell-saw`). See [governance-interceptor.md](governance-interceptor.md#applying-profile-changes).
 
 ### Testing
 

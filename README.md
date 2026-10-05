@@ -181,7 +181,10 @@ oc login --server=https://api.<cluster>:6443 -u <user>
 make generate-keys
 
 # 4. Configure secrets
-cp values-secret.yaml.template ~/values-secret.yaml
+# make generate-keys (step 3) already created ~/values-secret.yaml from the
+# template; edit it to add your inference and web-search keys. The Validated
+# Patterns framework reads ~/values-secret-secure-agent-workspace.yaml before ~/values-secret.yaml,
+# so the pattern-named file wins when both exist.
 # The default profile needs an NVIDIA key and a Brave Search key:
 #   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
