@@ -361,19 +361,19 @@ def test_manually_deleted_sandbox_leaves_the_ledger(
     "not labeled" on every reconcile."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name == "default":
                 ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"].pop("default/extra")
     fake_env.set_openshell_state(state)
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "extra" not in _ledger_names(ledger, "sandbox")
     assert "sandbox default/extra" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
@@ -389,13 +389,13 @@ def test_manually_deleted_workspace_leaves_the_ledger(
     logging "delete failed" on every reconcile."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["workspaces"] = [name for name in state["workspaces"] if name != "cuda-dev"]
     fake_env.set_openshell_state(state)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     saved = json.loads(ledger.read_text())
     assert "cuda-dev" not in _ledger_names(ledger, "workspace")
@@ -410,15 +410,15 @@ def test_manually_deleted_post_adoption_workspace_is_not_unlabeled(
     Not found there drops the ledger entry instead of "not labeled"."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     profiles[0].workspaces.append(ab.Workspace(name="notes"))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["workspaces"] = [name for name in state["workspaces"] if name != "notes"]
     fake_env.set_openshell_state(state)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "notes"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "notes" not in _ledger_names(ledger, "workspace")
     assert "not found" in out
@@ -445,14 +445,14 @@ def test_sandbox_is_deleted_before_its_provider(
     the sandbox still lists it."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name != "cuda-dev":
                 continue
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "cuda-sandbox"]
             ws.providers = [p for p in ws.providers if p.name != "nvidia"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" not in state["sandboxes"]
     assert "cuda-dev/nvidia" not in state["providers"]
