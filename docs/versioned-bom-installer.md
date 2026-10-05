@@ -348,7 +348,7 @@ then drop the old public key on the following image build. A bundle signed
 only by the retired key then fails `enforce`.
 
 Out of scope for this story, unchanged: sandbox images
-(`quay.io/rh-ai-quickstart/openclaw-openshell`, `nemoclaw-sandbox`) are not
+(`quay.io/aipcc/base-images/agentic/openclaw`, `nemoclaw-sandbox`) are not
 signature-checked, and `nemoclaw.cliImage` is accepted with a tag (`:latest`)
 rather than a digest, with a `WARN` at install time. Signing covers the
 gateway components (`spec.openshell.*`) and the installer bundle only;
