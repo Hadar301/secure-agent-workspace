@@ -5,8 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import profile_files
+from conftest import harness_files, profile_files
 from test_custom_endpoint import custom_secrets  # noqa: F401  (reused fixture)
+
+def _harness(ab):
+    return {"bundles": ab.parse_harness_files(harness_files())}
+
 
 SHIPPED_OPENAI_PROFILE = (
     Path(__file__).resolve().parents[2]
@@ -27,7 +31,7 @@ def creds(ab, profiles, secrets_dir):
 def test_first_apply_adopts_and_deletes_nothing(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     saved = json.loads(ledger.read_text())
     assert saved["adopted"] is True
     assert saved["lastPrune"] == {"pruned": [], "wouldPrune": []}
@@ -38,11 +42,11 @@ def test_first_apply_adopts_and_deletes_nothing(ab, fake_env, config, profiles, 
 def test_report_mode_keeps_a_removed_sandbox(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "report", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "cuda-sandbox"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     assert "cuda-dev/cuda-sandbox" in fake_env.openshell_state()["sandboxes"]
     assert "would delete sandbox cuda-dev/cuda-sandbox" in capsys.readouterr().out
 
@@ -50,10 +54,10 @@ def test_report_mode_keeps_a_removed_sandbox(ab, fake_env, config, profiles, cre
 def test_on_mode_deletes_a_removed_sandbox_and_empty_workspace(ab, fake_env, config, profiles, creds, tmp_path):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" not in state["sandboxes"]
     assert "cuda-dev" not in state["workspaces"]
@@ -63,10 +67,10 @@ def test_on_mode_deletes_a_removed_sandbox_and_empty_workspace(ab, fake_env, con
 def test_sandboxes_stay_when_prune_sandboxes_is_false(ab, fake_env, config, profiles, creds, tmp_path):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" in state["sandboxes"]
     assert "cuda-dev" in state["workspaces"]
@@ -75,24 +79,24 @@ def test_sandboxes_stay_when_prune_sandboxes_is_false(ab, fake_env, config, prof
 def test_a_hand_created_sandbox_is_never_deleted(ab, fake_env, config, profiles, creds, tmp_path):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/mine"] = {"image": "base", "providers": [], "phase": "Ready"}
     fake_env.set_openshell_state(state)
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "notebook"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     assert "default/mine" in fake_env.openshell_state()["sandboxes"]
 
 
 def test_empty_profiles_delete_nothing(ab, fake_env, config, profiles, creds, tmp_path):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     before = fake_env.openshell_state()["sandboxes"].keys()
     with pytest.raises(ab.InstallerError, match="missing or empty"):
-        ab.ProfileApplier(ab.Shell(), cfg, creds).apply([])
+        ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply([])
     assert set(fake_env.openshell_state()["sandboxes"]) == set(before)
 
 
@@ -101,7 +105,7 @@ def test_default_workspace_is_never_deleted(ab, fake_env, config, creds, tmp_pat
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
     # Seed an adopted ledger entry and prune directly. apply refuses an empty
     # profile list, so this does not go through apply.
-    applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
+    applier = ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab))
     applier.ledger.data = {
         "version": 1, "adopted": True,
         "objects": [{"kind": "workspace", "workspace": "", "name": "default",
@@ -122,29 +126,29 @@ def _drop_provider(profiles, workspace, name):
 def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     report = {**config, "prune": {"mode": "report", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), report, creds, harness=_harness(ab)).apply(profiles)
     _drop_provider(profiles, "default", "brave")
     before = [c for c in fake_env.openshell_calls() if "delete" in c]
-    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), report, creds, harness=_harness(ab)).apply(profiles)
     assert "default/brave" in fake_env.openshell_state()["providers"]
     assert [c for c in fake_env.openshell_calls() if "delete" in c] == before
     assert "would delete provider default/brave" in capsys.readouterr().out
     on = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), on, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), on, creds, harness=_harness(ab)).apply(profiles)
     assert "default/brave" not in fake_env.openshell_state()["providers"]
 
 
 def test_hand_made_workspace_and_provider_are_never_deleted(ab, fake_env, config, profiles, creds, tmp_path):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["workspaces"].append("notes")
     state["providers"]["default/mine"] = {"type": "openai", "credential": "local"}
     fake_env.set_openshell_state(state)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     assert "notes" in state["workspaces"]
     assert "default/mine" in state["providers"]
@@ -161,7 +165,7 @@ def custom_inference_profiles(ab):
 
 def _apply_on(ab, config, creds, profiles, ledger, docs=None):
     cfg = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), cfg, creds, docs).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, docs, harness=_harness(ab)).apply(profiles)
 
 
 def test_imported_profile_is_not_pruned_while_its_provider_still_uses_it(
@@ -265,19 +269,19 @@ def test_post_adoption_sandbox_is_pruned_from_json_labels(
     shape for sandbox get."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name == "default":
                 ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     saved = json.loads(ledger.read_text())
     extra = next(obj for obj in saved["objects"] if obj["kind"] == "sandbox" and obj["name"] == "extra")
     assert extra["adopted"] is False
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     assert "default/extra" not in fake_env.openshell_state()["sandboxes"]
     assert "extra" not in _ledger_names(ledger, "sandbox")
     assert "sandbox default/extra" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
@@ -288,19 +292,19 @@ def test_post_adoption_sandbox_without_label_is_kept(
         ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name == "default":
                 ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state.get("labels", {}).pop("sandbox/default/extra", None)
     fake_env.set_openshell_state(state)
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "default/extra" in fake_env.openshell_state()["sandboxes"]
     assert "extra" in _ledger_names(ledger, "sandbox")
@@ -314,17 +318,17 @@ def test_post_adoption_sandbox_prunes_when_json_output_is_unsupported(
     """A CLI that rejects `--output json` is retried as human `key: value` text."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name == "default":
                 ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     fake_env.reject_json_output()
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     assert "default/extra" not in fake_env.openshell_state()["sandboxes"]
     assert "extra" not in _ledger_names(ledger, "sandbox")
 
@@ -335,16 +339,16 @@ def test_post_adoption_workspace_is_pruned_from_equals_labels(
     adoption must still match that form and be deleted once it is empty."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     profiles[0].workspaces.append(ab.Workspace(name="notes"))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     saved = json.loads(ledger.read_text())
     notes = next(obj for obj in saved["objects"] if obj["kind"] == "workspace" and obj["name"] == "notes")
     assert notes["adopted"] is False
     assert "notes" in fake_env.openshell_state()["workspaces"]
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "notes"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     assert "notes" not in fake_env.openshell_state()["workspaces"]
     assert "notes" not in _ledger_names(ledger, "workspace")
     assert "workspace -/notes" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
@@ -357,19 +361,19 @@ def test_manually_deleted_sandbox_leaves_the_ledger(
     "not labeled" on every reconcile."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name == "default":
                 ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"].pop("default/extra")
     fake_env.set_openshell_state(state)
     for profile in profiles:
         for ws in profile.workspaces:
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "extra" not in _ledger_names(ledger, "sandbox")
     assert "sandbox default/extra" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
@@ -385,13 +389,13 @@ def test_manually_deleted_workspace_leaves_the_ledger(
     logging "delete failed" on every reconcile."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["workspaces"] = [name for name in state["workspaces"] if name != "cuda-dev"]
     fake_env.set_openshell_state(state)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     saved = json.loads(ledger.read_text())
     assert "cuda-dev" not in _ledger_names(ledger, "workspace")
@@ -406,15 +410,15 @@ def test_manually_deleted_post_adoption_workspace_is_not_unlabeled(
     Not found there drops the ledger entry instead of "not labeled"."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     profiles[0].workspaces.append(ab.Workspace(name="notes"))
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["workspaces"] = [name for name in state["workspaces"] if name != "notes"]
     fake_env.set_openshell_state(state)
     for profile in profiles:
         profile.workspaces = [ws for ws in profile.workspaces if ws.name != "notes"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "notes" not in _ledger_names(ledger, "workspace")
     assert "not found" in out
@@ -441,14 +445,14 @@ def test_sandbox_is_deleted_before_its_provider(
     the sandbox still lists it."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     for profile in profiles:
         for ws in profile.workspaces:
             if ws.name != "cuda-dev":
                 continue
             ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "cuda-sandbox"]
             ws.providers = [p for p in ws.providers if p.name != "nvidia"]
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" not in state["sandboxes"]
     assert "cuda-dev/nvidia" not in state["providers"]
@@ -479,12 +483,12 @@ def test_failed_provider_delete_stays_in_the_ledger(
     recorded as pruned either."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["brave"], "phase": "Ready"}
     fake_env.set_openshell_state(state)
     _drop_provider(profiles, "default", "brave")
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
     assert "default/brave" in fake_env.openshell_state()["providers"]
     assert "default/hand" in fake_env.openshell_state()["sandboxes"]

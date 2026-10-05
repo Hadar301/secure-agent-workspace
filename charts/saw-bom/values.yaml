@@ -1,3 +1,18 @@
 # Active profiles to deploy on this SAW instance.
 profiles:
   - data-science
+
+# Harness governance is checked in the guest against the gateway's live
+# provider profile catalog (`openshell provider list-profiles`), so there is
+# no list of governance profiles to keep in sync here.
+
+# Gates the harness feature as a whole, not just the demo bundle
+# (charts/saw-bom/harness/ds-default): with it off, EVERY profile sandbox's
+# harnessRef is stripped -- a custom harnessRef.image included -- no bundle
+# is shipped in the ConfigMap, and existing sandboxes are left alone on
+# upgrade. It has to be all-or-nothing: a harnessRef left in place without
+# allowDriverConfig=true in the openshell-saw chart would just fail at apply
+# time (the driver-config mount it needs is refused). Turning it on also
+# needs allowDriverConfig=true there (saw-users sets this for you from the
+# same user.harnessEnabled flag).
+harnessEnabled: false

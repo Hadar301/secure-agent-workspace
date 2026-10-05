@@ -4,10 +4,118 @@
 {{- range $profile := .Values.profiles }}
 {{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
 {{- range $path, $_ := $files }}
+{{- if and (hasSuffix "sandbox.yaml" $path) (not $.Values.harnessEnabled) }}
+{{- $doc := $.Files.Get $path | fromYaml }}
+{{- range $sb := (($doc.spec).sandboxes | default list) }}
+{{- $_ := unset $sb "harnessRef" }}
+{{- end }}
+{{- $_ := set $profileFiles $path (toYaml $doc) }}
+{{- else }}
 {{- $_ := set $profileFiles $path ($.Files.Get $path) }}
 {{- end }}
 {{- end }}
-{{- if $profileFiles }}
+{{- end }}
+{{- /* Inline harness bundles: charts/saw-bom/harness/<bundle>/<relpath>, for
+     sandboxes with harnessRef.name. The guest copies them unchanged into a
+     volume mounted read-only at /sandbox/harness. (harnessRef.image bundles
+     are OCI images the guest mounts directly; nothing is shipped here for
+     them.) Content is base64 per key -- a `|` block scalar normalises trailing whitespace, which
+     would change the tree digest between Git and the guest.
+     Only bundles referenced by a selected profile's sandbox harnessRef are
+     shipped, so the ConfigMap stays scoped to `.Values.profiles`. */ -}}
+{{- $wanted := dict }}
+{{- if .Values.harnessEnabled }}
+{{- range $profile := .Values.profiles }}
+{{- range $path, $_ := $.Files.Glob (printf "profiles/%s/**/sandbox.yaml" $profile) }}
+{{- range $sb := ((($.Files.Get $path | fromYaml).spec).sandboxes | default list) }}
+{{- if and $sb.harnessRef (not $sb.harnessRef.image) }}
+{{- $_ := set $wanted ($sb.harnessRef.name | default "") true }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $harness := dict }}
+{{- $digestLines := dict }}
+{{- $payload := 0 }}
+{{- $pathMaps := dict }}
+{{- range $path, $_ := $.Files.Glob "harness/**" }}
+{{- $content := $.Files.Get $path }}
+{{- $parts := splitList "/" $path }}
+{{- if lt (len $parts) 3 }}
+{{- fail (printf "harness file %q is not inside a bundle directory; expected harness/<bundle>/<path>" $path) }}
+{{- end }}
+{{- $bundle := index $parts 1 }}
+{{- if contains "__" $bundle }}
+{{- fail (printf "harness bundle name %q contains \"__\", the flat-key separator" $bundle) }}
+{{- end }}
+{{- if hasKey $wanted $bundle }}
+{{- $rel := join "/" (slice $parts 2) }}
+{{- /* Content-addressed key: the ConfigMap key is a hash of the relpath, not
+     the relpath itself, so a bundle's file layout never hits the iso9660/
+     Joliet 64-character filename limit KubeVirt's rendered disk imposes.
+     harness__<bundle>__map carries the hash -> relpath mapping the installer
+     needs to rebuild the tree (see parse_harness_files). */ -}}
+{{- $hash := trunc 16 (sha256sum $rel) }}
+{{- $key := printf "harness__%s__%s" $bundle $hash }}
+{{- if gt (len $key) 64 }}
+{{- fail (printf "harness ConfigMap key is %d chars (iso9660/Joliet limit is 64); shorten bundle name %q" (len $key) $bundle) }}
+{{- end }}
+{{- $map := get $pathMaps $bundle | default dict }}
+{{- if and (hasKey $map $hash) (ne (get $map $hash) $rel) }}
+{{- fail (printf "harness bundle %q: path hash collision between %q and %q; rename one file" $bundle (get $map $hash) $rel) }}
+{{- end }}
+{{- $_ := set $map $hash $rel }}
+{{- $_ := set $pathMaps $bundle $map }}
+{{- $_ := set $harness $key (b64enc $content) }}
+{{- $payload = add $payload (len (b64enc $content)) }}
+{{- $_ := set $digestLines $bundle (printf "%s%s\x00%s\n" (default "" (get $digestLines $bundle)) $rel (sha256sum $content)) }}
+{{- end }}
+{{- end }}
+{{- range $bundle, $map := $pathMaps }}
+{{- $mapJSON := toJson $map }}
+{{- $_ := set $harness (printf "harness__%s__map" $bundle) (b64enc $mapJSON) }}
+{{- $payload = add $payload (len (b64enc $mapJSON)) }}
+{{- end }}
+{{- $digests := dict }}
+{{- range $bundle, $text := $digestLines }}
+{{- $_ := set $digests $bundle (printf "sha256:%s" (sha256sum $text)) }}
+{{- end }}
+{{- if gt $payload 921600 }}
+{{- fail (printf "harness payload is %d bytes (>900KiB); the ConfigMap limit is 1MiB" $payload) }}
+{{- end }}
+{{- /* A selected profile's harnessRef digest, when set, must match the
+     computed digest (the pin is optional: bundle and pin ship together).
+     An OCI harnessRef (image: repo@sha256:...) is pinned by the image
+     digest instead; the guest pulls it and mounts it into the sandbox. */ -}}
+{{- $imageRefs := false }}
+{{- if .Values.harnessEnabled }}
+{{- range $profile := $.Values.profiles }}
+{{- range $path, $_ := $.Files.Glob (printf "profiles/%s/**/sandbox.yaml" $profile) }}
+{{- range $sb := ((($.Files.Get $path | fromYaml).spec).sandboxes | default list) }}
+{{- if and $sb.harnessRef $sb.harnessRef.image }}
+{{- $imageRefs = true }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$" $sb.harnessRef.image) }}
+{{- fail (printf "sandbox %q harnessRef.image must be pinned by digest (repo@sha256:...), got %q" $sb.name $sb.harnessRef.image) }}
+{{- end }}
+{{- if $sb.harnessRef.digest }}
+{{- fail (printf "sandbox %q harnessRef: set image or name/digest, not both" $sb.name) }}
+{{- end }}
+{{- else if $sb.harnessRef }}
+{{- $want := $sb.harnessRef.digest | default "" }}
+{{- $got := get $digests ($sb.harnessRef.name | default "") }}
+{{- if not $got }}
+{{- fail (printf "sandbox %q references unknown harness bundle %q" $sb.name ($sb.harnessRef.name | default "")) }}
+{{- end }}
+{{- if and $want (ne $want $got) }}
+{{- fail (printf "harnessRef digest mismatch for sandbox %q: sandbox.yaml says %q, the bundle hashes to %q" $sb.name $want $got) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if or $profileFiles $harness $imageRefs }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,5 +127,15 @@ data:
   {{- range $path, $content := $profileFiles }}
   {{ $path | replace "/" "__" }}: |
 {{ $content | indent 4 }}
+  {{- end }}
+  {{- range $key, $b64 := $harness }}
+  {{ $key }}: {{ $b64 | quote }}
+  {{- end }}
+  {{- if or $harness $imageRefs }}
+  harness-index.yaml: |
+    bundles:
+    {{- range $bundle, $digest := $digests }}
+      {{ $bundle }}: {{ $digest }}
+    {{- end }}
   {{- end }}
 {{- end }}
