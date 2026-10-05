@@ -28,11 +28,11 @@ def run_version(path):
 def test_fresh_install_places_all_binaries(ab, installer, bom, fake_env):
     fake_env.images_for_bom(bom)
     changed = installer.install(bom)
-    assert changed == ["cli", "gateway", "supervisor"]
+    assert changed == ["cli", "gateway", "supervisor", "sandbox"]
     for name in ("openshell", "openshell-gateway", "openshell-supervisor"):
         path = installer.bin_dir / name
         assert path.is_file() and os.access(path, os.X_OK)
-        assert run_version(path).endswith("0.0.116-rhaiv.0")
+        assert run_version(path).endswith(bom["spec"]["openshell"]["cli"]["version"])
     state = json.loads(installer.state_file.read_text())
     assert state["bom"] == bom["metadata"]["name"]
     assert state["components"]["gateway"]["image"] == bom["spec"]["openshell"]["gateway"]["image"]
@@ -115,7 +115,8 @@ def test_path_override_is_used(installer, bom, fake_env):
     bom["spec"]["openshell"]["supervisor"]["path"] = "/usr/bin/supervisor"
     images = fake_env.images_for_bom(bom)
     image = bom["spec"]["openshell"]["supervisor"]["image"]
-    images[image] = {"/usr/bin/supervisor": {"type": "binary", "version": "0.0.116-rhaiv.0"}}
+    images[image] = {"/usr/bin/supervisor": {"type": "binary",
+                                             "version": bom["spec"]["openshell"]["supervisor"]["version"]}}
     fake_env.set_images(images)
     installer.install(bom)
     assert (installer.bin_dir / "openshell-supervisor").is_file()
@@ -144,7 +145,7 @@ def test_dry_run_changes_nothing(ab, tmp_path, bom, fake_env):
     fake_env.images_for_bom(bom)
     installer = ab.ComponentInstaller(ab.Shell(dry_run=True), tmp_path / "bin",
                                       tmp_path / "state" / "installed.json")
-    assert installer.install(bom) == ["cli", "gateway", "supervisor"]
+    assert installer.install(bom) == ["cli", "gateway", "supervisor", "sandbox"]
     assert fake_env.podman_calls() == []
     assert not (tmp_path / "state").exists()
     assert not (tmp_path / "bin").exists()

@@ -189,11 +189,19 @@ def test_installer_units_run_install_then_apply(default_docs, tmp_path):
     install = written(cfg, "/etc/systemd/system/saw-install.service")
     apply = written(cfg, "/etc/systemd/system/saw-apply.service")
     assert "Wants=saw-install.service" in apply
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py install" in install
-    assert "ExecStart=/usr/bin/python3 /run/saw/installer/apply_bom.py apply" in apply
+    assert ("ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 "
+            "/var/lib/saw/verified/installer/apply_bom.py install "
+            "--installer-dir /var/lib/saw/verified/installer" in install)
+    assert ("ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 "
+            "/var/lib/saw/verified/installer/apply_bom.py apply "
+            "--installer-dir /var/lib/saw/verified/installer" in apply)
     assert "saw-install.service" in unit_deps(apply)["After"]
     for unit in (install, apply):
         assert "ExecStartPre=/usr/local/sbin/saw-mount-inputs" in unit
+        # apply_bom.py always runs from the staged, verified copy, never the
+        # live mount (PR #54 review, 2).
+        assert "ExecStartPre=/usr/local/sbin/saw-stage-installer" in unit
+        assert unit.index("saw-stage-installer") < unit.index("ExecStart=/usr/local/sbin/saw-with-lock")
         assert "StandardOutput=journal+console" in unit      # visible in guest-console-log
         assert "StartLimitBurst=" in unit                     # retries are bounded
         assert "ConditionPathExists=/var/lib/openshell-gateway-setup.done" in unit
@@ -316,11 +324,25 @@ def gateway_files(docs):
 def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     env, toml = gateway_files(default_docs)
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env
-    assert "OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml" in env
+    assert "OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml" in env
+    assert "OPENSHELL_CONFIG_FILE" not in env      # not read by OpenShell 0.1.x
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert toml["openshell"]["drivers"]["podman"]["supervisor_image"] == \
         values["bom"]["spec"]["openshell"]["supervisor"]["image"]
     assert "oidc" not in toml["openshell"].get("gateway", {})   # no issuer configured
+
+
+def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
+    """OpenShell 0.1.x rejects a gateway.toml without version 2 and wants the
+    compute driver and the sandbox runtime image named."""
+    env, toml = gateway_files(default_docs)
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert toml["openshell"]["version"] == 2
+    assert toml["openshell"]["gateway"]["compute_driver"] == "podman"
+    assert toml["openshell"]["drivers"]["podman"]["sandbox_runtime_image"] == \
+        values["bom"]["spec"]["openshell"]["sandbox"]["image"]
+    assert "OPENSHELL_COMPUTE_DRIVER=podman" in env
+    assert "OPENSHELL_DRIVERS" not in env
 
 
 def test_gateway_oidc_for_users_with_roles():
@@ -620,9 +642,19 @@ def test_governance_profiles_carry_their_id():
         assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
 
 
+def test_every_profile_names_its_binaries():
+    """OpenShell 0.1.x: a profile whose endpoints list no binaries allows
+    nothing, and removed fields (provider_type) must not linger."""
+    for path in sorted(GOVERNANCE_PROFILES.glob("*.yaml")) + sorted(SAW_PROFILES.glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        assert "provider_type" not in doc, path.name
+        if doc.get("endpoints"):
+            assert doc.get("binaries"), path.name
+
+
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "openai.yaml"]
+    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
     for path in copies:
         assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
@@ -632,7 +664,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "openai"}
+    assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
 
 
 def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
@@ -716,3 +748,36 @@ def test_cleanup_hook_can_be_turned_off():
                           if d["metadata"].get("annotations", {}).get("helm.sh/hook") == "pre-delete"]
     assert ("Pod", "saw-test-cleanup") in hooks(render())
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
+
+
+def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
+    docs = render("--set", "vm.liveInputs=true")
+    spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
+    disks = {d["name"] for d in spec["domain"]["devices"]["disks"]}
+    filesystems = {f["name"] for f in spec["domain"]["devices"]["filesystems"]}
+    assert disks == {"rootdisk", "cloudinitdisk"}
+    assert filesystems == {"saw-installer", "saw-profiles", "saw-sec-0", "saw-sec-1"}
+    assert all(item["virtiofs"] == {} for item in spec["domain"]["devices"]["filesystems"])
+    annotations = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["annotations"]
+    assert "openshell.pattern/installer-checksum" not in annotations
+    assert "openshell.pattern/cloudinit-checksum" in annotations
+    cfg = cloud_config(docs)
+    assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
+
+
+def test_signing_mode_defaults_to_warn(default_docs):
+    config = json.loads(installer_data(default_docs)["config.json"])
+    assert config["signing"]["mode"] == "warn"
+    assert config["prune"]["mode"] == "report"
+    assert config["prune"]["sandboxes"] is False
+    assert "bundle.sigstore.json" not in installer_data(default_docs)
+    unit = written(cloud_config(default_docs), "/etc/systemd/system/saw-install.service")
+    # saw-stage-installer runs verify-bundle when the golden image has it
+    # (PR #54 review, 2); apply_bom.py always runs from the staged copy.
+    assert "saw-stage-installer" in unit
+    assert unit.index("saw-stage-installer") < unit.index("apply_bom.py install")
+
+
+def test_enforce_without_trust_material_fails_at_render():
+    err = render_error("--set", "signing.mode=enforce")
+    assert "signing.mode enforce requires" in err

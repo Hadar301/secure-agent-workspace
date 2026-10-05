@@ -1,0 +1,44 @@
+#!/bin/bash
+# Debounce virtiofs updates, then reconcile. The lock is already held by
+# saw-with-lock. A Helm upgrade that rewrites several files becomes one run.
+set -euo pipefail
+hash_inputs() {
+  python3 - <<'PY'
+import hashlib, os
+from pathlib import Path
+root = Path(os.environ.get("SAW_ROOT", "/run/saw"))
+h = hashlib.sha256()
+for name in ("installer", "profiles", "secrets"):
+    base = root / name
+    h.update(name.encode())
+    h.update(b"\0")
+    if not base.is_dir():
+        h.update(b"missing")
+        continue
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".."))
+        for filename in sorted(filenames):
+            if filename.startswith(".."):
+                continue
+            path = Path(dirpath) / filename
+            target = path.resolve() if path.is_symlink() else path
+            if not target.is_file():
+                continue
+            h.update(path.relative_to(base).as_posix().encode())
+            h.update(b"\0")
+            h.update(target.read_bytes())
+            h.update(b"\0")
+print(h.hexdigest())
+PY
+}
+before=$(hash_inputs)
+sleep "${SAW_RECONCILE_DEBOUNCE:-10}"
+after=$(hash_inputs)
+if [[ "$before" != "$after" ]]; then
+  echo "saw-reconcile: inputs still changing; the next event will run"
+  exit 0
+fi
+# Run from the staged, verified copy saw-stage-installer just published in
+# this unit's ExecStartPre, not the live mount (PR #54 review, 2).
+exec /usr/bin/python3 /var/lib/saw/verified/installer/apply_bom.py reconcile \
+  --installer-dir /var/lib/saw/verified/installer

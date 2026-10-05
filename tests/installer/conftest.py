@@ -117,9 +117,12 @@ class FakeWorld:
     def images_for_bom(self, bom, version=None, nemoclaw=True):
         images = {}
         paths = {"gateway": "/usr/local/bin/openshell-gateway",
-                 "supervisor": "/openshell-sandbox",
+                 "supervisor": "/openshell-supervisor",
                  "cli": "/usr/local/bin/openshell"}
         for comp, entry in bom["spec"]["openshell"].items():
+            if comp not in paths:        # image-only component (sandbox runtime)
+                images[entry["image"]] = {}
+                continue
             images[entry["image"]] = {paths[comp]: {"type": "binary",
                                                     "version": version or entry["version"]}}
         if nemoclaw and "nemoclaw" in bom["spec"]:
@@ -145,6 +148,10 @@ class FakeWorld:
 
     def deny(self, *operations):
         (self.state / "deny.json").write_text(json.dumps(list(operations)))
+
+    def reject_json_output(self):
+        """`sandbox get --output json` fails like a CLI that has no such flag."""
+        (self.state / "reject-json").write_text("1")
 
     def exec_fails_in(self, *sandboxes):
         """`sandbox exec` into these sandboxes fails like a policy denial."""

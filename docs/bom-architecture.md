@@ -7,50 +7,41 @@
 │                        GitOps (ArgoCD)                                  │
 │                                                                         │
 │  values-prod.yaml ──► saw-bom chart ──► ConfigMap (saw-bom-profiles)    │
-│  overrides/*.yaml ──► openshell-saw chart ──► Setup Job + VM            │
+│  overrides/saw-users.yaml ──► openshell-saw chart ──► VM per person     │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     Setup Job (Fedora Pod)                              │
+│  Inputs on the VM: iso9660 disks, or virtiofs when vm.liveInputs is on  │
 │                                                                         │
-│  1. Install deps (openssh-clients, jq, openssl)                         │
-│  2. Wait for VM ready (SSH accessible)                                  │
-│  3. Upgrade OpenShell binaries (gateway/supervisor/CLI → 0.0.99)        │
-│  4. Patch OIDC issuer + restart gateway                                 │
-│  5. Extract BOM profiles from ConfigMap                                 │
-│  6. Resolve credentials from K8s secrets                                │
-│  7. Fetch OIDC token (alice/alice via Keycloak)                         │
-│  8. SSH into VM → run apply_bom.py                                      │
-│  9. Dashboard setup (Keycloak redirect URI + systemd services)          │
+│  installer ConfigMap (BOM, apply_bom.py, gateway config)                │
+│  saw-bom-profiles ConfigMap                                             │
+│  provider Secrets (inference, web-search, ...)                          │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│              apply_bom.py (runs on Gateway VM)                          │
+│              apply_bom.py (runs on the gateway VM, no SSH)              │
 │                                                                         │
-│  Phase 1: Gateway Setup                                                 │
-│  ├── Configure OIDC token                                               │
-│  ├── Register mTLS gateway (openshell-local)                            │
-│  ├── Grant workspace access (openshell-client → admin)                  │
-│  └── Enable providers_v2                                                │
+│  saw-install (root)                                                     │
+│  ├── Check component signatures (warn by default; enforce stops first) │
+│  ├── Pull each digest, install the binary, start the gateway           │
+│  └── Skip components that are already current                           │
 │                                                                         │
-│  Phase 2: Deploy Profiles                                               │
-│  ├── For each workspace:                                                │
-│  │   ├── Create workspace (via OIDC gateway)                            │
-│  │   ├── Create providers (nvidia, brave, etc.)                         │
-│  │   └── Create sandboxes (nemoclaw, openclaw, generic)                 │
-│  │       ├── nemoclaw: onboard → fallback provider → sandbox create     │
-│  │       │             → openclaw gateway start                         │
-│  │       ├── openclaw: sandbox create → wait Ready                      │
-│  │       │             → openclaw onboard (custom NVIDIA provider)      │
-│  │       │             → openclaw gateway start                         │
-│  │       └── generic:  sandbox create                                   │
-│  │                                                                      │
-│  Phase 3: Verify                                                        │
-│  └── Check all workspaces, providers, sandboxes → PASS/FAIL             │
+│  saw-apply (root reads inputs, then cloud-user runs the plan)          │
+│  ├── mTLS client cert CN=saw-installer, OU=openshell-admin              │
+│  ├── Workspaces, providers, sandboxes (provider attached per sandbox)   │
+│  ├── provider update when a Secret key changes                          │
+│  ├── Ledger of created objects; report mode only logs deletions        │
+│  └── Verify workspaces, providers, and sandboxes                        │
+│                                                                         │
+│  saw-reconcile, only when vm.liveInputs is true                        │
+│  └── install+apply on a BOM change; apply only on profile or Secret    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+Details, including signature custody and what still needs a VM restart, are
+in [Versioned BOM installer](versioned-bom-installer.md).
 
 ## Component Architecture
 
@@ -141,7 +132,7 @@ charts/saw-bom/profiles/
 | openclaw | openclaw-openshell:latest | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
 | generic | base | Plain sandbox for tools/scripts | None | OpenShell supervisor |
 
-## Inference Routing
+## Inference (OpenShell 0.1.x: no inference routes)
 
 ```
 User → OpenClaw TUI/GUI
@@ -149,13 +140,15 @@ User → OpenClaw TUI/GUI
          ▼
   OpenClaw Gateway (inside sandbox, port 18789)
          │
-         │ model: nvidia/nvidia/nemotron-3-super-120b-a12b
-         │ baseUrl: https://inference.local/v1
+         │ model: nvidia/nemotron-3-super-120b-a12b
+         │ baseUrl: https://integrate.api.nvidia.com/v1 (the provider's own endpoint)
+         │ key: the placeholder in NVIDIA_API_KEY
          │
          ▼
   OpenShell Network Proxy (10.200.0.1:3128)
          │
-         │ Injects NVIDIA_API_KEY from provider credential
+         │ Swaps in the real NVIDIA_API_KEY, only for the provider
+         │ profile's endpoints and binaries (node, curl)
          │ Enforces governance network policy
          │
          ▼

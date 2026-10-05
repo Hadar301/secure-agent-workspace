@@ -319,7 +319,7 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 
 #### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The SAW uses OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.116/docs/sandboxes/inference-routing.mdx): the installer creates an `openai` provider with the endpoint's base URL and sets it as the workspace's inference route. Agents call `https://inference.local/v1`; the gateway adds the key, so it never enters a sandbox.
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The installer creates an `openai` provider with the endpoint's base URL and onboards OpenClaw against that URL. OpenShell 0.1.x has no inference routing: the agent sends a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider profile names, so the profile must name your endpoint's host (see [docs/custom-inference.md](docs/custom-inference.md)).
 
 Select the `custom-inference` SAW-BOM profile and give the endpoint's URL, model and key.
 

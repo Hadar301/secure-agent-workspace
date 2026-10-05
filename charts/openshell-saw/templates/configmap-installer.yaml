@@ -17,6 +17,20 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if $webuiHost }}{{- $redirectUrl = printf "https://%s/oauth2/callback" $webuiHost }}{{- end }}
 {{- $dashboardEnabled := false }}
 {{- if and .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
+{{- $signMode := .Values.signing.mode | default "warn" }}
+{{- if not (or (eq $signMode "off") (eq $signMode "warn") (eq $signMode "enforce")) }}
+{{- fail (printf "signing.mode must be off, warn, or enforce, got %q" $signMode) }}
+{{- end }}
+{{- $trustKeys := .Values.signing.trustKeys | default list }}
+{{- $signIdentity := .Values.signing.identity | default "" }}
+{{- $signIssuer := .Values.signing.issuer | default "" }}
+{{- $pruneMode := .Values.prune.mode | default "report" }}
+{{- if not (or (eq $pruneMode "off") (eq $pruneMode "report") (eq $pruneMode "on")) }}
+{{- fail (printf "prune.mode must be off, report, or on, got %q" $pruneMode) }}
+{{- end }}
+{{- if and (eq $signMode "enforce") (not $trustKeys) (or (not $signIdentity) (not $signIssuer)) }}
+{{- fail "signing.mode enforce requires signing.trustKeys or both signing.identity and signing.issuer" }}
+{{- end }}
 {{- $config := dict
       "spiffe" .Values.spiffe
       "vmName" (include "openshell-sandbox.fullname" .)
@@ -34,6 +48,8 @@ changes here reach an existing VM after a restart (unlike cloud-init).
           "clientId" .Values.dashboard.clientId
           "redirectUrl" $redirectUrl
           "insecureSkipTlsVerify" (.Values.dashboard.insecureSkipIssuerTlsVerify | default false))
+      "signing" (dict "mode" $signMode "trustKeys" $trustKeys "identity" $signIdentity "issuer" $signIssuer)
+      "prune" (dict "mode" $pruneMode "sandboxes" (.Values.prune.sandboxes | default false))
       "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray) }}
 apiVersion: v1
 kind: ConfigMap
@@ -62,6 +78,10 @@ data:
 {{ .Files.Get "files/selinux/saw_spire.pp.b64" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
+{{- if .Files.Get "files/installer/bundle.sigstore.json" }}
+  bundle.sigstore.json: |
+{{ .Files.Get "files/installer/bundle.sigstore.json" | indent 4 }}
+{{- end }}
 {{- /* Provider profiles the installer imports when the gateway lacks them
 (e.g. brave with governance off). Same files as governance-policy/profiles. */}}
 {{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" }}

@@ -1,0 +1,29 @@
+#!/bin/bash
+# Run the golden image's bundle verifier if it is present; otherwise stage
+# the installer tree without verification, so apply_bom.py always runs
+# from SAW_STAGE_ROOT/installer and never straight off the live
+# ConfigMap/virtiofs mount, in every golden image (PR #54 review, 2).
+#
+# An image built before signing existed has no verifier at all: warn and
+# off still boot unverified (today's behavior for such an image), enforce
+# refuses, matching /usr/libexec/saw/verify-bundle's own contract.
+set -u
+if [[ -x /usr/libexec/saw/verify-bundle ]]; then
+  exec /usr/libexec/saw/verify-bundle
+fi
+echo "verify-bundle is not in this golden image; staging without verification" >&2
+INSTALLER_DIR="${SAW_INSTALLER_DIR:-/run/saw/installer}"
+STAGE_ROOT="${SAW_STAGE_ROOT:-/var/lib/saw/verified}"
+install -d -m 0755 "$STAGE_ROOT"
+stage=$(mktemp -d "${STAGE_ROOT}/.rev-XXXXXX")
+chmod 0755 "$stage"
+if ! cp -rL --preserve=mode "${INSTALLER_DIR}/." "${stage}/" 2>/dev/null; then
+  rm -rf "$stage"
+  echo "could not stage the installer tree from ${INSTALLER_DIR}" >&2
+  exit 1
+fi
+ln -sfn "$(basename "$stage")" "${STAGE_ROOT}/.installer-link"
+mv -T "${STAGE_ROOT}/.installer-link" "${STAGE_ROOT}/installer"
+mode=$(python3 -c 'import json
+print(json.load(open("'"${INSTALLER_DIR}"'/config.json", encoding="utf-8")).get("signing", {}).get("mode", "warn"))' 2>/dev/null || echo warn)
+[[ "$mode" != enforce ]]

@@ -84,6 +84,19 @@ def test_install_then_apply_reaches_ready(world):
         assert "nvapi-TEST-KEY-123" not in text
 
 
+def test_apply_writes_the_ledger_for_the_runtime_user(world):
+    cfg_path = world.inputs / "installer" / "config.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg["prune"] = {"mode": "report", "sandboxes": False}
+    cfg_path.write_text(json.dumps(cfg))
+    assert world.run("install").returncode == 0
+    result = world.run("apply")
+    assert result.returncode == 0, result.stdout + result.stderr
+    ledger = json.loads((world.state / "user" / "managed.json").read_text())
+    assert ledger["adopted"] is True
+    assert not (world.state / "managed.json").exists()
+
+
 def test_reboot_reruns_are_cheap_and_stay_ready(world):
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0
@@ -109,7 +122,7 @@ def test_new_bom_needs_install_before_apply(world):
     (world.inputs / "installer" / "installer-bom.yaml").write_text(yaml.safe_dump(world.bom))
     result = world.run("apply")
     assert result.returncode == 1
-    assert "install has not finished for BOM openshell-next (install: Done for openshell-0-0-116-rhaiv-0)" in result.stdout
+    assert "install has not finished for BOM openshell-next (install: Done for openshell-0-1-2-rhaiv-0)" in result.stdout
     assert not (world.state / "ready").exists()
 
 
@@ -315,3 +328,52 @@ def test_missing_selinux_boolean_is_not_fatal(world):
     result = world.run("install")
     assert result.returncode == 0
     assert "virt_qemu_ga_manage_ssh not available" in result.stdout
+
+
+# -- moving to a new OpenShell release series (0.0.x -> 0.1.x) ---------------
+
+def _old_gateway_state(world):
+    state = world.home / ".local" / "state" / "openshell" / "gateway"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "openshell.db").write_text("0.0.x database")
+    return state
+
+
+def _backups(world):
+    return sorted((world.home / ".local" / "state" / "openshell").glob("gateway.0.0.116-rhaiv.0.*"))
+
+
+def test_a_new_release_series_moves_the_gateway_state_aside(world):
+    state = _old_gateway_state(world)
+    world.state.mkdir(parents=True, exist_ok=True)
+    (world.state / "installed.json").write_text(json.dumps({"components": {"gateway": {
+        "image": "quay.io/x/gw@sha256:" + "0" * 64, "version": "0.0.116-rhaiv.0"}}}))
+    result = world.run("install")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "is a new release series" in result.stdout
+    assert not state.exists()
+    [backup] = _backups(world)
+    assert (backup / "openshell.db").read_text() == "0.0.x database"
+    installed = json.loads((world.state / "installed.json").read_text())
+    assert "gatewayStateResetPending" not in installed
+    # A reboot afterwards does not reset again.
+    _old_gateway_state(world)
+    assert world.run("install").returncode == 0
+    assert state.exists() and len(_backups(world)) == 1
+
+
+def test_an_interrupted_upgrade_still_resets_on_retry(world):
+    """The first run recorded the new binaries and the pending reset, then died
+    before moving the state; the retry sees the new version installed and must
+    still reset (PR review, 1)."""
+    state = _old_gateway_state(world)
+    world.state.mkdir(parents=True, exist_ok=True)
+    version = world.bom["spec"]["openshell"]["gateway"]["version"]
+    (world.state / "installed.json").write_text(json.dumps({
+        "components": {"gateway": {"image": world.bom["spec"]["openshell"]["gateway"]["image"],
+                                   "version": version}},
+        "gatewayStateResetPending": {"from": "0.0.116-rhaiv.0", "to": version}}))
+    result = world.run("install")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not state.exists() and len(_backups(world)) == 1
+    assert "gatewayStateResetPending" not in json.loads((world.state / "installed.json").read_text())

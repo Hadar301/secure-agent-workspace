@@ -44,16 +44,8 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
         "type": "nvidia", "credential": "NVIDIA_API_KEY=nvapi-TEST-KEY-123"}
     assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
 
-    # Per-workspace inference; the system route is set once, from 'default'
-    # (cuda-dev sorts first but must not set it: its provider isn't in 'default').
-    model = "nvidia/nemotron-3-super-120b-a12b"
-    assert state["inference"] == {"cuda-dev": ["nvidia", model], "default": ["nvidia", model]}
-    assert state["system_inference"] == ["nvidia", model]
-    system_sets = [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"] and "--system" in c]
-    assert len(system_sets) == 1
-    set_calls = [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]
-    assert set_calls.index(system_sets[0]) > set_calls.index(
-        next(c for c in set_calls if "--workspace" in c and c[c.index("--workspace") + 1] == "default"))
+    # OpenShell 0.1.x has no inference routes: nothing calls `openshell inference`.
+    assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
 
     # Enabled sandboxes only.
     assert set(state["sandboxes"]) == {"default/notebook", "cuda-dev/cuda-sandbox"}
@@ -61,17 +53,17 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     assert applier.verify(profiles) == []
 
 
-def test_system_inference_skipped_without_default_workspace_model(ab, fake_env, config, profiles, creds):
-    for _, ws in ab.enabled_workspaces(profiles):
-        if ws.name == "default":
-            for p in ws.providers:
-                p.model = None
+def test_openclaw_calls_the_native_endpoint_with_the_placeholder_key(
+        ab, fake_env, config, profiles, creds):
+    """0.1.x removed https://inference.local: OpenClaw calls NVIDIA directly,
+    with the placeholder the sandbox holds in NVIDIA_API_KEY (expanded inside
+    the sandbox, never by the installer)."""
     make_applier(ab, config, creds).apply(profiles)
-    state = fake_env.openshell_state()
-    assert state["system_inference"] is None
-    assert "cuda-dev" in state["inference"] and "default" not in state["inference"]
-    assert not [c for c in fake_env.openshell_calls() if "--system" in c]
-
+    onboard = next(c[-1] for c in fake_env.openshell_calls()
+                   if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and "notebook" in c)
+    assert '--custom-base-url https://integrate.api.nvidia.com/v1 ' in onboard
+    assert 'CUSTOM_API_KEY="$NVIDIA_API_KEY"' in onboard
+    assert "inference.local" not in onboard and "nvapi-TEST-KEY-123" not in onboard
 
 
 def test_nemoclaw_gets_the_provider_key_via_environment(ab, fake_env, config, profiles, creds):
@@ -215,7 +207,6 @@ def test_provider_without_gateway_profile_is_skipped_not_fatal(ab, fake_env, con
     assert "default/brave" not in state["providers"]
     assert {"default/nvidia", "cuda-dev/nvidia"} <= set(state["providers"])
     assert set(state["sandboxes"]) == {"default/notebook", "cuda-dev/cuda-sandbox"}
-    assert state["system_inference"] is not None
     assert applier.skipped == {("default", "brave")}
     assert applier.verify(profiles) == []
 
@@ -234,15 +225,6 @@ def test_other_provider_errors_still_fail(ab, fake_env, config, profiles, creds)
     fake_env.deny("provider create")
     with pytest.raises(ab.InstallerError, match="could not create provider"):
         make_applier(ab, config, creds).apply(profiles)
-
-
-def test_no_system_route_when_default_model_provider_is_skipped(ab, fake_env, config, profiles, creds):
-    fake_env.without_profiles("nvidia")
-    applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
-    state = fake_env.openshell_state()
-    assert state["system_inference"] is None and state["inference"] == {}
-    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["inference", "set"]]
 
 
 # -- importing a shipped provider profile the gateway lacks ------------------

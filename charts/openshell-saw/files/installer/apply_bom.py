@@ -5,7 +5,8 @@ apply_bom.py - in-guest SAW installer (Stage 1).
 Runs INSIDE the gateway VM. saw-install.service runs `install` and then
 saw-apply.service runs `apply`, on every boot.
 There is no SSH and no setup Job: the chart attaches everything this script
-needs as read-only disks, which saw-mount-inputs mounts under /run/saw:
+needs as read-only disks, or over virtiofs when vm.liveInputs is set.
+saw-mount-inputs mounts either kind under /run/saw:
 
     /run/saw/installer/installer-bom.yaml   versioned Bill of Materials
     /run/saw/installer/config.json          per-VM settings rendered by Helm
@@ -19,10 +20,8 @@ Commands:
     validate        check BOM, config, profiles and credentials; changes nothing
     install         step 1 (root): install the BOM components, start the gateway
     apply           step 2 (root): apply SAW-BOM profiles as the runtime user
+    reconcile       re-run install and/or apply when virtiofs inputs changed
     apply-profiles  (runtime user) internal; reads its plan from stdin
-
-Stage 1 scope: images are pinned by digest, which gives integrity without
-signing. Package/bundle signing is intentionally left for a later stage.
 
 The installer talks to the gateway only through a local mTLS gateway entry.
 End users log in with their own OIDC token; this script never performs an
@@ -35,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -60,11 +60,20 @@ GATEWAY_PORT = 17670
 COMPONENTS = {
     "gateway": {"image_path": "/usr/local/bin/openshell-gateway",
                 "dest": "openshell-gateway"},
-    "supervisor": {"image_path": "/openshell-sandbox",
+    # 0.1.x: the supervisor image carries /openshell-supervisor; the static
+    # /openshell-sandbox moved to the sandbox runtime image.
+    "supervisor": {"image_path": "/openshell-supervisor",
                    "dest": "openshell-supervisor"},
     "cli": {"image_path": "/usr/local/bin/openshell",
             "dest": "openshell"},
 }
+# Image-only components: pinned in the BOM and checked here (pull and
+# signature, as root), but no binary is extracted; the gateway pulls the image
+# itself as the runtime user. `sandbox` is the OpenShell 0.1.x sandbox runtime
+# image: the podman driver mounts the supervisor from it into every sandbox
+# (gateway.toml sandbox_runtime_image). Required: the chart's gateway.toml is
+# schema v2 (0.1.x) only.
+IMAGE_COMPONENTS = {"sandbox"}
 NEMOCLAW_IMAGE_PATH = "/opt/nemoclaw"
 
 DIGEST_IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$")
@@ -76,12 +85,12 @@ SECRET_KEY_RE = re.compile(r"^[-._a-zA-Z0-9]+$")
 OPENSHELL_NAME_LIMIT = 19
 # The installer's own mTLS identity; the gateway reads roles from the OU.
 ADMIN_CERT_SUBJECT = "/O=openshell/OU=openshell-admin/CN=saw-installer"
-# The gateway resolves the system inference route's provider in this workspace.
-SYSTEM_WORKSPACE = "default"
 ALREADY_RE = re.compile(r"already (exists|a member)", re.IGNORECASE)
 # The gateway has no profile for this provider type. Profiles such as brave
 # come from the governance interceptor, so they are missing when it is off.
-NO_PROFILE_RE = re.compile(r"provider profile '[^']*' not\s+found|unsupported provider type",
+# 0.0.x: "provider profile 'x' not found"; 0.1.x: "... 'x' was not found in
+# the requested scope".
+NO_PROFILE_RE = re.compile(r"provider profile '[^']*' (was )?not\s+found|unsupported provider type",
                            re.IGNORECASE)
 
 PROVIDER_CRED_MAP = {
@@ -97,13 +106,24 @@ PROVIDER_CRED_MAP = {
     "tavily": "TAVILY_API_KEY",
 }
 SANDBOX_TYPES = {"generic", "openclaw", "nemoclaw"}
-# Provider config key that holds the upstream base URL for OpenShell's
-# inference router (openshell-core inference profiles). An `openai` provider
-# with OPENAI_BASE_URL reaches any OpenAI-compatible server (vLLM, Ollama, ...).
+# Provider config key that records a provider's base URL. OpenShell 0.1.x has
+# no inference router: the agent calls the endpoint itself (see
+# NATIVE_BASE_URLS), and the provider profile must name that endpoint's host.
 BASE_URL_CONFIG_KEYS = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
     "nvidia": "NVIDIA_BASE_URL",
+}
+# OpenShell 0.1.x removed managed inference (`openshell inference`,
+# https://inference.local). An agent is configured with its provider's native
+# OpenAI-compatible endpoint and the placeholder key the sandbox receives in
+# the provider's env var; the sandbox proxy swaps in the real key only for
+# requests to the profile's endpoints from the profile's binaries. A
+# provider's baseUrl overrides these.
+NATIVE_BASE_URLS = {
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "build": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
 }
 
 
@@ -235,15 +255,24 @@ def validate_bom(doc):
         raise InstallerError(
             f"InstallerBOM targets installer {spec['installerVersion']}, "
             f"this installer is {INSTALLER_VERSION}")
-    _require_keys(spec["openshell"], set(COMPONENTS), set(COMPONENTS), "spec.openshell")
+    _require_keys(spec["openshell"], set(COMPONENTS) | IMAGE_COMPONENTS,
+                  set(COMPONENTS) | IMAGE_COMPONENTS, "spec.openshell")
     for comp, entry in spec["openshell"].items():
         where = f"spec.openshell.{comp}"
-        _require_keys(entry, {"version", "image"}, {"version", "image", "path"}, where)
+        _require_keys(entry, {"version", "image"}, {"version", "image", "path", "signature"}, where)
         if not isinstance(entry["version"], str) or not VERSION_RE.match(entry["version"]):
             raise InstallerError(f"{where}.version is not a version string")
         _check_digest_image(entry["image"], f"{where}.image")
         if "path" in entry and (not isinstance(entry["path"], str) or not entry["path"].startswith("/")):
             raise InstallerError(f"{where}.path must be an absolute path")
+        if "signature" in entry:
+            _validate_signature(entry["signature"], f"{where}.signature")
+    # Every OpenShell component must come from the same release (0.1.x does not
+    # support mixed peers); a Helm override of some versions only is refused.
+    versions = {normalize_version(e["version"]) for e in spec["openshell"].values()}
+    if len(versions) > 1:
+        raise InstallerError("spec.openshell components must all have the same version, got "
+                             + ", ".join(sorted(versions)))
     # Helm null / omitted both mean "no nemoclaw component".
     if spec.get("nemoclaw") is not None:
         _require_keys(spec["nemoclaw"], {"cliImage"}, {"cliImage"}, "spec.nemoclaw")
@@ -263,6 +292,29 @@ def validate_bom(doc):
         if not VERSION_RE.match(entry["version"]) or not entry["path"].startswith("/"):
             raise InstallerError("spec.spireAgent needs a version and absolute binary path")
     return doc
+
+
+KEY_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+
+def _validate_signature(sig, where):
+    """A component signature is a key name or a keyless identity, not both."""
+    _require_keys(sig, set(), {"keyRef", "identity", "issuer"}, where)
+    key_ref = sig.get("keyRef", "")
+    identity = sig.get("identity", "")
+    issuer = sig.get("issuer", "")
+    if key_ref and (identity or issuer):
+        raise InstallerError(f"{where}: set keyRef or identity and issuer, not both")
+    if key_ref:
+        if not isinstance(key_ref, str) or not KEY_REF_RE.match(key_ref):
+            raise InstallerError(f"{where}.keyRef must name a file under /etc/saw/trust")
+        return
+    if identity or issuer:
+        if not (isinstance(identity, str) and isinstance(issuer, str)
+                and identity.startswith("https://") and issuer.startswith("https://")):
+            raise InstallerError(f"{where}: identity and issuer must both be https URLs")
+        return
+    raise InstallerError(f"{where}: set keyRef or both identity and issuer")
 
 
 def _check_digest_image(image, where):
@@ -299,7 +351,33 @@ CONFIG_DEFAULTS = {
     "ownerSubject": "",
     "sandboxDashboardRoute": "",
     "dashboard": {"enabled": False},
+    "signing": {"mode": "off"},
+    "prune": {"mode": "off", "sandboxes": False},
 }
+
+SIGNING_MODE_ORDER = {"off": 0, "warn": 1, "enforce": 2}
+# The golden image can pin a minimum signing.mode (e.g. a production image
+# forces enforce). config.json ships in the same, unsigned ConfigMap as
+# apply_bom.py, so a namespace editor could otherwise set signing.mode: off
+# next to a modified apply_bom.py and defeat enforce entirely (PR #54
+# review, 1). Absent = no floor, i.e. today's default behavior.
+SIGNING_FLOOR_FILE = Path(os.environ.get("SAW_SIGNING_FLOOR_FILE", "/etc/saw/signing-mode"))
+
+
+def signing_mode_floor():
+    try:
+        value = SIGNING_FLOOR_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "off"
+    return value if value in SIGNING_MODE_ORDER else "off"
+
+
+def effective_signing_mode(configured_mode):
+    """The stricter of the golden-image floor and config.json's mode."""
+    floor = signing_mode_floor()
+    if SIGNING_MODE_ORDER.get(floor, 0) > SIGNING_MODE_ORDER.get(configured_mode, 0):
+        return floor
+    return configured_mode
 
 
 def load_config(path):
@@ -316,6 +394,21 @@ def load_config(path):
         raise InstallerError("installer config: invalid runtimeUser")
     if not NAME_RE.match(merged["mtlsGateway"]):
         raise InstallerError("installer config: invalid mtlsGateway name")
+    signing = merged.get("signing") or {}
+    if not isinstance(signing, dict):
+        raise InstallerError("installer config: signing must be an object")
+    mode = signing.get("mode", "off")
+    if mode not in ("off", "warn", "enforce"):
+        raise InstallerError("installer config: signing.mode must be off, warn, or enforce")
+    merged["signing"] = {**CONFIG_DEFAULTS["signing"], **signing, "mode": effective_signing_mode(mode)}
+    prune = merged.get("prune") or {}
+    if not isinstance(prune, dict):
+        raise InstallerError("installer config: prune must be an object")
+    prune_mode = prune.get("mode", "off")
+    if prune_mode not in ("off", "report", "on"):
+        raise InstallerError("installer config: prune.mode must be off, report, or on")
+    merged["prune"] = {**CONFIG_DEFAULTS["prune"], **prune, "mode": prune_mode,
+                       "sandboxes": bool(prune.get("sandboxes", False))}
     dash = merged.get("dashboard") or {}
     if dash.get("enabled"):
         for key in ("image", "proxyImage", "clientId"):
@@ -608,6 +701,11 @@ def read_secret_value(base, key):
         return ""
 
 
+# Characters a base URL never needs and a shell would interpret; the URL ends
+# up in an OpenClaw command line inside the sandbox.
+SHELL_UNSAFE = set("\"'`$\\;|&<>(){}")
+
+
 def check_base_url(url):
     """An http(s) base URL without credentials, query or fragment. The value
     is not echoed in errors: a pasted URL may contain a token."""
@@ -616,7 +714,7 @@ def check_base_url(url):
         ok = (parts.scheme in ("http", "https") and parts.hostname
               and parts.username is None and parts.password is None
               and not parts.query and not parts.fragment
-              and not any(c.isspace() for c in url))
+              and not any(c.isspace() or c in SHELL_UNSAFE for c in url))
         if ok:
             parts.port  # raises ValueError on a bad port
     except ValueError:
@@ -626,8 +724,8 @@ def check_base_url(url):
                          "query or fragment")
     host = parts.hostname
     if host in ("localhost", "127.0.0.1", "::1"):
-        raise ValueError("base URL must not be localhost: the gateway, not the sandbox, "
-                         "calls it (use a cluster Service or Route host)")
+        raise ValueError("base URL must not be localhost: inside the sandbox that is the "
+                         "sandbox itself (use a cluster Service or Route host)")
     return url.rstrip("/")
 
 
@@ -677,12 +775,16 @@ class ComponentInstaller:
     hash still match is left alone, so reboots do not re-pull anything.
     """
 
-    def __init__(self, shell, bin_dir, state_file, podman="podman", opt_dir="/opt"):
+    def __init__(self, shell, bin_dir, state_file, podman="podman", opt_dir="/opt",
+                 signing_mode="off", trust_dir="/etc/saw/trust"):
         self.sh = shell
         self.bin_dir = Path(bin_dir)
         self.state_file = Path(state_file)
         self.podman = podman
         self.opt_dir = Path(opt_dir)
+        self.signing_mode = signing_mode
+        self.trust_dir = Path(trust_dir)
+        self.signatures = {}
 
     def load_state(self):
         return read_json(self.state_file, {"components": {}})
@@ -692,6 +794,11 @@ class ComponentInstaller:
                 and state_entry.get("image") == image
                 and dest.exists()
                 and state_entry.get("sha256") == sha256_file(dest))
+
+    def _is_current_comp(self, comp, state_entry, image):
+        if comp in IMAGE_COMPONENTS:
+            return bool(state_entry) and state_entry.get("image") == image
+        return self._is_current(state_entry, image, self.bin_dir / COMPONENTS[comp]["dest"])
 
     def _extract(self, image, path_in_image, target):
         self.sh.run([self.podman, "pull", "--quiet", image], timeout=900)
@@ -704,8 +811,102 @@ class ComponentInstaller:
         finally:
             self.sh.run([self.podman, "rm", "-f", cid], check=False, quiet=True)
 
+    def signer_label(self, signature):
+        if not signature:
+            return "a configured signer"
+        if signature.get("keyRef"):
+            return signature["keyRef"]
+        return signature.get("identity") or "the configured identity"
+
+    def check_signatures(self, bom):
+        """Record a signature result per component. enforce fails before install.
+
+        A component whose file and digest are already current is only
+        trusted as still "verified" if that is what was actually recorded
+        the last time it was installed -- not just assumed. Otherwise a
+        component installed while signing.mode was off (or unsigned under
+        warn) would keep reporting "verified" forever, including right
+        after switching to enforce, without ever having been checked
+        (PR #54 review, 4).
+        """
+        self.signatures = {}
+        if self.signing_mode == "off" or self.sh.dry_run:
+            return self.signatures
+        installed = self.load_state().get("components", {})
+        for comp, entry in bom["spec"]["openshell"].items():
+            signature = entry.get("signature")
+            if not signature:
+                if self.signing_mode == "enforce":
+                    raise InstallerError(
+                        f"image {entry['image']} is not signed by {self.signer_label(None)}")
+                log(f"WARN: image {entry['image']} is not signed by {self.signer_label(None)}")
+                self.signatures[comp] = "unsigned"
+                continue
+            record = installed.get(comp) or {}
+            if self._is_current_comp(comp, record, entry["image"]) and \
+                    record.get("signature") == "verified":
+                self.signatures[comp] = "verified"
+                continue
+            self.signatures[comp] = self._verify_signature(comp, entry)
+        return self.signatures
+
+    def _signature_policy(self, signature):
+        """A one-image containers-policy.json: reject by default, or
+        require exactly the configured signer. Built here, in Python, from
+        the BOM's (already shape-validated) signature field, and used only
+        for this one pull via `podman pull --signature-policy`. Building it
+        dynamically is only trustworthy because this code itself only runs
+        after apply_bom.py passed the installer bundle's own signature
+        check (verify-bundle, PR #54 review, 2); the key material it points
+        at (/etc/saw/trust) is still golden-image-rooted, never taken from
+        the namespace. Default reject (not the image's system policy,
+        which stays permissive for warn/off) closes the gap where any
+        image from a registry the static policy did not special-case
+        pulled fine under "enforce" (PR #54 review, 4)."""
+        if not signature:
+            return {"default": [{"type": "reject"}]}
+        if signature.get("keyRef"):
+            key_path = self.trust_dir / f"{signature['keyRef']}.pub"
+            return {"default": [{"type": "sigstoreSigned", "keyPath": str(key_path),
+                                 "signedIdentity": {"type": "matchRepository"}}]}
+        # Keyless: podman's policy.json can only match a Fulcio-issued
+        # certificate by an exact fulcio.subjectEmail. _validate_signature
+        # requires `identity` to be an https:// URI (matching the docs'
+        # GitHub-Actions-workflow-ref example), so no identity that ever
+        # passes BOM validation can be email-shaped -- there is no field in
+        # podman's policy.json this schema's identity can be checked
+        # against. Checking oidcIssuer alone would accept any signer from
+        # that issuer: with https://token.actions.githubusercontent.com,
+        # that is any GitHub Actions workflow anywhere (PR #54 review
+        # round 2, 2). Reject rather than silently enforce less than the
+        # BOM asked for: a keyless signature behaves like no signer
+        # configured until there is a way to match this identity shape.
+        # Use keyRef.
+        return {"default": [{"type": "reject"}]}
+
+    def _verify_signature(self, comp, entry):
+        image = entry["image"]
+        signer = self.signer_label(entry.get("signature"))
+        policy = self._signature_policy(entry.get("signature"))
+        fd, policy_path = tempfile.mkstemp(prefix="saw-policy-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(policy, fh)
+            result = self.sh.run([self.podman, "pull", "--quiet", "--signature-policy",
+                                  policy_path, image], check=False, timeout=900)
+        finally:
+            os.unlink(policy_path)
+        if result.rc == 0:
+            return "verified"
+        message = f"image {image} is not signed by {signer}"
+        if self.signing_mode == "enforce":
+            raise InstallerError(message)
+        log(f"WARN: {message}")
+        return "unsigned"
+
     def install(self, bom):
         """Install every component. Returns the names of changed components."""
+        self.check_signatures(bom)
         state = self.load_state()
         installed = state.setdefault("components", {})
         changed = []
@@ -716,8 +917,20 @@ class ComponentInstaller:
             components["spireAgent"] = bom["spec"]["spireAgent"]
         for comp, entry in components.items():
             layout = COMPONENTS.get(comp, {"dest": "spire-agent", "image_path": "/opt/spire/bin/spire-agent"})
-            dest = self.bin_dir / layout["dest"]
             image = entry["image"]
+            if comp in IMAGE_COMPONENTS:
+                # Pulled for the gateway, which uses it by reference; nothing
+                # to extract or run.
+                if self._is_current_comp(comp, installed.get(comp), image):
+                    log(f"{comp}: {entry['version']} already pulled")
+                    continue
+                log(f"{comp}: pulling {entry['version']} image {image}")
+                self.sh.run([self.podman, "pull", "--quiet", image], timeout=900)
+                installed[comp] = {"image": image, "version": entry["version"],
+                                   "signature": self.signatures.get(comp, "unsigned")}
+                changed.append(comp)
+                continue
+            dest = self.bin_dir / layout["dest"]
             if self._is_current(installed.get(comp), image, dest):
                 log(f"{comp}: {entry['version']} already installed")
                 continue
@@ -741,7 +954,8 @@ class ComponentInstaller:
                         f"BOM expects {entry['version']}")
                 os.replace(staged, dest)
             installed[comp] = {"image": image, "version": entry["version"],
-                               "sha256": sha256_file(dest)}
+                               "sha256": sha256_file(dest),
+                               "signature": self.signatures.get(comp, "unsigned")}
             changed.append(comp)
         nemoclaw = bom["spec"].get("nemoclaw")
         if nemoclaw and self._install_nemoclaw(nemoclaw["cliImage"], installed):
@@ -870,6 +1084,57 @@ def ensure_gateway(shell, user, env, restart, timeout=120):
     log("openshell-gateway is up")
 
 
+def release_series(version):
+    """0.0.116-rhaiv.0 -> (0, 0); 0.1.2-rhaiv.0 -> (0, 1). Before 1.0 a minor
+    bump is a breaking release."""
+    major, minor = normalize_version(version).split(".")[:2]
+    return int(major), int(minor)
+
+
+def needs_state_reset(old_version, new_version):
+    """OpenShell 0.1.0 cannot upgrade a 0.0.x gateway in place: its database
+    and every sandbox must be recreated (docs/upgrade/0-1-0)."""
+    if not old_version or not new_version:
+        return False
+    return release_series(old_version) != release_series(new_version)
+
+
+def reset_gateway_state(shell, wrap, home, old_version, new_version, dry_run=False):
+    """Move the gateway to a new release series.
+
+    Stops the gateway, removes every OpenShell sandbox container, and moves
+    the gateway state (its SQLite database) aside as a backup. The apply
+    step then recreates workspaces, providers and sandboxes from the
+    SAW-BOM, as on a first boot. TLS material is kept. The old sandboxes'
+    /sandbox volumes are kept too, but recreated sandboxes get new IDs and
+    new, empty volumes: the old ones are listed for manual recovery."""
+    log(f"OpenShell {old_version} -> {new_version} is a new release series: "
+        "recreating gateway state and sandboxes")
+    systemctl = lambda *a: shell.run(wrap(["systemctl", "--user", *a]), check=False)
+    systemctl("stop", "openshell-gateway.service")
+    listed = shell.run(wrap([
+        "podman", "ps", "-a", "--filter", "label=openshell.ai/sandbox-name",
+        "--format", "{{.Names}}"]), check=False, quiet=True)
+    names = [n for n in listed.out.split() if n]
+    if names:
+        log(f"removing {len(names)} sandbox container(s) from {old_version}")
+        shell.run(wrap(["podman", "rm", "-f", *names]), check=False)
+    volumes = shell.run(wrap([
+        "podman", "volume", "ls", "--format", "{{.Name}}"]), check=False, quiet=True)
+    kept = [v for v in volumes.out.split() if v.startswith("openshell-sandbox-")]
+    if kept:
+        log(f"kept {len(kept)} /sandbox volume(s) of the old sandboxes (new sandboxes get new "
+            f"ones; copy data over by hand if needed): {', '.join(kept)}")
+    state = Path(home) / ".local" / "state" / "openshell" / "gateway"
+    if state.exists() and not dry_run:
+        backup = state.with_name(f"gateway.{normalize_version(old_version)}.{int(time.time())}")
+        try:
+            os.rename(state, backup)
+        except OSError as exc:
+            raise InstallerError(f"could not move the gateway state aside: {exc}") from None
+        log(f"gateway state moved to {backup}")
+
+
 # ---------------------------------------------------------------------------
 # Gateway configuration (re-synced from the installer disk on every boot)
 # ---------------------------------------------------------------------------
@@ -889,6 +1154,10 @@ def _env_keys(text):
 # The chart emits this only while identity is enabled. Opt-out must not keep
 # a copy that the golden image or an earlier boot appended.
 IDENTITY_ENV_KEYS = {"OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET"}
+# Keys an earlier chart wrote that must not survive as "extra" keys.
+# OPENSHELL_DRIVERS became OPENSHELL_COMPUTE_DRIVER in OpenShell 0.1.x; the
+# old name is only a deprecated alias there.
+RETIRED_ENV_KEYS = {"OPENSHELL_DRIVERS", "OPENSHELL_CONFIG_FILE", "OPENSHELL_SSH_GATEWAY_PORT"}
 
 
 def merge_user_env(chart_env, current):
@@ -900,7 +1169,7 @@ def merge_user_env(chart_env, current):
     """
     chart_keys = _env_keys(chart_env)
     extra = [line for key, line in _env_keys(current).items()
-             if key not in chart_keys and key not in IDENTITY_ENV_KEYS]
+             if key not in chart_keys and key not in IDENTITY_ENV_KEYS | RETIRED_ENV_KEYS]
     text = chart_env.rstrip("\n") + "\n"
     return text + ("\n".join(extra) + "\n" if extra else "")
 
@@ -999,6 +1268,105 @@ def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
 
+MANAGED_LABEL = "saw.redhat.com/managed=true"
+MANAGED_LABEL_KEY = "saw.redhat.com/managed"
+# OpenShell 0.0.116 and 0.1.2 print the two kinds differently (confirmed on
+# a 0.0.116 guest, and the same in the 0.1.2 CLI): `sandbox get` human text
+# is one `key: value` line per label and `--output json` has
+# labels[key] == "true"; `workspace get` has no `--output` flag and prints
+# `Labels: key=value, ...`.
+_MANAGED_LABEL_RE = re.compile(
+    r"(?:^|[\s,])saw\.redhat\.com/managed\s*[:=]\s*true\b")
+# A missing sandbox, workspace, or provider. Matches the short CLI line
+# (`sandbox 'name' not found`) and tonic's `status: NotFound, message: "..."`.
+# "provider profile 'x' was not found" is a catalog miss, not a missing object.
+_RESOURCE_NOT_FOUND_RE = re.compile(
+    r"status:\s*notfound\b"
+    r"|\b(?:sandbox|workspace|provider)\s+(?:'[^']*'\s+)?(?:was\s+)?not\s+found\b",
+    re.IGNORECASE)
+PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
+
+
+def _strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+
+
+def _managed_label_in_text(text):
+    return _MANAGED_LABEL_RE.search(_strip_ansi(text)) is not None
+
+
+def _managed_label_from_json(text):
+    """True or False when `text` is a JSON object, None when it is not JSON."""
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(doc, dict):
+        return False
+    # Top-level `labels` is the OpenShell 0.1.2 `sandbox get --output json`
+    # shape (labels["saw.redhat.com/managed"] == "true"). Read that key on
+    # purpose so a later CLI that nests labels elsewhere is an explicit change.
+    labels = doc.get("labels") or {}
+    if not isinstance(labels, dict):
+        return False
+    return str(labels.get(MANAGED_LABEL_KEY, "")).lower() == "true"
+
+
+def _cli_rejected_output_flag(text):
+    """True only for Clap's `unexpected argument '--output'` rejection.
+
+    A broader match (any error that mentions "output") would treat an
+    unrelated CLI failure as a missing `--output` flag and fall back to text.
+    """
+    low = _strip_ansi(text).lower()
+    return "unexpected argument '--output'" in low
+
+
+def _resource_not_found(text):
+    """True when the CLI says this sandbox, workspace, or provider is gone."""
+    return _RESOURCE_NOT_FOUND_RE.search(_strip_ansi(text)) is not None
+
+
+class Ledger:
+    """Objects the installer created. Only these can be pruned."""
+
+    def __init__(self, path, dry_run=False):
+        self.path = Path(path)
+        self.dry_run = dry_run
+        self.data = {"version": 1, "adopted": False, "objects": []}
+        if self.path.is_file():
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
+        # OpenShell 0.1.x has no inference routes (its upgrade drops them), so
+        # a route a 0.0.x apply recorded is forgotten, in every prune mode.
+        self.data["objects"] = [o for o in self.data["objects"] if o.get("kind") != "inference"]
+
+    def save(self):
+        if self.dry_run:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(self.path, self.data)
+
+    def add(self, kind, workspace, name, profile, adopted=False):
+        workspace = workspace or ""
+        for obj in self.data["objects"]:
+            if (obj["kind"], obj.get("workspace", ""), obj["name"]) == (kind, workspace, name):
+                obj["profile"] = profile
+                return
+        self.data["objects"].append({
+            "kind": kind, "workspace": workspace, "name": name, "profile": profile,
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "adopted": adopted,
+        })
+
+    def drop(self, kind, workspace, name):
+        workspace = workspace or ""
+        self.data["objects"] = [
+            obj for obj in self.data["objects"]
+            if (obj["kind"], obj.get("workspace", ""), obj["name"]) != (kind, workspace, name)]
+
+
 class ProfileApplier:
     def __init__(self, shell, cfg, creds, provider_profile_docs=None):
         self.sh = shell
@@ -1007,6 +1375,12 @@ class ProfileApplier:
         self.provider_profiles = provider_profile_docs or {}   # id -> profile YAML
         self.gateway = cfg["mtlsGateway"]
         self.skipped = set()          # (workspace, provider) the gateway had no profile for
+        self.desired = {}             # (kind, workspace, name) -> profile name that wants it
+        self.profile_name = ""
+        prune = cfg.get("prune") or {}
+        self.prune_mode = prune.get("mode", "off")
+        self.prune_sandboxes = bool(prune.get("sandboxes", False))
+        self.ledger = Ledger(prune["ledgerPath"], shell.dry_run) if prune.get("ledgerPath") else None
         for workspace in creds.values():
             for value in workspace.values():
                 shell.add_secret(value)
@@ -1086,9 +1460,19 @@ class ProfileApplier:
 
     # -- workspaces and providers ------------------------------------------
 
+    def remember(self, kind, workspace, name):
+        """An object this apply still wants. Recorded so a later apply can
+        prune it. The profile is captured here (per object), not read later
+        off the shared self.profile_name, which would attribute every
+        object to whichever profile happened to be processed last when more
+        than one profile is in use (PR #54 review, 9)."""
+        self.desired[(kind, workspace or "", name)] = self.profile_name
+
     def apply_workspace(self, ws):
+        self.remember("workspace", "", ws.name)
         if ws.name != "default":
             result = self.cli("workspace", "create", "--name", ws.name,
+                              "--label", MANAGED_LABEL,
                               check=False, ok_if_exists=True)
             if not result.ok:
                 raise InstallerError(
@@ -1130,8 +1514,8 @@ class ProfileApplier:
         credential = self.creds[ws.name][provider.name]
         env_name = PROVIDER_CRED_MAP[provider.type]
         env = {env_name: credential}
-        # OpenAI-compatible (and other) endpoints: the inference router reads
-        # the upstream base URL from the provider config.
+        # A custom endpoint is recorded on the provider; start_openclaw
+        # points the agent at it.
         config = (("--config", f"{BASE_URL_CONFIG_KEYS[provider.type]}={provider.base_url}")
                   if provider.base_url else ())
         create = ("provider", "create", "--name", provider.name, "--type", provider.type,
@@ -1146,6 +1530,12 @@ class ProfileApplier:
                 "provider profile (governed profiles come from the governance interceptor; "
                 "is governance enabled?)")
             self.skipped.add((ws.name, provider.name))
+            # Remembered even though it is unusable this run: a transient
+            # catalog gap (governance restarting, a brief profile outage)
+            # must not prune a provider that was working a moment ago
+            # (PR #54 review, 6b). finish_prune() also refuses to prune at
+            # all this run once anything lands in self.skipped.
+            self.remember("provider", ws.name, provider.name)
             return
         if not created.ok:
             raise InstallerError(f"could not create provider '{provider.name}' in workspace "
@@ -1155,6 +1545,16 @@ class ProfileApplier:
                                "--credential", env_name, *config, env=env, check=False)
             if not updated.ok:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
+        self.remember("provider", ws.name, provider.name)
+        if provider.type in self.provider_profiles:
+            # Keep an imported profile remembered on every run that still
+            # uses it, not only the run that imported it. Before this fix,
+            # the profile was only remembered when import_provider_profile
+            # ran (i.e. the gateway didn't have it yet); the very next apply
+            # (provider already exists) pruned the profile out from under
+            # the provider still using it, and the run after that
+            # re-imported it (PR #54 review, 6a).
+            self.remember("profile", ws.name, provider.type)
 
     def import_provider_profile(self, ws, profile_id):
         """The gateway has no profile for this provider type (governed
@@ -1170,21 +1570,7 @@ class ProfileApplier:
         if not result.ok:
             raise InstallerError(f"could not import the '{profile_id}' provider profile into "
                                  f"workspace '{ws.name}'")
-
-    def apply_inference(self, ws):
-        chosen = next((p for p in self.usable(ws) if p.model), None)
-        if not chosen:
-            return
-        log(f"Inference for '{ws.name}': {chosen.name} / {chosen.model}")
-        timeout = ("--timeout", str(chosen.inference_timeout)) if chosen.inference_timeout else ()
-        self.cli("inference", "set", "--provider", chosen.name, "--model", chosen.model,
-                 "--workspace", ws.name, *timeout, "--no-verify")
-        # The system route must point at a provider in the 'default'
-        # workspace (the gateway looks it up there), so only that workspace
-        # sets it.
-        if ws.name == SYSTEM_WORKSPACE:
-            self.cli("inference", "set", "--system", "--provider", chosen.name,
-                     "--model", chosen.model, *timeout, "--no-verify")
+        self.remember("profile", ws.name, profile_id)
 
     # -- sandboxes -------------------------------------------------------
 
@@ -1236,10 +1622,11 @@ class ProfileApplier:
         elif state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
+            self.remember("sandbox", ws.name, sb.name)
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
-        args = ["sandbox", "create", "--name", sb.name]
+        args = ["sandbox", "create", "--name", sb.name, "--label", MANAGED_LABEL]
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
@@ -1251,6 +1638,7 @@ class ProfileApplier:
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
+        self.remember("sandbox", ws.name, sb.name)
 
     def attach_missing_providers(self, ws, sb):
         """A sandbox created while one of its providers was skipped (e.g. no
@@ -1313,22 +1701,35 @@ class ProfileApplier:
                     break
                 log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
                 time.sleep(5)
-        # The supervisor rewrites passwd; match /sandbox ownership to it.
-        self.sh.run(["bash", "-c",
-                     "CNAME=$(podman ps -a --filter 'name=openshell.*" + sb.name +
-                     "' --format '{{.Names}}' | head -1) && [ -n \"$CNAME\" ] && "
-                     "podman exec -u 0 \"$CNAME\" chown -R sandbox:sandbox /sandbox"],
-                    check=False)
+        # No /sandbox chown: OpenShell 0.1.x runs the workload without
+        # capabilities (root in the container cannot even read /sandbox) and
+        # already gives /sandbox to the image's user.
         token = secrets.token_hex(16)
         self.sh.add_secret(token)
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
         oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                   "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
+        # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
+        # own endpoint with the placeholder key this exec receives in the
+        # provider's env var (e.g. NVIDIA_API_KEY); the sandbox proxy puts in
+        # the real key only for the profile's endpoints and binaries. The
+        # placeholder is read inside the sandbox (\$), never by the installer.
+        base_url = provider.base_url or NATIVE_BASE_URLS.get(provider.type, "")
+        key_var = PROVIDER_CRED_MAP.get(provider.type, "")
+        if not base_url or not key_var:
+            log(f"WARN: no native endpoint known for provider type '{provider.type}'; "
+                f"set baseUrl on provider '{provider.name}'. Skipping OpenClaw onboarding")
+            # The sandbox still has to stay Ready after the installer exits.
+            self.install_keepalive(ws, sb)
+            return
+        # key_var is a constant (PROVIDER_CRED_MAP); everything that comes from
+        # the profile or a Secret is quoted for the sandbox's shell.
         onboarded = self.cli(*exec_cmd, "sh", "-c",
-                 f"{oc_env} CUSTOM_API_KEY=proxy-managed openclaw onboard --non-interactive "
+                 f"{oc_env} CUSTOM_API_KEY=\"${key_var}\" openclaw onboard --non-interactive "
                  "--accept-risk --mode local --auth-choice custom-api-key "
-                 '--custom-base-url "https://inference.local/v1" '
-                 f"--custom-provider-id {provider.type} --custom-model-id \"{model}\" "
+                 f"--custom-base-url {shlex.quote(base_url)} "
+                 f"--custom-provider-id {shlex.quote(provider.type)} "
+                 f"--custom-model-id {shlex.quote(model)} "
                  "--custom-compatibility openai --skip-channels --skip-health", check=False)
         # Re-onboarding an existing sandbox with a different provider or model
         # (e.g. after switching to a custom endpoint) makes OpenClaw save the
@@ -1393,25 +1794,256 @@ class ProfileApplier:
     # -- orchestration ---------------------------------------------------
 
     def apply(self, profiles):
+        if not any(True for _ in enabled_workspaces(profiles)):
+            raise InstallerError(
+                "profile ConfigMap is missing or empty; refusing to change the gateway")
         self.register_gateway()
-        system_set = False
         for profile, ws in enabled_workspaces(profiles):
+            self.profile_name = profile.name
             banner(f"Profile {profile.name} / workspace {ws.name}")
             self.apply_workspace(ws)
             for provider in ws.providers:
                 if provider.enabled:
                     self.apply_provider(ws, provider)
-            self.apply_inference(ws)
-            system_set = system_set or (ws.name == SYSTEM_WORKSPACE and any(
-                p.model for p in self.usable(ws)))
             for sb in ws.sandboxes:
                 if sb.enabled:
                     self.apply_sandbox(ws, sb)
                 else:
                     log(f"Sandbox '{sb.name}' disabled, skipping")
-        if not system_set:
-            log(f"No provider with a model in workspace '{SYSTEM_WORKSPACE}': "
-                "system inference route left unchanged")
+        self.finish_prune()
+
+    def finish_prune(self):
+        if self.ledger is None or self.prune_mode == "off":
+            return
+        if not self.ledger.data.get("adopted"):
+            for (kind, workspace, name), profile in sorted(self.desired.items()):
+                self.ledger.add(kind, workspace, name, profile, adopted=True)
+            self.ledger.data["adopted"] = True
+            self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": []}
+            self.ledger.save()
+            log("adopted objects that match the current profiles; pruning nothing on the first run")
+            return
+        for (kind, workspace, name), profile in self.desired.items():
+            self.ledger.add(kind, workspace, name, profile, adopted=False)
+        if self.skipped:
+            # A provider skipped this run (the gateway briefly had no
+            # profile for its type) must not turn into deletions: the
+            # desired state this run is incomplete, not smaller on purpose
+            # (PR #54 review, 6b).
+            log(f"WARN: not pruning this run: {len(self.skipped)} provider(s) were skipped "
+                "(gateway briefly missing a provider profile for their type)")
+            self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": [],
+                                             "skipped": "providers were skipped this run"}
+            self.ledger.save()
+            return
+        self.prune()
+
+    def managed_label_ok(self, kind, workspace, name, entry):
+        """True when the object may be pruned, False when it must be kept.
+
+        None means get reported the object already gone, so the caller drops
+        the ledger entry instead of logging "not labeled" forever.
+
+        Adopted objects predate the managed label, so the ledger alone allows
+        them. Providers cannot be labeled. A get that fails for any other
+        reason (auth, a gateway error) stays unlabeled: prune keeps it rather
+        than deleting something it could not identify.
+        """
+        if entry.get("adopted") or kind not in ("workspace", "sandbox"):
+            return True
+        if kind == "sandbox":
+            return self._sandbox_labeled(workspace, name)
+        got = self.cli("workspace", "get", name, check=False, quiet=True)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
+
+    def _sandbox_labeled(self, workspace, name):
+        got = self.cli("sandbox", "get", name, *ws_args(workspace),
+                       "--output", "json", check=False, quiet=True)
+        if got.ok:
+            parsed = _managed_label_from_json(got.out)
+            if parsed is None:
+                return _managed_label_in_text(got.out + "\n" + got.err)
+            return parsed
+        blob = got.out + "\n" + got.err
+        # Gone already. Do not confuse that with Clap rejecting `--output`.
+        if _resource_not_found(blob):
+            return None
+        # A CLI that predates `--output` rejects the flag. Retry the human
+        # text, which is `key: value`. Any other failure stays unlabeled.
+        if not _cli_rejected_output_flag(blob):
+            return False
+        got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
+
+    def workspace_contents(self, name):
+        """Sandboxes and providers still in the workspace, used to decide
+        whether it is safe to delete. A failed listing must not look like
+        'empty': fail safe by reporting an opaque marker so the caller keeps
+        the workspace instead of silently deleting a non-empty one because a
+        command errored (PR #54 review, 8). Providers are checked too, not
+        only sandboxes: a hand-created provider with no sandbox otherwise
+        made the workspace look empty."""
+        contents = []
+        sandboxes = self.cli("sandbox", "list", "--workspace", name, check=False, quiet=True)
+        if not sandboxes.ok:
+            contents.append("(sandbox listing failed)")
+        else:
+            for line in re.sub(r"\x1b\[[0-9;]*m", "", sandboxes.out).splitlines():
+                line = line.strip()
+                if not line or line.lower().startswith("name"):
+                    continue
+                contents.append(line.split()[0])
+        providers = self.cli("provider", "list", "--workspace", name, check=False, quiet=True)
+        if not providers.ok:
+            contents.append("(provider listing failed)")
+        else:
+            for line in re.sub(r"\x1b\[[0-9;]*m", "", providers.out).splitlines():
+                line = line.strip()
+                if not line or line.lower().startswith("name"):
+                    continue
+                contents.append(f"provider {line.split()[0]}")
+        return contents
+
+    def delete_managed(self, kind, workspace, name):
+        """Delete one ledger object.
+
+        True: the CLI deleted it. ``"missing"``: the CLI says it is already
+        gone. False: leave it in the ledger.
+
+        A failed CLI delete must not look like success: prune() would log
+        `deleted`, record it in lastPrune (and therefore status.json), and
+        drop the ledger entry while the object is still on the gateway.
+        A not-found result is the exception: the object is already gone, so
+        the caller drops the ledger entry and logs ``not found``.
+        """
+        if kind == "sandbox":
+            result = self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "provider":
+            result = self.cli("provider", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "profile":
+            result = self.cli("provider", "profile", "delete", name, *ws_args(workspace), check=False)
+        elif kind == "workspace":
+            if name == "default":
+                log("keeping workspace 'default'")
+                return False
+            left = self.workspace_contents(name)
+            if left:
+                log(f"WARN: keeping workspace '{name}'; it still contains: {', '.join(left)}")
+                return False
+            result = self.cli("workspace", "delete", name, check=False)
+        else:
+            log(f"WARN: keeping {kind} '{name}': unknown kind; leaving it in the ledger")
+            return False
+        if not result.ok:
+            # sandbox/provider delete pass allow_missing on OpenShell 0.1.2, so
+            # they succeed when the object is already gone. workspace delete
+            # does not: a workspace removed by hand fails here. That is gone,
+            # not a referential-integrity failure, so the caller drops it.
+            if _resource_not_found(result.out + "\n" + result.err):
+                return "missing"
+            where = f" in '{workspace}'" if workspace else ""
+            log(f"WARN: keeping {kind} '{name}'{where}: delete failed; leaving it in the ledger")
+            return False
+        return True
+
+    def _forget_missing(self, kind, workspace, name, label, pruned, would):
+        """Drop a ledger entry the gateway no longer has.
+
+        `on` removes it so the next reconcile does not retry. `report` only
+        records the would-be cleanup.
+        """
+        if self.prune_mode == "report":
+            log(f"would delete {label}: not found")
+            would.append(label)
+            return
+        if self.prune_mode != "on":
+            return
+        where = f" in '{workspace}'" if workspace else ""
+        log(f"{kind} '{name}'{where}: not found; removing it from the ledger")
+        pruned.append(label)
+        self.ledger.drop(kind, workspace, name)
+
+    def kept_sandbox_providers(self):
+        """(workspace, provider-name) pairs, and workspaces, still needed by
+        a sandbox this run is keeping (desired, or retained because
+        prune.sandboxes is false). Removing a workspace from a profile must
+        not delete the provider or inference route a kept sandbox in it
+        still uses, even though the sandbox object itself is correctly left
+        alone (PR #54 review, 6c)."""
+        providers, workspaces = set(), set()
+        for obj in self.ledger.data["objects"]:
+            if obj["kind"] != "sandbox":
+                continue
+            workspace, name = obj.get("workspace", ""), obj["name"]
+            identity = ("sandbox", workspace, name)
+            if identity not in self.desired and self.prune_sandboxes:
+                continue    # this sandbox is actually going to be deleted
+            workspaces.add(workspace)
+            listed = self.cli("sandbox", "provider", "list", name, *ws_args(workspace),
+                              check=False, quiet=True)
+            if listed.ok:
+                for provider_name in re.sub(r"\x1b\[[0-9;]*m", "", listed.out).split():
+                    providers.add((workspace, provider_name))
+            else:
+                # Fail safe like workspace_contents: a failed listing must
+                # not look like "this sandbox uses nothing", or every
+                # provider in its workspace becomes prunable (PR #54
+                # review round 2, 3). Protect everything the ledger knows
+                # about in that workspace instead of guessing.
+                for other in self.ledger.data["objects"]:
+                    if other["kind"] == "provider" and other.get("workspace", "") == workspace:
+                        providers.add((workspace, other["name"]))
+        return providers, workspaces
+
+    def prune(self):
+        """Ledger entries that this apply did not want."""
+        kept_providers, _ = self.kept_sandbox_providers()
+        pruned, would = [], []
+        for kind in PRUNE_ORDER:
+            for obj in list(self.ledger.data["objects"]):
+                if obj["kind"] != kind:
+                    continue
+                workspace, name = obj.get("workspace", ""), obj["name"]
+                identity = (obj["kind"], workspace, name)
+                if identity in self.desired:
+                    continue
+                if kind == "sandbox" and not self.prune_sandboxes:
+                    log(f"keeping sandbox '{name}' in '{workspace}' "
+                        "(prune.sandboxes is false)")
+                    continue
+                if kind == "provider" and (workspace, name) in kept_providers:
+                    log(f"keeping provider '{name}' in '{workspace}': a sandbox this apply "
+                        "is keeping still uses it")
+                    continue
+                label = f"{kind} {workspace or '-'}/{name}"
+                labeled = self.managed_label_ok(kind, workspace, name, obj)
+                if labeled is None:
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                    continue
+                if not labeled:
+                    log(f"keeping {kind} '{name}': not labeled {MANAGED_LABEL}")
+                    continue
+                if self.prune_mode == "report":
+                    log(f"would delete {label}")
+                    would.append(label)
+                    continue
+                if self.prune_mode != "on":
+                    continue
+                outcome = self.delete_managed(kind, workspace, name)
+                if outcome == "missing":
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                elif outcome:
+                    log(f"deleted {label}")
+                    pruned.append(label)
+                    self.ledger.drop(kind, workspace, name)
+        self.ledger.data["lastPrune"] = {"pruned": pruned, "wouldPrune": would}
+        self.ledger.save()
 
     def verify(self, profiles):
         banner("Verification")
@@ -1504,9 +2136,17 @@ def setup_dashboard(shell, cfg, script, home):
 # ---------------------------------------------------------------------------
 
 class Inputs:
-    def __init__(self, root):
+    def __init__(self, root, installer_dir=None):
+        """installer_dir overrides where the BOM/config/apply_bom.py/dashboard
+        script are read from: the golden image's verify-bundle stages and
+        verifies them outside the live mount before install/apply/reconcile
+        ever runs, and always execs apply_bom.py from that staged copy
+        (/var/lib/saw/verified/installer by default). profiles/secrets are
+        intentionally still read live from root: they are not part of the
+        signed bundle and are meant to change without a restart
+        (PR #54 review, 2)."""
         self.root = Path(root)
-        self.installer = self.root / "installer"
+        self.installer = Path(installer_dir) if installer_dir else self.root / "installer"
         self.bom = self.installer / "installer-bom.yaml"
         self.config = self.installer / "config.json"
         self.dashboard_script = self.installer / "setup-dashboard.sh"
@@ -1539,16 +2179,23 @@ class Status:
     def read(self):
         return read_json(self.path, {})
 
-    def set(self, phase, bom=None, message=""):
+    def set(self, phase, bom=None, message="", signature=None, pruned=None, would_prune=None):
         log(f"{self.step}: {phase}{' - ' + message if message else ''}")
         if self.dry_run:
             return
         data = self.read()
-        data[self.step] = {
+        section = {
             "phase": phase, "bom": bom, "message": message,
             "installerVersion": INSTALLER_VERSION,
             "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if signature:
+            section["signature"] = signature
+        if pruned is not None:
+            section["pruned"] = pruned
+        if would_prune is not None:
+            section["wouldPrune"] = would_prune
+        data[self.step] = section
         write_json_atomic(self.path, data)
         install, apply = data.get("install", {}), data.get("apply", {})
         is_ready = (install.get("phase") == "Done" and apply.get("phase") == "Done"
@@ -1593,7 +2240,7 @@ def cmd_install(args):
 
     Needs only the BOM and config; profiles and credentials are not read,
     so a profile mistake can never block a software install."""
-    inputs = Inputs(args.inputs)
+    inputs = Inputs(args.inputs, getattr(args, "installer_dir", None))
     state_dir = Path(args.state_dir)
     status = Status(state_dir, "install", dry_run=args.dry_run)
     shell = Shell(dry_run=args.dry_run)
@@ -1604,12 +2251,35 @@ def cmd_install(args):
         cfg = load_config(inputs.config)
         bom_name = bom["metadata"]["name"]
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
-                                       podman=args.podman, opt_dir=args.opt_dir)
+                                       podman=args.podman, opt_dir=args.opt_dir,
+                                       signing_mode=cfg.get("signing", {}).get("mode", "off"))
+        state_file = state_dir / "installed.json"
+        # A move to a new release series must reset the gateway state even if
+        # this run dies after the new binaries are recorded: the pending reset
+        # is saved first and cleared only once it is done, so a retry (the
+        # recorded version is already the new one) still performs it.
+        state = installer.load_state()
+        previous = state.get("components", {}).get("gateway", {}).get("version")
+        new_version = bom["spec"]["openshell"]["gateway"]["version"]
+        if needs_state_reset(previous, new_version) and not state.get("gatewayStateResetPending"):
+            state["gatewayStateResetPending"] = {"from": previous, "to": new_version}
+            if not args.dry_run:
+                write_json_atomic(state_file, state)
         changed = installer.install(bom)
         log(f"changed components: {', '.join(changed) or 'none'}")
 
-        env, _ = runtime_user(cfg, args.as_current_user)
+        env, wrap = runtime_user(cfg, args.as_current_user)
         home, owner = runtime_home(cfg, args.as_current_user)
+        pending = read_json(state_file, {}).get("gatewayStateResetPending") or \
+            state.get("gatewayStateResetPending")
+        if pending:
+            reset_gateway_state(shell, wrap, home, pending["from"], pending["to"],
+                                dry_run=args.dry_run)
+            done = read_json(state_file, {"components": {}})
+            done.pop("gatewayStateResetPending", None)
+            done["gatewayRestartPending"] = True
+            if not args.dry_run:
+                write_json_atomic(state_file, done)
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
@@ -1625,7 +2295,6 @@ def cmd_install(args):
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
-        state_file = state_dir / "installed.json"
         state = read_json(state_file, {"components": {}})
         if {"gateway", "supervisor"} & set(changed) or config_changed:
             state["gatewayRestartPending"] = True
@@ -1636,11 +2305,12 @@ def cmd_install(args):
                            restart=bool(state.get("gatewayRestartPending")))
         if state.pop("gatewayRestartPending", None) and not args.dry_run:
             write_json_atomic(state_file, state)
-        status.set("Done", bom_name)
+        status.set("Done", bom_name, signature=installer.signatures)
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
-        status.set("Failed", bom_name, str(exc).splitlines()[0])
+        signature = installer.signatures if "installer" in locals() else None
+        status.set("Failed", bom_name, str(exc).splitlines()[0], signature=signature)
         return 1
 
 
@@ -1679,7 +2349,7 @@ def cmd_apply(args):
     mounted profiles and Secrets as root, then hands the plan to a child
     process running as the runtime user on stdin, so that user never needs
     access to /run/saw."""
-    inputs = Inputs(args.inputs)
+    inputs = Inputs(args.inputs, getattr(args, "installer_dir", None))
     state_dir = Path(args.state_dir)
     status = Status(state_dir, "apply", dry_run=args.dry_run)
     bom_name = None
@@ -1694,6 +2364,20 @@ def cmd_apply(args):
                 f"(install: {install.get('phase') or 'never ran'}"
                 f"{' for ' + install['bom'] if install.get('bom') else ''}); run `install` first")
 
+        cfg = dict(cfg)
+        prune = dict(cfg.get("prune") or {})
+        # The child runs as the runtime user. /var/lib/saw itself stays
+        # root-owned (status.json); the ledger lives in a directory that user
+        # can write, or the first apply dies with PermissionError.
+        _, owner = runtime_home(cfg, args.as_current_user)
+        ledger_dir = state_dir / "user"
+        if not args.dry_run:
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+            if owner:
+                os.chown(ledger_dir, *owner)
+            os.chmod(ledger_dir, 0o700)
+        prune["ledgerPath"] = str(ledger_dir / "managed.json")
+        cfg["prune"] = prune
         if args.dry_run:
             # Nothing runs in a dry run, so no user switch is needed (the
             # runtime user could not read /run/saw anyway).
@@ -1721,7 +2405,12 @@ def cmd_apply(args):
         result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
         if result.returncode != 0:
             raise InstallerError("applying profiles failed; see the log above")
-        status.set("Done", bom_name)
+        report = {}
+        ledger_path = state_dir / "user" / "managed.json"
+        if ledger_path.is_file():
+            report = json.loads(ledger_path.read_text(encoding="utf-8")).get("lastPrune") or {}
+        status.set("Done", bom_name, pruned=report.get("pruned"),
+                   would_prune=report.get("wouldPrune"))
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
@@ -1753,6 +2442,157 @@ def apply_plan(data, dry_run):
     return 0
 
 
+def tree_hash(path):
+    """Stable hash of a mounted input tree.
+
+    ConfigMap virtiofs mounts expose keys as symlinks into a ..data directory.
+    Names starting with '..' are that implementation and are not hashed.
+    """
+    path = Path(path)
+    digest = hashlib.sha256()
+    if not path.is_dir():
+        digest.update(b"missing")
+        return digest.hexdigest()
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+        dirnames[:] = sorted(name for name in dirnames
+                             if not name.startswith("..") and name != "__pycache__")
+        for filename in sorted(filenames):
+            if filename.startswith("..") or filename.endswith(".pyc"):
+                continue
+            file_path = Path(dirpath) / filename
+            target = file_path.resolve() if file_path.is_symlink() else file_path
+            if not target.is_file():
+                continue
+            digest.update(file_path.relative_to(path).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(target.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def input_hashes(inputs):
+    return {
+        "installer": tree_hash(inputs.installer),
+        "profiles": tree_hash(inputs.profiles),
+        "secrets": tree_hash(inputs.secrets),
+    }
+
+
+def reconcile_actions(current, applied, install_done, apply_done):
+    """What reconcile should run.
+
+    An empty applied record after a successful boot is adopted: those inputs
+    are already installed. A later change runs install for the installer
+    tree and apply for profiles or Secrets.
+    """
+    if not applied:
+        if install_done and apply_done:
+            return []
+        return ["install", "apply"]
+    actions = []
+    installer_changed = current.get("installer") != applied.get("installer")
+    rest_changed = (current.get("profiles") != applied.get("profiles")
+                    or current.get("secrets") != applied.get("secrets"))
+    if installer_changed:
+        actions.append("install")
+    # A BOM or installer-file change is followed by apply, so the new
+    # binaries are what the profile step uses. Profile or Secret changes
+    # run apply only.
+    if installer_changed or rest_changed:
+        actions.append("apply")
+    return actions
+
+
+def write_inputs_status(state_dir, current, applied, message):
+    path = Path(state_dir) / "status.json"
+    data = read_json(path, {})
+    data["inputs"] = {
+        "applied": applied,
+        "current": current,
+        "upToDate": current == applied,
+        "message": message,
+    }
+    write_json_atomic(path, data)
+
+
+# Without a backoff, a reconcile that fails (e.g. a component image is
+# briefly unreachable) never updates "applied", so the next timer tick --
+# about a minute later, per saw-inputs.timer -- immediately retries the same
+# failing, possibly 900s-timeout install or apply, while holding
+# /run/saw/lock the whole time (PR #54 review, 10).
+RECONCILE_BACKOFF_SECONDS = int(os.environ.get("SAW_RECONCILE_BACKOFF", "300"))
+
+
+def write_inputs_failure(state_dir, current, message):
+    path = Path(state_dir) / "status.json"
+    data = read_json(path, {})
+    inputs = dict(data.get("inputs") or {})
+    inputs.update({
+        "current": current,
+        "upToDate": False,
+        "message": message,
+        "lastFailedHash": current,
+        "lastFailedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    data["inputs"] = inputs
+    write_json_atomic(path, data)
+
+
+def reconcile_backoff_remaining(data, current):
+    """Seconds left in the backoff for this exact input hash, or 0."""
+    inputs = data.get("inputs") or {}
+    if inputs.get("lastFailedHash") != current or not inputs.get("lastFailedAt"):
+        return 0
+    try:
+        failed_at = datetime.fromisoformat(inputs["lastFailedAt"])
+    except ValueError:
+        return 0
+    elapsed = (datetime.now(timezone.utc) - failed_at).total_seconds()
+    return max(0, RECONCILE_BACKOFF_SECONDS - elapsed)
+
+
+def cmd_reconcile(args):
+    """Re-apply virtiofs inputs that changed since the last successful run.
+
+    Like install/apply, reads the installer tree (BOM, config, apply_bom.py
+    itself) from the staged, verified copy when --installer-dir is set, not
+    the live virtiofs mount -- the golden image's verify-bundle staged and
+    checked it moments earlier, in the same systemd unit's ExecStartPre.
+    Before this, reconcile ran apply_bom.py straight off the live mount with
+    no verification at all (PR #54 review, 2)."""
+    inputs = Inputs(args.inputs, getattr(args, "installer_dir", None))
+    state_dir = Path(args.state_dir)
+    current = input_hashes(inputs)
+    data = read_json(state_dir / "status.json", {})
+    applied = (data.get("inputs") or {}).get("applied") or {}
+    install_done = data.get("install", {}).get("phase") == "Done"
+    apply_done = data.get("apply", {}).get("phase") == "Done"
+    actions = reconcile_actions(current, applied, install_done, apply_done)
+    if not actions:
+        record = current if (install_done and apply_done) else applied
+        if install_done and apply_done and not applied:
+            record = current
+        write_inputs_status(state_dir, current, record or current,
+                            "inputs are up to date")
+        log("reconcile: inputs are up to date")
+        return 0
+    remaining = reconcile_backoff_remaining(data, current)
+    if remaining > 0:
+        log(f"reconcile: {', '.join(actions)} failed on this exact input before; "
+            f"waiting {int(remaining)}s more (or a further change) before retrying")
+        return 0
+    log(f"reconcile: running {', '.join(actions)}")
+    if "install" in actions and cmd_install(args) != 0:
+        write_inputs_failure(state_dir, current, "install failed; see status.install for details")
+        return 1
+    if "apply" in actions and cmd_apply(args) != 0:
+        write_inputs_failure(state_dir, current, "apply failed; see status.apply for details")
+        return 1
+    write_inputs_status(state_dir, current, current, "applied changed inputs")
+    log("reconcile: applied changed inputs")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="In-guest SAW installer (Stage 1)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1761,14 +2601,20 @@ def main(argv=None):
     p_validate.add_argument("--inputs", default=str(DEFAULT_INPUTS))
 
     for name, help_text in (("install", "step 1 (root): install BOM components, start the gateway"),
-                            ("apply", "step 2 (root): apply SAW-BOM profiles as the runtime user")):
+                            ("apply", "step 2 (root): apply SAW-BOM profiles as the runtime user"),
+                            ("reconcile", "re-run install and/or apply when inputs changed")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--inputs", default=str(DEFAULT_INPUTS))
         p.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
+        # Where the BOM/config/apply_bom.py/dashboard script are actually
+        # read from. Defaults to <inputs>/installer (the live mount) for
+        # backward compatibility; the systemd units point this at the
+        # golden image's verify-bundle staging area instead.
+        p.add_argument("--installer-dir", default=None)
         p.add_argument("--dry-run", action="store_true")
         # Test hook: run the user part as the current user instead of runuser.
         p.add_argument("--as-current-user", action="store_true", help=argparse.SUPPRESS)
-        if name == "install":
+        if name in ("install", "reconcile"):
             p.add_argument("--bin-dir", default="/usr/local/bin")
             p.add_argument("--opt-dir", default="/opt")
             p.add_argument("--podman", default="podman")
@@ -1780,7 +2626,8 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     commands = {"validate": cmd_validate, "install": cmd_install,
-                "apply": cmd_apply, "apply-profiles": cmd_apply_profiles}
+                "apply": cmd_apply, "reconcile": cmd_reconcile,
+                "apply-profiles": cmd_apply_profiles}
     try:
         return commands[args.command](args)
     except InstallerError as exc:

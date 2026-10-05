@@ -74,9 +74,11 @@ spec:
         {{- include "openshell-sandbox.labels" . | nindent 8 }}
         openshell.pattern/role: gateway
       annotations:
-        # Input changes (BOM, installer, cloud-init) change the VM spec, so
-        # KubeVirt flags the VM RestartRequired. The disks are read at boot.
+        # Cloud-init still needs a restart. With vm.liveInputs the installer
+        # ConfigMap and Secrets are virtiofs, so they are not in this checksum.
+        {{- if not .Values.vm.liveInputs }}
         openshell.pattern/installer-checksum: {{ include (print $.Template.BasePath "/configmap-installer.yaml") . | sha256sum | trunc 16 | quote }}
+        {{- end }}
         openshell.pattern/cloudinit-checksum: {{ include (print $.Template.BasePath "/secret-cloudinit.yaml") . | sha256sum | trunc 16 | quote }}
     spec:
       domain:
@@ -106,6 +108,7 @@ spec:
             - name: cloudinitdisk
               disk:
                 bus: virtio
+            {{- if not .Values.vm.liveInputs }}
             - name: saw-installer
               serial: saw-installer
               disk:
@@ -120,6 +123,18 @@ spec:
               disk:
                 bus: virtio
             {{- end }}
+            {{- end }}
+          {{- if .Values.vm.liveInputs }}
+          filesystems:
+            - name: saw-installer
+              virtiofs: {}
+            - name: saw-profiles
+              virtiofs: {}
+            {{- range $i, $name := $secrets }}
+            - name: saw-sec-{{ $i }}
+              virtiofs: {}
+            {{- end }}
+          {{- end }}
           interfaces:
             - name: default
               masquerade: {}

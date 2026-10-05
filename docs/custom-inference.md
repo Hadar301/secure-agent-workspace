@@ -1,15 +1,19 @@
 # Custom inference endpoint (vLLM, Ollama, any OpenAI-compatible server)
 
-A SAW can use a model server of your own instead of a cloud provider. It uses
-OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.116/docs/sandboxes/inference-routing.mdx):
+A SAW can use a model server of your own instead of a cloud provider.
+OpenShell 0.1.x removed managed inference routing (`openshell inference`,
+`https://inference.local`), so the agent calls the endpoint itself:
 
 - The installer creates an `openai` provider with the endpoint's base URL
-  (`--config OPENAI_BASE_URL=<url>`) and the key (passed via the environment),
-  then sets the workspace inference route (`openshell inference set`).
-- The gateway's inference router calls the endpoint with the key. Sandboxes
-  call `https://inference.local/v1` and never see the key or the endpoint.
-- OpenClaw is onboarded against `inference.local`, exactly like the default
-  NVIDIA setup, so the dashboard, keepalive and verification are unchanged.
+  (`--config OPENAI_BASE_URL=<url>`) and the key (passed via the
+  environment), and attaches it to the sandbox.
+- OpenClaw is onboarded against the endpoint's own URL, with the placeholder
+  key the sandbox holds in `OPENAI_API_KEY`. The sandbox proxy replaces the
+  placeholder with the real key only on requests to an endpoint of the
+  provider's profile, from a binary the profile lists. The key never enters
+  the sandbox.
+- So the provider's **profile must name the endpoint's host**. The shipped
+  `openai` profile allows `api.openai.com` only; see Requirements.
 
 ## Configure
 
@@ -47,15 +51,18 @@ OpenShell's [inference routing](https://github.com/NVIDIA/OpenShell/blob/v0.0.11
   (`http://vllm.<ns>.svc:8000/v1`) or Route host. `localhost` is refused.
 - `url` must be `http(s)://host[:port][/path]` without credentials, query or
   fragment. The installer rejects anything else without logging the value.
-- With governance on, the gateway only accepts provider types from the
-  governance catalog, so `charts/governance-policy/profiles/openai.yaml` must
-  be deployed (a profile the installer imports itself is not enough). The
-  profile has no endpoints: sandboxes get no direct egress from it.
-- Self-hosted models can be slow: the profile sets `inferenceTimeout: 300`
-  seconds (OpenShell's default is 60).
+- The `openai` provider profile must name the endpoint's host. With
+  governance on, the gateway uses only the governance catalog: set the
+  `host`/`port` of the endpoint in `charts/governance-policy/profiles/openai.yaml`
+  to your server's (keep `binaries`: OpenClaw runs under `node`). The
+  provider's `OPENAI_BASE_URL` alone is not enough: OpenShell never sends
+  the key to a host the profile does not name.
+- `inferenceTimeout` is still accepted but no longer used: there is no
+  gateway router to time out.
 
 ## Limitations
 
-- One inference route per workspace (an OpenShell limitation).
+- Not yet verified end to end on OpenShell 0.1.x; the installer does not
+  yet generate a per-endpoint profile.
 - NemoClaw sandboxes onboard their own provider settings; the profile only
   ships an OpenClaw sandbox.

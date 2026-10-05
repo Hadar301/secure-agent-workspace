@@ -50,6 +50,11 @@ vm:
   accessMode: ReadWriteOnce
   # Empty leaves volumeMode unset so CDI follows the StorageProfile.
   volumeMode: ""
+  # Share the installer ConfigMap, profiles, and provider Secrets over
+  # virtiofs so a change is visible without restarting the VM. Off until
+  # the guest units from a new cloud-init are in place: turning it on
+  # requires recreating the VM. Disks, VM size, and cloud-init still restart.
+  liveInputs: false
   # Mark the VMI Ready only after the in-guest installer finished both steps.
   # Uses a guest-agent exec probe (`/usr/libexec/saw-ready`). The helper
   # checks installer completion and, when the agent unit exists, agent health.
@@ -66,19 +71,27 @@ bom:
   apiVersion: saw.redhat.com/v1alpha1
   kind: InstallerBOM
   metadata:
-    name: openshell-0-0-116-rhaiv-0
+    name: openshell-0-1-2-rhaiv-0
   spec:
     installerVersion: 0.1.0
+    # OpenShell 0.1.x. Moving from 0.0.x recreates the gateway state and
+    # every sandbox (the installer does it; see docs/versioned-bom-installer.md).
     openshell:
       cli:
-        version: 0.0.116-rhaiv.0
-        image: quay.io/opendatahub/odh-openshell-cli@sha256:ffd6c5e163180aba4f19d445a23906856bd9b7a24710aa134484f2b2ee7a8f17
+        version: 0.1.2-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b
       gateway:
-        version: 0.0.116-rhaiv.0
-        image: quay.io/opendatahub/odh-openshell-gateway@sha256:456650bc420ff3bda27e81c13bea3ebad721b6a00d8541251f48ec999f92af6d
+        version: 0.1.2-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-gateway@sha256:c3b230a32245d0a6c35ed11c17cf590da9ede79dfb0378e3829e16709f63fba3
       supervisor:
-        version: 0.0.116-rhaiv.0
-        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:6c56ca2495ee10a77773b154cefd7309ebcab071962ea069ac349a3d9ec8c55a
+        version: 0.1.2-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:0179eb17dcc0098d3fce360035c0be0c26a39949ce09a397c7c259bf728170ff
+      # Sandbox runtime image: the podman driver mounts the supervisor from it
+      # into every sandbox (gateway.toml sandbox_runtime_image). Pulled, not
+      # extracted.
+      sandbox:
+        version: 0.1.2-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-sandbox@sha256:283838f9787bdd876ec8f110a5d5b5c752082a410f75173f0abf2533ae651989
     # NemoClaw CLI, needed by `type: nemoclaw` sandboxes (the default
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.
@@ -110,6 +123,24 @@ spiffe:
     version: 1.14.7
     image: ghcr.io/spiffe/spire-agent@sha256:3efffa16f4a928829dd4031862fd6ed4f6118647f2943bac02f539a4fe65f7f8
     path: /opt/spire/bin/spire-agent
+
+# Image and installer-bundle signature checks. warn records an unsigned
+# component and still installs it. enforce refuses the install. off skips
+# the check. enforce also requires trustKeys or a keyless identity below:
+# the public keys themselves live in the golden image at /etc/saw/trust,
+# not in this namespace.
+signing:
+  mode: warn
+  trustKeys: []
+  identity: ""
+  issuer: ""
+
+# Dropping an object from a SAW-BOM profile. report only logs what would be
+# deleted. on deletes it. Sandboxes are kept unless sandboxes is true, because
+# they hold user work. This is not pruneOnRemove (that deletes a user's VM).
+prune:
+  mode: report
+  sandboxes: false
 
 # If a BOM profile's sandbox image lives in this cluster's internal registry,
 # the VM's rootless Podman pulls it without credentials. This grants
