@@ -624,15 +624,30 @@ Secret and agent files are the measured disablement behavior. They do not
 show that turning SPIFFE back on recovers the enrollment.
 These items remain:
 
-- Shared SPIRE server outage. This is a mandatory blocker. The chart can
-  only install into `zero-trust-workload-identity-manager`. No SAW is
-  currently opted in, and this server is still that shared stack. It stays
-  running. An isolated environment or an authorized maintenance window is
-  required. The TCP scheduling tests do not cover it.
-- Correlated audit acceptance. This is a mandatory blocker. It needs the
-  missing supervisor capability or an explicitly approved acceptance-scope
-  change. The pinned OpenShell build does not emit the required identity
-  claims. The supervisor was not patched.
+- Shared SPIRE server outage. This remains a mandatory blocker. On
+  2026-10-05 the delivered chart still refuses a second
+  `spire-identity` release outside
+  `zero-trust-workload-identity-manager`, so an isolated stack was not
+  created. The shared server was not stopped. It has 17 attested agents and
+  49 entries: one `/saw/platform/registrar` entry, and 48 entries under
+  `/ns/` for `openshell-agents`, `vp-gitops`, `cert-manager`, `keycloak`,
+  `saw-alice`, `saw-keycloak`, `external-secrets`, `imperative`,
+  `patterns-operator`, `redhat-ods-operator`, `assisted-installer`,
+  `cert-manager-operator`, `external-secrets-operator`, `rhdh-operator`,
+  `saw-identity-demo`, `vault`, `vllm-test`, and
+  `zero-trust-workload-identity-manager`. No SAW is enrolled, so stopping
+  this server would not prove SAW grant recovery and would drop identity
+  for those other consumers. The server pod remains UID
+  `c25daa63-085b-4216-a328-633658ea1e83`.
+- Correlated audit acceptance. This remains a mandatory blocker. The pinned
+  supervisor `243a410b48a9760e7c90abe98a4b1b67414bc1d6` emits grant success
+  and failure in `inject_if_needed` without sandbox identity. The smallest
+  dependency change is to return the Workload API JWT-SVID `sub` alongside
+  the access token from `obtain_provider_token`, including cache hits, and
+  to put that SPIFFE ID on both OCSF events. Decode `azp` or `client_id`
+  from an access token only as an unverified hint, and omit it when the
+  token is opaque. Do not log token values. No image has been built and no
+  issue or pull request has been opened.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
@@ -779,13 +794,11 @@ Helm `identity-demo` is revision 7 in `saw-identity-demo`. Its pod
 `identity-demo-cc776b5d8-hx4wh` was created at 2026-10-05T09:25:07Z and is
 the issuer for the recorded grants, not a SAW.
 
-Both stay until the two mandatory blockers are settled. They are not canary
-cleanup. After that evidence is recorded, Helm `identity-demo` and namespace
-`saw-identity-demo`, including its enrollment secret, can be removed. That
-removes the ephemeral signing key with the pod. Helm `saw-spire` stays the
-shared stack under its existing owner. The outage test uses an isolated
-environment or restores this server after an authorized window. It is not a
-reason to uninstall the release. `alice` is not enrolled.
+Both stay until the two mandatory blockers have evidence. The outage was
+not run, and the audit dependency was not changed, so Helm `identity-demo`
+and Helm `saw-spire` were left in place. After both have evidence, uninstall
+`identity-demo` and delete `saw-identity-demo`, including its enrollment
+secret. Keep `saw-spire` under this Helm owner.
 The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
 already synced `113781e`, which is the chart revision the deleted `idpat`
 Applications deployed, before those objects were deleted.
