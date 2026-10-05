@@ -28,11 +28,11 @@
 #
 # Prerequisites:
 #   - oc logged in; openshell CLI installed and gateway selected
-#   - a SAW deployed with demoHarness=true + allowDriverConfig=true, e.g.
+#   - a SAW deployed with harnessEnabled=true + allowDriverConfig=true, e.g.
 #       helm upgrade --install <saw> charts/openshell-saw ... \
 #         --set allowDriverConfig=true
 #       helm upgrade --install saw-bom charts/saw-bom ... \
-#         --set demoHarness=true
+#         --set harnessEnabled=true
 #
 # Usage:
 #   ./scripts/e2e-harness.sh [--gateway NAME] [--workspace WS]
@@ -130,6 +130,7 @@ fi
 # A write through the mount must be refused (proves RO end to end).
 if sb_exec sh -c 'touch /sandbox/harness/.w 2>/dev/null' 2>/dev/null; then
   fail "write to /sandbox/harness succeeded (should be refused)"
+  sb_exec sh -c 'rm -f /sandbox/harness/.w 2>/dev/null' 2>/dev/null || true
 else
   pass "write to /sandbox/harness refused"
 fi
@@ -235,10 +236,12 @@ v = rev.get('${SANDBOX}','')
 print('image' if '/' in v.split('@')[0] else 'inline')" 2>/dev/null || true)
 fi
 if [[ "${HREF_KIND}" == "image" ]]; then
-  if command -v cosign >/dev/null 2>&1; then
-    check "cosign verifies the applied image" -- bash -c "echo '${STATUS_JSON}' | python3 -c \"import json,sys; print((json.load(sys.stdin).get('apply') or {}).get('appliedRevision',{}).get('${SANDBOX}',''))\" | xargs -I{} cosign verify {}"
-  else
+  if ! command -v cosign >/dev/null 2>&1; then
     skip "cosign not installed; installer verified at apply time (see status)"
+  elif [[ -z "${HARNESS_COSIGN_IDENTITY:-}" || -z "${HARNESS_COSIGN_ISSUER:-}" ]]; then
+    skip "HARNESS_COSIGN_IDENTITY/HARNESS_COSIGN_ISSUER not set (same values as the SAW's harness.cosign.identity/.issuer); keyless cosign refuses without them"
+  else
+    check "cosign verifies the applied image" -- bash -c "echo '${STATUS_JSON}' | python3 -c \"import json,sys; print((json.load(sys.stdin).get('apply') or {}).get('appliedRevision',{}).get('${SANDBOX}',''))\" | xargs -I{} cosign verify --certificate-identity '${HARNESS_COSIGN_IDENTITY}' --certificate-oidc-issuer '${HARNESS_COSIGN_ISSUER}' {}"
   fi
 else
   skip "inline ConfigMap bundle: no image signature to verify (installer enforces digest when pinned)"
@@ -265,7 +268,7 @@ fi
 if [[ "${REVOKE_DRILL}" == "yes" ]]; then
   step "H9: revocation drill (DESTRUCTIVE: recreates '${SANDBOX}')"
   echo -e "  ${YELLOW}Remove the harnessRef from the profile, re-apply, then re-run this script:${NC}"
-  echo "  1. helm upgrade saw-bom charts/saw-bom --set demoHarness=false"
+  echo "  1. helm upgrade saw-bom charts/saw-bom --set harnessEnabled=false"
   echo "     (or drop harnessRef from the sandbox) + restart the VM installer"
   echo "  2. expect: sandbox recreated WITHOUT /sandbox/harness,"
   echo "     'openclaw config get plugins.load.paths' no longer lists it,"
