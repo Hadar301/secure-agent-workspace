@@ -1,7 +1,0 @@
-# Base image: Red Hat AI agentic OpenClaw image (OpenClaw 2026.9.5), pinned by
-# digest. Keep in sync with the FROM line in Dockerfile.
-build:
-  baseImage: "quay.io/aipcc/base-images/agentic/openclaw@sha256:01b4def983e30a8e30e196d3f22ad3b759ade3af5e56dde89c306110162cb7bc"
-
-output:
-  imageStreamTag: "openclaw-openshell:latest"
