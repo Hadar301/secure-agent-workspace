@@ -702,9 +702,9 @@ Do not let a second Helm/Argo application take ownership of an existing stack.
 Build `identity/registrar`, publish its image, and set `registrar.image` to an
 immutable digest before enabling it. The source Dockerfile documents the build.
 The SPIRE agent component is separately digest pinned and verified during BOM
-installation. TCP uses the SPIRE Service on port 443. VSOCK guest configuration
-exists, but the host bridge and live validation remain outstanding; do not use
-that transport as an accepted deployment option yet. No transport fallback occurs.
+installation. TCP is the only transport. The chart and guest installer
+reject any other server transport. The agent uses the SPIRE Service on
+port 443.
 
 Quickstart accepts `DYNAMIC_PROVIDERS=true`, `SAW_VALUES=<file>` and
 `SAW_BOM_VALUES=<file>` without an API key. Both files must be explicit. Approved

@@ -26,6 +26,7 @@ registrar:
   joinTokenTTL: 600
   jwtSvidTTL: 300
   x509SvidTTL: 3600
+# TCP is the only transport. The chart rejects vsockBridge.enabled.
 vsockBridge:
   enabled: false
   image: ""

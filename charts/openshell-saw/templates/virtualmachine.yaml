@@ -5,8 +5,8 @@
 {{- $secrets := include "openshell-sandbox.providerSecrets" . | fromJsonArray }}
 {{- if .Values.spiffe.enabled }}
 {{- $_ := required "spiffe.trustDomain is required" .Values.spiffe.trustDomain }}
-{{- if not (has .Values.spiffe.serverTransport (list "tcp" "vsock")) }}
-{{- fail "spiffe.serverTransport must be tcp or vsock" }}
+{{- if ne .Values.spiffe.serverTransport "tcp" }}
+{{- fail "spiffe.serverTransport must be tcp" }}
 {{- end }}
 {{- end }}
 {{- range $secrets }}{{- include "openshell-sandbox.validateSecretName" . }}{{- end }}
@@ -88,9 +88,6 @@ spec:
           requests:
             memory: {{ .Values.vm.memory }}
         devices:
-          {{- if and .Values.spiffe.enabled (eq .Values.spiffe.serverTransport "vsock") }}
-          autoattachVSOCK: true
-          {{- end }}
           # Send the serial console (where saw-install/saw-apply log) to the
           # virt-launcher pod's guest-console-log container, even when the
           # cluster default leaves serial console logging off.

@@ -116,6 +116,7 @@ spiffe:
   trustDomain: ""
   serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local
   serverPort: 443
+  # TCP is the only transport. The chart rejects any other value.
   serverTransport: tcp
   gatewayUID: 1000
   registrarNamespace: zero-trust-workload-identity-manager

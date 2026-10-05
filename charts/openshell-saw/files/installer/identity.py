@@ -224,9 +224,9 @@ def agent_command(with_token):
 
 
 def service_unit(with_token, transport, run_as):
+    if transport != "tcp":
+        raise RuntimeError("SPIRE server transport must be tcp")
     after = "After=network-online.target"
-    if transport == "vsock":
-        after += " spire-vsock-relay.service\nRequires=spire-vsock-relay.service"
     command = " ".join(agent_command(with_token))
     # The binary file context is the domain entrypoint. The unit does not
     # override the process context, and it does not call a launch wrapper.
@@ -343,8 +343,8 @@ def install(config_path):
         raise RuntimeError("runtime UID differs from the registered gateway selector")
     mount_inputs()
     transport = identity["serverTransport"]
-    if transport not in ("tcp", "vsock"):
-        raise RuntimeError("unsupported SPIRE server transport")
+    if transport != "tcp":
+        raise RuntimeError("SPIRE server transport must be tcp")
     td = identity["trustDomain"]
     previous = Path("/etc/spire/trust-domain")
     if previous.exists() and previous.read_text().strip() != td:
@@ -370,8 +370,8 @@ def install(config_path):
     run("runuser", "-u", cfg["runtimeUser"], "--", "env",
         f"XDG_RUNTIME_DIR=/run/user/{user.pw_uid}", "systemctl", "--user", "enable", "--now", "podman.socket")
     conf = {"agent": {"data_dir": str(STATE), "trust_domain": td,
-                      "server_address": "127.0.0.1" if transport == "vsock" else identity["serverAddress"],
-                      "server_port": 18081 if transport == "vsock" else identity["serverPort"],
+                      "server_address": identity["serverAddress"],
+                      "server_port": identity["serverPort"],
                       "socket_path": SOCKET, "trust_bundle_path": str(STATE / "bootstrap-bundle.pem"),
                       "log_level": "ERROR", "rebootstrap_mode": "never"},
             "plugins": {"NodeAttestor": [{"join_token": {"plugin_data": {}}}],
@@ -424,24 +424,10 @@ def install(config_path):
         run("restorecon", str(test_helper))
     elif test_helper.exists():
         test_helper.unlink()
-    if transport == "vsock":
-        if not shutil.which("socat"):
-            install_package_without_policy_upgrade("socat")
-        Path("/etc/systemd/system/spire-vsock-relay.service").write_text("""[Unit]
-Description=SAW SPIRE VSOCK relay
-[Service]
-ExecStart=/usr/bin/socat TCP-LISTEN:18081,bind=127.0.0.1,fork,reuseaddr VSOCK-CONNECT:2:18081
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-""")
     unit = service_unit(with_token, transport, user.pw_name)
     changed_unit = not UNIT_PATH.exists() or UNIT_PATH.read_text() != unit
     UNIT_PATH.write_text(unit)
     run("systemctl", "daemon-reload")
-    if transport == "vsock":
-        run("systemctl", "enable", "--now", "spire-vsock-relay.service")
     run("systemctl", "enable", "spire-agent.service")
     run("systemctl", "restart" if (changed or changed_unit) else "start", "spire-agent.service")
     for _ in range(90):

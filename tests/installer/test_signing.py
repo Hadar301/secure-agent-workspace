@@ -393,9 +393,12 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path, edited):
     assert warned.returncode == 0
     assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
     assert installed.read_text() == "old-binary\n"
-    # warn does publish a failed bundle, so it takes effect (matches the
-    # documented "warn logs ... and continues").
-    assert staged_apply_bom.read_text() == "tampered\n"
+    # warn does publish a failed bundle, so the edited file takes effect
+    # (matches the documented "warn logs ... and continues"). Other covered
+    # files stay as they were.
+    assert (tmp_path / "verified" / "installer" / edited).read_text() == "tampered\n"
+    if edited != "apply_bom.py":
+        assert staged_apply_bom.read_text() == "apply_bom.py\n"
 
 
 def test_a_byte_shifted_between_files_is_rejected(tmp_path):

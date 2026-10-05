@@ -67,7 +67,9 @@ PROCEDURES = {
 
 
 def blocked_cases(transport):
-    transports = ("tcp", "vsock") if transport == "both" else (transport,)
+    if transport != "tcp":
+        raise ValueError("only tcp is supported and this acceptance run does not execute another transport")
+    transports = (transport,)
     return [{"name": f"{t}/{case}", "status": "blocked",
              "detail": PROCEDURES.get(case) or (
                  "Pinned OpenShell lacks correlated injected identity audit claims"
@@ -1786,7 +1788,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--context", required=True)
     parser.add_argument("--namespace-prefix", required=True)
-    parser.add_argument("--transport", required=True, choices=("tcp", "vsock", "both"))
+    parser.add_argument("--transport", required=True, choices=("tcp",))
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--scenario", choices=("vm-spire-deny-expiry", "profile-remove-restore",
                                               "research-expiry-denial", "vm-recreate", "vm-recreate-verify",

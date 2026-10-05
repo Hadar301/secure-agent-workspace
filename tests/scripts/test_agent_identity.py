@@ -22,12 +22,18 @@ def test_ready_requires_true_ready_condition():
     assert live.ready({"status": {"conditions": [{"type": "Ready", "status": "True"}]}})
 
 
-def test_transports_remain_blocked():
+def test_tcp_cases_remain_blocked():
     live = load("test-agent-identity-live")
-    cases = live.blocked_cases("both")
-    assert len(cases) == 2 * len(live.SCENARIOS)
+    cases = live.blocked_cases("tcp")
+    assert len(cases) == len(live.SCENARIOS)
     assert {c["status"] for c in cases} == {"blocked"}
-    assert {c["name"].split("/")[0] for c in cases} == {"tcp", "vsock"}
+    assert {c["name"].split("/")[0] for c in cases} == {"tcp"}
+    try:
+        live.blocked_cases("vsock")
+    except ValueError as error:
+        assert "tcp" in str(error)
+    else:
+        raise AssertionError("a non-TCP transport was accepted")
     tcp = [c for c in cases if c["name"].startswith("tcp/")]
     recorded = [c for c in tcp if c["name"].endswith("/bootstrap-failure")]
     assert len(recorded) == 1
