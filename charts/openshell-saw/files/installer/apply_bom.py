@@ -1907,6 +1907,39 @@ class Ledger:
             if (obj["kind"], obj.get("workspace", ""), obj["name"]) != (kind, workspace, name)]
 
 
+# The OpenClaw gateways running in a sandbox, one pid per line. A pattern
+# (`pgrep -f`, `pkill -f`) is not usable here: the `sh -c` script that runs
+# this check also contains the text `openclaw gateway run` (it starts the
+# gateway), so the pattern matched the script's own shell, which then killed
+# itself, or concluded a gateway was already running. This walks /proc and
+# skips any `sh -c` process; it also matches the gateway once it has renamed
+# itself `openclaw-gateway`.
+_GATEWAY_PIDS_SH = (
+    'gateway_pids() { for d in /proc/[0-9]*; do '
+    'c=$(tr "\\000" " " < "$d/cmdline" 2>/dev/null) || continue; '
+    'case "$c" in *"sh -c "*) continue;; esac; '
+    'case "$c" in *"openclaw gateway run"*|openclaw-gateway*) echo "${d#/proc/}";; esac; '
+    'done; }')
+
+
+def gateway_start_script(refilled, token, oc_env):
+    """The sandbox script that (re)starts OpenClaw's gateway: always when
+    the harness was refilled, otherwise only when none is running."""
+    q = shlex.quote
+    return "\n".join([
+        _GATEWAY_PIDS_SH,
+        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(gateway_pids)" ]; then',
+        f"  {oc_env} openclaw config set gateway.auth.token {q(token)} "
+        '|| echo "WARN: could not set gateway.auth.token"',
+        f"  export OPENCLAW_GATEWAY_TOKEN={q(token)} {oc_env}",
+        '  for p in $(gateway_pids); do kill "$p" 2>/dev/null; done',
+        "  sleep 1",
+        "  nohup openclaw gateway run --allow-unconfigured --bind lan --port 18789 "
+        "> /tmp/openclaw-gateway.log 2>&1 &",
+        "fi",
+    ]) + "\n"
+
+
 class HarnessVolume:
     """A sandbox's podman named volume holding its harness bundle tree
     unchanged, plus a marker with the source and tree digest. An unchanged,
@@ -2710,20 +2743,11 @@ class ProfileApplier:
                      f"{oc_env} openclaw config set gateway.controlUi.allowedOrigins {origins}",
                      check=False)
         refilled = self.harness_refilled.get((ws.name, sb.name), False)
-        self.cli(*exec_cmd, "sh", "-c",
-                 # Restart (and rotate the token with it) only on refill or if
-                 # no gateway is running; otherwise an unconditional restart
-                 # would cut live sessions, and a token rewrite without one
-                 # would desync config from what the running gateway accepts.
-                 # '[o]penclaw' keeps pkill/pgrep from matching their own argv
-                 # and killing this shell.
-                 f"if [ {'1' if refilled else '0'} = 1 ] || "
-                 "! pgrep -f '[o]penclaw gateway run' > /dev/null; then "
-                 f"{oc_env} openclaw config set gateway.auth.token {shlex.quote(token)} && "
-                 f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && "
-                 "pkill -f '[o]penclaw gateway run' || true; sleep 1; "
-                 "nohup openclaw gateway run --allow-unconfigured --bind lan --port 18789 "
-                 "> /tmp/openclaw-gateway.log 2>&1 & fi",
+        # Restart (and rotate the token with it) only on a refill or when no
+        # gateway is running: an unconditional restart would cut live
+        # sessions, and a token rewrite without one would desync the config
+        # from what the running gateway accepts.
+        self.cli(*exec_cmd, "sh", "-c", gateway_start_script(refilled, token, oc_env),
                  check=False)
         self.install_keepalive(ws, sb)
 
