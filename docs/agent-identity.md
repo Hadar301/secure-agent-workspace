@@ -619,22 +619,20 @@ revision 1 to 2 result above. The revision 4 installer upgrade is a different
 change and was measured on the already-disabled VM. Disabled-mode
 provisioning, revocation, retained material, and a secret-backed provider
 request before and after disablement are recorded above. Re-enable was not
-tested.
+a required acceptance case and was not tested. The retained join-token
+Secret and agent files are the measured disablement behavior. They do not
+show that turning SPIFFE back on recovers the enrollment.
 These items remain:
 
-- Shared SPIRE server outage. This is a mandatory blocker. The current chart
-  can only install into `zero-trust-workload-identity-manager`, and that
-  server is shared by the enrolled VMs. It was left running. An isolated
-  environment or an authorized maintenance window is required. The TCP
-  scheduling tests do not cover it.
+- Shared SPIRE server outage. This is a mandatory blocker. The chart can
+  only install into `zero-trust-workload-identity-manager`. No SAW is
+  currently opted in, and this server is still that shared stack. It stays
+  running. An isolated environment or an authorized maintenance window is
+  required. The TCP scheduling tests do not cover it.
 - Correlated audit acceptance. This is a mandatory blocker. It needs the
   missing supervisor capability or an explicitly approved acceptance-scope
   change. The pinned OpenShell build does not emit the required identity
   claims. The supervisor was not patched.
-- Re-enable of a disabled VM was not a required acceptance case and was not
-  tested. Retained join-token and agent files are the measured disablement
-  behavior. They do not show that turning SPIFFE back on recovers the
-  enrollment.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
@@ -772,11 +770,22 @@ with `saw-bom` in `saw-identity-c`, and Helm `identity-e` revision 1 with
 SPIRE then had no `/saw/saw-identity-*` entries. `identity-d` had lived in
 `saw-identity-c`.
 
-What remains is not an identity canary. `alice` is UID
+What remains is not an identity canary. No VM has
+`saw.redhat.com/spiffe=true`. `alice` is UID
 `4d9604bb-4ebc-438a-a4e2-85175a744328`, Running, with no SPIFFE label.
 `spire-server-0` is UID `c25daa63-085b-4216-a328-633658ea1e83`, Running.
-Helm `saw-spire` is revision 15. Helm `identity-demo` is revision 7 in
-`saw-identity-demo`; it is the issuer for the recorded grants, not a SAW.
+Helm `saw-spire` is revision 15 in `zero-trust-workload-identity-manager`.
+Helm `identity-demo` is revision 7 in `saw-identity-demo`. Its pod
+`identity-demo-cc776b5d8-hx4wh` was created at 2026-10-05T09:25:07Z and is
+the issuer for the recorded grants, not a SAW.
+
+Both stay until the two mandatory blockers are settled. They are not canary
+cleanup. After that evidence is recorded, Helm `identity-demo` and namespace
+`saw-identity-demo`, including its enrollment secret, can be removed. That
+removes the ephemeral signing key with the pod. Helm `saw-spire` stays the
+shared stack under its existing owner. The outage test uses an isolated
+environment or restores this server after an authorized window. It is not a
+reason to uninstall the release. `alice` is not enrolled.
 The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
 already synced `113781e`, which is the chart revision the deleted `idpat`
 Applications deployed, before those objects were deleted.
