@@ -1,10 +1,5 @@
 enabled: true
-spiffeIssuer: https://spire-oidc.apps.cluster-2p7tv.dyn.redhatworkshops.io
-allowedPrefixes:
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-a/identity-a
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-b/identity-b
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-c/identity-c
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-c/identity-d
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-e/identity-e
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-q/identity-q
-- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-idpat/idpat
+# Supply the installed SPIRE OIDC issuer and only the SAW prefix under test.
+# See README.md; the demo chart rejects empty values.
+spiffeIssuer: ""
+allowedPrefixes: []

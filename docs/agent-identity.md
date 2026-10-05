@@ -467,9 +467,10 @@ provider and without identity resources. That VM never had an enrollment, so
 it does not show a provider that already existed on an enrolled VM.
 
 Pattern deployment used a dedicated SAW and did not take ownership of the
-shared identity stack. `examples/agent-identity/idpat-applications.yaml`
-creates namespace `saw-idpat` and Applications `idpat-bom` and `idpat` at
-revision `codex/agent-identity` commit `3b040d06`. It does not install
+shared identity stack. The historical site-specific manifest, since replaced
+by `examples/agent-identity/pattern-saw-applications.yaml.tpl`, created
+namespace `saw-idpat` and Applications `idpat-bom` and `idpat` at revision
+`codex/agent-identity` commit `3b040d06`. It did not install
 `charts/spire-identity`. `alice` was not modified: VM UID
 `4d9604bb-4ebc-438a-a4e2-85175a744328`, Running, no
 `saw.redhat.com/spiffe` label, Application `saw-alice` still tracking
@@ -522,7 +523,9 @@ belong to this key. The protected request from sandbox `agent` was HTTP 200,
 curl exit 0, audience `saw-protected-service`, with
 `spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-idpat/idpat/ws/default/sandbox/agent`
 in `sub`, `azp`, and `client_id`, expiring at 2026-10-05T09:31:00Z. The
-allowlist is in `examples/agent-identity/demo-values.yaml`.
+allowlist was supplied in site-specific demo values. The checked-in
+`examples/agent-identity/demo-values.yaml` now requires an issuer and prefix
+for the target installation.
 
 Route `idpat-webui` exists because `route.webui` defaults to true; the
 Application values set `route.enabled` and `route.dashboard` false and did
@@ -694,10 +697,12 @@ directly. It does not exercise OpenShell's grant flow or replay a gateway
 assertion. Shared validation code explains why signature and expiry are checked
 before the grant branch; it does not widen this live result.
 
-Example values are in `examples/agent-identity/`. `cluster-values.yaml` describes
-the current cluster installation; `pattern-values.yaml` shows the Pattern
-application wiring. On this cluster the Pattern already owns `saw-alice` and
-the platform applications, and `pattern-values.yaml` was not applied.
+Example values are in `examples/agent-identity/`; its `README.md` explains
+the site inputs. `cluster-values.yaml` leaves the trust domain, cluster name,
+issuer, and storage class to the target installation; `pattern-values.yaml`
+shows the Pattern application wiring. On this cluster the Pattern already owns
+`saw-alice` and the platform applications, and `pattern-values.yaml` was not
+applied.
 Do not let a second Helm/Argo application take ownership of an existing stack.
 
 Build `identity/registrar`, publish its image, and set `registrar.image` to an
@@ -794,7 +799,7 @@ with `saw-bom` in `saw-identity-c`, and Helm `identity-e` revision 1 with
 SPIRE then had no `/saw/saw-identity-*` entries. `identity-d` had lived in
 `saw-identity-c`.
 
-What remains is not an identity canary. No VM has
+At that cleanup snapshot, no identity canary remained. No VM then had
 `saw.redhat.com/spiffe=true`. `alice` is UID
 `4d9604bb-4ebc-438a-a4e2-85175a744328`, Running, with no SPIFFE label.
 `spire-server-0` is UID `c25daa63-085b-4216-a328-633658ea1e83`, Running.
@@ -811,3 +816,42 @@ secret. Keep `saw-spire` under this Helm owner.
 The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
 already synced `113781e`, which is the chart revision the deleted `idpat`
 Applications deployed, before those objects were deleted.
+
+## OpenShell 0.1.2 TCP revalidation, 2026-10-05
+
+The dedicated `saw-identity-u/identity-u` VM (UID
+`565d45f5-0f5a-47ad-bc4d-d5b6ee8eac4b`) revalidated the example against
+OpenShell `0.1.2-rhaiv.0`. The old community sandbox image digest
+`c2a43bb0d765774e2790b3babfb20997bb2eac7b4bf4c6d7d8661e99817bf904`
+embeds a policy with three `tls: terminate` values. OpenShell 0.1.2 rejects
+that policy before admission with `unknown tls value 'terminate'`, even on a
+provider-free sandbox. A policy-free UBI control was admitted. This was an
+image-policy compatibility failure, not a `saw-demo-cc` profile failure.
+
+The examples now pin public image
+`registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc`.
+It has `sh` and `curl` and no embedded OpenShell policy. A manually created
+`agent` using this digest was Ready and returned HTTP 200 from `/protected`.
+That manual result was followed by an installer check: Helm `saw-bom` revision
+3 changed only the default sandbox image to this digest; the manual `agent`
+was deleted, then `identity-u` was restarted once to refresh its BOM disk.
+The new VMI is `c8690752-ced5-4e6b-835b-ee05a3ca7a1c`. The mounted profile
+named the UBI digest, `saw-apply` recreated `agent` from it, both installer
+phases were Done for `openshell-0-1-2-rhaiv-0`, `/usr/libexec/saw-ready`
+exited 0, and the VM became Ready. Guest identity status was `present` at
+generation 1.
+
+The installer-created sandbox then returned HTTP 200 from `/protected` with
+curl exit 0. The response had `aud=saw-protected-service` and
+`sub`, `azp`, and `client_id` all equal to
+`spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent`.
+Its access-token expiry was `2026-10-05T17:17:54Z`. The demo issuer is now
+Helm revision 8, pod `identity-demo-786b559d6f-j4drb`; tokens issued by the
+earlier pod do not cross this signing-key boundary. No raw token was retained.
+
+The cluster golden image lacks `verify-bundle`, so the installer recorded the
+OpenShell components as unsigned on this boot. The result above establishes
+automatic TCP client-credentials provisioning on this canary, not signed
+component verification, 0.1.2 token exchange, the complete live suite, the shared
+SPIRE server outage, or the required correlated proxy audit. PR #55 remains
+draft while those items are open.

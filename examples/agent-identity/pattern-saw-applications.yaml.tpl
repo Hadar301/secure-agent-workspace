@@ -1,32 +1,30 @@
-# Dedicated Pattern-style SAW. It uses the agent-identity chart, which is the
-# revision that can reference the shared SPIRE service. It does not install
-# or adopt charts/spire-identity, and it does not change saw-alice.
-# The Pattern branch codex/custom-inference-vm-installer has no SPIFFE
-# templates, so this Application cannot use that revision and still enroll.
+# Render with scripts/render-agent-identity-applications.py before applying.
+# This creates one dedicated SAW and BOM Application. It does not install or
+# adopt the shared SPIRE stack or an existing SAW.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: saw-idpat
+  name: ${SAW_NAMESPACE}
   labels:
     openshell.pattern/saw: "true"
-    saw.redhat.com/identity-test-run: agent-identity-pattern-20261005
+    saw.redhat.com/identity-test-run: ${TEST_RUN_ID}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: idpat-bom
-  namespace: vp-gitops
+  name: ${SAW_BOM_NAME}
+  namespace: ${GITOPS_NAMESPACE}
   labels:
     validatedpatterns.io/pattern: secure-agent-workspace
-    openshell.pattern/owner: idpat
+    openshell.pattern/owner: ${SAW_NAME}
 spec:
   project: default
   destination:
     name: in-cluster
-    namespace: saw-idpat
+    namespace: ${SAW_NAMESPACE}
   source:
-    repoURL: https://github.com/Hadar301/secure-agent-workspace.git
-    targetRevision: codex/agent-identity
+    repoURL: ${GIT_REPO_URL}
+    targetRevision: ${GIT_REVISION}
     path: charts/saw-bom
     helm:
       releaseName: saw-bom
@@ -46,7 +44,8 @@ spec:
             kind: Sandboxes
             spec:
               sandboxes:
-              - image: ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:c2a43bb0d765774e2790b3babfb20997bb2eac7b4bf4c6d7d8661e99817bf904
+              # UBI supplies sh and curl without an incompatible image policy.
+              - image: registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc
                 name: agent
                 providers:
                 - protected
@@ -68,24 +67,24 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: idpat
-  namespace: vp-gitops
+  name: ${SAW_NAME}
+  namespace: ${GITOPS_NAMESPACE}
   labels:
     validatedpatterns.io/pattern: secure-agent-workspace
-    openshell.pattern/owner: idpat
+    openshell.pattern/owner: ${SAW_NAME}
 spec:
   project: default
   destination:
     name: in-cluster
-    namespace: saw-idpat
+    namespace: ${SAW_NAMESPACE}
   source:
-    repoURL: https://github.com/Hadar301/secure-agent-workspace.git
-    targetRevision: codex/agent-identity
+    repoURL: ${GIT_REPO_URL}
+    targetRevision: ${GIT_REVISION}
     path: charts/openshell-saw
     helm:
-      releaseName: idpat
+      releaseName: ${SAW_NAME}
       values: |
-        sandboxName: idpat
+        sandboxName: ${SAW_NAME}
         route:
           enabled: false
           dashboard: false
@@ -100,9 +99,9 @@ spec:
         spiffe:
           enabled: true
           testMode: true
-          testRunID: agent-identity-pattern-20261005
-          trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
-          serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local
+          testRunID: ${TEST_RUN_ID}
+          trustDomain: ${TRUST_DOMAIN}
+          serverAddress: ${SPIRE_SERVER_ADDRESS}
           serverPort: 443
           serverTransport: tcp
           gatewayUID: 1000
@@ -118,12 +117,12 @@ spec:
               header_name: Authorization
               token_grant:
                 grant_type: client_credentials
-                token_endpoint: http://identity-demo.saw-identity-demo.svc.cluster.local:8080/token
+                token_endpoint: ${DEMO_TOKEN_ENDPOINT}
                 audience: saw-protected-service
-                jwt_svid_audience: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+                jwt_svid_audience: ${DEMO_AUDIENCE}
                 cache_ttl_seconds: 30
             endpoints:
-            - host: identity-demo.saw-identity-demo.svc.cluster.local
+            - host: ${DEMO_HOST}
               port: 8080
               protocol: rest
               access: read-write

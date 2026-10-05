@@ -1,8 +1,9 @@
-# Replace these three cluster-specific fields before deployment.
+# Site values for a new shared SPIRE installation. Supply the three required
+# identity fields from your deployment; never copy another cluster's values.
 spiffe:
   enabled: true
-  trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
-  clusterName: cluster-2p7tv
-  jwtIssuer: https://spire-oidc.apps.cluster-2p7tv.dyn.redhatworkshops.io
+  trustDomain: ""
+  clusterName: ""
+  jwtIssuer: ""
 persistence:
-  storageClass: ocs-external-storagecluster-ceph-rbd-immediate
+  storageClass: ""
