@@ -277,6 +277,20 @@ def test_an_unchanged_image_keeps_the_sandbox(
     assert not notebook_deletes(fake_env)
 
 
+def test_a_rerun_configures_the_harness_only_once(ab, fake_env, config, profiles, creds, tmp_path):
+    """create_sandbox's own harness config (for an already-running sandbox)
+    and start_openclaw's are the same round trip; a rerun must not pay for
+    it twice."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    make_applier(ab, cfg, creds).apply(profiles)
+    scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    sets = [s for s in scripts if "openclaw config set plugins.load.paths" in s]
+    assert len(sets) == 2, "one configure_harness per apply (create, then rerun); not two per apply"
+
+
 def test_a_new_image_digest_refills_the_volume_in_place(ab, fake_env, config, profiles, creds):
     """The volume keeps its identity (0.1.x stops a sandbox whose attached
     volume was recreated), so the sandbox keeps running."""
@@ -469,6 +483,26 @@ def test_an_inline_forged_marker_does_not_pass_verify(ab, fake_env, config, prof
     assert applier.verify(profiles), "forged marker must not satisfy verify"
     applier.apply(profiles)
     assert (volume / "skills/demo/SKILL.md").read_text() == V1["skills/demo/SKILL.md"]
+
+
+def test_a_stale_ledger_digest_is_not_reused_for_a_changed_image_ref(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """A forged on-volume marker claiming the new source, paired with a
+    ledger digest that actually belongs to the old source, must not pass as
+    intact: the ledger entry is only trusted when its own source matches."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}, IMAGE_V2: {"__tree__": V2}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    make_applier(ab, cfg, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+    volume = fake_env.state / "volumes" / volume_name(ab)
+    old_digest = ab.harness_tree_digest(ab.read_volume_tree(volume))
+    (volume / ab.HARNESS_MARKER).write_text(json.dumps({
+        "source": IMAGE_V2, "treeDigest": old_digest}))
+    applier = make_applier(ab, cfg, creds)
+    assert applier.verify(use_ref(profiles, {"image": IMAGE_V2})), \
+        "stale ledger digest + forged marker source must not pass verify"
+    applier.apply(use_ref(profiles, {"image": IMAGE_V2}))
+    assert "v2" in (volume / "skills/demo/SKILL.md").read_text()
+    assert applier.verify(use_ref(profiles, {"image": IMAGE_V2})) == []
 
 
 # -- stdio secrets from image bundles: refused at describe time --------------------

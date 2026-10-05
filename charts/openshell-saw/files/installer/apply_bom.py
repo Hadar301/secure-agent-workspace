@@ -44,6 +44,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,8 +190,11 @@ class Shell:
     def run(self, cmd, env=None, check=True, ok_if_exists=False,
             timeout=300, input_text=None, quiet=False, force=False):
         display = self.mask(" ".join(str(c) for c in cmd))
-        # force=True: still run read-only probes during --dry-run (catalog,
-        # image export) so governance cannot pass dry-run and fail apply.
+        # force=True: still run this during --dry-run (catalog reads, and the
+        # harness image pull/export needed to check it) so governance cannot
+        # pass dry-run and fail apply. The image pull is the one exception to
+        # "read-only": pulling by digest is deterministic and safe to repeat,
+        # but it does write to the local image store.
         if self.dry_run and not force:
             log(f"[dry-run] {display}")
             return Result(0)
@@ -551,6 +555,11 @@ OPENCLAW_EXEC_ENV = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/st
 MCP_PLACEHOLDER_ONLY = re.compile(
     r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|Bearer \$\{[A-Za-z_][A-Za-z0-9_]*\})$",
     re.IGNORECASE)
+# A stdio arg naming a credential-ish flag with a literal value, e.g.
+# "--api-key=sk-live-...". The "--flag value" two-token form is not covered.
+MCP_ARG_CREDENTIAL_RE = re.compile(
+    r"^--?[\w-]*(?:key|token|secret|password|passwd|auth)[\w-]*=(?P<value>.*)$",
+    re.IGNORECASE)
 # The podman driver's workload container (its supervisor has the same
 # sandbox labels but not the user's mounts): isolation.rs WORKLOAD_FILTER.
 WORKLOAD_ROLE_LABEL = "openshell.ai/isolation-role=sandbox"
@@ -759,6 +768,19 @@ def describe_harness_tree(files, inline=False):
                             f"harness '{name}': mcp.json server '{server}' {field} '{key}' is not "
                             "a bare ${VAR} placeholder (e.g. \"Bearer ${VAR}\"); a literal secret "
                             "must not ship in a bundle's mcp.json, the ConfigMap or the image")
+            for arg in conf.get("args") or []:
+                match = isinstance(arg, str) and MCP_ARG_CREDENTIAL_RE.match(arg)
+                if match and not MCP_PLACEHOLDER_ONLY.match(match.group("value")):
+                    raise InstallerError(
+                        f"harness '{name}': mcp.json server '{server}' arg {arg!r} looks like a "
+                        "credential flag with a literal value; use --flag=${VAR} instead")
+            if isinstance(conf.get("url"), str):
+                creds = urlsplit(conf["url"])
+                if creds.username or creds.password:
+                    raise InstallerError(
+                        f"harness '{name}': mcp.json server '{server}' url has a literal "
+                        "credential in it (user:pass@host); a literal secret must not ship "
+                        "in a bundle's mcp.json, the ConfigMap or the image")
             profile = (declared.get(server) or {}).get("governanceProfile", "")
             if conf["type"] == "stdio":
                 command = conf.get("command")
@@ -2409,12 +2431,16 @@ class ProfileApplier:
                         f"allow (allowed: {allowed}); refusing to fill the harness of "
                         f"sandbox '{sb.name}'")
 
-    def expected_harness_digest(self, volume, bundle):
+    def expected_harness_digest(self, volume, bundle, source):
         """Trusted tree digest for `volume`, or None when none is known yet.
 
         Inline: the ConfigMap digest. Image: this apply's confirmed digest,
-        else the ledger entry written after a previous fill. No ledger and
-        no in-apply confirmation means the volume is always refilled.
+        else the ledger entry written after a previous fill, if it is for
+        this same `source` (a changed harnessRef makes a stale entry's digest
+        describe the wrong tree; a forged on-volume marker could otherwise
+        pair that stale-but-valid digest with a source string it does not
+        belong to and pass as intact). No ledger and no in-apply confirmation
+        means the volume is always refilled.
         """
         if bundle is not None:
             return bundle.digest
@@ -2422,7 +2448,8 @@ class ProfileApplier:
             return self.harness_digests[volume]
         if self.ledger is None:
             return None
-        return self.ledger.data.get("harness", {}).get(volume, {}).get("treeDigest")
+        entry = self.ledger.data.get("harness", {}).get(volume, {})
+        return entry.get("treeDigest") if entry.get("source") == source else None
 
     def prepare_harness(self, ws, sb):
         """Check the sandbox's harness and fill its volume.
@@ -2442,7 +2469,7 @@ class ProfileApplier:
         # Dry-run still resolves the tree and runs governance (so a bundle
         # that would fail apply cannot pass --dry-run); it skips volume I/O.
         mountpoint = None if self.sh.dry_run else self.volumes.ensure(volume, ws.name)
-        expected_digest = self.expected_harness_digest(volume, bundle)
+        expected_digest = self.expected_harness_digest(volume, bundle, source)
         # None: the volume predates its admission labels, which cannot be
         # added later; it is replaced below, after governance passed.
         tree = (self.volumes.current(mountpoint, source, expected_digest)[0]
@@ -2507,7 +2534,10 @@ class ProfileApplier:
             time.sleep(delay)
         raise InstallerError(f"could not remove harness volume {volume} to relabel it")
 
-    def create_sandbox(self, ws, sb):
+    def create_sandbox(self, ws, sb, configure_harness=True):
+        """configure_harness=False: the caller runs start_openclaw right
+        after this, which configures the harness itself; skip the redundant
+        round trip here."""
         self.prepare_harness(ws, sb)
         state = self.sandbox_state(ws, sb)
         if state == "running" and not self.sh.dry_run and not self.harness_mount_ok(ws, sb):
@@ -2528,7 +2558,7 @@ class ProfileApplier:
         elif state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
-            if sb.harness_ref:
+            if sb.harness_ref and configure_harness:
                 exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
                             "--no-tty", "--"]
                 self.configure_harness(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
@@ -2710,7 +2740,7 @@ class ProfileApplier:
                         "harnessRef; the next apply recreates the sandbox"]
             return []
         volume = harness_volume_name(ws.name, sb.name)
-        expected_digest = self.expected_harness_digest(volume, bundle)
+        expected_digest = self.expected_harness_digest(volume, bundle, source)
         failures = self.volumes.verify(volume, ws.name, source, expected_digest)
         if failures:
             return failures
@@ -2848,10 +2878,10 @@ class ProfileApplier:
                 log(f"Sandbox '{sb.name}' already onboarded; skipping nemoclaw onboard")
             elif not self.onboard_nemoclaw(ws, sb, provider):
                 log(f"nemoclaw onboard failed for '{sb.name}'; continuing with plain sandbox create")
-            self.create_sandbox(ws, sb)
+            self.create_sandbox(ws, sb, configure_harness=False)
             self.start_openclaw(ws, sb, provider)
         elif sb.type == "openclaw":
-            self.create_sandbox(ws, sb)
+            self.create_sandbox(ws, sb, configure_harness=False)
             self.start_openclaw(ws, sb, provider)
         else:
             self.create_sandbox(ws, sb)
@@ -2878,7 +2908,7 @@ class ProfileApplier:
                         log(f"ERROR: sandbox '{sb.name}': {exc}")
                         self.sandbox_failures.append(f"sandbox '{sb.name}': {exc}")
                     except Exception as exc:
-                        log(f"ERROR: sandbox '{sb.name}': {exc}")
+                        log(f"ERROR: sandbox '{sb.name}': {exc}\n{traceback.format_exc()}")
                         self.sandbox_failures.append(f"sandbox '{sb.name}': {exc}")
                 else:
                     log(f"Sandbox '{sb.name}' disabled, skipping")

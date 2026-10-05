@@ -415,6 +415,24 @@ def test_a_placeholder_only_value_in_mcp_json_is_accepted(ab, field, value):
     ab.describe_harness_tree(_stdio_tree(decl, conf))
 
 
+def test_a_literal_secret_in_an_arg_flag_is_refused(ab):
+    conf = {"type": "stdio", "command": "node", "args": ["--api-key=sk-literal-secret"]}
+    with pytest.raises(ab.InstallerError, match="looks like a credential flag"):
+        ab.describe_harness_tree(_stdio_tree(conf=conf))
+
+
+def test_a_placeholder_only_arg_flag_is_accepted(ab):
+    conf = {"type": "stdio", "command": "node", "args": ["--api-key=${TAVILY_API_KEY}"]}
+    ab.describe_harness_tree(_stdio_tree(conf=conf))
+
+
+def test_a_literal_credential_in_an_mcp_url_is_refused(ab):
+    conf = {"type": "streamable-http", "url": "https://user:sk-literal-secret@api.tavily.com/mcp"}
+    decl = {"governanceProfile": "web-search"}
+    with pytest.raises(ab.InstallerError, match="literal.*credential"):
+        ab.describe_harness_tree(_stdio_tree(decl, conf))
+
+
 def test_check_bundle_accepts_the_shipped_ds_default_bundle():
     result = subprocess.run(
         [sys.executable, str(ROOT / "charts/openshell-saw/files/installer/apply_bom.py"),
