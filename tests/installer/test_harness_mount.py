@@ -413,6 +413,22 @@ def test_a_planted_symlink_is_treated_as_drift_and_refilled(ab, fake_env, config
     assert applier.verify(profiles) == []
 
 
+def test_an_unreadable_planted_file_is_refilled_not_fatal(ab, fake_env, config, profiles, creds):
+    """A mode-000 file (planted by another owner in the user namespace) must
+    not crash the apply: refill proceeds, backing up what it can read."""
+    use_ref(profiles, {"name": "demo"})
+    harness = _inline(ab, "demo", V1)
+    make_applier(ab, config, creds, harness=harness).apply(profiles)
+    volume = fake_env.state / "volumes" / volume_name(ab)
+    planted = volume / "plugins" / "secret"
+    planted.write_text("locked")
+    planted.chmod(0o000)
+    applier = make_applier(ab, config, creds, harness=harness)
+    assert applier.verify(profiles), "verify must notice the unreadable file"
+    applier.apply(profiles)  # refill wipes the volume, taking the planted file with it
+    assert applier.verify(profiles) == []
+
+
 def test_an_inline_forged_marker_does_not_pass_verify(ab, fake_env, config, profiles, creds):
     """Rewriting the tree and the in-volume marker together must still fail:
     the ConfigMap digest is the trust anchor, not the marker."""

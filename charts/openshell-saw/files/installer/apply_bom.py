@@ -1950,6 +1950,11 @@ class HarnessVolume:
         except VolumeDrift as exc:
             log(f"WARN: harness volume drift ({exc}); refilling")
             return None, marker
+        except OSError as exc:
+            # A planted file unreadable by our uid (other owner in the user
+            # namespace) must not crash the apply: refill, same as drift.
+            log(f"WARN: harness volume unreadable ({exc}); refilling")
+            return None, marker
         if harness_tree_digest(tree) != expected_digest:
             return None, marker
         return tree, marker
@@ -1967,7 +1972,13 @@ class HarnessVolume:
             if had:
                 with tarfile.open(backup, "w") as tar:
                     for child in mountpoint.iterdir():
-                        tar.add(child, arcname=child.name)
+                        try:
+                            tar.add(child, arcname=child.name)
+                        except OSError as exc:
+                            # Content not readable by our uid (other owner in
+                            # the user namespace) cannot be backed up; proceed
+                            # without it rather than blocking the refill.
+                            log(f"WARN: could not back up {child.name} before refill ({exc})")
             for child in list(mountpoint.iterdir()):
                 try:
                     if child.is_dir() and not child.is_symlink():
