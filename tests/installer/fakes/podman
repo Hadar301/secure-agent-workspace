@@ -214,6 +214,13 @@ elif cmd == "volume":
 elif cmd == "unshare":
     # No user namespace in tests: run the command as is.
     sys.exit(subprocess.run(args[1:]).returncode)
+elif cmd == "rmi":
+    image = args[-1]
+    if image not in images:
+        print(f"Error: {image}: image not known", file=sys.stderr)
+        sys.exit(125)
+    del images[image]
+    (state / "images.json").write_text(json.dumps(images))
 elif cmd in ("rm", "exec"):
     pass
 else:

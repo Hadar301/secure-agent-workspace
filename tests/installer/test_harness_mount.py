@@ -293,6 +293,30 @@ def test_a_new_image_digest_refills_the_volume_in_place(ab, fake_env, config, pr
     assert applier.verify(profiles) == []
 
 
+def test_an_oversized_harness_image_is_refused(ab, fake_env, config, profiles, creds, monkeypatch):
+    """Reading an image tree fully into memory must have a ceiling: an
+    oversized bundle refuses instead of risking the VM's memory."""
+    monkeypatch.setattr(ab, "HARNESS_IMAGE_MAX_BYTES", 10)
+    big_tree = {**V1, "skills/demo/SKILL.md": "x" * 100}
+    fake_env.set_images({IMAGE_V1: {"__tree__": big_tree}})
+    with pytest.raises(ab.InstallerError, match="exceeds"):
+        make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+
+
+def test_an_unused_harness_image_is_removed_after_the_ref_changes(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """A harness image no sandbox references any more must not linger on the
+    VM forever."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}, IMAGE_V2: {"__tree__": V2}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    images = lambda: json.loads((fake_env.state / "images.json").read_text())
+    make_applier(ab, cfg, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+    assert IMAGE_V1 in images()
+    make_applier(ab, cfg, creds).apply(use_ref(profiles, {"image": IMAGE_V2}))
+    assert IMAGE_V1 not in images(), "the old image must be GC'd"
+    assert IMAGE_V2 in images()
+
+
 def test_a_sandbox_created_before_its_harness_is_recreated(ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds, harness={"bundles": {}}).apply(use_ref(profiles, {}))

@@ -537,6 +537,10 @@ HARNESS_MOUNT = "/sandbox/harness"
 HARNESS_MARKER = ".saw-harness-revision"  # written into the volume with the bundle
 HARNESS_VOLUME_PREFIX = "saw-harness-"
 HARNESS_VOLUME_LABEL = "saw.redhat.com/harness-volume"
+# A harness image is read fully into memory (tree_digest, the volume import
+# tarball); an unbounded one can exhaust the VM. 512 MiB comfortably covers a
+# real bundle (skills, a few native plugins) with headroom to spare.
+HARNESS_IMAGE_MAX_BYTES = 512 * 1024 * 1024
 # Keys configure_harness may set; a shape change must unset the ones it
 # no longer wants, not leave them stale.
 HARNESS_CONFIG_KEYS = ("plugins.load.paths", "skills.load.extraDirs")
@@ -593,6 +597,7 @@ def read_harness_tar(path):
     goes into the sandbox's harness volume.
     """
     files = {}
+    total = 0
     with tarfile.open(path) as tar:
         for member in tar.getmembers():
             rel = member.name
@@ -604,6 +609,10 @@ def read_harness_tar(path):
             safe_rel_path(rel, "harness image")
             if not member.isfile():
                 raise InstallerError(f"harness image: {member.name!r} is not a regular file")
+            total += member.size
+            if total > HARNESS_IMAGE_MAX_BYTES:
+                raise InstallerError(
+                    f"harness image exceeds {HARNESS_IMAGE_MAX_BYTES} bytes uncompressed; refusing it")
             files[rel] = (tar.extractfile(member).read(), bool(member.mode & 0o111))
     if "harness.yaml" not in files:
         raise InstallerError("harness image has no /harness.yaml at its root")
@@ -2039,6 +2048,7 @@ class ProfileApplier:
         self.harness_info = {}        # (workspace, sandbox) -> describe_harness_tree()
         self.harness_refilled = {}    # (workspace, sandbox) -> volume was (re)filled this apply
         self.harness_volumes = set()  # volumes this apply wants to keep
+        self.harness_images = set()   # harnessRef.image refs this apply wants to keep
         self.harness_digests = {}     # volume -> trusted tree digest, this apply
         self.sandbox_failures = []    # "sandbox '<name>': <error>" kept for the raise at end
         for workspace in creds.values():
@@ -2425,6 +2435,8 @@ class ProfileApplier:
         source, bundle = self.harness_source(sb)
         if source is None:
             return None
+        if bundle is None:
+            self.harness_images.add(source)
         volume = harness_volume_name(ws.name, sb.name)
         self.harness_volumes.add(volume)
         # Dry-run still resolves the tree and runs governance (so a bundle
@@ -2788,6 +2800,23 @@ class ProfileApplier:
                 if self.volumes.remove(volume):
                     log(f"Removed harness volume {volume}; no sandbox uses it any more")
 
+    def cleanup_harness_images(self):
+        """Remove previously-pulled harness images no sandbox wants any more.
+
+        Unlike volumes, a stray podman image carries no marker of its own, so
+        "previously pulled for a harness" has to be tracked across applies;
+        the ledger (already the trust anchor for prune) is where that lives.
+        No ledger configured: images just accumulate, as before.
+        """
+        if self.sh.dry_run or self.ledger is None:
+            return
+        previous = set(self.ledger.data.get("harnessImages", []))
+        for image in previous - self.harness_images:
+            if self._podman("rmi", image, check=False, quiet=True).ok:
+                log(f"Removed harness image {image}; no sandbox uses it any more")
+        self.ledger.data["harnessImages"] = sorted(self.harness_images)
+        self.ledger.save()
+
     def install_keepalive(self, ws, sb):
         """A system unit that keeps an exec session open so the sandbox stays
         Ready after the installer exits (same as the old setup Job)."""
@@ -2855,6 +2884,7 @@ class ProfileApplier:
                     log(f"Sandbox '{sb.name}' disabled, skipping")
         self.finish_prune()
         self.cleanup_harness_volumes()
+        self.cleanup_harness_images()
         if self.sandbox_failures:
             raise InstallerError(
                 f"{len(self.sandbox_failures)} sandbox(es) failed to apply:\n" +
