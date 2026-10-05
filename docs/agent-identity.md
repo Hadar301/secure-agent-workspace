@@ -394,10 +394,11 @@ Retained on purpose: Secret `identity-q-spire-join-token`,
 `/etc/spire/agent.conf`, `/etc/spire/trust-domain`,
 `/var/lib/spire/agent/agent-data.json`, and
 `/var/lib/spire/agent/keys/keys.json`. `disable()` stops and deletes the
-`spire-agent.service` unit file. It does not
-delete those files or the join-token Secret, so a later enable is not treated
-as loss of the previous enrollment material. Re-enable was not tested. The
-registrar has already deleted the entries and banned the agent.
+`spire-agent.service` unit file. It does not delete those files or the
+join-token Secret. That retention was measured. It does not show that a
+later enable recovers the enrollment. Re-enable was not tested, and it was
+not a required acceptance case. The registrar has already deleted the
+entries and banned the agent.
 
 The `protected` / `saw-demo-cc` providers are still listed in both the
 `default` and `research` workspaces, each with `CREDENTIAL_KEYS` 0 and
@@ -406,8 +407,8 @@ profile. Those leftovers are reconciliation behavior. They were not removed.
 This profile never had a `credentialSecret` provider, so the 502
 `token_grant_failed` grants, and the later 403 `policy_denied` grants after
 the sandboxes were recreated, do not show that a secret-backed provider still
-works. `identity-q` stays the disabled canary. `identity-a`, `identity-c`,
-`identity-d`, `identity-e`, and `alice` were Ready at the first disable.
+works. At that measurement `identity-q` was the disabled canary, and
+`identity-a`, `identity-c`, `identity-d`, `identity-e`, and `alice` were Ready.
 `saw-spire-registrar-5d68d8d5c-ckg65`, created 2026-10-04T08:22:15Z, was still
 Running on 2026-10-05. The compatibility gate records `disabled-mode-live` as
 blocked because it does not execute this mutation.
@@ -522,7 +523,7 @@ Application values set `route.enabled` and `route.dashboard` false and did
 not set `route.webui`. That route does not adopt the SPIRE server.
 
 `identity-s` and `idpat` were left in place after this evidence. `identity-q`
-stays the disabled canary. `identity-c`, `identity-d`, and `identity-e` were
+was the disabled canary. `identity-c`, `identity-d`, and `identity-e` were
 not mutated. The shared SPIRE server was not stopped.
 
 `identity-t` in `saw-identity-t` is the enrolled VM that already had a
@@ -630,8 +631,10 @@ These items remain:
   missing supervisor capability or an explicitly approved acceptance-scope
   change. The pinned OpenShell build does not emit the required identity
   claims. The supervisor was not patched.
-- Re-enable of a disabled VM. Retained join-token and agent state were not
-  exercised. The disablement results do not support re-enable.
+- Re-enable of a disabled VM was not a required acceptance case and was not
+  tested. Retained join-token and agent files are the measured disablement
+  behavior. They do not show that turning SPIFFE back on recovers the
+  enrollment.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
@@ -757,9 +760,23 @@ namespaces `saw-identity-q`, `saw-identity-s`, `saw-identity-t`, and
 `saw-idpat` were removed by 2026-10-05T09:35:39Z. Their registrations were already gone before the
 namespaces were deleted. BuildConfig `saw-registrar-ttl` was removed. The
 registrar image digest used by Helm `saw-spire` revision 15 remains.
-`identity-a`, `identity-c`, `identity-d`, and `identity-e` stay as the
-diagnostic, isolation, and migration baselines. `alice` and the shared SPIRE
-server were not removed. `identity-demo` stays because those baselines still
-use it. The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
-already synced `113781e`, which is the chart revision those Applications
-deployed, before these objects were deleted.
+
+The remaining canaries were removed after their evidence was in this report.
+Helm `identity-a` revision 14, Helm `identity-c` and `identity-d` revision 1
+with `saw-bom` in `saw-identity-c`, and Helm `identity-e` revision 1 with
+`saw-bom` in `saw-identity-e` were uninstalled. VM UIDs were
+`c89c222c-166e-437a-af0f-2fa97bad0008`, `3c5b8675-2430-47bb-b4c2-cc4fe50e035d`,
+`67b4fabc-24af-49cd-b2b2-d91cd1bff72d`, and
+`6d2d2555-e6a6-4f84-ac55-721614ba72d4`. Namespaces `saw-identity-a`,
+`saw-identity-c`, and `saw-identity-e` were gone at 2026-10-05T10:36:25Z.
+SPIRE then had no `/saw/saw-identity-*` entries. `identity-d` had lived in
+`saw-identity-c`.
+
+What remains is not an identity canary. `alice` is UID
+`4d9604bb-4ebc-438a-a4e2-85175a744328`, Running, with no SPIFFE label.
+`spire-server-0` is UID `c25daa63-085b-4216-a328-633658ea1e83`, Running.
+Helm `saw-spire` is revision 15. Helm `identity-demo` is revision 7 in
+`saw-identity-demo`; it is the issuer for the recorded grants, not a SAW.
+The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
+already synced `113781e`, which is the chart revision the deleted `idpat`
+Applications deployed, before those objects were deleted.
