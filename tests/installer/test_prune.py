@@ -237,6 +237,27 @@ def test_managed_label_text_accepts_both_cli_formats(ab):
     assert ab._managed_label_from_json('{"labels": {}}') is False
 
 
+def test_output_flag_rejection_is_claps_exact_phrase(ab):
+    """Only Clap's `unexpected argument '--output'` retries as human text."""
+    assert ab._cli_rejected_output_flag("error: unexpected argument '--output' found\n")
+    assert not ab._cli_rejected_output_flag(
+        "error: unexpected argument '--workspace' found\n"
+        "Usage: openshell sandbox get <NAME> --output")
+    assert not ab._cli_rejected_output_flag("unrecognized option '--output'")
+
+
+def test_not_found_is_distinct_from_other_cli_failures(ab):
+    assert ab._resource_not_found("Error: sandbox 'extra' not found")
+    assert ab._resource_not_found("Error: workspace not found")
+    assert ab._resource_not_found("Error: workspace 'notes' not found")
+    assert ab._resource_not_found(
+        'status: NotFound, message: "sandbox \'extra\' not found", details: []')
+    assert not ab._resource_not_found("Error: provider 'brave' is attached to a sandbox")
+    assert not ab._resource_not_found(
+        "Error: provider profile 'brave' was not found in the requested scope")
+    assert not ab._resource_not_found("error: unexpected argument '--output' found")
+
+
 def test_post_adoption_sandbox_is_pruned_from_json_labels(
         ab, fake_env, config, profiles, creds, tmp_path, capsys):
     """Objects created after the first apply are adopted=false, so prune
@@ -327,6 +348,127 @@ def test_post_adoption_workspace_is_pruned_from_equals_labels(
     assert "notes" not in fake_env.openshell_state()["workspaces"]
     assert "notes" not in _ledger_names(ledger, "workspace")
     assert "workspace -/notes" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
+
+
+def test_manually_deleted_sandbox_leaves_the_ledger(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """A sandbox removed by hand makes `sandbox get` fail during the label
+    check. That is gone, so the ledger drops it instead of logging
+    "not labeled" on every reconcile."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name == "default":
+                ws.sandboxes.append(ab.Sandbox(name="extra", image="base", providers=["nvidia"]))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"].pop("default/extra")
+    fake_env.set_openshell_state(state)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "extra"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    out = capsys.readouterr().out
+    assert "extra" not in _ledger_names(ledger, "sandbox")
+    assert "sandbox default/extra" in json.loads(ledger.read_text())["lastPrune"]["pruned"]
+    assert "not found" in out
+    assert "not labeled" not in out
+    assert "delete failed" not in out
+
+
+def test_manually_deleted_workspace_leaves_the_ledger(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """OpenShell 0.1.2 `workspace delete` does not pass allow_missing. A
+    workspace the user already removed must leave the ledger instead of
+    logging "delete failed" on every reconcile."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["workspaces"] = [name for name in state["workspaces"] if name != "cuda-dev"]
+    fake_env.set_openshell_state(state)
+    for profile in profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name != "cuda-dev"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    out = capsys.readouterr().out
+    saved = json.loads(ledger.read_text())
+    assert "cuda-dev" not in _ledger_names(ledger, "workspace")
+    assert "workspace -/cuda-dev" in saved["lastPrune"]["pruned"]
+    assert "not found" in out
+    assert "delete failed" not in out
+
+
+def test_manually_deleted_post_adoption_workspace_is_not_unlabeled(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """A workspace created after adoption is label-checked via `workspace get`.
+    Not found there drops the ledger entry instead of "not labeled"."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    profiles[0].workspaces.append(ab.Workspace(name="notes"))
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["workspaces"] = [name for name in state["workspaces"] if name != "notes"]
+    fake_env.set_openshell_state(state)
+    for profile in profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name != "notes"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    out = capsys.readouterr().out
+    assert "notes" not in _ledger_names(ledger, "workspace")
+    assert "not found" in out
+    assert "not labeled" not in out
+    assert "delete failed" not in out
+
+
+def _delete_call(calls, kind, name, workspace):
+    for index, call in enumerate(calls):
+        if call[:2] != [kind, "delete"] or name not in call:
+            continue
+        if workspace == "default":
+            if "--workspace" not in call:
+                return index
+        elif "--workspace" in call and call[call.index("--workspace") + 1] == workspace:
+            return index
+    return None
+
+
+def test_sandbox_is_deleted_before_its_provider(
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+    """PRUNE_ORDER is sandbox then provider. Deleting both in one apply must
+    remove the sandbox first, or the fake refuses the provider delete while
+    the sandbox still lists it."""
+    ledger = tmp_path / "managed.json"
+    cfg = _on(config, ledger)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    for profile in profiles:
+        for ws in profile.workspaces:
+            if ws.name != "cuda-dev":
+                continue
+            ws.sandboxes = [sb for sb in ws.sandboxes if sb.name != "cuda-sandbox"]
+            ws.providers = [p for p in ws.providers if p.name != "nvidia"]
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    assert "cuda-dev/cuda-sandbox" not in state["sandboxes"]
+    assert "cuda-dev/nvidia" not in state["providers"]
+    calls = fake_env.openshell_calls()
+    sandbox_at = _delete_call(calls, "sandbox", "cuda-sandbox", "cuda-dev")
+    provider_at = _delete_call(calls, "provider", "nvidia", "cuda-dev")
+    assert sandbox_at is not None and provider_at is not None
+    assert sandbox_at < provider_at
+    saved = json.loads(ledger.read_text())
+    assert "sandbox cuda-dev/cuda-sandbox" in saved["lastPrune"]["pruned"]
+    assert "provider cuda-dev/nvidia" in saved["lastPrune"]["pruned"]
+    assert not any(
+        obj["kind"] == "provider" and obj["name"] == "nvidia" and obj.get("workspace") == "cuda-dev"
+        for obj in saved["objects"])
+    assert any(
+        obj["kind"] == "provider" and obj["name"] == "nvidia" and obj.get("workspace") == "default"
+        for obj in saved["objects"])
+    out = capsys.readouterr().out
+    assert "attached to a sandbox" not in out
+    assert "delete failed" not in out
 
 
 def test_failed_provider_delete_stays_in_the_ledger(
