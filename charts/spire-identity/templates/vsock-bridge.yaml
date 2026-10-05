@@ -1,3 +1,0 @@
-{{- if and .Values.spiffe.enabled .Values.vsockBridge.enabled }}
-{{- fail "vsockBridge is not supported; TCP is the only transport" }}
-{{- end }}
