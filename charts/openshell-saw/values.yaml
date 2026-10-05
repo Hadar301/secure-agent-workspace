@@ -295,8 +295,7 @@ job:
 egress:
   enabled: true
   allow:
-    - integrate.api.nvidia.com
-    - api.search.brave.com
+    # Registries the VM pulls from. Quay redirects blobs to the cdn hosts.
     - quay.io
     - cdn.quay.io
     - cdn01.quay.io
@@ -306,4 +305,22 @@ egress:
     - cdn05.quay.io
     - cdn06.quay.io
     - registry.fedoraproject.org
+    # Exact hosts from charts/governance-policy/profiles. A test fails if a
+    # shipped profile grows a host that is not listed here.
+    # *-aiplatform.googleapis.com is not here: a dnsName rule cannot express it.
+    - integrate.api.nvidia.com
+    - api.search.brave.com
+    - api.openai.com
+    - api.tavily.com
+    - registry.npmjs.org
+    - github.com
+    - api.github.com
+    - api-1.github.com
+    - slack.com
+    - generativelanguage.googleapis.com
+    - cloudcode-pa.googleapis.com
+    - accounts.google.com
+    - oauth2.googleapis.com
+    - www.googleapis.com
+    - iamcredentials.googleapis.com
   extraAllow: []

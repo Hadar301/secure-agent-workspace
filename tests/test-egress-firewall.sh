@@ -61,8 +61,14 @@ if rules[-2]["to"] != {"cidrSelector": "0.0.0.0/0"} or rules[-1]["to"] != {"cidr
     sys.exit("missing IPv4 or IPv6 deny")
 if rules[0]["to"].get("nodeSelector", {}).get("matchLabels", {}).get("kubernetes.io/os") != "linux":
     sys.exit("first rule must allow node addresses only")
-if "ports" in rules[0] or "ports" in rules[-1] or "ports" in rules[-2]:
-    sys.exit("node allow and the denies must not be limited to one port")
+if rules[0].get("ports") != [
+    {"protocol": "TCP", "port": 6443},
+    {"protocol": "TCP", "port": 443},
+    {"protocol": "TCP", "port": 80},
+]:
+    sys.exit("node allow must be TCP 6443, 443, and 80 only")
+if "ports" in rules[-1] or "ports" in rules[-2]:
+    sys.exit("the denies must not be limited to one port")
 names = []
 for rule in rules:
     if len(rule["to"]) != 1:
@@ -76,7 +82,9 @@ for rule in rules:
         if rule["ports"] != [{"protocol": "TCP", "port": 443}]:
             sys.exit("hostname allow must be TCP 443 only")
         names.append(name)
-for required in ("integrate.api.nvidia.com", "quay.io", "cdn01.quay.io", "registry.fedoraproject.org"):
+for required in ("integrate.api.nvidia.com", "quay.io", "cdn01.quay.io",
+                 "registry.fedoraproject.org", "registry.npmjs.org", "api.openai.com",
+                 "github.com"):
     if required not in names:
         sys.exit("missing " + required)
 if "openshell-keycloak-ingress-saw-keycloak.apps.example.com" not in names:
@@ -211,5 +219,14 @@ if [[ "${allowed_code}" =~ ^[0-9]{3}$ && "${allowed_code}" != "000" ]]; then
 else
   fail "VM can reach declared host ${ALLOWED_HOST} (got '${allowed_code}')"
 fi
+
+for host in cdn01.quay.io registry.npmjs.org; do
+  code="$(probe "${host}" | tr -d '[:space:]')"
+  if [[ "${code}" =~ ^[0-9]{3}$ && "${code}" != "000" ]]; then
+    pass "VM can reach ${host} (HTTP ${code})"
+  else
+    fail "VM can reach ${host} (got '${code}')"
+  fi
+done
 
 finish

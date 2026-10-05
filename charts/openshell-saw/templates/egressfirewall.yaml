@@ -26,13 +26,21 @@ metadata:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 spec:
   egress:
-    # The API server and the ingress router are reached on node addresses.
-    # This does not allow the public internet.
+    # API (6443) and the ingress router (443, 80) on node addresses.
+    # Not kubelet, SSH, or NodePorts. A load-balancer IP is not a node
+    # address, so this rule does not cover that path.
     - type: Allow
       to:
         nodeSelector:
           matchLabels:
             kubernetes.io/os: linux
+      ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
     {{- range $hosts }}
     - type: Allow
       to:
@@ -47,7 +55,7 @@ spec:
         dnsName: {{ $keycloak | quote }}
       ports:
         - protocol: TCP
-          port: 443
+          port: {{ include "openshell-sandbox.keycloakRoutePort" . | trim }}
     {{- end }}
     - type: Deny
       to:

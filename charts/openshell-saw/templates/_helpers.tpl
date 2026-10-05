@@ -47,16 +47,29 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 {{- end }}
 
 {{/*
-Hostname of the Keycloak route, taken from the issuer URL. The egress
-firewall allows this host so the VM can fetch OIDC keys. Empty when the
-issuer URL is not known yet.
+Hostname of the Keycloak route, taken from the issuer URL, without a port.
+The egress firewall allows this host so the VM can fetch OIDC keys. Empty
+when the issuer URL is not known yet.
 */}}
 {{- define "openshell-sandbox.keycloakRouteHost" -}}
 {{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
 {{- if $issuer -}}
-{{- $hostpath := regexReplaceAll "^https?://" $issuer "" -}}
-{{- regexReplaceAll "/.*$" $hostpath "" -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- regexReplaceAll ":[0-9]+$" $authority "" -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+TCP port of the Keycloak issuer URL. 443 when the URL has no port.
+*/}}
+{{- define "openshell-sandbox.keycloakRoutePort" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- regexReplaceAll "^.*:" $authority "" -}}
+{{- else -}}443{{- end -}}
+{{- else -}}443{{- end -}}
 {{- end }}
 
 {{/*

@@ -404,8 +404,6 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
 
 
 DEFAULT_EGRESS_HOSTS = [
-    "integrate.api.nvidia.com",
-    "api.search.brave.com",
     "quay.io",
     "cdn.quay.io",
     "cdn01.quay.io",
@@ -415,6 +413,29 @@ DEFAULT_EGRESS_HOSTS = [
     "cdn05.quay.io",
     "cdn06.quay.io",
     "registry.fedoraproject.org",
+    "integrate.api.nvidia.com",
+    "api.search.brave.com",
+    "api.openai.com",
+    "api.tavily.com",
+    "registry.npmjs.org",
+    "github.com",
+    "api.github.com",
+    "api-1.github.com",
+    "slack.com",
+    "generativelanguage.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "www.googleapis.com",
+    "iamcredentials.googleapis.com",
+]
+# A dnsName rule cannot express this. A new wildcard in a shipped profile
+# must be added here on purpose, not silently skipped.
+KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
+NODE_ALLOW_PORTS = [
+    {"protocol": "TCP", "port": 6443},
+    {"protocol": "TCP", "port": 443},
+    {"protocol": "TCP", "port": 80},
 ]
 
 
@@ -446,7 +467,7 @@ def test_egress_firewall_denies_undeclared_hosts(default_docs):
     rules, allowed = _egress_names(default_docs)
     _assert_safe_order(rules)
     assert rules[0]["to"]["nodeSelector"]["matchLabels"] == {"kubernetes.io/os": "linux"}
-    assert "ports" not in rules[0]
+    assert rules[0]["ports"] == NODE_ALLOW_PORTS
     assert allowed == DEFAULT_EGRESS_HOSTS
     assert all(r["ports"] == [{"protocol": "TCP", "port": 443}] for r in rules if "dnsName" in r["to"])
     assert all(h.strip() and "*" not in h and "/" not in h for h in allowed)
@@ -470,9 +491,33 @@ def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
     assert allowed.count(host) == 1
 
     docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell")
-    _, allowed = _egress_names(docs)
+    rules, allowed = _egress_names(docs)
     assert "id.example.net" in allowed
-    assert not any("://" in h or "/" in h for h in allowed)
+    assert not any("://" in h or "/" in h or ":" in h for h in allowed)
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 443}]
+
+
+def test_egress_keycloak_port_comes_from_the_issuer():
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
+    rules, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert "id.example.net:8443" not in allowed
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
+
+
+def test_egress_covers_every_shipped_profile_host(default_docs):
+    _, allowed = _egress_names(default_docs)
+    exact, wild = set(), set()
+    for path in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"):
+        for endpoint in (yaml.safe_load(path.read_text()) or {}).get("endpoints") or []:
+            host = endpoint["host"]
+            (wild if "*" in host else exact).add(host)
+    missing = exact - set(allowed)
+    assert not missing, "shipped profile hosts missing from the firewall: " + ", ".join(sorted(missing))
+    assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
+    assert not any("*" in host for host in allowed)
 
 
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
@@ -516,11 +561,6 @@ def test_egress_rejects_unsafe_hosts(host):
                            "--set-string", f"egress.extraAllow[0]={host}")
     assert result.returncode != 0, host
     assert "egress host" in result.stderr
-
-
-def test_egress_rejects_an_issuer_host_with_a_port():
-    err = render_error("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
-    assert "egress host" in err
 
 
 # -- installer ConfigMap -----------------------------------------------------
