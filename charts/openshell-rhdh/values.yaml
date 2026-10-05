@@ -116,6 +116,21 @@ portal:
     # generator.
     networkPolicy: true
 
+# TLS: every connection the portal makes is verified. RHDH (Node), the
+# generator and the Keycloak setup Job trust a bundle built when their pod
+# starts (files/ca-bundle.py): the system CAs, the cluster's trusted CA
+# bundle (proxy CAs), the Kubernetes API and service CAs, and the router's
+# CA (openshift-config-managed/default-ingress-cert, for Keycloak's route).
+# The portal pipeline trusts Vault through the service CA.
+tls:
+  # More CAs (PEM) to trust, for example one that signed a custom ingress
+  # certificate and is in neither the system nor the cluster bundle.
+  extraCaBundle: ""
+  # Turns verification off everywhere (RHDH's Node runtime, its proxy and
+  # Kubernetes plugin, the generator, the Keycloak Job, Vault). Only for a
+  # throwaway test cluster.
+  insecureSkipVerify: false
+
 keycloak:
   namespace: saw-keycloak
   name: openshell-keycloak
@@ -124,7 +139,6 @@ keycloak:
   host: ""
   # Confidential client for RHDH; the setup Job creates or updates it.
   clientId: rhdh
-  insecureSkipTlsVerify: true
 
 # The RHDH OIDC client secret and session secret, from Vault (values-secret:
 # rhdh-oidc, generated on first load).
@@ -140,7 +154,6 @@ oidcSecret:
 # (ansible/playbooks/saw-portal-vault.yaml) or `make portal-vault-setup`.
 vault:
   addr: https://vault.vault.svc:8200
-  skipVerify: true
   authMount: hub
   role: saw-portal-writer
   kvMount: secret

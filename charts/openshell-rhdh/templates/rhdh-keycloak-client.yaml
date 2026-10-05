@@ -66,6 +66,8 @@ spec:
     spec:
       serviceAccountName: saw-rhdh-keycloak
       restartPolicy: OnFailure
+      initContainers:
+        {{- include "openshell-rhdh.caInitContainer" . | nindent 8 }}
       containers:
         - name: client
           image: {{ .Values.portal.image }}
@@ -84,7 +86,9 @@ spec:
             - name: RHDH_URL
               value: {{ include "openshell-rhdh.url" . }}
             - name: INSECURE
-              value: {{ .Values.keycloak.insecureSkipTlsVerify | toString | quote }}
+              value: {{ .Values.tls.insecureSkipVerify | toString | quote }}
+            - name: CA_FILE
+              value: /opt/saw-ca/ca-bundle.crt
             {{- if .Values.rhdh.rbac.enabled }}
             # Every user in this group (RBAC role saw-user); the client's
             # service account may read users and groups (catalog import).
@@ -102,6 +106,9 @@ spec:
             - name: script
               mountPath: /opt/saw
               readOnly: true
+            - name: saw-ca
+              mountPath: /opt/saw-ca
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -111,3 +118,4 @@ spec:
         - name: script
           configMap:
             name: saw-rhdh-keycloak-client
+        {{- include "openshell-rhdh.caVolumes" . | nindent 8 }}

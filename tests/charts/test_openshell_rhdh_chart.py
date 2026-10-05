@@ -427,3 +427,80 @@ def test_no_status_call_outlives_the_router_timeout(docs):
     waits = [int(w) for name, text in cm.items() if name.endswith(".yaml")
              for w in re.findall(r"wait=(\d+)", text)]
     assert waits and max(waits) < 30
+
+
+# -- TLS (review of #57: verification was off by default) -------------------------
+
+def _envs(container):
+    return {e["name"]: e.get("value") for e in container.get("env", [])}
+
+
+def tls_settings(docs):
+    backstage = next(d for d in docs if d["kind"] == "Backstage")
+    config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
+    generator = one(docs, "Deployment", "saw-workspaces-generator")["spec"]["template"]["spec"]
+    job = one(docs, "Job", "saw-rhdh-keycloak-client")["spec"]["template"]["spec"]
+    task = one(docs, "Task", "saw-workspace")["spec"]["steps"][0]
+    return {
+        "node": {e["name"]: e["value"] for e in backstage["spec"]["application"]["extraEnvs"]["envs"]},
+        "patch": (backstage["spec"].get("deployment") or {}).get("patch"),
+        "proxy": [ep.get("secure") for ep in config["proxy"]["endpoints"].values() if ep["target"].startswith("https")],
+        "kubernetes": config["kubernetes"]["clusterLocatorMethods"][0]["clusters"][0],
+        "generator": generator, "job": job, "task": _envs(task)}
+
+
+def test_tls_is_verified_everywhere_by_default(docs):
+    s = tls_settings(docs)
+    assert "NODE_TLS_REJECT_UNAUTHORIZED" not in s["node"]
+    assert s["node"]["NODE_EXTRA_CA_CERTS"] == "/opt/saw-ca/ca-bundle.crt"
+    pod = s["patch"]["spec"]["template"]["spec"]
+    assert [c["name"] for c in pod["initContainers"]] == ["saw-ca-bundle"]
+    assert pod["containers"][0]["name"] == "backstage-backend"
+    assert {"name": "saw-ca", "mountPath": "/opt/saw-ca", "readOnly": True} in pod["containers"][0]["volumeMounts"]
+    assert s["proxy"] == [True, True]
+    assert s["kubernetes"]["skipTLSVerify"] is False
+    assert s["kubernetes"]["caFile"] == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    gen_env = _envs(s["generator"]["containers"][0])
+    assert gen_env["KEYCLOAK_SKIP_VERIFY"] == "false" and gen_env["KEYCLOAK_CA_FILE"] == "/opt/saw-ca/ca-bundle.crt"
+    assert [c["name"] for c in s["generator"]["initContainers"]] == ["saw-ca-bundle"]
+    job_env = _envs(s["job"]["containers"][0])
+    assert job_env["INSECURE"] == "false" and job_env["CA_FILE"] == "/opt/saw-ca/ca-bundle.crt"
+    assert [c["name"] for c in s["job"]["initContainers"]] == ["saw-ca-bundle"]
+    assert s["task"]["VAULT_SKIP_VERIFY"] == "false"
+    assert s["task"]["VAULT_CACERT"].endswith("/service-ca.crt")
+
+
+def test_one_switch_turns_verification_off(docs):
+    s = tls_settings(render("--set", "tls.insecureSkipVerify=true"))
+    assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0" and s["patch"] is None
+    assert s["proxy"] == [False, False]
+    assert s["kubernetes"]["skipTLSVerify"] is True
+    assert _envs(s["generator"]["containers"][0])["KEYCLOAK_SKIP_VERIFY"] == "true"
+    assert _envs(s["job"]["containers"][0])["INSECURE"] == "true"
+    assert s["task"]["VAULT_SKIP_VERIFY"] == "true"
+
+
+def test_the_ca_bundle_sources_are_in_each_namespace(docs):
+    for ns in ("rhdh", "saw-portal"):
+        sources = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-ca-sources"
+                   and d["metadata"]["namespace"] == ns]
+        assert len(sources) == 1 and "ca-bundle.py" in sources[0]["data"]
+        trusted = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-trusted-ca"
+                   and d["metadata"]["namespace"] == ns]
+        assert trusted[0]["metadata"]["labels"]["config.openshift.io/inject-trusted-cabundle"] == "true"
+    binding = one(docs, "RoleBinding", "saw-portal-ingress-ca")
+    assert binding["metadata"]["namespace"] == "openshift-config-managed"
+    assert {s["name"] for s in binding["subjects"]} == {"system:serviceaccounts:rhdh",
+                                                        "system:serviceaccounts:saw-portal"}
+    role = one(docs, "Role", "saw-portal-ingress-ca")
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"],
+                              "resourceNames": ["default-ingress-cert"], "verbs": ["get"]}]
+
+
+def test_extra_cas_reach_the_bundle(tmp_path):
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"tls": {"extraCaBundle": pem}}))
+    docs = render("-f", str(values))
+    sources = next(d for d in docs if d["metadata"]["name"] == "saw-ca-sources")
+    assert sources["data"]["extra-ca.crt"].strip() == pem

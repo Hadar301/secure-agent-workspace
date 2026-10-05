@@ -13,7 +13,8 @@ imports them), and every user is in group USERS_GROUP: it is the realm's
 default group (new users join it) and existing users are added.
 
 Env: KC_URL, KC_NAMESPACE, KC_NAME, REALM, CLIENT_ID, CLIENT_SECRET,
-     RHDH_URL, INSECURE (true to skip TLS verification of Keycloak),
+     RHDH_URL, CA_FILE (the CA bundle Keycloak's certificate is checked
+     against), INSECURE (true to skip that check: test clusters only),
      USERS_GROUP (optional), ADMINS (optional: users kept out of USERS_GROUP).
 """
 import base64
@@ -61,7 +62,7 @@ def main():
     if not secret:
         print("rhdh-oidc has no client secret yet (load it into Vault)", file=sys.stderr)
         return 1
-    ctx = ssl.create_default_context()
+    ctx = ssl.create_default_context(cafile=os.environ.get("CA_FILE") or None)
     if os.environ.get("INSECURE") == "true":
         ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
     creds = admin_credentials()

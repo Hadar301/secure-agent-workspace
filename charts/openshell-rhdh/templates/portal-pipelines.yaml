@@ -55,7 +55,10 @@ spec:
         - name: VAULT_ADDR
           value: {{ .Values.vault.addr }}
         - name: VAULT_SKIP_VERIFY
-          value: {{ .Values.vault.skipVerify | toString | quote }}
+          value: {{ .Values.tls.insecureSkipVerify | toString | quote }}
+        # Vault's in-cluster certificate is signed by the service CA.
+        - name: VAULT_CACERT
+          value: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
         - name: VAULT_AUTH_MOUNT
           value: {{ .Values.vault.authMount }}
         - name: VAULT_ROLE

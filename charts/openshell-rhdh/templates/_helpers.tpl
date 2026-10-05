@@ -28,6 +28,53 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- printf "http://backstage-%s.%s.svc:80" .Values.rhdh.name .Values.rhdh.namespace -}}
 {{- end -}}
 
+{{- /* The init container that writes the CA bundle (files/ca-bundle.py)
+to the saw-ca volume, and the volumes it needs; see tls in values.yaml.
+Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}}
+{{- define "openshell-rhdh.caInitContainer" -}}
+- name: saw-ca-bundle
+  image: {{ .Values.portal.image }}
+  command: ["python3", "/opt/saw-ca-sources/ca-bundle.py", "/opt/saw-ca/ca-bundle.crt"]
+  env:
+    - name: TRUSTED_CA_FILE
+      value: /opt/saw-trusted-ca/ca-bundle.crt
+    - name: EXTRA_CA_FILE
+      value: /opt/saw-ca-sources/extra-ca.crt
+  volumeMounts:
+    - name: saw-ca
+      mountPath: /opt/saw-ca
+    - name: saw-ca-sources
+      mountPath: /opt/saw-ca-sources
+      readOnly: true
+    - name: saw-trusted-ca
+      mountPath: /opt/saw-trusted-ca
+      readOnly: true
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 64Mi }
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    capabilities: { drop: [ALL] }
+    seccompProfile: { type: RuntimeDefault }
+{{- end -}}
+
+{{- define "openshell-rhdh.caVolumes" -}}
+- name: saw-ca
+  emptyDir: {}
+- name: saw-ca-sources
+  configMap:
+    name: saw-ca-sources
+- name: saw-trusted-ca
+  configMap:
+    name: saw-trusted-ca
+    optional: true
+{{- end -}}
+
+{{- define "openshell-rhdh.caNamespaces" -}}
+{{- list .Values.rhdh.namespace .Values.portal.namespace | uniq | toJson -}}
+{{- end -}}
+
 {{- define "openshell-rhdh.argoNamespace" -}}
 {{- .Values.applicationSet.namespace | default .Values.global.vpArgoNamespace | default "vp-gitops" -}}
 {{- end -}}

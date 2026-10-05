@@ -35,6 +35,8 @@ spec:
         checksum/catalog: {{ .Files.Get "files/profile-catalog.json" | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: saw-workspaces-generator
+      initContainers:
+        {{- include "openshell-rhdh.caInitContainer" . | nindent 8 }}
       containers:
         - name: generator
           image: {{ .Values.portal.image }}
@@ -72,7 +74,9 @@ spec:
             - name: KEYCLOAK_SECRET_FILE
               value: /etc/saw-keycloak/client_secret
             - name: KEYCLOAK_SKIP_VERIFY
-              value: {{ .Values.keycloak.insecureSkipTlsVerify | toString | quote }}
+              value: {{ .Values.tls.insecureSkipVerify | toString | quote }}
+            - name: KEYCLOAK_CA_FILE
+              value: /opt/saw-ca/ca-bundle.crt
             - name: USERS_GROUP
               value: {{ .Values.rhdh.rbac.usersGroup | quote }}
             {{- end }}
@@ -91,6 +95,9 @@ spec:
               readOnly: true
             - name: token
               mountPath: /etc/saw-generator
+              readOnly: true
+            - name: saw-ca
+              mountPath: /opt/saw-ca
               readOnly: true
             {{- if .Values.rhdh.rbac.enabled }}
             - name: keycloak
@@ -112,6 +119,7 @@ spec:
         - name: token
           secret:
             secretName: saw-workspaces-generator
+        {{- include "openshell-rhdh.caVolumes" . | nindent 8 }}
         {{- if .Values.rhdh.rbac.enabled }}
         - name: keycloak
           secret:

@@ -115,7 +115,7 @@ data:
         /saw-requests:
           target: https://kubernetes.default.svc/api/v1/namespaces/{{ .Values.portal.namespace }}/secrets
           changeOrigin: true
-          secure: false
+          secure: {{ not .Values.tls.insecureSkipVerify }}
           credentials: require
           allowedMethods: ['POST']
           allowedHeaders: ['Content-Type']
@@ -124,7 +124,7 @@ data:
         /saw-pipelineruns:
           target: https://kubernetes.default.svc/apis/tekton.dev/v1/namespaces/{{ .Values.portal.namespace }}/pipelineruns
           changeOrigin: true
-          secure: false
+          secure: {{ not .Values.tls.insecureSkipVerify }}
           credentials: require
           allowedMethods: ['POST']
           allowedHeaders: ['Content-Type']
@@ -152,7 +152,8 @@ data:
             - name: local
               url: https://kubernetes.default.svc
               authProvider: serviceAccount
-              skipTLSVerify: true
+              skipTLSVerify: {{ .Values.tls.insecureSkipVerify }}
+              caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
               skipMetricsLookup: true
               serviceAccountToken:
                 $file: /opt/app-root/src/saw/token
