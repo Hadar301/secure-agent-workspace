@@ -240,6 +240,13 @@ supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 provider_spiffe_workload_api_socket = "/spiffe-workload-api/agent.sock"
 {{- end }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
+{{- if .Values.allowDriverConfig }}
+# Sandboxes mount their harness volume through caller driver config.
+# Resource admission and enable_bind_mounts keep their defaults (on / off),
+# so only a volume labelled attachable for the caller's workspace can be
+# attached, and no host path or image.
+allow_driver_config = true
+{{- end }}
 {{- if .Values.governance.enabled }}
 
 [[openshell.gateway.interceptors]]

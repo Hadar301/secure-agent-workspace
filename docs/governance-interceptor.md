@@ -236,3 +236,16 @@ make governance-add-profile OPENSHELL_SAW_NAME=alice \
 ```bash
 make governance-demo OPENSHELL_SAW_NAME=alice
 ```
+
+### Applying profile changes
+
+`governance-add-profile`, `governance-remove-profile`, and `governance-create-profile` run `scripts/governance-profile.sh`, which edits `charts/governance-policy/profiles/`, commits, and runs `git push origin HEAD`, then waits for Argo CD to sync the `governance-policy` application. This is the GitOps (Option A) path.
+
+On the quickstart path (Option B), governance-policy is installed with Helm, not Argo CD, so a push does not change the cluster. Edit the profiles under `charts/governance-policy/profiles/` and re-apply the chart:
+
+```bash
+helm upgrade --install governance-policy charts/governance-policy \
+  --namespace openshell-agents
+```
+
+`governance-list-profiles` queries the gateway named by `OPENSHELL_SAW_NAME` (default `openshell-saw`).

@@ -230,7 +230,7 @@ build-gateway-podman: ## Build Podman gateway VM image and push to quay
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 
-copy-images: ## Mirror pre-built images from quay to the internal registry
+copy-images: ## Mirror pre-built images from quay to the internal registry (tries the version tag, then latest)
 	@echo "Ensuring namespace and image registry route..."
 	@oc create namespace $(BUILD_NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null
 	@oc patch configs.imageregistry.operator.openshift.io/cluster \
@@ -375,7 +375,7 @@ ssh-secret: ## (Legacy) SSH key secrets in $(NS); provisioning no longer uses th
 
 # --- Sandbox ---
 
-openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, CONTAINER_RUNTIME=podman|docker)
+openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, WEB_SEARCH_API_KEY=, OWNER_SUBJECT=, CONTAINER_RUNTIME=podman|docker)
 	@NS=$(NS) SAW_NS=$(SAW_NS) KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
 	OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SAW_CHART=$(SAW_CHART) \
 	SANDBOX_IMAGE=$(SANDBOX_IMAGE) AGENT=$(AGENT) \
@@ -424,13 +424,27 @@ openshell-saw-list: ## List all sandboxes (every SAW namespace)
 openshell-saw-logs: .check-saw-name ## Follow the in-VM installer (serial console)
 	oc -n $(SAW_NS) logs -f -l vm.kubevirt.io/name=$(OPENSHELL_SAW_NAME) -c guest-console-log --tail=-1
 
-openshell-saw-status: .check-saw-name .check-ssh-key ## Show the in-VM installer status (over vm-ssh)
+openshell-saw-status: .check-saw-name .check-ssh-key ## Show the in-VM installer status (vm-ssh adds your SSH key to the VM first)
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh 'sudo cat /var/lib/saw/status.json'
 
 openshell-saw-vm-ssh: .check-saw-name .check-ssh-key ## Shell on the gateway VM: adds your key to its accessCredentials Secret (CMD= to run one command)
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh
+
+# --- Harness bundles (skills, MCP servers, OpenClaw tool plugins) ---
+# harness-bundles/<bundle>/ as an OCI image, mounted read-only at
+# /sandbox/harness. HARNESS_BUNDLE=ds-default HARNESS_REPO=ghcr.io/<owner>/saw-harness-ds-default
+
+HARNESS_BUNDLE ?= ds-default
+
+.PHONY: harness-bundle-build harness-bundle-push
+harness-bundle-build: ## Build harness-bundles/$(HARNESS_BUNDLE) as a local OCI image
+	@$(SCRIPTS_DIR)/harness-bundle.sh build $(HARNESS_BUNDLE)
+
+harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO) and print the harnessRef
+	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
+	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
 
 openshell-saw-restart: .check-saw-name ## Restart the VM so it applies a changed BOM/profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
@@ -516,7 +530,7 @@ openshell-saw-gui: .check-saw-name ## Open web UI (alias for nemoclaw-gui)
 PROFILE_NAME   ?=
 PROFILE_FILE   ?=
 
-governance-list-profiles: ## List governance provider profiles
+governance-list-profiles: ## List governance provider profiles (set OPENSHELL_SAW_NAME to target a sandbox)
 	@NS=$(SAW_NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh list
 
 governance-add-profile: ## Enable an existing profile (PROFILE_NAME=github)
@@ -535,6 +549,9 @@ governance-demo: .check-saw-name ## Run governance interceptor demo
 
 test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
 	@$(SCRIPTS_DIR)/e2e-test.sh
+
+test-harness-e2e: ## Verify the harness bundle live (OPENSHELL_SAW_NAME=, E2E_ARGS=--revoke-drill)
+	@$(SCRIPTS_DIR)/e2e-harness.sh $(E2E_ARGS)
 
 # --- Teardown ---
 

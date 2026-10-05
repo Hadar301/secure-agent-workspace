@@ -7,6 +7,8 @@ permission error, to test error paths.
 """
 import json
 import os
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -15,8 +17,8 @@ args = sys.argv[1:]
 with open(state_dir / "openshell.log", "a") as log:
     log.write(json.dumps(args) + "\n")
 
-path = state_dir / "openshell.json"
-state = json.loads(path.read_text()) if path.exists() else {
+state_file = state_dir / "openshell.json"
+state = json.loads(state_file.read_text()) if state_file.exists() else {
     "gateways": [], "selected": None, "workspaces": ["default"], "members": [],
     "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None}
 deny = json.loads((state_dir / "deny.json").read_text()) if (state_dir / "deny.json").exists() else []
@@ -25,7 +27,7 @@ no_profiles = (json.loads((state_dir / "no-profiles.json").read_text())
 
 
 def save():
-    path.write_text(json.dumps(state))
+    state_file.write_text(json.dumps(state))
 
 
 def opt(name, default=None):
@@ -150,6 +152,16 @@ elif op == "workspace member":
     if member in state["members"]:
         fail("Error: member already exists")
     state["members"].append(member)
+elif op == "provider list-profiles":
+    # catalog.json: {"<profile id>": ["<endpoint host>", ...]}; the default
+    # stands in for the governance interceptor's catalog.
+    catalog = (json.loads((state_dir / "catalog.json").read_text())
+               if (state_dir / "catalog.json").exists() else {
+                   "web-search": ["api.tavily.com", "api.search.brave.com", "registry.npmjs.org"],
+                   "brave": ["api.search.brave.com"], "nvidia": ["integrate.api.nvidia.com"],
+                   "github": ["api.github.com"]})
+    print(json.dumps([{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
+                      for pid, hosts in sorted(catalog.items())]))
 elif op == "provider profile" and head[2] == "import":
     # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
     import yaml
@@ -251,9 +263,110 @@ elif op == "sandbox create":
         fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
     remember_labels("sandbox", ws, opt("--name"))
+    if opt("--driver-config-json"):
+        state["sandboxes"][key]["driverConfig"] = json.loads(opt("--driver-config-json"))
 elif op == "sandbox delete":
     state["sandboxes"].pop(f"{ws}/{head[2]}", None)
 elif op == "sandbox exec":
+    # A file inside a volume mounted with --driver-config-json: read it from
+    # the fake podman's volume directory, as the real mount would show it.
+    if len(args) >= 2 and args[-2] == "cat":
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        for mount in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
+            target = mount["target"].rstrip("/") + "/"
+            if args[-1].startswith(target):
+                rel = args[-1][len(target):]
+                if mount["type"] == "image":
+                    images_file = state_dir / "images.json"
+                    images = json.loads(images_file.read_text()) if images_file.exists() else {}
+                    tree = images.get(mount["source"], {}).get("__tree__", {})
+                    if rel in tree:
+                        print(tree[rel], end="")
+                        save()
+                        sys.exit(0)
+                path = state_dir / "volumes" / mount["source"] / rel
+                if mount["type"] == "volume" and path.is_file():
+                    print(path.read_text(), end="")
+                    save()
+                    sys.exit(0)
+        fail(f"cat: {args[-1]}: No such file or directory", 1)
+    sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+    mounts = ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", [])
+
+    def harness_files():
+        for mount in mounts:
+            if mount["target"].rstrip("/") != "/sandbox/harness":
+                continue
+            if mount["type"] == "image":
+                images_file = state_dir / "images.json"
+                images = json.loads(images_file.read_text()) if images_file.exists() else {}
+                return images.get(mount["source"], {}).get("__tree__", {})
+            root = state_dir / "volumes" / mount["source"]
+            if root.is_dir():
+                return {str(p.relative_to(root)): p.read_text()
+                        for p in root.rglob("*") if p.is_file()}
+        return {}
+
+    script = args[-1] if args else ""
+    if "openclaw config set " in script:
+        m = re.search(r"openclaw config set (\S+)\s+(.*)", script)
+        if m:
+            key, rest = m.group(1), m.group(2).strip()
+            try:
+                tokens = shlex.split(rest)
+                val = json.loads(tokens[0]) if tokens else None
+            except (ValueError, json.JSONDecodeError):
+                val = rest.strip("'\"")
+            if key.startswith(("plugins.load", "skills.load")):
+                sb.setdefault("openclawConfig", {})[key] = val
+            save()
+            sys.exit(0)
+    if "openclaw config unset " in script:
+        m = re.search(r"openclaw config unset (\S+)", script)
+        if m:
+            (sb.get("openclawConfig") or {}).pop(m.group(1), None)
+            save()
+            sys.exit(0)
+    if "openclaw config get " in script:
+        m = re.search(r"openclaw config get (\S+)", script)
+        if m:
+            val = (sb.get("openclawConfig") or {}).get(m.group(1))
+            if val is None:
+                sys.exit(1)
+            print(json.dumps(val))
+            save()
+            sys.exit(0)
+    if "openclaw plugins list --json" in script:
+        # plugins-list.json overrides the listing (a bundle OpenClaw has not
+        # loaded, or output that does not parse).
+        override = state_dir / "plugins-list.json"
+        if override.exists():
+            print(override.read_text(), end="")
+            save()
+            sys.exit(0)
+        # 2026.9.5 `--json` shape: bundle row from the mount plus native ids.
+        # `mcp list` is not modelled (it never shows bundle servers).
+        import yaml as _yaml
+        files = harness_files()
+        try:
+            name = (_yaml.safe_load(files.get("harness.yaml", "")) or {}).get("metadata", {}).get("name", "")
+        except ValueError:
+            name = ""
+        caps = []
+        if any(rel.startswith("skills/") for rel in files):
+            caps.append("skills")
+        if "mcp.json" in files:
+            caps.append("mcpServers")
+        plugins = [{"id": name, "name": name, "format": "bundle",
+                    "source": "$OPENCLAW_HOME/harness", "rootDir": "/sandbox/harness",
+                    "enabled": True, "status": "loaded", "bundleCapabilities": caps}]
+        for pname in sorted({rel.split("/")[1] for rel in files
+                             if rel.startswith("plugins/") and rel.count("/") >= 2}):
+            plugins.append({"id": pname, "name": pname, "format": "openclaw",
+                            "enabled": True, "status": "loaded"})
+        print(json.dumps({"plugins": plugins}))
+        save()
+        sys.exit(0)
     failing = (json.loads((state_dir / "exec-fail.json").read_text())
                if (state_dir / "exec-fail.json").exists() else [])
     if opt("-n") in failing:
