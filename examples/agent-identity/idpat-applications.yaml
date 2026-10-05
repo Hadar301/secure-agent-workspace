@@ -126,7 +126,6 @@ spec:
             - host: identity-demo.saw-identity-demo.svc.cluster.local
               port: 8080
               protocol: rest
-              tls: none
               access: read-write
               enforcement: enforce
             binaries:
