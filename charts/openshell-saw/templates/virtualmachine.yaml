@@ -48,9 +48,23 @@ spec:
           name: {{ include "openshell-sandbox.dataSourceName" . }}
           namespace: {{ include "openshell-sandbox.goldenNamespace" . }}
         {{- end }}
+        {{- $access := .Values.vm.accessMode | default "ReadWriteOnce" }}
+        {{- if not (has $access (list "ReadWriteOnce" "ReadWriteMany")) }}
+        {{- fail "vm.accessMode must be ReadWriteOnce or ReadWriteMany" }}
+        {{- end }}
+        {{- $volumeMode := .Values.vm.volumeMode | default "" }}
+        {{- if and $volumeMode (not (has $volumeMode (list "Filesystem" "Block"))) }}
+        {{- fail "vm.volumeMode must be Filesystem, Block, or empty" }}
+        {{- end }}
         storage:
+          {{- with .Values.vm.storageClass }}
+          storageClassName: {{ . | quote }}
+          {{- end }}
           accessModes:
-            - ReadWriteOnce
+            - {{ $access }}
+          {{- if $volumeMode }}
+          volumeMode: {{ $volumeMode }}
+          {{- end }}
           resources:
             requests:
               storage: {{ .Values.vm.diskSize }}

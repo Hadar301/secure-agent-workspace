@@ -78,6 +78,27 @@ def test_registrar_uses_the_launcher_constraint():
     assert granted == ["kubevirt-controller"]
 
 
+def test_registrar_lifetimes_are_validated_and_passed():
+    digest = "sha256:" + ("a" * 64)
+    result = render("--set", "spiffe.enabled=true,registrar.enabled=true",
+                    "--set", "spiffe.trustDomain=saw.test",
+                    "--set", "registrar.image=example/registrar@" + digest,
+                    "--set", "registrar.joinTokenTTL=600,registrar.jwtSvidTTL=180,registrar.x509SvidTTL=1800")
+    assert result.returncode == 0, result.stderr
+    deploy = next(d for d in yaml.safe_load_all(result.stdout) if d and d["kind"] == "Deployment")
+    env = {item["name"]: item.get("value") for item in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["JOIN_TOKEN_TTL"] == "600"
+    assert env["JWT_SVID_TTL"] == "180"
+    assert env["X509_SVID_TTL"] == "1800"
+    for raw in ("59", "86401", "10m"):
+        bad = render("--set", "spiffe.enabled=true,registrar.enabled=true",
+                     "--set", "spiffe.trustDomain=saw.test",
+                     "--set", "registrar.image=example/registrar@" + digest,
+                     "--set", "registrar.jwtSvidTTL=" + raw)
+        assert bad.returncode != 0
+        assert "registrar.jwtSvidTTL" in bad.stderr
+
+
 def test_refuses_wrong_namespace_and_insecure_issuer():
     assert render("--set", "spiffe.enabled=true", "-n", "default").returncode != 0
     result = render("--set", "spiffe.enabled=true,operands.enabled=true",

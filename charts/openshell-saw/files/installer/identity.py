@@ -103,6 +103,43 @@ def readiness_decision(status, unit_exists, agent_healthy):
     return True
 
 
+def installed_identity_units(agent_unit=UNIT_PATH):
+    """Unit files that a disable run has to stop. Credential files stay."""
+    if agent_unit.exists():
+        return ["spire-agent.service"]
+    return []
+
+
+def install_test_helper():
+    """Root-only QEMU helper for designated test VMs. It does not enroll or read credentials."""
+    if not shutil.which("semanage"):
+        install_package_without_policy_upgrade("policycoreutils-python-utils")
+    test_helper = Path("/usr/libexec/saw-identity-test")
+    test_helper.write_text('#!/bin/sh\nexec "$@"\n')
+    test_helper.chmod(0o700)
+    ensure_fcontext(str(test_helper), "virt_qemu_ga_unconfined_exec_t")
+    run("restorecon", str(test_helper))
+    run("setsebool", "-P", "virt_qemu_ga_run_unconfined", "on")
+
+
+def disable():
+    """Stop guest identity services. Do not delete enrollment files.
+
+    Opting out is not credential loss. The registrar revokes registrations
+    when the VM label is removed. Wiping /var/lib/spire here would make a
+    later enable look like state loss.
+    """
+    units = installed_identity_units()
+    for unit in units:
+        subprocess.run(["systemctl", "disable", "--now", unit], check=False, capture_output=True)
+    removed = False
+    if UNIT_PATH.exists():
+        UNIT_PATH.unlink()
+        removed = True
+    if units or removed:
+        run("systemctl", "daemon-reload")
+
+
 def ready():
     # Fixed purpose. Extra arguments are ignored and nothing is written.
     try:
@@ -432,6 +469,10 @@ if __name__ == "__main__":
         status()
     elif command == "ready":
         ready()
+    elif command == "disable":
+        disable()
+    elif command == "test-helper":
+        install_test_helper()
     else:
         try:
             install(sys.argv[1])

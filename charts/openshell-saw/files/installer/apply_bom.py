@@ -886,11 +886,21 @@ def _env_keys(text):
     return keys
 
 
+# The chart emits this only while identity is enabled. Opt-out must not keep
+# a copy that the golden image or an earlier boot appended.
+IDENTITY_ENV_KEYS = {"OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET"}
+
+
 def merge_user_env(chart_env, current):
     """The chart's gateway.env wins; keys only the golden image's first-boot
-    setup adds (runtime bridge endpoint, podman socket) are kept."""
+    setup adds (runtime bridge endpoint, podman socket) are kept.
+
+    The Workload API socket is not one of those keys. When the chart omits
+    it, the merged file omits it too.
+    """
     chart_keys = _env_keys(chart_env)
-    extra = [line for key, line in _env_keys(current).items() if key not in chart_keys]
+    extra = [line for key, line in _env_keys(current).items()
+             if key not in chart_keys and key not in IDENTITY_ENV_KEYS]
     text = chart_env.rstrip("\n") + "\n"
     return text + ("\n".join(extra) + "\n" if extra else "")
 
@@ -1196,8 +1206,30 @@ class ProfileApplier:
         clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
+    def workload_api_mount_must_go(self, ws, sb):
+        """Identity opt-out has to recreate a sandbox that still bind-mounts the Workload API."""
+        if (self.cfg.get("spiffe") or {}).get("enabled"):
+            return False
+        listed = self.sh.run(["podman", "ps", "-a", "--format", "{{.Names}}"], check=False, quiet=True)
+        if not listed.ok:
+            return False
+        needle = "%s--%s" % (ws.name, sb.name)
+        for name in listed.out.split():
+            if needle not in name:
+                continue
+            inspected = self.sh.run(
+                ["podman", "inspect", "--format", "{{json .HostConfig.Binds}}", name],
+                check=False, quiet=True)
+            if inspected.ok and "/spiffe-workload-api" in (inspected.out or ""):
+                return True
+        return False
+
     def create_sandbox(self, ws, sb):
         state = self.sandbox_state(ws, sb)
+        if state == "running" and self.workload_api_mount_must_go(ws, sb):
+            log(f"Sandbox '{sb.name}' still mounts the Workload API; recreating it")
+            self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+            state = "missing"
         if state == "broken":
             log(f"Sandbox '{sb.name}' is not running; recreating it")
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
@@ -1581,10 +1613,15 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
+        identity_script = str(inputs.installer / "identity.py")
         if (cfg.get("spiffe") or {}).get("enabled"):
             if "spireAgent" not in bom["spec"]:
                 raise InstallerError("identity requires a pinned spireAgent BOM component")
-            shell.run([sys.executable, str(inputs.installer / "identity.py"), str(inputs.config)], timeout=600)
+            shell.run([sys.executable, identity_script, str(inputs.config)], timeout=600)
+        else:
+            shell.run([sys.executable, identity_script, "disable"], timeout=120)
+        if (cfg.get("spiffe") or {}).get("testMode"):
+            shell.run([sys.executable, identity_script, "test-helper"], timeout=300)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.

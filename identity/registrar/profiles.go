@@ -30,11 +30,11 @@ func id(td, path string) *types.SPIFFEID { return &types.SPIFFEID{TrustDomain: t
 
 // desiredEntries deliberately reads only BOM workspaces/sandboxes, never labels
 // supplied by a workload or an arbitrary SPIFFE ID supplied by a tenant.
-func desiredEntries(td, ns, vm, uid, parent string, files map[string]string, gatewayUID string) ([]*types.Entry, error) {
+func desiredEntries(td, ns, vm, uid, parent string, files map[string]string, gatewayUID string, jwtSvid, x509Svid int32) ([]*types.Entry, error) {
 	base := "/saw/" + ns + "/" + vm
 	entry := func(path string, selectors ...*types.Selector) *types.Entry {
 		return &types.Entry{SpiffeId: id(td, path), ParentId: id(td, parent), Selectors: selectors,
-			JwtSvidTtl: 300, X509SvidTtl: 3600, Hint: "saw:" + uid}
+			JwtSvidTtl: jwtSvid, X509SvidTtl: x509Svid, Hint: "saw:" + uid}
 	}
 	out := []*types.Entry{entry(base+"/gateway",
 		&types.Selector{Type: "unix", Value: "uid:" + gatewayUID},

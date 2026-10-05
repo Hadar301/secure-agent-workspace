@@ -541,6 +541,23 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
         assert apps[app]["namespace"] == "openshell-agents", app
 
 
+def test_root_disk_keeps_readwriteonce_unless_storage_is_selected(default_docs):
+    storage = default_docs[("VirtualMachine", "saw-test")]["spec"]["dataVolumeTemplates"][0]["spec"]["storage"]
+    assert storage["accessModes"] == ["ReadWriteOnce"]
+    assert "storageClassName" not in storage
+    assert "volumeMode" not in storage
+    docs = render("--set", "vm.storageClass=ocs-external-storagecluster-cephfs",
+                  "--set", "vm.accessMode=ReadWriteMany",
+                  "--set", "vm.volumeMode=Filesystem")
+    selected = docs[("VirtualMachine", "saw-test")]["spec"]["dataVolumeTemplates"][0]["spec"]["storage"]
+    assert selected["storageClassName"] == "ocs-external-storagecluster-cephfs"
+    assert selected["accessModes"] == ["ReadWriteMany"]
+    assert selected["volumeMode"] == "Filesystem"
+    refused = helm_template(CHART, "--set", "sandboxName=saw-test", "--set", "vm.accessMode=ReadOnlyMany")
+    assert refused.returncode != 0
+    assert "vm.accessMode" in refused.stderr
+
+
 def test_vm_logs_its_serial_console(default_docs):
     """The installer logs to the console; make it visible in the pod even when
     the cluster default leaves serial console logging off."""

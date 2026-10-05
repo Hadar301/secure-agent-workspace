@@ -44,6 +44,12 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Empty uses the cluster default StorageClass.
+  storageClass: ""
+  # Root disks stay ReadWriteOnce unless a caller selects another mode.
+  accessMode: ReadWriteOnce
+  # Empty leaves volumeMode unset so CDI follows the StorageProfile.
+  volumeMode: ""
   # Mark the VMI Ready only after the in-guest installer finished both steps.
   # Uses a guest-agent exec probe (`/usr/libexec/saw-ready`). The helper
   # checks installer completion and, when the agent unit exists, agent health.

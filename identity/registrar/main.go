@@ -50,6 +50,7 @@ type controller struct {
 	agents        agentv1.AgentClient
 	entries       entryv1.EntryClient
 	td, namespace string
+	life          lifetimes
 }
 
 func env(key, fallback string) string {
@@ -65,6 +66,10 @@ func main() {
 	td := os.Getenv("TRUST_DOMAIN")
 	if td == "" {
 		log.Fatal("TRUST_DOMAIN is required")
+	}
+	life, err := lifetimesFromEnv()
+	if err != nil {
+		log.Fatal(err)
 	}
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -89,7 +94,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer conn.Close()
-	c := &controller{k: k, d: d, config: cfg, agents: agentv1.NewAgentClient(conn), entries: entryv1.NewEntryClient(conn), td: td, namespace: env("POD_NAMESPACE", "zero-trust-workload-identity-manager")}
+	c := &controller{k: k, d: d, config: cfg, agents: agentv1.NewAgentClient(conn), entries: entryv1.NewEntryClient(conn), td: td, namespace: env("POD_NAMESPACE", "zero-trust-workload-identity-manager"), life: life}
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 	defer queue.ShutDown()
 	factory := dynamicinformer.NewDynamicSharedInformerFactory(d, 30*time.Second)
@@ -285,9 +290,11 @@ func (c *controller) reconcile(ctx context.Context, key string) error {
 	if _, err := strconv.ParseUint(gatewayUID, 10, 32); err != nil {
 		return fmt.Errorf("gateway UID annotation is required")
 	}
-	if _, err := desiredEntries(c.td, ns, name, uid, "/validation", files, gatewayUID); err != nil {
+	if _, err := desiredEntries(c.td, ns, name, uid, "/validation", files, gatewayUID, c.life.jwtSvid, c.life.x509Svid); err != nil {
 		return err
 	}
+	// An existing join-token Secret keeps its minted expiry. The configured
+	// join-token lifetime applies only when this VM has no Secret yet.
 	if secret == nil {
 		var err error
 		secret, err = c.bootstrap(ctx, vm, nil)
@@ -299,7 +306,7 @@ func (c *controller) reconcile(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	wanted, err := desiredEntries(c.td, ns, name, uid, string(secret.Data["node-path"]), files, gatewayUID)
+	wanted, err := desiredEntries(c.td, ns, name, uid, string(secret.Data["node-path"]), files, gatewayUID, c.life.jwtSvid, c.life.x509Svid)
 	if err != nil {
 		return err
 	}
@@ -319,10 +326,15 @@ func (c *controller) reconcile(ctx context.Context, key string) error {
 				return fmt.Errorf("SPIRE entry creation failed")
 			}
 		} else {
+			// Keep the registration ID. A lifetime change updates that entry
+			// in place instead of deleting it and creating another.
 			want.Id = got.Id
 			want.RevisionNumber = got.RevisionNumber
 			want.CreatedAt = got.CreatedAt
 			if !proto.Equal(want, got) {
+				if want.JwtSvidTtl != got.JwtSvidTtl || want.X509SvidTtl != got.X509SvidTtl {
+					log.Printf("update registration %s jwt %d->%d x509 %d->%d", want.SpiffeId.GetPath(), got.JwtSvidTtl, want.JwtSvidTtl, got.X509SvidTtl, want.X509SvidTtl)
+				}
 				r, e := c.entries.BatchUpdateEntry(ctx, &entryv1.BatchUpdateEntryRequest{Entries: []*types.Entry{want}})
 				if e != nil {
 					return e
@@ -363,10 +375,11 @@ func (c *controller) bootstrap(ctx context.Context, vm *unstructured.Unstructure
 	if !strings.Contains(pem, "BEGIN CERTIFICATE") {
 		return nil, fmt.Errorf("trust bundle is not ready")
 	}
-	token, err := c.agents.CreateJoinToken(ctx, &agentv1.CreateJoinTokenRequest{Ttl: 600})
+	token, err := c.agents.CreateJoinToken(ctx, &agentv1.CreateJoinTokenRequest{Ttl: c.life.joinToken})
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("minted join token ttl=%d expires=%d", c.life.joinToken, token.ExpiresAt)
 	owner := meta.NewControllerRef(vm, schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachine"})
 	s := &core.Secret{ObjectMeta: meta.ObjectMeta{Name: vm.GetName() + "-spire-join-token", Namespace: vm.GetNamespace(), OwnerReferences: []meta.OwnerReference{*owner}}, Data: map[string][]byte{
 		"token": []byte(token.Value), "node-path": []byte("/spire/agent/join_token/" + token.Value), "bundle.pem": []byte(pem), "generation": []byte(strconv.Itoa(generation)), "expires": []byte(strconv.FormatInt(token.ExpiresAt, 10)),

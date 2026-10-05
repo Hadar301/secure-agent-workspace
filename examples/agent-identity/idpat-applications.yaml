@@ -1,0 +1,158 @@
+# Dedicated Pattern-style SAW. It uses the agent-identity chart, which is the
+# revision that can reference the shared SPIRE service. It does not install
+# or adopt charts/spire-identity, and it does not change saw-alice.
+# The Pattern branch codex/custom-inference-vm-installer has no SPIFFE
+# templates, so this Application cannot use that revision and still enroll.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: saw-idpat
+  labels:
+    openshell.pattern/saw: "true"
+    saw.redhat.com/identity-test-run: agent-identity-pattern-20261005
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: idpat-bom
+  namespace: vp-gitops
+  labels:
+    validatedpatterns.io/pattern: secure-agent-workspace
+    openshell.pattern/owner: idpat
+spec:
+  project: default
+  destination:
+    name: in-cluster
+    namespace: saw-idpat
+  source:
+    repoURL: https://github.com/Hadar301/secure-agent-workspace.git
+    targetRevision: codex/agent-identity
+    path: charts/saw-bom
+    helm:
+      releaseName: saw-bom
+      values: |
+        profiles: []
+        profileFiles:
+          profiles/identity-demo/default/providers.yaml: |
+            apiVersion: saw.redhat.com/v1alpha1
+            kind: Providers
+            spec:
+              providers:
+              - name: protected
+                runtimeCredentials: true
+                type: saw-demo-cc
+          profiles/identity-demo/default/sandbox.yaml: |
+            apiVersion: saw.redhat.com/v1alpha1
+            kind: Sandboxes
+            spec:
+              sandboxes:
+              - image: ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:c2a43bb0d765774e2790b3babfb20997bb2eac7b4bf4c6d7d8661e99817bf904
+                name: agent
+                providers:
+                - protected
+                type: generic
+          profiles/identity-demo/default/workspace.yaml: |
+            apiVersion: saw.redhat.com/v1alpha1
+            kind: Workspace
+            metadata:
+              name: default
+            spec:
+              enabled: true
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    retry:
+      limit: 5
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: idpat
+  namespace: vp-gitops
+  labels:
+    validatedpatterns.io/pattern: secure-agent-workspace
+    openshell.pattern/owner: idpat
+spec:
+  project: default
+  destination:
+    name: in-cluster
+    namespace: saw-idpat
+  source:
+    repoURL: https://github.com/Hadar301/secure-agent-workspace.git
+    targetRevision: codex/agent-identity
+    path: charts/openshell-saw
+    helm:
+      releaseName: idpat
+      values: |
+        sandboxName: idpat
+        route:
+          enabled: false
+          dashboard: false
+        governance:
+          enabled: false
+        dashboard:
+          enabled: false
+        vm:
+          cores: 2
+          memory: 4Gi
+          readinessProbe: true
+        spiffe:
+          enabled: true
+          testMode: true
+          testRunID: agent-identity-pattern-20261005
+          trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
+          serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local
+          serverPort: 443
+          serverTransport: tcp
+          gatewayUID: 1000
+        providerProfiles:
+          saw-demo-cc:
+            id: saw-demo-cc
+            display_name: SAW identity acceptance
+            category: other
+            credentials:
+            - name: access_token
+              required: false
+              auth_style: bearer
+              header_name: Authorization
+              token_grant:
+                grant_type: client_credentials
+                token_endpoint: http://identity-demo.saw-identity-demo.svc.cluster.local:8080/token
+                audience: saw-protected-service
+                jwt_svid_audience: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+                cache_ttl_seconds: 30
+            endpoints:
+            - host: identity-demo.saw-identity-demo.svc.cluster.local
+              port: 8080
+              protocol: rest
+              tls: none
+              access: read-write
+              enforcement: enforce
+            binaries:
+            - /usr/bin/curl
+  ignoreDifferences:
+    # KubeVirt and the MAC pool write these after admission. Server-side
+    # apply does not take them, and a Healthy status does not mean the
+    # chart spec matches. The registrar finalizer is checked on the VM.
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /metadata/annotations/kubemacpool.io~1transaction-timestamp
+        - /metadata/annotations/kubevirt.io~1latest-observed-api-version
+        - /metadata/annotations/kubevirt.io~1storage-observed-api-version
+        - /metadata/finalizers
+        - /spec/template/metadata/annotations/kubevirt.io~1pci-topology-version
+        - /spec/template/spec/architecture
+        - /spec/template/spec/domain/machine
+        - /spec/template/spec/domain/firmware/serial
+        - /spec/template/spec/domain/firmware/uuid
+        - /spec/template/spec/domain/devices/interfaces/0/macAddress
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    retry:
+      limit: 5
+    syncOptions:
+      - ServerSideApply=true

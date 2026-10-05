@@ -20,6 +20,12 @@ persistence:
 registrar:
   enabled: false
   image: ""
+  # Whole seconds. Join tokens already stored on a VM keep their minted
+  # expiry. JWT and X.509 lifetimes are reconciled onto existing entries.
+  # They must not exceed the SPIRE server jwtValidity and x509Validity.
+  joinTokenTTL: 600
+  jwtSvidTTL: 300
+  x509SvidTTL: 3600
 vsockBridge:
   enabled: false
   image: ""

@@ -63,6 +63,13 @@ def test_wiped_or_corrupt_state_is_missing(identity, material):
     assert not identity.credentials_present()
 
 
+def test_disable_stops_only_installed_identity_units(identity, tmp_path):
+    agent = tmp_path / "spire-agent.service"
+    assert identity.installed_identity_units(agent) == []
+    agent.write_text("unit")
+    assert identity.installed_identity_units(agent) == ["spire-agent.service"]
+
+
 def test_permission_error_is_not_credential_loss(identity, monkeypatch):
     def denied(*args, **kwargs):
         raise PermissionError("denied")
