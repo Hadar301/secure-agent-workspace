@@ -148,6 +148,8 @@ class FakeKube:
             return {"items": [{"metadata": {"name": n}} for n, labels in self.namespaces.items()
                               if labels.get(key) == val]}
         if url.path == "/apis/route.openshift.io/v1/routes":
+            if not sel:
+                return {"items": list(self.routes)}
             key, _, val = sel.partition("=")
             return {"items": [r for r in self.routes if (r["metadata"].get("labels") or {}).get(key) == val]}
         if url.path == "/apis/config.openshift.io/v1/ingresses/cluster":
@@ -331,3 +333,49 @@ def test_without_its_secret_the_registrar_cannot_write(world, tmp_path):
     with pytest.raises(reg.HttpError):
         reg.run(once=True)
     assert kc.puts == []
+
+
+def test_a_rollout_keeps_the_entries_of_routes_not_yet_labelled(world):
+    """Found live: the registrar came up before the SAW apps relabelled
+    their routes, adopted the Jobs' entries, and removed them all, so users
+    could not sign in until their app synced. Entries go only when their
+    route does."""
+    reg, kc, kube, _ = world
+    reg.bootstrap()
+    alice = "https://alice-webui-saw-alice.apps.example.com"
+    d = dashboard(kc)
+    d["redirectUris"] = [alice + "/oauth2/callback",
+                         "https://dave-webui-saw-dave.apps.example.com/oauth2/callback"]   # dave is gone
+    d["webOrigins"] = [alice]
+    kube.routes = [route("saw-alice", "alice-webui-saw-alice" + SUFFIX, labelled=False)]
+    reg.run(once=True)
+    assert dashboard(kc)["redirectUris"] == [alice + "/oauth2/callback"]
+    assert dashboard(kc)["webOrigins"] == [alice]
+    kube.routes = [route("saw-alice", "alice-webui-saw-alice" + SUFFIX)]       # alice's app synced
+    reg.run(once=True)
+    assert dashboard(kc)["redirectUris"] == [alice + "/oauth2/callback"]
+    kube.routes = []                                                            # alice removed
+    reg.run(once=True)
+    assert dashboard(kc)["redirectUris"] == [] and dashboard(kc)["webOrigins"] == []
+
+
+def test_an_unlabelled_route_elsewhere_keeps_nothing(world):
+    """Only routes in SAW namespaces count as still in use."""
+    reg, kc, kube, _ = world
+    reg.bootstrap()
+    dashboard(kc)["redirectUris"] = ["https://evil-other.apps.example.com/oauth2/callback"]
+    kube.routes = [route("other", "evil-other" + SUFFIX, labelled=False)]
+    reg.run(once=True)
+    assert dashboard(kc)["redirectUris"] == []
+
+
+def test_an_entry_removed_by_hand_is_not_put_back(world):
+    reg, kc, kube, _ = world
+    reg.bootstrap()
+    kube.routes = [route("saw-alice", "alice-webui-saw-alice" + SUFFIX)]
+    reg.run(once=True)
+    kube.routes = [route("saw-alice", "alice-webui-saw-alice" + SUFFIX, labelled=False)]
+    dashboard(kc)["redirectUris"] = []
+    reg.run(once=True)
+    assert dashboard(kc)["redirectUris"] == []
+

@@ -182,9 +182,13 @@ def selector(value):
 
 def wanted(kube, namespace_selector, route_selector, suffix):
     """The redirect URIs and web origins of the labelled routes in SAW
-    namespaces whose host is under `suffix`."""
+    namespaces whose host is under `suffix`, and the hosts of all routes in
+    SAW namespaces, labelled or not (still in use: see reconcile)."""
     namespaces = {n["metadata"]["name"] for n in
                   kube.get(f"/api/v1/namespaces?labelSelector={selector(namespace_selector)}").get("items", [])}
+    present = {(r.get("spec") or {}).get("host", "")
+               for r in kube.get("/apis/route.openshift.io/v1/routes").get("items", [])
+               if (r.get("metadata") or {}).get("namespace") in namespaces}
     routes = kube.get(f"/apis/route.openshift.io/v1/routes?labelSelector={selector(route_selector)}")
     uris, origins = set(), set()
     for route in routes.get("items", []):
@@ -203,7 +207,7 @@ def wanted(kube, namespace_selector, route_selector, suffix):
             continue
         uris.add(f"https://{host}{path}")
         origins.add(f"https://{host}")
-    return uris, origins
+    return uris, origins, present - {""}
 
 
 def under(entry, suffix):
@@ -211,11 +215,17 @@ def under(entry, suffix):
     return parsed.scheme == "https" and (parsed.hostname or "").endswith(suffix)
 
 
-def reconcile(client, uris, origins, suffix):
+def reconcile(client, uris, origins, suffix, present=frozenset()):
     """The client with its redirect URIs and web origins brought in step,
     or None when nothing changes. The first run adopts the entries under
     `suffix` that the per-VM Jobs registered before, so the ones of VMs
-    that are gone get removed too."""
+    that are gone get removed too.
+
+    An entry is removed only when no route in a SAW namespace has its host
+    any more (`present`). A route that is there but not (yet) labelled
+    keeps its entry: during a rollout the registrar starts before the SAW
+    apps relabel their routes, and dropping their entries then would break
+    those users' sign-in until their app synced."""
     attributes = dict(client.get("attributes") or {})
     current_uris, current_origins = client.get("redirectUris") or [], client.get("webOrigins") or []
     try:
@@ -223,9 +233,18 @@ def reconcile(client, uris, origins, suffix):
     except (KeyError, ValueError, TypeError):
         managed = {"redirectUris": [u for u in current_uris if under(u, suffix)],
                    "webOrigins": [o for o in current_origins if under(o, suffix)]}
-    new_uris = sorted((set(current_uris) - set(managed.get("redirectUris") or [])) | uris)
-    new_origins = sorted((set(current_origins) - set(managed.get("webOrigins") or [])) | origins)
-    record = json.dumps({"redirectUris": sorted(uris), "webOrigins": sorted(origins)}, sort_keys=True)
+
+    def kept(current, mine, want):
+        # Mine and still on the client, not wanted, but its route is still there.
+        return {e for e in set(mine) & set(current) - want
+                if urllib.parse.urlsplit(e).hostname in present}
+
+    keep_uris = kept(current_uris, managed.get("redirectUris") or [], uris)
+    keep_origins = kept(current_origins, managed.get("webOrigins") or [], origins)
+    new_uris = sorted((set(current_uris) - set(managed.get("redirectUris") or [])) | uris | keep_uris)
+    new_origins = sorted((set(current_origins) - set(managed.get("webOrigins") or [])) | origins | keep_origins)
+    record = json.dumps({"redirectUris": sorted(uris | keep_uris),
+                         "webOrigins": sorted(origins | keep_origins)}, sort_keys=True)
     if (new_uris == sorted(current_uris) and new_origins == sorted(current_origins)
             and attributes.get(MANAGED_ATTRIBUTE) == record):
         return None
@@ -238,7 +257,7 @@ def ingress_domain(kube):
 
 
 def sync(kube, suffix):
-    uris, origins = wanted(kube, env("NAMESPACE_SELECTOR"), env("ROUTE_SELECTOR"), suffix)
+    uris, origins, present = wanted(kube, env("NAMESPACE_SELECTOR"), env("ROUTE_SELECTOR"), suffix)
     secret = open(env("SECRET_FILE"), encoding="utf-8").read().strip()
     kc = Keycloak(env("KC_URL"), env("REALM"), env("REALM"),
                   {"grant_type": "client_credentials", "client_id": env("CLIENT_ID"), "client_secret": secret})
@@ -247,7 +266,7 @@ def sync(kube, suffix):
     if found is None:
         raise HttpError(404, f"client {name} not found in realm {env('REALM')}")
     client = kc("GET", f"/clients/{found['id']}")
-    updated = reconcile(client, uris, origins, suffix)
+    updated = reconcile(client, uris, origins, suffix, present)
     if updated is None:
         return False
     added = sorted(set(updated["redirectUris"]) - set(client.get("redirectUris") or []))
