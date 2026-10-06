@@ -53,8 +53,9 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   [Removing things from a profile](#removing-things-from-a-profile).
 - Nothing else runs in the SAW's namespace: no Job. The VM's root disk is
   imported by CDI from the golden image (or cloned from a DataSource), and
-  the routes' redirect URIs are registered by an administrator
-  (`make -f Makefile-quickstart keycloak-register`).
+  the routes' redirect URIs are registered by the redirect registrar in
+  Keycloak's namespace (or, with it off, by an administrator:
+  `make -f Makefile-quickstart keycloak-register`).
 
 cloud-init runs once per VM, so it only writes static files (mount script,
 units, and the reconcile units when `vm.liveInputs` is true) and first-boot

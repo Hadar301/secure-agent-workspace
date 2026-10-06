@@ -250,9 +250,11 @@ It works for every workspace, from the portal or from `overrides/saw-users.yaml`
     and `sandboxUiProxy.allowedUsers`.
 - The route is labelled `saw.redhat.com/oidc-redirect=true`. Its callback,
   `https://<host>/oauth2/callback`, has to be on Keycloak's
-  `openshell-dashboard` client before anyone can sign in: an administrator
-  runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the
-  workspace exists (the portal does not do it). See the README's
+  `openshell-dashboard` client before anyone can sign in. The redirect
+  registrar in Keycloak's namespace adds it within about 15 seconds of the
+  route appearing; with the registrar off, an administrator runs
+  `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the
+  workspace exists. See the README's
   [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 The UI ports are VM interface ports, so adding or removing a UI takes a VM

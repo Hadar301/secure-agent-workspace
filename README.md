@@ -379,7 +379,7 @@ Details: [docs/custom-inference.md](docs/custom-inference.md).
 
 ### Self-service workspaces and sandbox web UIs
 
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (an administrator registers its sign-in once it exists: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 
@@ -550,9 +550,21 @@ Each workspace's web UIs (the VM's OpenShell dashboard, and each sandbox UI
 route) sign in through Keycloak's `openshell-dashboard` client, and Keycloak
 only sends the browser back to a redirect URI registered on that client. Every
 UI has its own host, and Keycloak takes no wildcard in a host name, so each
-one is registered. Nothing in the cluster does it: an administrator runs it,
-with their own `oc` session, once the workspace exists (from
-`overrides/saw-users.yaml` or the self-service portal).
+one is registered.
+
+By default the **redirect registrar** does it: one Deployment in Keycloak's
+namespace (`charts/openshell-keycloak`, `redirectRegistrar`) registers each
+web UI route's `https://<host>/oauth2/callback` within about 15 seconds of
+the route appearing (from `overrides/saw-users.yaml` or the self-service
+portal), and removes the entries of workspaces that are gone. It signs in as
+its own Keycloak client that may only manage the OpenShell realm's clients;
+its init container uses the Keycloak admin Secret once per start to set that
+client up, and the registrar itself never sees it.
+
+To keep Keycloak admin access out of the cluster entirely, turn it off
+(`redirectRegistrar.enabled: false` in the `openshell-keycloak` values) and
+register as an administrator instead, with your own `oc` session. The same
+targets work alongside the registrar too:
 
 ```bash
 make -f Makefile-quickstart keycloak-register KC_USER=carol   # account (if new) + carol's web UIs
@@ -569,14 +581,7 @@ them. Until then, signing in to that workspace's UIs fails with Keycloak's
 missing and removes the entries it added for workspaces that are gone;
 entries it did not add (registered by hand, other apps) are kept.
 
-To have this done in the cluster instead, turn on the optional redirect
-registrar (`redirectRegistrar.enabled: true` in the `openshell-keycloak`
-values): one Deployment in Keycloak's namespace applies the same rules as
-`keycloak-redirects-sync` every 15 seconds, so a new workspace's sign-in
-works without an administrator step. It signs in as its own Keycloak client
-that may only manage the OpenShell realm's clients; its init container uses
-the Keycloak admin Secret once per start to set that client up. Off by
-default.
+The registrar and `keycloak-redirects-sync` apply the same rules.
 
 The web UI routes are the ones labelled `saw.redhat.com/oidc-redirect=true` in
 the `saw-*` namespaces. With another OIDC issuer, register their callbacks

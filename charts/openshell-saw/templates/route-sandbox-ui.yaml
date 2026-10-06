@@ -10,8 +10,8 @@ metadata:
     {{- include "openshell-sandbox.labels" $ | nindent 4 }}
     openshell.pattern/sandbox-ui: "true"
     # A web UI route: https://<host>/oauth2/callback goes on the dashboard's
-    # Keycloak client (make keycloak-register, or the optional registrar in
-    # charts/openshell-keycloak).
+    # Keycloak client (the redirect registrar in charts/openshell-keycloak,
+    # or make keycloak-register).
     saw.redhat.com/oidc-redirect: "true"
   annotations:
     openshell.pattern/workspace: {{ $e.workspace | quote }}

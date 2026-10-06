@@ -4,10 +4,12 @@ administrator (make keycloak-register, make keycloak-redirects-sync).
 
 Every web UI (a VM's dashboard, each sandbox UI) has its own route host, and
 Keycloak matches redirect URIs exactly except for a trailing wildcard, so
-each host is registered on the dashboard client. Nothing in the cluster does
-this: an administrator runs it, with their own oc session and Keycloak's
-admin Secret, as for scripts/keycloak-users.sh. With another OIDC issuer,
-`list` shows what to register there.
+each host is registered on the dashboard client. The redirect registrar in
+Keycloak's namespace does it by default, with the same rules as `sync`; with
+it off (redirectRegistrar.enabled: false), an administrator runs this, with
+their own oc session and Keycloak's admin Secret, as for
+scripts/keycloak-users.sh. With another OIDC issuer, `list` shows what to
+register there.
 
   list             The client's redirect URIs, and the SAW web UI routes that
                    have none yet.

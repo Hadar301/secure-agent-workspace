@@ -40,7 +40,9 @@ def test_default_deploys_keycloak_database_and_realm():
 
 def test_existing_mode_imports_only_the_realm_into_that_keycloak():
     docs = render("--set", "keycloak.existing=keycloak", "--set", "keycloak.realm=openshell")
-    assert [d["kind"] for d in docs] == ["KeycloakRealmImport"]
+    assert not {"Keycloak", "StatefulSet", "Service", "PersistentVolumeClaim"} & {d["kind"] for d in docs}
+    assert [d["kind"] for d in render("--set", "keycloak.existing=keycloak",
+                                      "--set", "redirectRegistrar.enabled=false")] == ["KeycloakRealmImport"]
     spec = realm_of(docs)["spec"]
     assert spec["keycloakCRName"] == "keycloak"
     assert spec["realm"]["realm"] == "openshell"
@@ -156,20 +158,20 @@ def test_values_secret_generates_every_test_users_password():
         assert field["vaultPolicy"] == "validatedPatternDefaultPolicy"
 
 
-def test_by_default_nothing_in_keycloaks_namespace_registers_redirect_uris():
-    """Off by default: an administrator registers them
-    (scripts/keycloak-redirects.py). redirectRegistrar.enabled turns the
-    in-cluster registrar on, in plain and existing-Keycloak mode alike."""
+def test_the_registrar_is_on_by_default_and_can_be_turned_off():
+    """On by default, in plain and existing-Keycloak mode alike. Off: nothing
+    in Keycloak's namespace registers redirect URIs or holds cluster-wide
+    access (an administrator runs scripts/keycloak-redirects.py)."""
     for args in ((), ("--set", "keycloak.existing=keycloak")):
-        docs = render(*args)
-        assert not [d for d in docs if "redirect" in d["metadata"]["name"]]
-        assert not [d for d in docs if d["kind"] in ("ClusterRole", "ClusterRoleBinding")]
-        on = render(*args, "--set", "redirectRegistrar.enabled=true")
+        on = render(*args)
         assert [d["metadata"]["name"] for d in on if d["kind"] == "Deployment"
                 and "redirect" in d["metadata"]["name"]] == ["saw-redirect-registrar"]
+        off = render(*args, "--set", "redirectRegistrar.enabled=false")
+        assert not [d for d in off if "redirect" in d["metadata"]["name"]]
+        assert not [d for d in off if d["kind"] in ("ClusterRole", "ClusterRoleBinding")]
 
 
-# -- the redirect registrar (optional, redirectRegistrar.enabled) ----------------------------------------------------------
+# -- the redirect registrar (redirectRegistrar, on by default) ----------------------------------------------------------
 
 def registrar(docs):
     (dep,) = [d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "saw-redirect-registrar"]

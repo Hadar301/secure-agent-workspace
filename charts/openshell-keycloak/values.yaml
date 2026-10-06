@@ -39,9 +39,9 @@ keycloak:
       # confirmed live that "https://*/oauth2/callback" is rejected outright
       # ("Invalid parameter: redirect_uri") — so a single static entry can't
       # cover every sandbox. Each web UI route's exact redirect URI is
-      # registered on this client: by an administrator (make keycloak-register
-      # KC_USER=..., make keycloak-redirects-sync), or, with
-      # redirectRegistrar.enabled, by the registrar below.
+      # registered on this client: by the redirect registrar below (on by
+      # default), or by an administrator (make keycloak-register KC_USER=...,
+      # make keycloak-redirects-sync).
       # These are just the initial (empty) values before any sandbox exists.
       redirectUris: []
       webOrigins: []
@@ -107,18 +107,19 @@ keycloak:
     - openshell-user
     - openshell-admin
 
-# Optional: register the web UI redirect URIs from inside the cluster. Off by
-# default: an administrator registers them (make keycloak-register,
-# make keycloak-redirects-sync; README "Web UI sign-in"). On: one Deployment
-# in this namespace keeps the dashboard client's redirect URIs and web
-# origins in step with the SAW web UI routes (routes labelled routeSelector
-# in namespaces labelled namespaceSelector, with a host under hostSuffix),
-# every intervalSeconds. Its init container uses the master admin
+# The redirect registrar: registers the SAW web UIs' redirect URIs from
+# inside the cluster. On by default: one Deployment in this namespace keeps
+# the dashboard client's redirect URIs and web origins in step with the SAW
+# web UI routes (routes labelled routeSelector in namespaces labelled
+# namespaceSelector, with a host under hostSuffix), every intervalSeconds.
+# Off: nothing in the cluster holds Keycloak admin access for this, and an
+# administrator registers them instead (make keycloak-register,
+# make keycloak-redirects-sync; README "Web UI sign-in"). Its init container uses the master admin
 # (adminSecret) once per start to set up the registrar's own client, which
 # may only manage this realm's clients; the registrar itself never sees the
 # master admin. Same rules as scripts/keycloak-redirects.py sync.
 redirectRegistrar:
-  enabled: false
+  enabled: true
   image: registry.access.redhat.com/ubi9/python-311:latest
   clientId: saw-redirect-registrar
   # Empty: http://<keycloak>-service.<namespace>.svc:8080 (in-cluster).

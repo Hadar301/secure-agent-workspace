@@ -250,14 +250,17 @@ carol. Its description starts with the status: `Requested`, `Creating`,
 
 ## 5. Open the sandbox
 
-First register the workspace's sign-in, as an administrator (it also creates
-the Keycloak account if the user has none; it waits for the routes):
+The redirect registrar registers the workspace's sign-in on its own. Check
+it, and create carol's Keycloak account if she has none (as an administrator;
+it waits for the routes):
 
 ```bash
 make -f Makefile-quickstart keycloak-register KC_USER=carol
 ```
 
-Without it, the sign-in stops at Keycloak with "Invalid parameter: redirect_uri".
+A sign-in that stops at Keycloak with "Invalid parameter: redirect_uri" means
+the URI is not registered yet: see the registrar's log
+(`oc logs -n saw-keycloak deploy/saw-redirect-registrar -c registrar`).
 
 The installer creates the profile's sandboxes; there is nothing to start.
 

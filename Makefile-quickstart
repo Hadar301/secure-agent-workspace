@@ -350,10 +350,11 @@ keycloak-reset-password: ## Give a Keycloak user a new generated password and pr
 	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
 
 # Web UI sign-in: each workspace's web UIs (the VM dashboard, each sandbox
-# UI route) need their redirect URI on Keycloak's dashboard client. Nothing in
-# the cluster registers them: run keycloak-register once the workspace exists
-# (it waits up to REDIRECT_WAIT seconds for its routes), and
-# keycloak-redirects-sync after deleting workspaces. See README, "Web UI sign-in".
+# UI route) need their redirect URI on Keycloak's dashboard client. The
+# redirect registrar (charts/openshell-keycloak, on by default) registers
+# them; with it off, run keycloak-register once the workspace exists (it waits
+# up to REDIRECT_WAIT seconds for its routes) and keycloak-redirects-sync after
+# deleting workspaces. See README, "Web UI sign-in".
 REDIRECT_WAIT ?= 600
 KC_REDIRECTS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME) WAIT=$(REDIRECT_WAIT)
 
