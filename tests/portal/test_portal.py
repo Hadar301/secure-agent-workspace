@@ -1321,7 +1321,7 @@ def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
     (tmp_path / "trusted.crt").write_text(pem.format("TRUSTED"))
     (tmp_path / "extra.crt").write_text(pem.format("EXTRA"))
     monkeypatch.setattr(mod, "SYSTEM", (str(tmp_path / "system.crt"),))
-    monkeypatch.setattr(mod, "SA", str(tmp_path / "no-sa"))
+    monkeypatch.setattr(mod, "SA_DIRS", (str(tmp_path / "no-sa"),))
     monkeypatch.setenv("TRUSTED_CA_FILE", str(tmp_path / "trusted.crt"))
     monkeypatch.setenv("EXTRA_CA_FILE", str(tmp_path / "extra.crt"))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
