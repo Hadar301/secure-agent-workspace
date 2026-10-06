@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import json
 import re
+import signal
 import subprocess
 import time
 import uuid
@@ -48,10 +49,10 @@ PROCEDURES = {
         "saw.redhat.com/recovery-attempts. The compatibility gate does not execute it."
     ),
     "infrastructure-outage": (
-        "Manual evidence exists for a short registrar outage and a short "
-        "connectivity drop. Neither shows post-expiry behavior. The compatibility "
-        "gate does not execute them. Post-expiry denial is --scenario "
-        "vm-spire-deny-expiry."
+        "Manual evidence exists for registrar and VM-to-SPIRE connectivity outages. "
+        "The compatibility gate does not execute them. Post-expiry connectivity "
+        "denial is --scenario vm-spire-deny-expiry; a bounded shared-server "
+        "interruption is --scenario spire-server-outage."
     ),
     "lifecycle-cleanup": (
         "Profile removal and restoration is --scenario profile-remove-restore. "
@@ -271,6 +272,12 @@ def svid(ws):
     if not matches:
         return {"error": "container missing"}
     container = matches[0]
+    visible = cu(["podman", "exec", container, "/bin/sh", "-c",
+                  "test -S /spiffe-workload-api/agent.sock"])
+    if visible.returncode == 1:
+        return {"error": "supervisor-only Workload API socket is absent from podman exec"}
+    if visible.returncode:
+        return {"error": "socket visibility probe failed"}
     copied = cu(["podman", "cp", "/usr/local/bin/spire-agent", container + ":/tmp/spire-agent"])
     if copied.returncode:
         return {"error": "copy"}
@@ -278,8 +285,12 @@ def svid(ws):
     fetched = cu(["podman", "exec", container, "/tmp/spire-agent", "api", "fetch", "jwt",
                   "-socketPath", "/spiffe-workload-api/agent.sock", "-audience", AUDIENCE,
                   "-output", "json", "-spiffeID", spiffe], timeout=30)
-    cu(["podman", "exec", container, "rm", "-f", "/tmp/spire-agent"])
+    removed = cu(["podman", "exec", container, "/bin/rm", "-f", "/tmp/spire-agent"])
+    if removed.returncode:
+        return {"error": "probe binary cleanup failed"}
     if fetched.returncode:
+        if "dial unix /spiffe-workload-api/agent.sock: connect: no such file or directory" in (fetched.stderr or ""):
+            return {"error": "supervisor-only Workload API socket is absent from podman exec"}
         return {"error": "fetch"}
     data = json.loads(fetched.stdout)
     token = ""
@@ -343,14 +354,26 @@ def fetch_svid(ws, spiffe):
     if not matches:
         return {"ok": False, "error": "container missing"}
     container = matches[0]
+    visible = cu(["podman", "exec", container, "/bin/sh", "-c",
+                  "test -S /spiffe-workload-api/agent.sock"])
+    if visible.returncode == 1:
+        return {"ok": False, "probeUnavailable": True,
+                "error": "supervisor-only Workload API socket is absent from podman exec"}
+    if visible.returncode:
+        return {"ok": False, "error": "socket visibility probe failed"}
     copied = cu(["podman", "cp", "/usr/local/bin/spire-agent", container + ":/tmp/spire-agent"])
     if copied.returncode:
         return {"ok": False, "error": "copy"}
     fetched = cu(["podman", "exec", container, "/tmp/spire-agent", "api", "fetch", "jwt",
                   "-socketPath", "/spiffe-workload-api/agent.sock", "-audience", AUDIENCE,
                   "-output", "json", "-spiffeID", spiffe], timeout=25)
-    cu(["podman", "exec", container, "rm", "-f", "/tmp/spire-agent"])
+    removed = cu(["podman", "exec", container, "/bin/rm", "-f", "/tmp/spire-agent"])
+    if removed.returncode:
+        return {"ok": False, "error": "probe binary cleanup failed"}
     if fetched.returncode:
+        if "dial unix /spiffe-workload-api/agent.sock: connect: no such file or directory" in (fetched.stderr or ""):
+            return {"ok": False, "probeUnavailable": True,
+                    "error": "supervisor-only Workload API socket is absent from podman exec"}
         return {"ok": False, "error": redact(fetched.stderr or fetched.stdout) or "fetch failed"}
     try:
         data = json.loads(fetched.stdout)
@@ -475,6 +498,11 @@ def run_vm_spire_deny_expiry(args):
         guest = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "snapshot", timeout=100)
         if not all(str(guest["providers"].get(ws, "")).strip() for ws in ("default", "research")):
             raise AssertionError("active providers were not recorded")
+        if any(guest["svids"].get(ws, {}).get("error", "").startswith("supervisor-only Workload API")
+               for ws in ("default", "research")):
+            report["status"] = "blocked"
+            report["detail"] = "direct SVID expiry probe runs in podman exec, where the supervisor-only socket is absent"
+            return report
         access_exp = min(guest["grants"][ws]["exp"] for ws in ("default", "research"))
         svid_exp = min(guest["svids"][ws]["exp"] for ws in ("default", "research"))
         before = {**before_id, "registrarReady": before_id["registrarReady"],
@@ -542,6 +570,146 @@ def run_vm_spire_deny_expiry(args):
     return report
 
 
+def _replicas(oc, kind, name):
+    obj = json.loads(command(oc + ["get", kind, "-n", NS, name, "-o", "json"], timeout=30))
+    return obj["spec"].get("replicas", 1), obj.get("status", {}).get("readyReplicas", 0)
+
+
+def _wait_replicas(oc, kind, name, desired, timeout=120):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        actual, ready_count = _replicas(oc, kind, name)
+        if actual != desired:
+            raise AssertionError(f"{kind}/{name} was reconciled to {actual}, expected {desired}")
+        if ready_count == desired:
+            return
+        time.sleep(3)
+    raise AssertionError(f"{kind}/{name} did not reach {desired} ready replicas")
+
+
+def _spire_consumers(oc):
+    agents = json.loads(command(oc + ["exec", "-n", NS, "spire-server-0", "-c", "spire-server", "--",
+                                    "/spire-server", "agent", "list", "-output", "json"], timeout=40))
+    entries = json.loads(command(oc + ["exec", "-n", NS, "spire-server-0", "-c", "spire-server", "--",
+                                     "/spire-server", "entry", "show", "-output", "json"], timeout=40))
+    if agents.get("next_page_token") or entries.get("next_page_token"):
+        raise AssertionError("shared SPIRE inventory was truncated")
+    return {"agents": len(agents.get("agents", [])), "entries": len(entries.get("entries", []))}
+
+
+def run_spire_server_outage(args):
+    """Stop the shared server long enough to expire the canary's cached token, then restore it."""
+    oc = ["oc", "--context", args.context, "--request-timeout=30s"]
+    namespace, vm = args.vm_namespace, args.vm
+    audience = "http://identity-demo.saw-identity-demo.svc.cluster.local:8080"
+    operator = "zero-trust-workload-identity-manager-controller-manager"
+    report = {"scenario": "spire-server-outage", "executed": True, "acceptanceComplete": False,
+              "status": "fail", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    vm_obj = json.loads(command(oc + ["get", "vm", "-n", namespace, vm, "-o", "json"], timeout=30))
+    if (vm_obj["metadata"].get("labels") or {}).get("saw.redhat.com/spiffe") != "true":
+        raise AssertionError("target VM is not explicitly opted into SPIFFE")
+    trust_domain = vm_obj["metadata"]["annotations"]["saw.redhat.com/trust-domain"]
+    service = json.loads(command(oc + ["get", "svc", "-n", NS, "spire-server", "-o", "json"], timeout=30))
+    spire_ip = service["spec"]["clusterIP"]
+    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", spire_ip):
+        raise AssertionError("SPIRE Service address is not an IPv4 cluster IP")
+    if _replicas(oc, "deploy", operator) != (1, 1) or _replicas(oc, "sts", "spire-server") != (1, 1):
+        raise AssertionError("SPIRE operator and server must each start with one ready replica")
+    before_id = _identity_view(oc, namespace, vm)
+    report["sharedConsumersBefore"] = _spire_consumers(oc)
+    before_guest = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "snapshot", timeout=100)
+    baseline = before_guest["grants"]["default"]
+    if (baseline.get("http"), baseline.get("curlExit")) != (200, 0):
+        raise AssertionError("canary protected baseline did not succeed")
+    if "protected" not in before_guest["providers"].get("default", ""):
+        raise AssertionError("the expected client-credentials provider is not present")
+    if baseline.get("sub") != baseline.get("azp") or baseline.get("sub") != baseline.get("client_id"):
+        raise AssertionError("baseline is not a sandbox-bound client-credentials grant")
+    report["before"] = _sanitize({"identity": before_id, "guestState": before_guest["state"],
+                                  "guestGeneration": before_guest["generation"],
+                                  "provider": "protected/saw-demo-cc", "grant": baseline})
+    scaled_operator = False
+    scaled_server = False
+    interrupted = False
+    old_handler = signal.getsignal(signal.SIGTERM)
+    def stop_signal(_signum, _frame):
+        raise InterruptedError("outage runner interrupted")
+    signal.signal(signal.SIGTERM, stop_signal)
+    try:
+        scaled_operator = True
+        command(oc + ["scale", "deploy/" + operator, "-n", NS, "--replicas=0"], timeout=30)
+        _wait_replicas(oc, "deploy", operator, 0)
+        scaled_server = True
+        command(oc + ["scale", "sts/spire-server", "-n", NS, "--replicas=0"], timeout=30)
+        _wait_replicas(oc, "sts", "spire-server", 0)
+        outage_epoch = int(time.time())
+        report["outageStart"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Both demo access tokens and SPIRE JWT-SVIDs have five-minute maximum validity.
+        deadline = max(outage_epoch + 310, int(baseline["exp"]) + 10)
+        if deadline > outage_epoch + 420:
+            raise AssertionError("credential expiry exceeds the bounded outage window")
+        while time.time() <= deadline:
+            if _replicas(oc, "sts", "spire-server") != (0, 0):
+                raise AssertionError("SPIRE server returned during the outage window")
+            if _replicas(oc, "deploy", operator) != (0, 0):
+                raise AssertionError("SPIRE operator returned during the outage window")
+            time.sleep(min(15, max(1, deadline - time.time() + 1)))
+        denied_guest = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "snapshot", timeout=100)
+        denied = denied_guest["grants"]["default"]
+        status = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "status", timeout=30)
+        report["denied"] = _sanitize({"epoch": denied_guest["epoch"], "grant": denied,
+                                      "guest": status, "serverReplicas": _replicas(oc, "sts", "spire-server")})
+        if denied_guest["epoch"] <= max(outage_epoch + 300, int(baseline["exp"])):
+            raise AssertionError("denial was sampled before cached credentials expired")
+        if (denied.get("http"), denied.get("curlExit")) != (502, 0):
+            raise AssertionError("post-expiry protected request did not return parsed HTTP 502")
+        if status.get("generation") != before_id["generation"] or not status.get("credentialsPresent"):
+            raise AssertionError("guest enrollment changed during server outage")
+    except (AssertionError, OSError, subprocess.SubprocessError, InterruptedError) as error:
+        report["detail"] = str(error)[:500]
+        interrupted = True
+    finally:
+        restore_errors = []
+        if scaled_server:
+            try:
+                command(oc + ["scale", "sts/spire-server", "-n", NS, "--replicas=1"], timeout=30)
+                _wait_replicas(oc, "sts", "spire-server", 1, timeout=240)
+            except (AssertionError, OSError, subprocess.SubprocessError) as error:
+                restore_errors.append(str(error)[:250])
+        if scaled_operator:
+            try:
+                command(oc + ["scale", "deploy/" + operator, "-n", NS, "--replicas=1"], timeout=30)
+                _wait_replicas(oc, "deploy", operator, 1, timeout=180)
+            except (AssertionError, OSError, subprocess.SubprocessError) as error:
+                restore_errors.append(str(error)[:250])
+        report["faultRestored"] = not restore_errors
+        if restore_errors:
+            report["restoreDetail"] = "; ".join(restore_errors)[:500]
+        signal.signal(signal.SIGTERM, old_handler)
+    if interrupted or not report["faultRestored"]:
+        return report
+    for _ in range(12):
+        restored_guest = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "snapshot", timeout=100)
+        if restored_guest["grants"]["default"].get("http") == 200:
+            break
+        time.sleep(10)
+    restored_id = _identity_view(oc, namespace, vm)
+    report["sharedConsumersAfter"] = _spire_consumers(oc)
+    restored = restored_guest["grants"]["default"]
+    report["restored"] = _sanitize({"identity": restored_id, "guestGeneration": restored_guest["generation"],
+                                    "guestState": restored_guest["state"], "grant": restored})
+    if (restored.get("http"), restored.get("curlExit")) != (200, 0):
+        report["detail"] = "protected grant did not recover after server restoration"
+    elif restored_id["generation"] != before_id["generation"] or restored_id["vmi"] != before_id["vmi"]:
+        report["detail"] = "recovery minted a new enrollment or restarted the VM"
+    elif restored["exp"] <= baseline["exp"] or restored.get("sub") != baseline.get("sub"):
+        report["detail"] = "fresh sandbox-bound token was not observed"
+    else:
+        report["status"] = "pass"
+        report["result"] = "post-expiry fail-closed and fresh grant on the same enrollment"
+    return report
+
+
 def run(args):
     run_id = "identity-" + uuid.uuid4().hex[:10]
     namespace = args.namespace_prefix + "-" + run_id
@@ -590,7 +758,7 @@ def run(args):
         assert keys.get("keys"), "Empty JWKS"
         return {"issuer": issuer, "keyCount": len(keys["keys"])}
 
-    def probe(component, image, binary):
+    def probe(component, image, binary, expected):
         pod = {"apiVersion": "v1", "kind": "Pod",
                "metadata": {"name": component, "namespace": namespace,
                             "labels": {"saw.redhat.com/identity-test-run": run_id}},
@@ -607,7 +775,7 @@ def run(args):
         command(oc + ["wait", "-n", namespace, "pod/" + component,
                       "--for=jsonpath={.status.phase}=Succeeded", "--timeout=180s"])
         output = command(oc + ["logs", "-n", namespace, component]).strip()
-        assert "0.0.116" in output, "Unexpected pinned binary version"
+        assert expected.split("-", 1)[0] in output, "Unexpected pinned binary version"
         return {"image": image, "version": output}
 
     try:
@@ -624,9 +792,12 @@ def run(args):
         bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())["bom"]
         for comp, binary in (("gateway", "/usr/local/bin/openshell-gateway"),
                              ("cli", "/usr/local/bin/openshell"),
-                             ("supervisor", "/openshell-sandbox")):
-            image = bom["spec"]["openshell"][comp]["image"]
-            check("binary/" + comp, lambda comp=comp, image=image, binary=binary: probe(comp, image, binary))
+                             ("supervisor", "/openshell-supervisor")):
+            pinned = bom["spec"]["openshell"][comp]
+            image, expected = pinned["image"], pinned["version"]
+            check("binary/" + comp,
+                  lambda comp=comp, image=image, binary=binary, expected=expected:
+                  probe(comp, image, binary, expected))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         report["checks"].append({"name": "preflight", "status": "fail", "detail": str(error)[:1000]})
     finally:
@@ -1752,6 +1923,11 @@ def run_cross_vm_isolation(args):
                 raise AssertionError("VM is not one of the dedicated cross-VM instances")
             sides[vm] = _vm_side(oc, namespace, vm, trust_domain, audience, spire_ip, peer)
             report[vm] = _sanitize(sides[vm])
+        if any(sides[vm]["isolation"].get(ws, {}).get(ws, {}).get("probeUnavailable")
+               for vm in (left_vm, right_vm) for ws in ("default", "research")):
+            report["status"] = "blocked"
+            report["detail"] = "direct negative-ID probe runs in podman exec, where the supervisor-only socket is absent"
+            return report
         report["result"] = cross_vm_result(sides[left_vm], sides[right_vm])
         report["status"] = "pass"
     except (AssertionError, KeyError, TypeError, subprocess.SubprocessError, OSError, json.JSONDecodeError) as error:
@@ -1763,6 +1939,7 @@ def run_cross_vm_isolation(args):
 def execute_scenario(args):
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
     runners = {"vm-spire-deny-expiry": run_vm_spire_deny_expiry,
+               "spire-server-outage": run_spire_server_outage,
                "profile-remove-restore": run_profile_remove_restore,
                "research-expiry-denial": run_research_expiry_denial,
                "vm-recreate": run_vm_recreate,
@@ -1772,7 +1949,7 @@ def execute_scenario(args):
                "networkpolicy": run_networkpolicy}
     try:
         report = runners[args.scenario](args)
-    except (OSError, subprocess.SubprocessError, KeyError, ValueError) as error:
+    except (AssertionError, OSError, subprocess.SubprocessError, KeyError, ValueError) as error:
         report = {"scenario": args.scenario, "executed": True, "status": "fail",
                   "acceptanceComplete": False, "faultRestored": False,
                   "detail": str(error)[:500]}
@@ -1781,7 +1958,7 @@ def execute_scenario(args):
     path = args.artifact_dir / ("scenario-" + args.scenario + ".json")
     path.write_text(json.dumps(report, indent=2) + "\n")
     print("%s: %s" % (report.get("status", "fail").upper(), path))
-    return 0 if report.get("status") == "pass" else 1
+    return {"pass": 0, "blocked": 2}.get(report.get("status"), 1)
 
 
 if __name__ == "__main__":
@@ -1790,7 +1967,7 @@ if __name__ == "__main__":
     parser.add_argument("--namespace-prefix", required=True)
     parser.add_argument("--transport", required=True, choices=("tcp",))
     parser.add_argument("--artifact-dir", required=True, type=Path)
-    parser.add_argument("--scenario", choices=("vm-spire-deny-expiry", "profile-remove-restore",
+    parser.add_argument("--scenario", choices=("vm-spire-deny-expiry", "spire-server-outage", "profile-remove-restore",
                                               "research-expiry-denial", "vm-recreate", "vm-recreate-verify",
                                               "namespace-delete", "cross-vm-isolation", "networkpolicy"))
     parser.add_argument("--vm-namespace")

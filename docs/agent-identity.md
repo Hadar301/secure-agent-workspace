@@ -6,16 +6,20 @@ live migration, cold reschedule, a second SAW, and an idempotent upgrade are
 recorded below. Configurable registrar TTLs and disabled-mode provisioning
 are recorded below, including a secret-backed provider that keeps working
 after SPIFFE is turned off. Re-enable was not tested and is not a supported
-result. Shared SPIRE server outage and
-correlated audit remain open and are retained
-as blockers. The live runner executes compatibility probes and reports the
-remaining scenarios as blocked.
+result. A bounded shared SPIRE server outage passed on the 0.1.2 canary on
+2026-10-06. Correlated proxy audit remains blocked by the pinned supervisor.
+The default live runner still executes a compatibility gate and reports the
+remaining unautomated scenarios as blocked; explicit scenarios run the
+documented live procedures.
 
-The live identity evidence below used OpenShell `0.0.116-rhaiv.0`. The merge
-from `main` on 2026-10-05 pins OpenShell `0.1.2-rhaiv.0` and changes installer
-staging and signing. The merged build has local checks, but its VM identity,
-grant, and audit behavior has not been revalidated on the cluster. Earlier
-live results do not establish acceptance for this new dependency build.
+Most earlier live identity evidence below used OpenShell `0.0.116-rhaiv.0`.
+The merge from `main` on 2026-10-05 pins OpenShell `0.1.2-rhaiv.0` and changes
+installer staging and signing. The 0.1.2 canary has since passed automatic TCP
+client credentials, one-workspace token exchange, expired-user-token rejection,
+and the shared-server outage. Earlier results remain version-specific and do
+not establish the complete 0.1.2 acceptance suite. Signed-component
+verification was skipped by the cluster golden image, which lacks
+`verify-bundle`.
 
 ## Architecture
 
@@ -631,23 +635,12 @@ request before and after disablement are recorded above. Re-enable was not
 a required acceptance case and was not tested. The retained join-token
 Secret and agent files are the measured disablement behavior. They do not
 show that turning SPIFFE back on recovers the enrollment.
-These items remain:
+The 2026-10-05 inventory had no enrolled SAW, 17 agents, and 49 entries on
+the shared server, so a shutdown then would not have tested SAW grant
+recovery. A dedicated 0.1.2 canary was subsequently enrolled, and the bounded
+shared-server outage passed on 2026-10-06 as recorded below. These items
+remain:
 
-- Shared SPIRE server outage. This remains a mandatory blocker. On
-  2026-10-05 the delivered chart still refuses a second
-  `spire-identity` release outside
-  `zero-trust-workload-identity-manager`, so an isolated stack was not
-  created. The shared server was not stopped. It has 17 attested agents and
-  49 entries: one `/saw/platform/registrar` entry, and 48 entries under
-  `/ns/` for `openshell-agents`, `vp-gitops`, `cert-manager`, `keycloak`,
-  `saw-alice`, `saw-keycloak`, `external-secrets`, `imperative`,
-  `patterns-operator`, `redhat-ods-operator`, `assisted-installer`,
-  `cert-manager-operator`, `external-secrets-operator`, `rhdh-operator`,
-  `saw-identity-demo`, `vault`, `vllm-test`, and
-  `zero-trust-workload-identity-manager`. No SAW is enrolled, so stopping
-  this server would not prove SAW grant recovery and would drop identity
-  for those other consumers. The server pod remains UID
-  `c25daa63-085b-4216-a328-633658ea1e83`.
 - Correlated audit acceptance. This remains a mandatory blocker. The source
   for the pinned `0.1.2-rhaiv.0` supervisor is NVIDIA/OpenShell tag `v0.1.2`.
   `inject_if_needed` there still emits grant success and failure without a
@@ -659,7 +652,9 @@ These items remain:
   events. That subject does not verify the injected access token's `azp` or
   `client_id`; opaque tokens have no locally inspectable claims. Do not log
   token values. Details are in `docs/issues/agent-identity-audit-blocker.md`.
-  No image has been built and no issue or pull request has been opened.
+  [NVIDIA/OpenShell #4233](https://github.com/NVIDIA/OpenShell/issues/4233)
+  was opened on 2026-10-06. No supported image with the audit capability has
+  been built or validated.
 
 Deleting a profile registration prevents renewal. Already issued JWT-SVIDs and
 access tokens are expected to remain usable until expiry, normally five minutes.
@@ -808,11 +803,11 @@ Helm `identity-demo` is revision 7 in `saw-identity-demo`. Its pod
 `identity-demo-cc776b5d8-hx4wh` was created at 2026-10-05T09:25:07Z and is
 the issuer for the recorded grants, not a SAW.
 
-Both stay until the two mandatory blockers have evidence. The outage was
-not run, and the audit dependency was not changed, so Helm `identity-demo`
-and Helm `saw-spire` were left in place. After both have evidence, uninstall
-`identity-demo` and delete `saw-identity-demo`, including its enrollment
-secret. Keep `saw-spire` under this Helm owner.
+Both were retained at that point because the outage and audit criteria were
+still open. The outage has since passed on a later server pod, while the audit
+criterion and remaining suite are open. After the remaining live evidence is
+recorded, uninstall `identity-demo` and delete `saw-identity-demo`, including
+its enrollment secret. Keep `saw-spire` under its existing Helm owner.
 The allowlist is commit `14b645d` on `codex/agent-identity`. Argo had
 already synced `113781e`, which is the chart revision the deleted `idpat`
 Applications deployed, before those objects were deleted.
@@ -852,6 +847,89 @@ earlier pod do not cross this signing-key boundary. No raw token was retained.
 The cluster golden image lacks `verify-bundle`, so the installer recorded the
 OpenShell components as unsigned on this boot. The result above establishes
 automatic TCP client-credentials provisioning on this canary, not signed
-component verification, 0.1.2 token exchange, the complete live suite, the shared
-SPIRE server outage, or the required correlated proxy audit. PR #55 remains
-draft while those items are open.
+component verification or the complete live suite.
+
+### OpenShell 0.1.2 token exchange on `identity-u`, 2026-10-06
+
+The official OpenShell 0.1.2 macOS CLI was checksum-verified against its release
+archive and connected through a temporary, one-day mTLS admin certificate to
+`identity-u`. A demo user token was requested on the laptop and submitted with
+`scripts/openshell-saw-token-provider.py` through the authenticated gateway.
+Neither the token nor the certificate was put in a command argument or retained
+in the evidence. The approved `saw-demo-exchange` profile and temporary
+`xchg-live` provider were scoped to the default workspace.
+
+After `protected` was detached and the sandbox acknowledged `xchg-live`, the
+protected request at 09:19:09 UTC returned HTTP 200 with `sub=demo-alice`,
+`aud=saw-protected-service`, and both `azp` and `client_id` equal to
+`spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent`.
+The user token expired at 09:22:49 UTC. A request at 09:27:07 UTC returned
+HTTP 502 while only `xchg-live` was attached, showing no client-credentials
+fallback. `protected` was then reattached with an acknowledged receipt;
+its sandbox-bound request returned HTTP 200 at 09:27:59 UTC. The temporary
+exchange provider and profile were deleted. Generation 1 and VMI UID
+`c8690752-ced5-4e6b-835b-ee05a3ca7a1c` stayed unchanged. This measures the
+one-workspace 0.1.2 exchange flow; the full TCP suite and correlated proxy audit
+remain open.
+
+### Bounded shared SPIRE server outage, 2026-10-06
+
+`scripts/test-agent-identity-live.py --scenario spire-server-outage` ran on the
+same dedicated canary. The operator and server started with one ready replica
+each. The runner scaled both to zero, held the server down from 11:47:18 UTC
+through the five-minute credential lifetime, and restored both in its cleanup
+path. The baseline `protected` request was HTTP 200 and its access token expired
+at 11:52:10 UTC. With the server still at zero replicas, a request at 11:52:38
+UTC returned parsed HTTP 502, curl exit 0. Guest credentials remained present;
+the generation and VMI did not change. After restoration, the protected request
+returned HTTP 200 with the same sandbox identity and a new access-token expiry
+of 11:58:41 UTC. The agent record stayed present and the registrar was ready.
+
+The shared SPIRE inventory was 18 agents and 59 entries both before and after.
+The server, operator, node agents, CSI drivers, discovery provider, and
+registrar were Ready afterward. `alice` and `identity-u` kept their VM UIDs and
+were Ready. Sanitized machine-readable evidence is in
+[the outage result](evidence/agent-identity-spire-outage-2026-10-06.json).
+This proves fail-closed and recovery on the canary; it does not certify every
+other platform consumer's behavior during the shared interruption. The
+correlated proxy audit and remaining full-suite automation remain open.
+
+### Dynamic quickstart and identical-values reapply, 2026-10-06
+
+`scripts/openshell-saw-create.sh` now lets `SAW_VALUES` determine inference,
+governance, and route settings when `DYNAMIC_PROVIDERS=true`; its static-provider
+defaults still apply outside that mode. The actual quickstart command deployed
+run-labelled `identity-v` in `saw-identity-v` without an API key. Helm revision
+1 retained `spiffe.enabled=true`, disabled routes and governance, and did not
+set an inference-provider override. The guest installed and applied the pinned
+OpenShell 0.1.2 BOM without SSH. VM UID
+`b629e752-297d-4847-aec3-adecf28e349c` reached Ready at generation 1, VMI
+`1265650f-408c-4c1c-a3c2-53326ccfdea2`. The gateway, default, and research
+registrations had different paths, the expected selectors, `admin=false`, and
+the same attested agent parent. Both workspaces returned HTTP 200 with no
+static provider credential; each response had its own sandbox SPIFFE ID in
+`sub`, `azp`, and `client_id` and audience `saw-protected-service`.
+
+The same quickstart command produced Helm revision 2 without changing the VM
+UID, VMI UID, generation, agent, or registration IDs. Both workspace grants
+were HTTP 200 afterward. The demo issuer was temporarily upgraded to allow
+the new prefix, then restored to its original eight-prefix values; those two
+pod changes rotated its ephemeral signing key. The canary VM and BOM releases
+and namespace were removed. All three registrations were gone and its agent
+was banned before namespace deletion. The existing `identity-u` was still
+Ready. [Sanitized quickstart evidence](evidence/agent-identity-quickstart-2026-10-06.json)
+records the IDs, selectors, grant summaries, and cleanup.
+
+The old runner's direct JWT-SVID probe is not valid for this 0.1.2 sandbox:
+`podman exec` enters a workload view where `/spiffe-workload-api` is absent,
+including for uid 0. The supervisor obtains SVIDs for successful grants while
+the workload cannot use the socket. Direct gateway/peer ID rejection needs a
+supervisor-context probe or equivalent; the grant claims and registration
+selectors alone do not pass that negative test. The golden image still lacks
+`verify-bundle`, so this deployment also does not establish signed-component
+verification.
+
+The compatibility gate on OpenShift 4.22.14 passed SPIRE readiness, HTTPS
+discovery/JWKS, the pinned 0.1.2 gateway, CLI, and supervisor binary checks,
+and run-namespace cleanup. Its aggregate result remains `blocked` because the
+default gate does not execute the complete acceptance suite.

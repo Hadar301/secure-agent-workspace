@@ -82,4 +82,7 @@ destination, and outcome, with no sandbox SPIFFE ID and no `azp` or
 the cache-hit path returns that string before another SVID fetch.
 `v0.1.3-pre.3` and `main`, checked the same day, do not add those fields
 either. This source recheck does not replace live proxy output. The blocker
-remains open, and no upstream issue or pull request has been opened.
+remains open. [NVIDIA/OpenShell #4233](https://github.com/NVIDIA/OpenShell/issues/4233)
+was opened on 2026-10-06 to request structured, request-correlated identity
+and outcome in token-grant audit events. No supported build with that capability
+has been validated.

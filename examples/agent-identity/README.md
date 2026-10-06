@@ -63,3 +63,26 @@ at that site values file in your fork. Do not apply a second owner to an
 already installed SPIRE stack. For a direct canary install, supply a unique
 `spiffe.testRunID` and the same installed `spiffe.trustDomain` alongside
 `canary-values.yaml`.
+
+The quickstart can deploy a dynamic-provider SAW without an API key. Its
+`SAW_VALUES` accepts comma-separated Helm values files in precedence order;
+put the site values last. For example, after setting `TRUST_DOMAIN`,
+`SAW_NAME`, and `TEST_RUN_ID` above:
+
+```sh
+cat > /tmp/agent-identity-site-values.yaml <<EOF
+spiffe:
+  trustDomain: "$TRUST_DOMAIN"
+  testRunID: "$TEST_RUN_ID"
+EOF
+make openshell-saw-create \
+  OPENSHELL_SAW_NAME="$SAW_NAME" SAW_NS="$SAW_NAMESPACE" \
+  OWNER=identity-test OIDC_ISSUER=none DYNAMIC_PROVIDERS=true \
+  SAW_VALUES="examples/agent-identity/canary-values.yaml,examples/agent-identity/provider-values.yaml,/tmp/agent-identity-site-values.yaml" \
+  SAW_BOM_VALUES=examples/agent-identity/bom-values.yaml
+```
+
+The demo issuer must allow this SAW's SPIFFE prefix before protected requests
+can succeed. The quickstart leaves route, governance, and inference settings
+to these values files in dynamic mode. Remove the test VM and its namespace
+after recording evidence.
