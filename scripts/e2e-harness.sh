@@ -291,7 +291,6 @@ fi
 if [[ "${REVOKE_DRILL}" == "yes" ]]; then
   step "H9: revocation drill (DESTRUCTIVE: recreates '${SANDBOX}')"
   SAW_NS="${SAW_NS:-saw-${GATEWAY}}"
-  BOM_RELEASE="${BOM_RELEASE:-saw-bom}"
   BOM_CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/saw-bom"
   # An apply + recreate can take minutes; poll rather than guess a sleep.
   DRILL_TIMEOUT="${DRILL_TIMEOUT:-1500}"

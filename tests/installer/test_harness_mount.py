@@ -277,6 +277,22 @@ def test_an_unchanged_image_is_not_pulled_again(
     assert sum(op[:1] == ["export"] for op in podman_ops(fake_env)) == 1
 
 
+def test_a_revoked_signature_is_caught_on_a_later_apply(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """A volume that already holds the image is not evidence the image is
+    still trusted: the signature is rechecked even when the ledger says the
+    volume is current and no pull/export is needed."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    with pytest.raises(ab.InstallerError, match="is not signed by"):
+        make_applier(ab, cfg, creds).apply(profiles)
+    assert sum(op[:1] == ["pull"] and op[-1] == IMAGE_V1 for op in podman_ops(fake_env)) == 1, \
+        "the volume was already current; the signature check must not require a pull"
+
+
 def test_an_unchanged_image_keeps_the_sandbox(
         ab, fake_env, config, profiles, creds, tmp_path):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})

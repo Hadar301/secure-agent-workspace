@@ -2969,7 +2969,12 @@ class ProfileApplier:
                 log(f"WARN: harness '{info['name']}': sandbox '{sb.name}' does not answer "
                     "`openclaw mcp status`; MCP servers checked by bundle capability only")
             else:
-                missing_servers = [s for s in info["mcpServers"] if s not in listed.out]
+                # Whole-token match: a plain substring check would call a
+                # declared server "present" when it is only a fragment of a
+                # different, unrelated server's name in the output (e.g.
+                # declared "search" matching listed "search-internal").
+                missing_servers = [s for s in info["mcpServers"]
+                                   if not re.search(rf"\b{re.escape(s)}\b", listed.out)]
                 if missing_servers:
                     return [f"OpenClaw does not list MCP server(s) {', '.join(missing_servers)} "
                             f"from {source}"]
