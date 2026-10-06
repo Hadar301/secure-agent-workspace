@@ -40,6 +40,8 @@ Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}
       value: /opt/saw-trusted-ca/ca-bundle.crt
     - name: EXTRA_CA_FILE
       value: /opt/saw-ca-sources/extra-ca.crt
+    - name: SA_DIR
+      value: /opt/saw-ca-sa
   volumeMounts:
     - name: saw-ca
       mountPath: /opt/saw-ca
@@ -48,6 +50,9 @@ Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}
       readOnly: true
     - name: saw-trusted-ca
       mountPath: /opt/saw-trusted-ca
+      readOnly: true
+    - name: saw-ca-sa
+      mountPath: /opt/saw-ca-sa
       readOnly: true
   resources:
     requests: { cpu: 10m, memory: 32Mi }
@@ -69,6 +74,23 @@ Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}
   configMap:
     name: saw-trusted-ca
     optional: true
+# The service account's token, the Kubernetes API's CA and the service CA,
+# for the init container only: the RHDH operator does not mount the service
+# account into its pod (automountServiceAccountToken: false), and without
+# the API's CA RHDH cannot verify kubernetes.default.svc.
+- name: saw-ca-sa
+  projected:
+    sources:
+      - serviceAccountToken:
+          path: token
+          expirationSeconds: 3600
+      - configMap:
+          name: kube-root-ca.crt
+          items: [{key: ca.crt, path: ca.crt}]
+      - configMap:
+          name: openshift-service-ca.crt
+          items: [{key: service-ca.crt, path: service-ca.crt}]
+          optional: true
 {{- end -}}
 
 {{- define "openshell-rhdh.caNamespaces" -}}
