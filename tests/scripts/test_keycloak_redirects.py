@@ -92,6 +92,8 @@ class FakeOc:
         self.namespaces = {"saw-alice": {SAW: "true"}, "saw-bob": {SAW: "true"}, "other": {}}
         self.routes = []
         self.calls = []
+        self.keycloak_cr = {"status": {"externalURL": url}}
+        self.keycloak_routes = []
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -99,12 +101,19 @@ class FakeOc:
             key, _, val = args[args.index("-l") + 1].partition("=")
             return {"items": [{"metadata": {"name": n}} for n, labels in self.namespaces.items()
                               if labels.get(key) == val]}
+        if args[:2] == ("get", "routes") and "-n" in args:
+            ns = args[args.index("-n") + 1]
+            items = [r for r in self.keycloak_routes if r["metadata"]["namespace"] == ns]
+            if "-l" in args:
+                key, _, val = args[args.index("-l") + 1].partition("=")
+                items = [r for r in items if (r["metadata"].get("labels") or {}).get(key) == val]
+            return {"items": items}
         if args[:2] == ("get", "routes"):
             return {"items": list(self.routes)}
         if args[:2] == ("get", "ingresses.config.openshift.io"):
             return {"spec": {"domain": "apps.example.com"}}
         if args[:2] == ("get", "keycloak"):
-            return {"status": {"externalURL": self.url}}
+            return self.keycloak_cr
         if args[:2] == ("get", "secret"):
             assert args[2] == "openshell-keycloak-initial-admin" and args[4] == "saw-keycloak"
             return {"data": {"username": base64.b64encode(b"admin").decode(),
@@ -288,3 +297,27 @@ def test_the_optional_registrar_follows_the_same_rules_as_sync(current, managed,
     assert script.MANAGED_ATTRIBUTE == registrar.MANAGED_ATTRIBUTE
     assert (script.reconcile(client, uris, set(want), SUFFIX, present, prune=True)
             == registrar.reconcile(client, uris, set(want), SUFFIX, present))
+
+
+def test_keycloak_is_found_without_status_external_url(world):
+    """Found live: the Keycloak CR had no status.externalURL, and every
+    command failed. Same fallbacks as scripts/keycloak-host.sh."""
+    mod, kc, oc = world
+    url = oc.url
+    oc.keycloak_cr = {"status": {}}
+    oc.keycloak_routes = [{"metadata": {"namespace": "saw-keycloak", "name": "other"}, "spec": {"host": "other.example.com"}},
+                          {"metadata": {"namespace": "saw-keycloak", "name": "kc", "labels": {"app": "keycloak"}},
+                           "spec": {"host": "openshell-keycloak-ingress-saw-keycloak.apps.example.com"}}]
+    assert mod.keycloak_url("saw-keycloak", "openshell-keycloak") == \
+        "https://openshell-keycloak-ingress-saw-keycloak.apps.example.com"
+    oc.keycloak_cr = {"spec": {"hostname": {"hostname": "https://sso.example.com/"}}}
+    assert mod.keycloak_url("saw-keycloak", "openshell-keycloak") == "https://sso.example.com"
+    oc.keycloak_cr = {}
+    oc.keycloak_routes = [oc.keycloak_routes[0]]                     # one unlabelled route: it
+    assert mod.keycloak_url("saw-keycloak", "openshell-keycloak") == "https://other.example.com"
+    oc.keycloak_routes = []
+    with pytest.raises(mod.Error, match="no URL for Keycloak saw-keycloak/openshell-keycloak"):
+        mod.keycloak_url("saw-keycloak", "openshell-keycloak")
+    oc.keycloak_cr = {"status": {"externalURL": url + "/"}}
+    assert mod.keycloak_url("saw-keycloak", "openshell-keycloak") == url
+

@@ -163,11 +163,33 @@ class Keycloak:
         return self("GET", f"/clients/{found[0]['id']}")
 
 
+def keycloak_url(ns, name):
+    """Keycloak's URL, found as scripts/keycloak-host.sh does: the CR's
+    status.externalURL (not every RHBK version sets it), its
+    spec.hostname.hostname, the route labelled app=keycloak, or the
+    namespace's only route."""
+    cr = oc_json("get", "keycloak", name, "-n", ns)
+    url = (cr.get("status") or {}).get("externalURL") or ""
+    if url:
+        return url.rstrip("/")
+    host = ((cr.get("spec") or {}).get("hostname") or {}).get("hostname") or ""
+    if not host:
+        routes = oc_json("get", "routes", "-n", ns, "-l", "app=keycloak").get("items") or []
+        if not routes:
+            routes = oc_json("get", "routes", "-n", ns).get("items") or []
+            if len(routes) != 1:
+                routes = []
+        host = ((routes[0].get("spec") or {}).get("host") or "") if routes else ""
+    host = re.sub(r"^https?://", "", host).split("/")[0]
+    if not host:
+        raise Error(f"no URL for Keycloak {ns}/{name}: no status.externalURL, spec.hostname or route "
+                    "(set KEYCLOAK_NS / KEYCLOAK_NAME)")
+    return f"https://{host}"
+
+
 def keycloak():
     ns, name = env("KEYCLOAK_NS", "saw-keycloak"), env("KEYCLOAK_NAME", "openshell-keycloak")
-    url = (oc_json("get", "keycloak", name, "-n", ns).get("status") or {}).get("externalURL")
-    if not url:
-        raise Error(f"Keycloak {ns}/{name} has no external URL yet")
+    url = keycloak_url(ns, name)
     data = oc_json("get", "secret", f"{name}-initial-admin", "-n", ns).get("data") or {}
     user, password = (base64.b64decode(data.get(k, "")).decode() for k in ("username", "password"))
     return Keycloak(url, env("KEYCLOAK_REALM", "openshell"), user, password, tls_context())
