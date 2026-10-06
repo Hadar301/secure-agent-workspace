@@ -9,6 +9,9 @@ metadata:
   labels:
     {{- include "openshell-sandbox.labels" $ | nindent 4 }}
     openshell.pattern/sandbox-ui: "true"
+    # The redirect registrar (charts/openshell-keycloak) adds
+    # https://<host>/oauth2/callback to the dashboard's Keycloak client.
+    saw.redhat.com/oidc-redirect: "true"
   annotations:
     openshell.pattern/workspace: {{ $e.workspace | quote }}
     openshell.pattern/sandbox: {{ $e.sandbox | quote }}

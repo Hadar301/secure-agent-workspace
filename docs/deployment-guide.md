@@ -76,10 +76,18 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 - **Clients:**
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
     (effective lifetime capped to 10h by the realm's SSO Session Max)
-  - `openshell-dashboard` — public client, PKCE, redirect URIs registered dynamically per sandbox
+  - `openshell-dashboard` — public client, PKCE, redirect URIs registered by the redirect registrar (below)
 - **Users:** developer, admin, alice, bob (test accounts)
 - **Roles:** `openshell-user`, `openshell-admin`
 - **Token mappers:** realm roles in access tokens, audience mapper so dashboard tokens are accepted by the gateway
+
+#### Redirect registrar
+
+Every web UI has its own route host (each VM's dashboard, and each sandbox UI route), and Keycloak matches redirect URIs exactly apart from a trailing wildcard, so each host has to be registered on `openshell-dashboard`. One Deployment per cluster does that, `saw-redirect-registrar` in Keycloak's namespace (`charts/openshell-keycloak`, `redirectRegistrar`). Every 15 seconds it lists the routes labelled `saw.redhat.com/oidc-redirect=true` in namespaces labelled `openshell.pattern/saw=true`, keeps those whose host is under the cluster's ingress domain, and sets their `https://<host>/oauth2/callback` redirect URIs and `https://<host>` web origins on the client. When a route goes, its entries go. Entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`) are kept; on its first run it takes over the per-VM entries the prepare Jobs used to add, so those of removed VMs are cleaned up.
+
+The registrar signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm. Its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and passes the client secret to the registrar in memory; the master admin is not used after that, and no user namespace has Keycloak credentials or reaches Keycloak's admin API. `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
+
+The registrar reaches Keycloak in-cluster (`http://<keycloak>-service.<namespace>.svc:8080`). For an existing Keycloak without HTTP enabled, set `redirectRegistrar.keycloakUrl`, and `redirectRegistrar.adminSecret` if its admin Secret has another name.
 
 ### Phase 3: Secrets
 
@@ -113,7 +121,7 @@ Cloud-init runs once and writes the static files: the mount script, the `saw-ins
 
 #### Prepare Job
 
-The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource and registers the dashboard redirect URI in Keycloak. It does not install binaries or apply profiles.
+The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource. It does not touch Keycloak (the [redirect registrar](#redirect-registrar) registers the web UI routes), install binaries, or apply profiles.
 
 #### Guest
 

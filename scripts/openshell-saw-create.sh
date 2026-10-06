@@ -105,9 +105,9 @@ if [[ -n "${OIDC_ISSUER}" ]]; then
   # the VM's installer uses its local mTLS identity instead.
   OIDC_OPTS="--set oidc.issuerUrl=${OIDC_ISSUER} --set oidc.clientId=${OIDC_CLIENT_ID}"
   OIDC_OPTS="${OIDC_OPTS} --set oidc.realm=${KEYCLOAK_REALM}"
-  # The prepare Job reads <Keycloak CR name>-initial-admin to register the
-  # dashboard redirect URI; use the Keycloak actually running in KEYCLOAK_NS
-  # (the repo's openshell-keycloak if present, else e.g. an existing `keycloak`).
+  # The issuer URL names the Keycloak CR; use the Keycloak actually running
+  # in KEYCLOAK_NS (the repo's openshell-keycloak if present, else e.g. an
+  # existing `keycloak`).
   if oc get keycloak openshell-keycloak -n "${KEYCLOAK_NS}" >/dev/null 2>&1; then
     KC_NAME=openshell-keycloak
   else

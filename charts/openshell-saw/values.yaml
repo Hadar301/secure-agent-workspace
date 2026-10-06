@@ -206,9 +206,6 @@ dashboard:
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
-  # Override the Keycloak namespace for the admin Secret lookup only.
-  # Empty = oidc.keycloakNamespace.
-  keycloakNamespace: ""
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.

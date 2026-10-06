@@ -111,8 +111,7 @@ def test_prepare_role_has_no_vm_access(default_docs):
 
 def test_prepare_scripts_render_and_are_valid_bash(default_docs, tmp_path):
     data = default_docs[("ConfigMap", "saw-test-prepare-scripts")]["data"]
-    assert set(data) == {"prepare.sh", "install-deps.sh", "bootstrap-golden-image.sh",
-                         "register-keycloak-redirect.sh"}
+    assert set(data) == {"prepare.sh", "install-deps.sh", "bootstrap-golden-image.sh"}
     for name, text in data.items():
         path = tmp_path / name
         path.write_text(text)
@@ -523,15 +522,26 @@ def test_no_cross_namespace_role_when_sharing_the_golden_namespace():
     assert not [d for d in docs if d["metadata"]["name"].endswith("golden-image")]
 
 
-def test_keycloak_admin_access_is_granted_in_the_keycloak_namespace():
-    docs = all_docs()
-    kc = [d for d in docs if "keycloak-admin-read" in d["metadata"]["name"]]
-    assert {d["metadata"]["namespace"] for d in kc} == {"saw-keycloak"}
-    assert all(d["metadata"]["name"] == "saw-test-saw-alice-keycloak-admin-read" for d in kc)
-    docs = all_docs("--set", "oidc.keycloakNamespace=sso")
-    assert {d["metadata"]["namespace"] for d in docs if "keycloak-admin-read" in d["metadata"]["name"]} == {"sso"}
-    prepare = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-test-prepare-scripts")
-    assert 'KEYCLOAK_NS="sso"' in prepare["data"]["prepare.sh"]
+def test_no_user_namespace_gets_keycloak_admin_access():
+    """The redirect registrar in Keycloak's namespace registers the web UI
+    callbacks; this chart grants nothing outside its own namespace for it and
+    the prepare Job never sees Keycloak credentials."""
+    for docs in (all_docs(), all_docs("--set", "oidc.keycloakNamespace=sso")):
+        assert not [d for d in docs if "keycloak" in d["metadata"]["name"]]
+        assert not [d for d in docs if d["metadata"].get("namespace") in ("saw-keycloak", "sso")]
+        prepare = next(d for d in docs if d["kind"] == "ConfigMap"
+                       and d["metadata"]["name"] == "saw-test-prepare-scripts")
+        assert "initial-admin" not in json.dumps(prepare) and "KEYCLOAK" not in prepare["data"]["prepare.sh"]
+        role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-test-prepare")
+        assert {g for r in role["rules"] for g in r["apiGroups"]} <= {"", "cdi.kubevirt.io"}
+
+
+def test_the_webui_route_asks_for_its_redirect_uri():
+    route = next(d for d in all_docs() if d["kind"] == "Route" and d["metadata"]["name"] == "saw-test-webui")
+    assert route["metadata"]["labels"]["saw.redhat.com/oidc-redirect"] == "true"
+    route = next(d for d in all_docs("--set", "dashboard.enabled=false")
+                 if d["kind"] == "Route" and d["metadata"]["name"] == "saw-test-webui")
+    assert "saw.redhat.com/oidc-redirect" not in route["metadata"]["labels"]
 
 
 def test_cluster_scoped_names_include_the_namespace():
@@ -666,18 +676,6 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     for key, value in data.items():
         (tmp_path / key).write_text(value)
     assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
-
-
-def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
-    """Found live with an existing Keycloak CR named `keycloak`: the Job
-    looked for openshell-keycloak-initial-admin and could not register the
-    dashboard redirect. openshell-saw-create.sh passes the CR it finds."""
-    docs = render("--set", "oidc.issuerUrl=https://sso.example.com/realms/openshell",
-                  "--set", "oidc.keycloakName=keycloak", "--set", "oidc.realm=openshell")
-    role = next(d for (kind, name), d in docs.items() if kind == "Role" and d["metadata"].get("namespace") == "saw-keycloak")
-    assert role["rules"][0]["resourceNames"] == ["keycloak-initial-admin"]
-    scripts = next(d for (kind, name), d in docs.items() if kind == "ConfigMap" and name.endswith("-prepare-scripts"))
-    assert 'OIDC_KEYCLOAK_NAME="keycloak"' in scripts["data"]["prepare.sh"]
 
 
 def test_create_script_passes_the_keycloak_it_finds():
@@ -831,10 +829,12 @@ def test_trusted_proxy_can_be_turned_off(tmp_path):
     assert cfg["sandboxUiProxy"]["trustedProxy"]["enabled"] is False
 
 
-def test_the_prepare_job_registers_the_route_callback(tmp_path):
+def test_sandbox_ui_routes_ask_for_their_redirect_uri(tmp_path):
     docs = _with_ui(tmp_path, UI)
-    prepare = docs[("ConfigMap", "saw-test-prepare-scripts")]["data"]["prepare.sh"]
-    assert 'UI_ROUTE_HOSTS="saw-test-default-notebook-ui.apps.example.com "' in prepare
+    routes = [d for (kind, _), d in docs.items() if kind == "Route"
+              and d["metadata"]["labels"].get("openshell.pattern/sandbox-ui") == "true"]
+    assert routes and all(r["metadata"]["labels"]["saw.redhat.com/oidc-redirect"] == "true" for r in routes)
+    assert {r["spec"]["host"] for r in routes} == {"saw-test-default-notebook-ui.apps.example.com"}
     # A Job cannot change: it is a Sync hook, recreated on every sync.
     job = docs[("Job", "saw-test-prepare")]
     assert job["metadata"]["annotations"] == {"argocd.argoproj.io/hook": "Sync",

@@ -143,13 +143,6 @@ Governance interceptor gRPC endpoint reachable from the VM.
 {{- end }}
 
 {{/*
-Namespace of Keycloak's "<keycloakName>-initial-admin" Secret.
-*/}}
-{{- define "openshell-sandbox.keycloakNamespace" -}}
-{{- .Values.dashboard.keycloakNamespace | default .Values.oidc.keycloakNamespace | default .Release.Namespace -}}
-{{- end }}
-
-{{/*
 Namespace of the golden image DataSource.
 */}}
 {{- define "openshell-sandbox.goldenNamespace" -}}

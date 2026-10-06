@@ -52,8 +52,9 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   It records what it created and, in the default `report` prune mode, only
   logs what a later profile change would delete. See
   [Removing things from a profile](#removing-things-from-a-profile).
-- The prepare Job only bootstraps the golden image DataSource and registers
-  the dashboard redirect URI in Keycloak (admin API). It has no VM access.
+- The prepare Job only bootstraps the golden image DataSource. It has no VM
+  access and no Keycloak access: the routes' redirect URIs are registered
+  by the redirect registrar in Keycloak's namespace.
 
 cloud-init runs once per VM, so it only writes static files (mount script,
 units, and the reconcile units when `vm.liveInputs` is true) and first-boot

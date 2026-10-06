@@ -38,9 +38,8 @@ keycloak:
       # Keycloak's redirect URI matching only supports a *trailing* wildcard —
       # confirmed live that "https://*/oauth2/callback" is rejected outright
       # ("Invalid parameter: redirect_uri") — so a single static entry can't
-      # cover every sandbox. Each sandbox's prepare Job registers its own exact
-      # redirect URI onto this client via the Keycloak Admin API instead (see
-      # charts/openshell-saw/files/register-keycloak-redirect.sh).
+      # cover every sandbox. The redirect registrar (redirectRegistrar below)
+      # registers each web UI route's exact redirect URI on this client.
       # These are just the initial (empty) values before any sandbox exists.
       redirectUris: []
       webOrigins: []
@@ -105,3 +104,24 @@ keycloak:
   roles:
     - openshell-user
     - openshell-admin
+
+# One registrar per cluster, in this namespace: it keeps the dashboard
+# client's redirect URIs and web origins in step with the SAW web UI routes
+# (routes labelled routeSelector in namespaces labelled namespaceSelector,
+# with a host under hostSuffix). It replaces the per-VM prepare Job that
+# used the master admin from every user's namespace. Its init container uses
+# the master admin (adminSecret) to set up the registrar's own client, which
+# may only manage this realm's clients.
+redirectRegistrar:
+  enabled: true
+  image: registry.access.redhat.com/ubi9/python-311:latest
+  clientId: saw-redirect-registrar
+  # Empty: http://<keycloak>-service.<namespace>.svc:8080 (in-cluster).
+  keycloakUrl: ""
+  # Empty: <keycloak>-initial-admin (the operator's).
+  adminSecret: ""
+  namespaceSelector: openshell.pattern/saw=true
+  routeSelector: saw.redhat.com/oidc-redirect=true
+  # Empty: the cluster's ingress domain (ingresses.config.openshift.io).
+  hostSuffix: ""
+  intervalSeconds: 15

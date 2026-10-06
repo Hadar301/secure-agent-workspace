@@ -11,13 +11,6 @@ GOLDEN_NS="{{ include "openshell-sandbox.goldenNamespace" . }}"
 GOLDEN_DISK_SIZE="{{ .Values.vm.diskSize }}"
 GOLDEN_IMAGE_URL="{{ .Values.source.goldenImageURL }}"
 PULL_METHOD="{{ .Values.source.pullMethod | default "node" }}"
-DASHBOARD_ENABLED="{{ and .Values.dashboard.enabled .Values.route.webui }}"
-DASHBOARD_CLIENT_ID="{{ .Values.dashboard.clientId }}"
-OIDC_ISSUER_URL="{{ include "openshell-sandbox.oidcIssuerUrl" . }}"
-OIDC_KEYCLOAK_NAME="{{ .Values.oidc.keycloakName }}"
-OIDC_REALM="{{ .Values.oidc.realm }}"
-KEYCLOAK_NS="{{ include "openshell-sandbox.keycloakNamespace" . }}"
-UI_ROUTE_HOSTS="{{ range $e := include "openshell-sandbox.sandboxUi" . | fromJsonArray }}{{ $e.host }} {{ end }}"
 SCRIPTS_DIR="/scripts"
 
 # --- Phase 1: tools ---
@@ -30,12 +23,9 @@ source "${SCRIPTS_DIR}/bootstrap-golden-image.sh"
 echo "Disk source is a registry/HTTP import; no golden image bootstrap needed."
 {{- end }}
 
-# --- Phase 3: dashboard redirect URI in Keycloak ---
-if [[ ( "${DASHBOARD_ENABLED}" == "true" || -n "${UI_ROUTE_HOSTS// /}" ) && -n "${OIDC_ISSUER_URL}" ]]; then
-  source "${SCRIPTS_DIR}/register-keycloak-redirect.sh"
-else
-  echo "Dashboard or OIDC issuer not configured; skipping Keycloak redirect registration."
-fi
+# The web UI routes' Keycloak redirect URIs are not set here: the routes are
+# labelled saw.redhat.com/oidc-redirect, and the redirect registrar in
+# Keycloak's namespace (charts/openshell-keycloak) registers them.
 
 echo "Prepare complete for vm/${VM_NAME}. The VM installs itself; follow its console log:"
 echo "  oc logs -f -n ${NS} \$(oc get pod -n ${NS} -l vm.kubevirt.io/name=${VM_NAME} -o name) -c guest-console-log"

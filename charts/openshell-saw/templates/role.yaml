@@ -18,8 +18,3 @@ rules:
     resourceNames: {{ include "openshell-sandbox.providerSecrets" . }}
     verbs: ["get"]
   {{- end }}
-  {{- if .Values.dashboard.enabled }}
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["get"]
-  {{- end }}

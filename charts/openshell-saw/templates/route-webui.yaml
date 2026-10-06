@@ -5,6 +5,11 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-webui
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+    {{- if .Values.dashboard.enabled }}
+    # The redirect registrar (charts/openshell-keycloak) adds
+    # https://<host>/oauth2/callback to the dashboard's Keycloak client.
+    saw.redhat.com/oidc-redirect: "true"
+    {{- end }}
 spec:
   to:
     kind: Service
