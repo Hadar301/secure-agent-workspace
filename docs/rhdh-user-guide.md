@@ -212,9 +212,11 @@ oc logs -n saw-portal -l tekton.dev/pipelineRun=<run name> --all-containers
 oc get secret -n saw-portal | grep saw-req- || echo "no pending requests"
 oc get configmap -n saw-portal saw-ws-carol -o jsonpath='{.data.user\.json}' | jq .
 
-# The keys are in Vault (names only)
+# The keys are in Vault (names only), under the entry's vaultPrefix
+PREFIX=$(oc get configmap -n saw-portal saw-ws-carol -o jsonpath='{.data.user\.json}' \
+  | jq -r .vaultPrefix | sed 's|^secret/data/|secret/|')
 oc exec -n vault vault-0 -- env VAULT_TOKEN=$TOKEN VAULT_SKIP_VERIFY=true \
-  vault kv list secret/hub/saw-carol
+  vault kv list "$PREFIX"
 
 # Argo CD builds the workspace
 oc get applications.argoproj.io -n vp-gitops | grep -E "portal-ws-carol|saw-carol"
@@ -334,7 +336,7 @@ oc get configmap -n saw-portal saw-ws-carol            # NotFound
 oc get applications.argoproj.io -n vp-gitops | grep -E "portal-ws-carol|saw-carol"   # gone
 oc get ns saw-carol                                    # Terminating, then NotFound
 oc exec -n vault vault-0 -- env VAULT_TOKEN=$TOKEN VAULT_SKIP_VERIFY=true \
-  vault kv list secret/hub/saw-carol                   # no entries
+  vault kv list secret/hub/saw-carol                   # no entries (no generation left)
 ```
 
 The catalog entry disappears at the next refresh.

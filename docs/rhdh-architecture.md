@@ -25,7 +25,7 @@ This page explains the parts and how they connect. To try it, follow the
 | Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token), the RHDH catalog with each workspace's status (`/catalog.yaml`, no token) and the progress the create template follows (`/status`, the user's Backstage token, through the RHDH proxy endpoint `/saw-status`); a NetworkPolicy admits only RHDH and Argo CD. |
 | ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. |
 | `saw-users` → `openshell-saw` | namespace `saw-<user>` | The same charts as a Git-declared user in `overrides/saw-users.yaml`: External Secrets for the user's keys, the BOM, the VM, the gateway and UI routes. |
-| Vault | `secret/data/hub/saw-<user>/<secret>` | The user's keys. The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
+| Vault | `secret/data/hub/saw-<user>/<generation>/<secret>` | The user's keys, under the registration's generation (a new one per registration, so a deleted workspace's cleanup never reaches a replacement's keys). The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
 | In-VM installer | `apply_bom.py` in the VM | Creates the sandboxes, starts OpenClaw, and runs one OAuth proxy and one port forward per sandbox UI. |
 | Cleanup | CronJob `saw-portal-cleanup` | Deletes request Secrets that no pipeline handled. |
 
@@ -90,7 +90,7 @@ sequenceDiagram
   P->>R: fetch JWKS, verify token signatures and expiry
   Note over P: user = the token's subject, never the form
   P->>P: check form against the profile catalog,<br/>refuse names taken by Git users or other apps
-  P->>V: write secret/data/hub/saw-user/<secret>
+  P->>V: write secret/data/hub/saw-user/<generation>/<secret>
   P->>K: ConfigMap saw-ws-user (registry entry), delete the request
   A->>K: ApplicationSet asks the generator for workspaces
   A->>A: Application portal-ws-user (charts/saw-users)
@@ -240,7 +240,7 @@ profile needs.
 | VM | `<user>` |
 | Argo CD applications | `portal-ws-<user>` → `saw-<user>-secrets`, `saw-<user>-bom`, `saw-<user>` |
 | Registry entry | ConfigMap `saw-ws-<user>` in `saw-portal` |
-| Keys | `secret/data/hub/saw-<user>/<secret>` (e.g. `inference`, `web-search`) |
+| Keys | `secret/data/hub/saw-<user>/<generation>/<secret>` (e.g. `inference`, `web-search`); the entry's `vaultPrefix` names the generation |
 | OpenShell web UI | `https://<user>-webui-saw-<user>.apps.<domain>` |
 | Sandbox UI | `https://<user>-<workspace>-<sandbox>-ui.apps.<domain>` |
 | RHDH | `https://backstage-developer-hub-rhdh.apps.<domain>` |

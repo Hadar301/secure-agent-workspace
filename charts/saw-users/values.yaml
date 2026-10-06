@@ -23,7 +23,7 @@ defaults:
   profiles:
     - data-science
   # Shared hub prefix. Set vaultPrefix on a user for a private path
-  # (secret/data/hub/saw-<user>, what the self-service portal writes).
+  # (secret/data/hub/saw-<user>/<generation> is what the self-service portal writes).
   # This chart does not create Vault entries.
   vaultPrefix: secret/data/hub
   # The SSH key the VMs are provisioned with is the pattern's, not the

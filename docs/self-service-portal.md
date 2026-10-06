@@ -22,14 +22,14 @@ RHDH  "Create or update my agent workspace" (charts/openshell-rhdh)
 Tekton (namespace saw-portal)  portal.py create
   │  1. verify the Backstage token (ES256 signatures, RHDH's JWKS): the user it acts for
   │  2. check the form against the profile catalog
-  │  3. Vault  secret/data/hub/saw-<user>/<secret>      (Kubernetes auth, role saw-portal-writer)
+  │  3. Vault  secret/data/hub/saw-<user>/<generation>/<secret>  (Kubernetes auth, role saw-portal-writer)
   │  4. ConfigMap saw-ws-<user>, label saw.redhat.com/workspace=true: the registry entry
   ▼
 ApplicationSet saw-portal-workspaces (plugin generator: portal.py serve; create and update only)
   │  Application portal-ws-<user> → charts/saw-users with that one user
   ▼
 saw-users → namespace saw-<user> (label saw.redhat.com/portal=true)
-            saw-<user>-secrets (External Secrets from secret/data/hub/saw-<user>)
+            saw-<user>-secrets (External Secrets from the entry's vaultPrefix)
             saw-<user>-bom, saw-<user> (the VM), exactly as for overrides/saw-users.yaml
 ```
 
@@ -184,8 +184,12 @@ for another service) and fills a field's default (a profile's model).
 
 ### Keys
 
-A portal workspace's `vaultPrefix` is `secret/data/hub/saw-<user>`. It sits
-under the hub prefix, so the existing `vault-backend` store already reads it.
+A portal workspace's `vaultPrefix` is `secret/data/hub/saw-<user>/<generation>`.
+The generation is a random ID given to each new registration (a create with no
+registry entry); updates keep it, so the keys stay where they are for as long
+as the entry lives. It sits under the hub prefix, so the existing
+`vault-backend` store already reads it. Entries from before generations keep
+`secret/data/hub/saw-<user>`.
 `pattern-secrets` syncs only the Secrets the user's profiles read, and the
 SSH key always from the shared `secret/data/hub/ssh`.
 
@@ -202,7 +206,11 @@ with the pattern's root token (`ansible/playbooks/saw-portal-vault.yaml`).
 Without the imperative framework, run
 `make -f Makefile-quickstart portal-vault-setup` once as a cluster admin.
 
-Deleting a workspace also deletes its keys (`portal.deleteVaultSecrets`).
+Deleting a workspace also deletes its keys (`portal.deleteVaultSecrets`): the
+keys of the entry's generation only. A delete's cleanup can be overtaken after
+it has checked that the entry is still its own (a later delete takes over and
+finishes, then a create registers a replacement); the replacement has a new
+generation, so the older cleanup cannot destroy its keys.
 
 ## Sandbox web UIs
 

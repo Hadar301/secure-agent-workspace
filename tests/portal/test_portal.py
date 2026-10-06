@@ -340,6 +340,12 @@ class Fake:
             "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items()}}
 
 
+# The generations the world fixture hands out, in order (portal.new_generation).
+GEN = [f"{n:016x}" for n in range(1, 10)]
+KEYS = "hub/saw-alice/" + GEN[0]       # the first registration's keys
+NEW_KEYS = "hub/saw-alice/" + GEN[1]   # a replacement's
+
+
 @pytest.fixture
 def world(portal, monkeypatch, tmp_path):
     fake = Fake()
@@ -352,6 +358,8 @@ def world(portal, monkeypatch, tmp_path):
     monkeypatch.setattr(portal, "kube", lambda: portal.Http(url, "k8s-token"))
     monkeypatch.setattr(portal, "fetch_json", lambda u, insecure=False:
                         scaffolder.jwks() if "/api/scaffolder/" in u else auth.jwks())
+    generations = iter(GEN)
+    monkeypatch.setattr(portal, "new_generation", lambda: next(generations))
     for k, v in {"NAMESPACE": "saw-portal", "CATALOG_PATH": str(CATALOG), "RHDH_INTERNAL_URL": "http://rhdh",
                  "ARGO_NAMESPACE": "vp-gitops",
                  "VAULT_ADDR": url, "VAULT_AUTH_MOUNT": "hub", "VAULT_ROLE": "saw-portal-writer",
@@ -378,14 +386,14 @@ def test_create_writes_vault_and_the_registry(portal, world):
     fake, signer = world
     fake.request("saw-req-1", ds_request(signer))
     assert portal.main(["create", "saw-req-1"]) == 0
-    assert fake.vault == {"hub/saw-alice/inference": {"api_key": "nvapi-1", "provider": "nvidia"},
-                          "hub/saw-alice/web-search": {"api_key": "brave-1", "provider": "brave"}}
+    assert fake.vault == {f"{KEYS}/inference": {"api_key": "nvapi-1", "provider": "nvidia"},
+                          f"{KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
     assert fake.logins == [{"role": "saw-portal-writer", "jwt": "pod-sa-token"}]
     cm = fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"]
     assert cm["metadata"]["labels"]["saw.redhat.com/workspace"] == "true"
     assert json.loads(cm["data"]["user.json"]) == {
         "name": "alice", "profiles": ["data-science"], "ownerSubject": "",
-        "vaultPrefix": "secret/data/hub/saw-alice", "pruneOnRemove": True}
+        "vaultPrefix": f"secret/data/{KEYS}", "pruneOnRemove": True}
     assert "/api/v1/namespaces/saw-portal/secrets/saw-req-1" not in fake.objects, "request consumed"
 
 
@@ -428,7 +436,7 @@ def test_a_portal_workspace_can_be_updated(portal, world):
     fake.request("saw-req-2", ds_request(signer, **{"inference.api_key": "nvapi-2"}))
     assert portal.main(["create", "saw-req-1"]) == 0
     assert portal.main(["create", "saw-req-2"]) == 0
-    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-2"
+    assert fake.vault[f"{KEYS}/inference"]["api_key"] == "nvapi-2"       # same generation
 
 
 def test_delete_removes_the_entry_and_the_keys(portal, world):
@@ -537,7 +545,7 @@ def test_a_second_create_for_the_same_user_replaces_the_entry(portal, world):
     assert portal.main(["create", "saw-req-1"]) == 0
     fake.request("saw-req-2", ds_request(signer, **{"inference.api_key": "nvapi-2"}))
     assert portal.main(["create", "saw-req-2"]) == 0
-    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-2"
+    assert fake.vault[f"{KEYS}/inference"]["api_key"] == "nvapi-2"       # same generation
     assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" in fake.objects
 
 
@@ -685,7 +693,8 @@ def test_the_deletion_mark_stays_until_the_keys_are_gone(portal, world, monkeypa
     monkeypatch.setattr(portal.Vault, "destroy", real)
     fake.request("saw-req-4", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
     assert portal.main(["create", "saw-req-4"]) == 0
-    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-new"
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+                          f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 
 def test_a_stale_cleanup_leaves_a_replacement_alone(portal, world, monkeypatch):
@@ -705,7 +714,79 @@ def test_a_stale_cleanup_leaves_a_replacement_alone(portal, world, monkeypatch):
     monkeypatch.setenv("PIPELINE_RUN", "saw-workspace-delete-a")
     assert portal.main(["finish-delete", "alice"]) == 1
     assert REGISTRY in fake.objects
-    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-new"
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+                          f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
+
+
+def test_a_cleanup_overtaken_after_its_check_leaves_the_replacement_alone(portal, world, monkeypatch):
+    """Review of #57: cleanup A passes its ownership check and pauses before
+    Vault; delete B takes over and finishes, and a create registers a
+    replacement with new keys; then A resumes. A used to destroy the
+    replacement's keys (only its final ConfigMap DELETE failed). Keys now
+    belong to a registration's generation: A destroys its own only."""
+    fake, signer = world
+    monkeypatch.setenv("PIPELINE_RUN", "delete-a")
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    real = portal.Vault.destroy
+    overtaken = []
+
+    def destroy(self, path):
+        if not overtaken:        # A, checked and about to touch Vault
+            overtaken.append(path)
+            monkeypatch.setenv("PIPELINE_RUN", "delete-b")
+            fake.request("saw-req-3", {"action": "delete", "token": signer.token()})
+            assert portal.main(["delete", "saw-req-3"]) == 0          # B takes over
+            assert portal.main(["finish-delete", "alice"]) == 0       # and finishes
+            assert REGISTRY not in fake.objects and fake.vault == {}
+            monkeypatch.setenv("PIPELINE_RUN", "create-c")
+            fake.request("saw-req-4", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
+            assert portal.main(["create", "saw-req-4"]) == 0          # the replacement
+            monkeypatch.setenv("PIPELINE_RUN", "delete-a")
+        real(self, path)
+    monkeypatch.setattr(portal.Vault, "destroy", destroy)
+    assert portal.main(["finish-delete", "alice"]) == 1               # A: entry changed, left
+    assert overtaken == [f"{KEYS}/inference"], "A only ever reaches its own generation"
+    entry = json.loads(fake.objects[REGISTRY]["data"]["user.json"])
+    assert entry["vaultPrefix"] == f"secret/data/{NEW_KEYS}"
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+                          f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
+
+
+def test_an_entry_from_before_generations_keeps_and_deletes_its_own_keys(portal, world):
+    """Entries written before generations have vaultPrefix <base>/saw-<user>:
+    an update writes there, and a delete destroys only those keys."""
+    fake, signer = world
+    legacy = {**portal.registry_entry("alice", "data-science"), "vaultPrefix": "secret/data/hub/saw-alice"}
+    fake.objects[REGISTRY] = {"metadata": {"name": "saw-ws-alice", "resourceVersion": "1", "uid": "u1",
+                                           "labels": {"saw.redhat.com/workspace": "true"}},
+                              "data": {"user.json": json.dumps(legacy)}}
+    fake.vault[f"{KEYS}/inference"] = {"api_key": "someone-elses"}      # another generation
+    fake.request("saw-req-1", ds_request(signer, **{"inference.api_key": "nvapi-2"}))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    assert fake.vault["hub/saw-alice/inference"]["api_key"] == "nvapi-2"
+    assert json.loads(fake.objects[REGISTRY]["data"]["user.json"])["vaultPrefix"] == "secret/data/hub/saw-alice"
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    assert portal.main(["finish-delete", "alice"]) == 0
+    assert fake.vault == {f"{KEYS}/inference": {"api_key": "someone-elses"}}
+
+
+@pytest.mark.parametrize("prefix", ["secret/data/hub/saw-bob", "secret/data/hub/saw-alice/../saw-bob",
+                                    "secret/data/hub/saw-alice/0000000000000001/x", "secret/data/hub"])
+def test_a_vault_prefix_outside_the_users_own_is_not_cleaned_up(portal, world, prefix):
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    cm = fake.objects[REGISTRY]
+    cm["data"]["user.json"] = json.dumps({**json.loads(cm["data"]["user.json"]), "vaultPrefix": prefix})
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    before = dict(fake.vault)
+    assert portal.main(["finish-delete", "alice"]) == 1
+    assert fake.vault == before and REGISTRY in fake.objects
 
 
 def test_only_the_delete_that_owns_the_mark_cleans_up(portal, world, monkeypatch):
@@ -1062,7 +1143,7 @@ def test_an_admin_creates_a_workspace_for_another_user(portal, world, monkeypatc
     assert portal.main(["create", "saw-req-1"]) == 0
     entry = json.loads(fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-carol"]["data"]["user.json"])
     assert entry["name"] == "carol"
-    assert "hub/saw-carol/inference" in fake.vault
+    assert f"hub/saw-carol/{GEN[0]}/inference" in fake.vault
     assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-admin" not in fake.objects
     log = capsys.readouterr().out
     assert "create request saw-req-1 from admin for carol" in log

@@ -1,7 +1,7 @@
 # Self-service agent workspaces (see docs/self-service-portal.md).
 #
 #   RHDH template ──► request Secret + PipelineRun ──► portal.py create
-#     (namespace portal.namespace)                     ├─ keys ──► Vault <kv>/data/<prefixBase>/saw-<user>/<secret>
+#     (namespace portal.namespace)                     ├─ keys ──► Vault <kv>/data/<prefixBase>/saw-<user>/<generation>/<secret>
 #                                                      └─ ConfigMap saw-ws-<user> (the workspace registry)
 #   ApplicationSet (plugin generator portal.py serve) ──► Application saw-portal-<user>
 #     └─ charts/saw-users with that one user ──► namespace saw-<user> and its three apps

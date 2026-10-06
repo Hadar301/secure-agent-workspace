@@ -386,14 +386,54 @@ def requester(data):
     return token_user(data.get("token", ""))
 
 
-def vault_prefix(user):
-    return f"{env('VAULT_PREFIX_BASE', 'hub')}/saw-{user}"
+GENERATION_RE = re.compile(r"[0-9a-f]{16}")
 
 
-def registry_entry(user, profile):
+def vault_prefix(user, generation=""):
+    """Where a workspace's keys are in Vault: <base>/saw-<user>/<generation>.
+    Each registration (a create with no entry) gets a new generation, which
+    stays for as long as the entry lives, so the cleanup of a deleted
+    workspace destroys only that registration's keys, never a replacement's.
+    Entries from before generations keep <base>/saw-<user>."""
+    base = f"{env('VAULT_PREFIX_BASE', 'hub')}/saw-{user}"
+    return f"{base}/{generation}" if generation else base
+
+
+def new_generation():
+    return os.urandom(8).hex()
+
+
+def entry_generation(user, entry):
+    """The generation of a registry entry, from its vaultPrefix: "" for an
+    entry from before generations (or a deletion mark that stands in for a
+    missing entry). A vaultPrefix outside the user's own is refused."""
+    prefix = (entry or {}).get("vaultPrefix")
+    if not prefix:
+        return ""
+    base = f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user)}"
+    if prefix == base:
+        return ""
+    generation = prefix[len(base) + 1:] if prefix.startswith(base + "/") else ""
+    if not GENERATION_RE.fullmatch(generation):
+        raise PortalError(f"registry entry saw-ws-{user} has vaultPrefix {prefix!r}, "
+                          f"not under {base}")
+    return generation
+
+
+def read_entry(cm):
+    """The registry entry a ConfigMap saw-ws-<user> holds; {} when its
+    user.json is missing or broken."""
+    try:
+        entry = json.loads(((cm or {}).get("data") or {}).get("user.json", ""))
+    except ValueError:
+        return {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def registry_entry(user, profile, generation=""):
     """The saw-users list entry for a portal workspace."""
     return {"name": user, "profiles": [profile], "ownerSubject": "",
-            "vaultPrefix": f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user)}",
+            "vaultPrefix": f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user, generation)}",
             "pruneOnRemove": os.environ.get("PRUNE_ON_REMOVE", "true") == "true"}
 
 
@@ -1029,11 +1069,15 @@ def handle(action, request_name):
             profile, secrets = parse_request(data, catalog)
             check_namespace_is_ours(k8s, user)
             check_applications_are_ours(k8s, user)
+            # An update keeps the entry's keys where they are; a new
+            # registration gets its own generation (see vault_prefix).
+            generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
+            prefix = vault_prefix(user, generation)
             vault = vault_client()
             for secret, values in secrets.items():
-                vault.write(f"{vault_prefix(user)}/{secret}", values)
-                log(f"Vault: {vault_prefix(user)}/{secret} ({', '.join(sorted(values))})")
-            entry = registry_entry(user, profile)
+                vault.write(f"{prefix}/{secret}", values)
+                log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
+            entry = registry_entry(user, profile, generation)
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
                           resource_version=cm["metadata"].get("resourceVersion") if cm else None)
@@ -1088,7 +1132,14 @@ def finish_delete(user):
     can register a replacement and write new keys in between. Only the run
     that marked it cleans up (DELETION_ANNOTATION): an entry that was
     re-created, or that a later delete took over, is left alone with its
-    keys, and the entry is removed only in the version that was checked."""
+    keys, and the entry is removed only in the version that was checked.
+
+    The keys destroyed are the checked entry's generation only. A cleanup
+    can pass its check and then be overtaken (a later delete takes over and
+    finishes, and a create registers a replacement) before it reaches
+    Vault; the replacement has a new generation, so nothing this cleanup
+    does can touch its keys. A marked entry never becomes live again (a
+    create refuses it), so its generation is dead once marked."""
     ns = env("NAMESPACE")
     check_user(user)
     k8s = kube()
@@ -1105,11 +1156,12 @@ def finish_delete(user):
         raise PortalError(f"{name} is not this run's deletion any more "
                           f"({'re-created' if not is_deleting(cm) else 'taken over by ' + owner}); "
                           "its entry and keys are left alone")
+    prefix = vault_prefix(user, entry_generation(user, read_entry(cm)))
     if os.environ.get("DELETE_VAULT_SECRETS", "true") == "true":
         vault = vault_client()
         for secret in sorted({s for p in catalog.values() for s in p.get("secrets", {})}):
-            vault.destroy(f"{vault_prefix(user)}/{secret}")
-        log(f"Vault: {vault_prefix(user)}/* deleted")
+            vault.destroy(f"{prefix}/{secret}")
+        log(f"Vault: {prefix}/* deleted")
     meta = cm["metadata"]
     try:
         k8s.call("DELETE", f"/api/v1/namespaces/{ns}/configmaps/{name}",
