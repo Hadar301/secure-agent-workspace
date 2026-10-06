@@ -38,8 +38,10 @@ keycloak:
       # Keycloak's redirect URI matching only supports a *trailing* wildcard —
       # confirmed live that "https://*/oauth2/callback" is rejected outright
       # ("Invalid parameter: redirect_uri") — so a single static entry can't
-      # cover every sandbox. The redirect registrar (redirectRegistrar below)
-      # registers each web UI route's exact redirect URI on this client.
+      # cover every sandbox. Each web UI route's exact redirect URI is
+      # registered on this client: by an administrator (make keycloak-register
+      # KC_USER=..., make keycloak-redirects-sync), or, with
+      # redirectRegistrar.enabled, by the registrar below.
       # These are just the initial (empty) values before any sandbox exists.
       redirectUris: []
       webOrigins: []
@@ -105,15 +107,18 @@ keycloak:
     - openshell-user
     - openshell-admin
 
-# One registrar per cluster, in this namespace: it keeps the dashboard
-# client's redirect URIs and web origins in step with the SAW web UI routes
-# (routes labelled routeSelector in namespaces labelled namespaceSelector,
-# with a host under hostSuffix). It replaces the per-VM prepare Job that
-# used the master admin from every user's namespace. Its init container uses
-# the master admin (adminSecret) to set up the registrar's own client, which
-# may only manage this realm's clients.
+# Optional: register the web UI redirect URIs from inside the cluster. Off by
+# default: an administrator registers them (make keycloak-register,
+# make keycloak-redirects-sync; README "Web UI sign-in"). On: one Deployment
+# in this namespace keeps the dashboard client's redirect URIs and web
+# origins in step with the SAW web UI routes (routes labelled routeSelector
+# in namespaces labelled namespaceSelector, with a host under hostSuffix),
+# every intervalSeconds. Its init container uses the master admin
+# (adminSecret) once per start to set up the registrar's own client, which
+# may only manage this realm's clients; the registrar itself never sees the
+# master admin. Same rules as scripts/keycloak-redirects.py sync.
 redirectRegistrar:
-  enabled: true
+  enabled: false
   image: registry.access.redhat.com/ubi9/python-311:latest
   clientId: saw-redirect-registrar
   # Empty: http://<keycloak>-service.<namespace>.svc:8080 (in-cluster).
@@ -125,3 +130,4 @@ redirectRegistrar:
   # Empty: the cluster's ingress domain (ingresses.config.openshift.io).
   hostSuffix: ""
   intervalSeconds: 15
+

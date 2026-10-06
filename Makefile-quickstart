@@ -38,6 +38,8 @@ KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= saw-keycloak
 KEYCLOAK_REALM ?= openshell
+# The Keycloak CR in KEYCLOAK_NS (another name for a Keycloak the cluster already runs)
+KEYCLOAK_NAME  ?= openshell-keycloak
 # yes/no: let `make keycloak` import the realm into a Keycloak already in KEYCLOAK_NS
 USE_EXISTING_KEYCLOAK ?=
 SCRIPTS_DIR    := scripts
@@ -132,6 +134,7 @@ WORKSPACE      ?= default
         build-nemoclaw build-nemoclaw-cli \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
+        keycloak-register keycloak-redirects keycloak-redirects-sync \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-status openshell-saw-restart openshell-saw-vm-ssh openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete sandbox-pre-delete delete-all status \
@@ -333,7 +336,7 @@ keycloak-harden: ## For a realm imported earlier: password policy, brute-force l
 
 USERS_FILE ?= overrides/saw-users.yaml
 KC_USER    ?=
-KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM)
+KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME)
 
 keycloak-add-users: ## Create the Keycloak users in USERS_FILE (default overrides/saw-users.yaml) that do not exist yet, with generated passwords
 	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
@@ -345,6 +348,25 @@ keycloak-password: ## Print a Keycloak user's password (KC_USER=carol)
 keycloak-reset-password: ## Give a Keycloak user a new generated password and print it (KC_USER=carol)
 	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
 	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
+
+# Web UI sign-in: each workspace's web UIs (the VM dashboard, each sandbox
+# UI route) need their redirect URI on Keycloak's dashboard client. Nothing in
+# the cluster registers them: run keycloak-register once the workspace exists
+# (it waits up to REDIRECT_WAIT seconds for its routes), and
+# keycloak-redirects-sync after deleting workspaces. See README, "Web UI sign-in".
+REDIRECT_WAIT ?= 600
+KC_REDIRECTS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME) WAIT=$(REDIRECT_WAIT)
+
+keycloak-register: ## Register a user: Keycloak account (if new, password printed) and their workspace's web UI redirect URIs (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@printf 'users:\n  - name: %s\n' "$(KC_USER)" | $(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users -
+	@$(KC_REDIRECTS_ENV) python3 $(SCRIPTS_DIR)/keycloak-redirects.py register "$(KC_USER)"
+
+keycloak-redirects: ## List the dashboard client's redirect URIs, and the web UI routes that have none yet
+	@$(KC_REDIRECTS_ENV) python3 $(SCRIPTS_DIR)/keycloak-redirects.py list
+
+keycloak-redirects-sync: ## Register every workspace's web UI redirect URIs, and remove those of deleted workspaces
+	@$(KC_REDIRECTS_ENV) python3 $(SCRIPTS_DIR)/keycloak-redirects.py sync
 
 keycloak-check: ## Check the Keycloak in KEYCLOAK_NS is configured for OpenShell (realm, CLI client, roles)
 	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \

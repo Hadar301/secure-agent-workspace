@@ -250,6 +250,15 @@ carol. Its description starts with the status: `Requested`, `Creating`,
 
 ## 5. Open the sandbox
 
+First register the workspace's sign-in, as an administrator (it also creates
+the Keycloak account if the user has none; it waits for the routes):
+
+```bash
+make -f Makefile-quickstart keycloak-register KC_USER=carol
+```
+
+Without it, the sign-in stops at Keycloak with "Invalid parameter: redirect_uri".
+
 The installer creates the profile's sandboxes; there is nothing to start.
 
 ### In the browser

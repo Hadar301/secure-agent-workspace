@@ -248,6 +248,12 @@ It works for every workspace, from the portal or from `overrides/saw-users.yaml`
     reaches. It signs in with Keycloak (PKCE) and admits only the users in
     `sandbox-ui-users`: the workspace owner (Keycloak `preferred_username`)
     and `sandboxUiProxy.allowedUsers`.
+- The route is labelled `saw.redhat.com/oidc-redirect=true`. Its callback,
+  `https://<host>/oauth2/callback`, has to be on Keycloak's
+  `openshell-dashboard` client before anyone can sign in: an administrator
+  runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the
+  workspace exists (the portal does not do it). See the README's
+  [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 The UI ports are VM interface ports, so adding or removing a UI takes a VM
 restart (`make openshell-saw-restart`).
