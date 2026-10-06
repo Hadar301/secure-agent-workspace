@@ -293,6 +293,23 @@ def test_a_revoked_signature_is_caught_on_a_later_apply(
         "the volume was already current; the signature check must not require a pull"
 
 
+def test_an_image_whose_signature_is_revoked_is_garbage_collected(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """An image must join harness_images only after it verifies: joining
+    first would make cleanup_harness_images see it as still wanted and
+    never remove it, keeping an untrusted image on disk forever."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    images = lambda: json.loads((fake_env.state / "images.json").read_text())
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    assert IMAGE_V1 in images()
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    with pytest.raises(ab.InstallerError, match="sandbox\\(es\\) failed to apply"):
+        make_applier(ab, cfg, creds).apply(profiles)
+    assert IMAGE_V1 not in images(), "a revoked image must not linger on the VM"
+
+
 def test_an_unchanged_image_keeps_the_sandbox(
         ab, fake_env, config, profiles, creds, tmp_path):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})

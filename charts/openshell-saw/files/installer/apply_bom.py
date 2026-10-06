@@ -2603,14 +2603,16 @@ class ProfileApplier:
         if source is None:
             return None
         if bundle is None:
-            self.harness_images.add(source)
             # Every apply, not only the one that fills the volume: a volume
             # already holding the image is no evidence the image is still
             # trusted, so revoking the signing identity has to bite on the
             # next apply. Runs under --dry-run too (force, via cfg lookup
             # which needs no shell call) before any tree from the volume or
-            # a pull is trusted.
+            # a pull is trusted. Verified before it joins harness_images: an
+            # image that fails here must not be kept, or cleanup_harness_images
+            # (previous - self.harness_images) would never remove it.
             self.verify_harness_image(source)
+            self.harness_images.add(source)
         volume = harness_volume_name(ws.name, sb.name)
         self.harness_volumes.add(volume)
         # Dry-run still resolves the tree and runs governance (so a bundle
