@@ -784,6 +784,7 @@ def describe_harness_tree(files, inline=False):
       agentPluginsBundle   plugin.json at the root (OpenClaw loads skills/ and
                            mcp.json from the bundle root)
        mcp                  the bundle has mcp.json
+       mcpServers           server names declared in mcp.json
        pluginDirs           native plugins under plugins/
        governance           [{kind, name, governanceProfile, hosts}] to check
                             against the gateway's catalog and the sandbox's
@@ -800,6 +801,7 @@ def describe_harness_tree(files, inline=False):
     doc = _yaml(files["harness.yaml"][0].decode("utf-8"), "harness.yaml")
     spec = doc.get("spec") or {}
     name = (doc.get("metadata") or {}).get("name", "")
+    mcp_server_names = []
     if "mcp.json" in files and "plugin.json" not in files:
         raise InstallerError(
             f"harness '{name}': mcp.json with no plugin.json at the bundle root; OpenClaw only "
@@ -835,6 +837,7 @@ def describe_harness_tree(files, inline=False):
             servers = json.loads(files["mcp.json"][0]).get("mcpServers") or {}
         except ValueError as exc:
             raise InstallerError(f"harness '{name}': mcp.json is not valid JSON ({exc})") from None
+        mcp_server_names = sorted(servers)
         for server, conf in sorted(servers.items()):
             if not isinstance(conf, dict) or conf.get("type") not in ("stdio", "streamable-http", "sse"):
                 raise InstallerError(
@@ -894,6 +897,7 @@ def describe_harness_tree(files, inline=False):
         "skills": any(rel.startswith("skills/") for rel in files),
         "agentPluginsBundle": "plugin.json" in files,
         "mcp": "mcp.json" in files,
+        "mcpServers": mcp_server_names,
         "pluginDirs": plugin_dirs,
         "governance": governance,
     }
@@ -2441,10 +2445,12 @@ class ProfileApplier:
         """The bundle tree of a harness image (with file modes). Pulled by
         digest when it is not present yet.
 
+        The signature is checked by the caller (prepare_harness), on every
+        apply rather than only on the one that reaches here.
+
         Runs even under --dry-run (force): dry-run must refuse a bad image the
         same way a real apply would, before it claims success.
         """
-        self.verify_harness_image(image)
         if not self._podman("image", "exists", image, check=False, quiet=True, force=True).ok:
             self._podman("pull", "--quiet", image, timeout=900, force=True)
         created = self._podman("create", image, "/harness.yaml", force=True)
@@ -2598,6 +2604,13 @@ class ProfileApplier:
             return None
         if bundle is None:
             self.harness_images.add(source)
+            # Every apply, not only the one that fills the volume: a volume
+            # already holding the image is no evidence the image is still
+            # trusted, so revoking the signing identity has to bite on the
+            # next apply. Runs under --dry-run too (force, via cfg lookup
+            # which needs no shell call) before any tree from the volume or
+            # a pull is trusted.
+            self.verify_harness_image(source)
         volume = harness_volume_name(ws.name, sb.name)
         self.harness_volumes.add(volume)
         # Dry-run still resolves the tree and runs governance (so a bundle
@@ -2944,6 +2957,22 @@ class ProfileApplier:
         if missing:
             return [f"OpenClaw does not list enabled plugin(s) {', '.join(missing)} "
                     f"from {source}"]
+        if info["mcpServers"]:
+            # `plugins list --json` says only "this bundle has MCP servers",
+            # never which ones, so a server OpenClaw dropped (bad entry,
+            # failed load) is invisible there; `mcp status` names them. An
+            # agent without the subcommand is a WARN, not a failure, or
+            # every apply breaks on such a build.
+            listed = self.cli(*exec_cmd, "sh", "-c", f"{OPENCLAW_EXEC_ENV} openclaw mcp status",
+                              check=False, quiet=True)
+            if not listed.ok or not (listed.out or "").strip():
+                log(f"WARN: harness '{info['name']}': sandbox '{sb.name}' does not answer "
+                    "`openclaw mcp status`; MCP servers checked by bundle capability only")
+            else:
+                missing_servers = [s for s in info["mcpServers"] if s not in listed.out]
+                if missing_servers:
+                    return [f"OpenClaw does not list MCP server(s) {', '.join(missing_servers)} "
+                            f"from {source}"]
         desired = openclaw_harness_config(info)
         for key in HARNESS_CONFIG_KEYS:
             got = self.cli(*exec_cmd, "sh", "-c",

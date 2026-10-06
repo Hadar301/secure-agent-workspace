@@ -12,11 +12,14 @@
 #       sandbox has a provider of that type
 #   H7  cosign signature (image refs only; inline refs report SKIP)
 #   H8  audit: volume admission labels present
-#   H9  revocation drill (opt-in --revoke-drill): harnessRef removed ->
-#       sandbox recreated without the mount, volume cleaned up
+#   H9  revocation drill (opt-in --revoke-drill): harnessEnabled=false ->
+#       sandbox recreated without the mount, then harnessEnabled=true ->
+#       mount back. Executed, not printed.
 #
-# Read-only by default: H1-H8 change nothing. H9 recreates the sandbox
-# (agent work outside /sandbox/persist is lost, like any pod restart).
+# Read-only by default: H1-H8 change nothing. H9 upgrades the saw-bom release
+# twice, restarts the VM twice when vm.liveInputs is off, and recreates the
+# sandbox (agent work outside /sandbox/persist is lost, like any pod restart).
+# It restores harnessEnabled=true on exit, including on ^C.
 #
 # Platform gaps from the PR review are OUT OF SCOPE here and tracked
 # separately (upstream OpenShell, not this repo's installer):
@@ -36,7 +39,8 @@
 #
 # Usage:
 #   ./scripts/e2e-harness.sh [--gateway NAME] [--workspace WS]
-#                            [--sandbox SB] [--bundle B] [--revoke-drill]
+#                            [--sandbox SB] [--bundle B]
+#                            [--revoke-drill [--bom-release NAME]]
 #   make test-harness-e2e OPENSHELL_SAW_NAME=my-saw [--revoke-drill via E2E_ARGS]
 
 set -euo pipefail
@@ -46,6 +50,7 @@ WORKSPACE="${WORKSPACE:-default}"
 SANDBOX="${HARNESS_SANDBOX:-notebook}"
 BUNDLE="${HARNESS_BUNDLE_EXPECT:-ds-default}"
 REVOKE_DRILL="no"
+BOM_RELEASE="${BOM_RELEASE:-saw-bom}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --sandbox)   SANDBOX="$2"; shift 2 ;;
     --bundle)    BUNDLE="$2"; shift 2 ;;
     --revoke-drill) REVOKE_DRILL="yes"; shift ;;
+    --bom-release)  BOM_RELEASE="$2"; shift 2 ;;
     -h|--help)
       sed -n '1,32p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1 (see --help)"; exit 2 ;;
@@ -188,6 +194,23 @@ print('  enabled plugins:', ' '.join(sorted(by_id)) or '<none>')
     || fail "bundle row missing/disabled/capability-short in plugins list --json"
 fi
 
+# The bundle row says there ARE MCP servers, never which ones; `mcp status`
+# names them, so a server OpenClaw dropped shows up only here.
+MCP_DECLARED=$(sb_exec sh -c 'cat /sandbox/harness/mcp.json' 2>/dev/null \
+  | python3 -c "import json,sys; print(' '.join(sorted((json.load(sys.stdin).get('mcpServers') or {}))))" 2>/dev/null || true)
+if [[ -z "${MCP_DECLARED}" ]]; then
+  skip "bundle declares no MCP servers"
+else
+  MCP_STATUS=$(sb_exec sh -c 'OPENCLAW_HOME=/sandbox openclaw mcp status' 2>/dev/null || true)
+  if [[ -z "${MCP_STATUS}" ]]; then
+    skip "sandbox does not answer 'openclaw mcp status'"
+  else
+    for s in ${MCP_DECLARED}; do
+      if echo "${MCP_STATUS}" | grep -qw "$s"; then pass "MCP server '$s' listed"; else fail "MCP server '$s' missing from mcp status"; fi
+    done
+  fi
+fi
+
 step "H4: OpenClaw harness config points at the mount"
 PATHS=$(sb_exec sh -c 'openclaw config get plugins.load.paths' 2>/dev/null || true)
 if echo "${PATHS}" | grep -q "/sandbox/harness"; then
@@ -267,14 +290,77 @@ fi
 
 if [[ "${REVOKE_DRILL}" == "yes" ]]; then
   step "H9: revocation drill (DESTRUCTIVE: recreates '${SANDBOX}')"
-  echo -e "  ${YELLOW}Remove the harnessRef from the profile, re-apply, then re-run this script:${NC}"
-  echo "  1. helm upgrade saw-bom charts/saw-bom --set harnessEnabled=false"
-  echo "     (or drop harnessRef from the sandbox) + restart the VM installer"
-  echo "  2. expect: sandbox recreated WITHOUT /sandbox/harness,"
-  echo "     'openclaw config get plugins.load.paths' no longer lists it,"
-  echo "     unused harness volume removed."
-  echo "  3. restore: re-add the harnessRef, re-apply, re-run without --revoke-drill."
-  skip "manual drill: instructions printed above (not executed by the script)"
+  SAW_NS="${SAW_NS:-saw-${GATEWAY}}"
+  BOM_RELEASE="${BOM_RELEASE:-saw-bom}"
+  BOM_CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/saw-bom"
+  # An apply + recreate can take minutes; poll rather than guess a sleep.
+  DRILL_TIMEOUT="${DRILL_TIMEOUT:-1500}"
+
+  # The BOM reaches the VM over virtiofs only with vm.liveInputs; otherwise it
+  # is an iso9660 disk KubeVirt re-renders on VM start, so the drill restarts
+  # the VM after each helm upgrade.
+  LIVE_INPUTS="no"
+  if oc -n "${SAW_NS}" get vm "${GATEWAY}" \
+      -o jsonpath='{.spec.template.spec.domain.devices.filesystems[*].name}' 2>/dev/null \
+      | grep -q saw-profiles; then
+    LIVE_INPUTS="yes"
+  fi
+
+  set_harness() { # set_harness true|false
+    helm upgrade "${BOM_RELEASE}" "${BOM_CHART}" -n "${SAW_NS}" \
+      --reuse-values --set "harnessEnabled=$1" >/dev/null
+    if [[ "${LIVE_INPUTS}" != "yes" ]]; then
+      virtctl restart -n "${SAW_NS}" "${GATEWAY}" >/dev/null
+    fi
+  }
+  # want=gone: the sandbox must come back without /sandbox/harness.
+  # want=present: it must come back with it. An unreachable gateway or a
+  # missing sandbox is "not yet" in both directions, since the VM is
+  # restarting and the installer is recreating the sandbox underneath.
+  wait_mount() { # wait_mount gone|present
+    local want="$1" deadline=$((SECONDS + DRILL_TIMEOUT)) have
+    while [[ "${SECONDS}" -lt "${deadline}" ]]; do
+      sleep 15
+      "${GW[@]}" sandbox list --workspace "${WORKSPACE}" >/dev/null 2>&1 || continue
+      sb_exec true >/dev/null 2>&1 || continue
+      if sb_exec test -d /sandbox/harness >/dev/null 2>&1; then have=present; else have=gone; fi
+      if [[ "${have}" == "${want}" ]]; then
+        local paths
+        paths=$(sb_exec sh -c 'openclaw config get plugins.load.paths' 2>/dev/null || true)
+        if [[ "${want}" == "gone" ]] && echo "${paths}" | grep -q "/sandbox/harness"; then continue; fi
+        if [[ "${want}" == "present" ]] && ! echo "${paths}" | grep -q "/sandbox/harness"; then continue; fi
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  if ! command -v helm >/dev/null 2>&1 || ! command -v oc >/dev/null 2>&1; then
+    skip "revocation drill needs helm and oc on PATH"
+  elif [[ "${LIVE_INPUTS}" != "yes" ]] && ! command -v virtctl >/dev/null 2>&1; then
+    skip "revocation drill needs virtctl (vm.liveInputs is off, so the BOM disk only changes on VM restart)"
+  elif ! helm status "${BOM_RELEASE}" -n "${SAW_NS}" >/dev/null 2>&1; then
+    skip "no helm release '${BOM_RELEASE}' in ${SAW_NS} (pass --bom-release NAME)"
+  else
+    echo "  revoking: helm upgrade ${BOM_RELEASE} --set harnessEnabled=false (ns ${SAW_NS}, liveInputs=${LIVE_INPUTS})"
+    # Always put the harness back, including on ^C or a failed assert.
+    # shellcheck disable=SC2064
+    trap "echo 'restoring harnessEnabled=true'; set_harness true || true; trap - EXIT INT TERM" EXIT INT TERM
+    set_harness false
+    if wait_mount gone; then
+      pass "harness revoked: sandbox recreated without /sandbox/harness, plugins.load.paths clean"
+    else
+      fail "harness still mounted or plugins.load.paths stale after revoke (timeout ${DRILL_TIMEOUT}s)"
+    fi
+    echo "  restoring: helm upgrade ${BOM_RELEASE} --set harnessEnabled=true"
+    set_harness true
+    if wait_mount present; then
+      pass "harness restored: sandbox recreated with /sandbox/harness, plugins.load.paths set"
+    else
+      fail "harness not restored after re-enabling (timeout ${DRILL_TIMEOUT}s)"
+    fi
+    trap - EXIT INT TERM
+  fi
 fi
 
 echo ""
