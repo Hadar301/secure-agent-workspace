@@ -206,6 +206,8 @@ The OpenClaw `before_tool_call` hook (`saw-tool-gate`) runs before the tool. Ope
 
 This is not a cluster OCSF pipeline. The JSONL file is the tool-action trail on the sandbox volume.
 
+The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs` and `tests/installer/test_tool_gate.py`. Run them locally with `make test-tool-gate` (Node on `PATH`). They are not part of the installer CI job (`make test-installer`).
+
 ## Audit Trail
 
 Every interceptor decision is logged by the gateway:
