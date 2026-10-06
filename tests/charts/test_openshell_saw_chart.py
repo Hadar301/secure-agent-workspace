@@ -95,28 +95,18 @@ def default_docs():
 
 def test_no_setup_job_and_no_ssh_provisioning(default_docs):
     kinds = {k for k, _ in default_docs}
-    assert ("Job", "saw-test-setup") not in default_docs
-    assert ("Job", "saw-test-prepare") in default_docs
+    assert not [k for k, _ in default_docs if k in ("Job", "CronJob")], "nothing runs in the namespace but the VM"
+    # Only the pre-delete cleanup hook (helm uninstall / app deletion) has an identity.
+    assert [n for (k, n), d in default_docs.items() if k == "ServiceAccount"
+            and "helm.sh/hook" not in (d["metadata"].get("annotations") or {})] == []
     assert "VirtualMachine" in kinds
     text = yaml.safe_dump(list(default_docs.values()))
     for forbidden in ("virtctl", "guest_ssh", "guest_scp", "portforward", "openshell-aap-ssh"):
         assert forbidden not in text, forbidden
 
 
-def test_prepare_role_has_no_vm_access(default_docs):
-    rules = default_docs[("Role", "saw-test-prepare")]["rules"]
-    groups = {g for r in rules for g in r["apiGroups"]}
-    assert "kubevirt.io" not in groups and "subresources.kubevirt.io" not in groups
 
 
-def test_prepare_scripts_render_and_are_valid_bash(default_docs, tmp_path):
-    data = default_docs[("ConfigMap", "saw-test-prepare-scripts")]["data"]
-    assert set(data) == {"prepare.sh", "install-deps.sh", "bootstrap-golden-image.sh"}
-    for name, text in data.items():
-        path = tmp_path / name
-        path.write_text(text)
-        assert subprocess.run(["bash", "-n", str(path)]).returncode == 0, name
-    assert 'VM_NAME="saw-test"' in data["prepare.sh"]
 
 
 # -- VM wiring -------------------------------------------------------------
@@ -498,42 +488,70 @@ def all_docs(*args, namespace="saw-alice"):
     return [d for d in yaml.safe_load_all(result.stdout) if d]
 
 
-def test_saw_namespace_can_bootstrap_the_shared_golden_image():
+def root_source(docs):
+    vm = next(d for d in docs if d["kind"] == "VirtualMachine")
+    return vm["spec"]["dataVolumeTemplates"][0]["spec"]
+
+
+def test_the_root_disk_is_imported_from_the_golden_image_by_default():
+    """No Job bootstraps a DataSource: the VM's disk template imports the
+    golden image from the internal registry, which the namespace may pull."""
     docs = all_docs()
+    assert root_source(docs)["source"] == {"registry": {
+        "url": "docker://image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest",
+        "pullMethod": "node"}}
+    shared = [d for d in docs if d["metadata"].get("namespace") == "openshell-agents"]
+    assert [(d["kind"], d["metadata"]["name"]) for d in shared] == [
+        ("RoleBinding", "saw-test-saw-alice-golden-image-puller")]
+    assert shared[0]["roleRef"]["name"] == "system:image-puller"
+    assert shared[0]["subjects"] == [{"apiGroup": "rbac.authorization.k8s.io", "kind": "Group",
+                                      "name": "system:serviceaccounts:saw-alice"}]
+
+
+def test_a_registry_image_needs_nothing_in_the_shared_namespace():
+    docs = all_docs("--set", "source.registryURL=docker://quay.io/x/disk@sha256:" + "a" * 64,
+                    "--set", "source.pullMethod=pod")
+    assert root_source(docs)["source"]["registry"] == {"url": "docker://quay.io/x/disk@sha256:" + "a" * 64,
+                                                       "pullMethod": "pod"}
+    assert not [d for d in docs if d["metadata"].get("namespace") == "openshell-agents"]
+    docs = all_docs("--set", "source.goldenImageURL=docker://quay.io/x/old:1")
+    assert root_source(docs)["source"]["registry"]["url"] == "docker://quay.io/x/old:1"
+
+
+def test_a_datasource_is_cloned_when_named():
+    docs = all_docs("--set", "source.dataSource=openshell-gateway")
+    assert root_source(docs)["sourceRef"] == {"kind": "DataSource", "name": "openshell-gateway",
+                                              "namespace": "openshell-agents"}
     role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"].endswith("golden-image"))
     binding = next(d for d in docs if d["kind"] == "RoleBinding" and d["metadata"]["name"].endswith("golden-image"))
-    assert role["metadata"]["namespace"] == "openshell-agents"
-    assert binding["metadata"]["namespace"] == "openshell-agents"
+    assert role["metadata"]["namespace"] == binding["metadata"]["namespace"] == "openshell-agents"
     # KubeVirt clones the root disk as the namespace's default SA; CDI needs
-    # create on datavolumes/source in the source namespace for it.
-    assert binding["subjects"] == [
-        {"kind": "ServiceAccount", "name": "default", "namespace": "saw-alice"},
-        {"kind": "ServiceAccount", "name": "saw-test-prepare", "namespace": "saw-alice"}]
+    # create on datavolumes/source in the source namespace for it. Nothing
+    # else may create there.
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "default", "namespace": "saw-alice"}]
     assert {"apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes/source"],
             "verbs": ["create"]} in role["rules"]
-    vm = next(d for d in docs if d["kind"] == "VirtualMachine")
-    assert vm["spec"]["dataVolumeTemplates"][0]["spec"]["sourceRef"]["namespace"] == "openshell-agents"
+    assert [r for r in role["rules"] if "create" in r["verbs"]] == [
+        {"apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes/source"], "verbs": ["create"]}]
 
 
-def test_no_cross_namespace_role_when_sharing_the_golden_namespace():
-    docs = all_docs(namespace="openshell-agents")
-    assert not [d for d in docs if d["metadata"]["name"].endswith("golden-image")]
-    docs = all_docs("--set", "source.registryURL=docker://quay.io/x/disk:1")
-    assert not [d for d in docs if d["metadata"]["name"].endswith("golden-image")]
+def test_nothing_in_another_namespace_when_sharing_the_golden_namespace():
+    for args in ((), ("--set", "source.dataSource=openshell-gateway")):
+        docs = all_docs(*args, namespace="openshell-agents")
+        assert not [d for d in docs if "golden-image" in d["metadata"]["name"]]
+    docs = all_docs("--set", "source.httpURL=https://example.com/disk.qcow2")
+    assert root_source(docs)["source"] == {"http": {"url": "https://example.com/disk.qcow2"}}
+    assert not [d for d in docs if "golden-image" in d["metadata"]["name"]]
 
 
 def test_no_user_namespace_gets_keycloak_admin_access():
     """The redirect registrar in Keycloak's namespace registers the web UI
     callbacks; this chart grants nothing outside its own namespace for it and
-    the prepare Job never sees Keycloak credentials."""
+    no pod in the namespace sees Keycloak credentials."""
     for docs in (all_docs(), all_docs("--set", "oidc.keycloakNamespace=sso")):
         assert not [d for d in docs if "keycloak" in d["metadata"]["name"]]
         assert not [d for d in docs if d["metadata"].get("namespace") in ("saw-keycloak", "sso")]
-        prepare = next(d for d in docs if d["kind"] == "ConfigMap"
-                       and d["metadata"]["name"] == "saw-test-prepare-scripts")
-        assert "initial-admin" not in json.dumps(prepare) and "KEYCLOAK" not in prepare["data"]["prepare.sh"]
-        role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-test-prepare")
-        assert {g for r in role["rules"] for g in r["apiGroups"]} <= {"", "cdi.kubevirt.io"}
+        assert "initial-admin" not in json.dumps(docs)
 
 
 def test_the_webui_route_asks_for_its_redirect_uri():
@@ -546,11 +564,15 @@ def test_the_webui_route_asks_for_its_redirect_uri():
 
 def test_cluster_scoped_names_include_the_namespace():
     """Two SAWs with the same name in different namespaces must not collide."""
-    names_a = {(d["kind"], d["metadata"]["name"]) for d in all_docs(namespace="saw-a")
-               if d["kind"].startswith("Cluster")}
-    names_b = {(d["kind"], d["metadata"]["name"]) for d in all_docs(namespace="saw-b")
-               if d["kind"].startswith("Cluster")}
-    assert names_a and not names_a & names_b
+    def names(ns, *args):
+        return {(d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
+                for d in all_docs(*args, namespace=ns)
+                if d["kind"].startswith("Cluster") or d["metadata"].get("namespace") not in (None, ns)}
+    for args in ((), ("--set", "source.dataSource=openshell-gateway")):
+        names_a, names_b = names("saw-a", *args), names("saw-b", *args)
+        assert names_a and not names_a & names_b
+    # Nothing cluster-wide: no prepare Job, no SCC or registry grants for it.
+    assert not [d for d in all_docs() if d["kind"].startswith("Cluster")]
 
 
 GOV_CHART = ROOT / "charts" / "governance-interceptor"
@@ -835,10 +857,6 @@ def test_sandbox_ui_routes_ask_for_their_redirect_uri(tmp_path):
               and d["metadata"]["labels"].get("openshell.pattern/sandbox-ui") == "true"]
     assert routes and all(r["metadata"]["labels"]["saw.redhat.com/oidc-redirect"] == "true" for r in routes)
     assert {r["spec"]["host"] for r in routes} == {"saw-test-default-notebook-ui.apps.example.com"}
-    # A Job cannot change: it is a Sync hook, recreated on every sync.
-    job = docs[("Job", "saw-test-prepare")]
-    assert job["metadata"]["annotations"] == {"argocd.argoproj.io/hook": "Sync",
-                                              "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation"}
 
 
 def test_no_sandbox_ui_changes_nothing(tmp_path):

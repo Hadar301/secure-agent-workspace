@@ -19,20 +19,21 @@ spec:
         annotations:
           cdi.kubevirt.io/storage.bind.immediate.requested: "true"
       spec:
-        {{- if .Values.source.registryURL }}
-        source:
-          registry:
-            url: {{ .Values.source.registryURL | quote }}
-            pullMethod: node
-        {{- else if .Values.source.httpURL }}
+        {{- /* The disk is made once, from this source; see source in values.yaml. */}}
+        {{- if eq (include "openshell-sandbox.diskSource" .) "http" }}
         source:
           http:
             url: {{ .Values.source.httpURL | quote }}
-        {{- else }}
+        {{- else if eq (include "openshell-sandbox.diskSource" .) "dataSource" }}
         sourceRef:
           kind: DataSource
           name: {{ include "openshell-sandbox.dataSourceName" . }}
           namespace: {{ include "openshell-sandbox.goldenNamespace" . }}
+        {{- else }}
+        source:
+          registry:
+            url: {{ include "openshell-sandbox.diskImageURL" . | quote }}
+            pullMethod: {{ .Values.source.pullMethod | default "node" }}
         {{- end }}
         storage:
           accessModes:

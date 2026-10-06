@@ -314,7 +314,6 @@ sandbox-pre-delete: .check-saw-name
 	@echo "Cleaning up heavy resources for '$(OPENSHELL_SAW_NAME)' before uninstall..."
 	-@oc delete vm $(OPENSHELL_SAW_NAME) -n $(SAW_NS) --wait=false 2>/dev/null
 	-@oc delete dv $(OPENSHELL_SAW_NAME)-root -n $(SAW_NS) --wait=false 2>/dev/null
-	-@oc delete job $(OPENSHELL_SAW_NAME)-prepare -n $(SAW_NS) --wait=false 2>/dev/null
 	@echo "Heavy resources for '$(OPENSHELL_SAW_NAME)' scheduled for deletion."
 
 # --- Keycloak / OIDC ---

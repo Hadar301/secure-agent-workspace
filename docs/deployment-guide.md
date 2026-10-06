@@ -119,9 +119,9 @@ The VM boots from a clone of the golden image. Nothing logs in over SSH to insta
 
 Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
 
-#### Prepare Job
+#### Root disk
 
-The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource. It does not touch Keycloak (the [redirect registrar](#redirect-registrar) registers the web UI routes), install binaries, or apply profiles.
+There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make copy-images` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), or `source.dataSource` to clone a golden image DataSource that already exists. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the [redirect registrar](#redirect-registrar).
 
 #### Guest
 
