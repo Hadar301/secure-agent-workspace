@@ -155,13 +155,14 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
 fi
 
 # The chart lists inference and web-search by default, and the VM waits until
-# every listed Secret exists. Pass only the Secrets this run created, or a
-# quickstart without a web-search key (or without an API key) stays Starting.
+# every listed Secret exists. Leave out only the Secrets that are not in the
+# namespace: a quickstart without a web-search key (or an API key) would stay
+# Starting, and a re-run without the keys must keep the Secrets already there.
 SECRET_SET=()
-if [[ -z "${API_KEY}" ]]; then
+if ! oc get secret inference -n "${DEPLOY_NS}" >/dev/null 2>&1; then
   SECRET_SET+=(--set "inference.secretName=")
 fi
-if [[ -z "${WEB_SEARCH_API_KEY}" ]]; then
+if ! oc get secret web-search -n "${DEPLOY_NS}" >/dev/null 2>&1; then
   SECRET_SET+=(--set "additionalProviderSecrets=null")
 fi
 
