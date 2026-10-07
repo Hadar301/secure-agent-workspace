@@ -129,7 +129,7 @@ WORKSPACE      ?= default
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs keycloak-check generate-keys \
-        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
+        build-nemoclaw build-nemoclaw-cli \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-status openshell-saw-restart openshell-saw-vm-ssh openshell-saw-ssh ssh-secret \
@@ -161,19 +161,6 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
-
-build-openclaw-openshell: build-openclaw-openshell-local ## Build the openclaw-openshell sandbox image and push to quay
-	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
-
-build-openclaw-openshell-local: ## Build the openclaw-openshell sandbox image into this cluster's internal registry only (no quay push access needed)
-	-@oc delete is openclaw-openshell -n $(BUILD_NS) 2>/dev/null
-	helm upgrade --install openclaw-openshell-image $(HELM_DIR)openclaw-openshell-image \
-		--namespace $(BUILD_NS) --create-namespace
-	oc start-build openclaw-openshell -n $(BUILD_NS) --follow
-	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/openclaw-openshell:latest"
-	@echo "Point a BOM profile's sandbox image at that path and enable internalRegistry.allowAnonymousPull"
-	@echo "(see charts/openshell-saw/values.yaml) if you don't have quay push access."
 
 # --- Governance interceptor image ---
 
@@ -335,6 +322,30 @@ sandbox-pre-delete: .check-saw-name
 keycloak: ## Deploy Keycloak + realm (uses a Keycloak already in KEYCLOAK_NS if configured; asks before importing the realm into it)
 	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
 	USE_EXISTING_KEYCLOAK=$(USE_EXISTING_KEYCLOAK) $(SCRIPTS_DIR)/deploy-keycloak.sh
+
+keycloak-passwords: ## Show the Keycloak users' passwords (test users and users added with keycloak-add-users)
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) $(SCRIPTS_DIR)/keycloak-users.sh show
+
+keycloak-harden: ## For a realm imported earlier: password policy, brute-force lockout, no self-registration, generated passwords for the test users
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
+	$(SCRIPTS_DIR)/keycloak-users.sh ensure
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
+	$(SCRIPTS_DIR)/keycloak-users.sh harden
+
+USERS_FILE ?= overrides/saw-users.yaml
+KC_USER    ?=
+KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM)
+
+keycloak-add-users: ## Create the Keycloak users in USERS_FILE (default overrides/saw-users.yaml) that do not exist yet, with generated passwords
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
+
+keycloak-password: ## Print a Keycloak user's password (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh password "$(KC_USER)"
+
+keycloak-reset-password: ## Give a Keycloak user a new generated password and print it (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
 
 keycloak-check: ## Check the Keycloak in KEYCLOAK_NS is configured for OpenShell (realm, CLI client, roles)
 	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
@@ -522,6 +533,20 @@ openclaw-gui: .check-saw-name .check-gateway-ca ## Open OpenClaw web UI (e.g. ma
 		-L "$$GUI_PORT:127.0.0.1:18789" \
 		-N sandbox@openshell-$$SANDBOX.$(WORKSPACE)
 
+sandbox-ui: .check-saw-name .check-gateway-ca ## Print the sandbox web UI routes (ui.route in the SAW-BOM); the OpenClaw token only when the gateway still asks for it
+	@oc get route -n $(SAW_NS) -l openshell.pattern/sandbox-ui=true --no-headers \
+		-o custom-columns='HOST:.spec.host,WS:.metadata.annotations.openshell\.pattern/workspace,SB:.metadata.annotations.openshell\.pattern/sandbox' \
+		2>/dev/null | while read -r host ws sb; do \
+		frag=$$(openshell --gateway $(OPENSHELL_SAW_NAME) sandbox exec -n $$sb --workspace $$ws --no-tty -- \
+			sh -c 'cat /sandbox/.openclaw/openclaw.json' 2>/dev/null \
+			| python3 -c "import sys,json; a=json.load(sys.stdin).get('gateway',{}).get('auth',{}); print('' if a.get('mode') == 'trusted-proxy' else '#token=' + a.get('token',''))" 2>/dev/null); \
+		echo "$$sb ($$ws): https://$$host/$$frag"; \
+	done; \
+	echo "Sign in with Keycloak as $(OPENSHELL_SAW_NAME); only the workspace owner gets through."
+
+portal-vault-setup: ## Let the self-service portal write users' keys to Vault (policy + role; the imperative job does the same)
+	@scripts/portal-vault-setup.sh
+
 openshell-saw-gui: .check-saw-name ## Open web UI (alias for nemoclaw-gui)
 	@$(MAKE) nemoclaw-gui OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SANDBOX_NAME=$(SANDBOX_NAME) WORKSPACE=$(WORKSPACE) GUI_PORT=$(GUI_PORT)
 
@@ -583,23 +608,19 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 # --- In-guest installer tests (no cluster needed) ---
 .PHONY: deploy-spire-identity test-agent-identity-live
 deploy-spire-identity: ## Deploy shared SPIRE infrastructure (explicit IDENTITY_CONTEXT and IDENTITY_VALUES)
-	$(PYTHON) scripts/deploy-spire-identity.py --context "$(IDENTITY_CONTEXT)" --values "$(IDENTITY_VALUES)"
+	uv run --no-project -- python scripts/deploy-spire-identity.py --context "$(IDENTITY_CONTEXT)" --values "$(IDENTITY_VALUES)"
 
 test-agent-identity-live: ## Run live identity compatibility gate; exit 2 means acceptance remains blocked
-	$(PYTHON) scripts/test-agent-identity-live.py --context "$(IDENTITY_CONTEXT)" \
+	uv run --no-project --with PyYAML -- python scripts/test-agent-identity-live.py --context "$(IDENTITY_CONTEXT)" \
 		--namespace-prefix "$(IDENTITY_NAMESPACE_PREFIX)" --transport "$(IDENTITY_TRANSPORT)" \
 		--artifact-dir "$(IDENTITY_ARTIFACT_DIR)"
 
-PYTHON ?= python3
 .PHONY: test-installer
 test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
-	@$(PYTHON) -c "import pytest, yaml, click, requests" 2>/dev/null || { \
-		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
-		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
-	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
-		tests/installer tests/charts tests/scripts cli/tests/test_kube.py cli/tests/test_cli.py
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} uv run --no-project --with-requirements tests/requirements.txt -- python -m pytest -q -p no:cacheprovider \
+		tests/installer tests/charts tests/scripts tests/portal cli/tests/test_kube.py cli/tests/test_cli.py
 
 .PHONY: openshell-saw-token-provider
 openshell-saw-token-provider: ## Create a token-exchange provider using laptop OIDC credentials
 	@test "$(origin WORKSPACE)" != "file" || { echo 'Set WORKSPACE explicitly'; exit 1; }
-	@python3 $(SCRIPTS_DIR)/openshell-saw-token-provider.py --gateway "$(OPENSHELL_SAW_NAME)" --workspace "$(WORKSPACE)" --provider "$(PROVIDER)" --profile "$(PROVIDER_PROFILE)"
+	@uv run --no-project -- python $(SCRIPTS_DIR)/openshell-saw-token-provider.py --gateway "$(OPENSHELL_SAW_NAME)" --workspace "$(WORKSPACE)" --provider "$(PROVIDER)" --profile "$(PROVIDER_PROFILE)"

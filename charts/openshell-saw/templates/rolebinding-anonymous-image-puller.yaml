@@ -1,7 +1,7 @@
 {{- if .Values.internalRegistry.allowAnonymousPull }}
 # Lets the sandbox VM's container runtime (an external client to the cluster —
 # it has no ServiceAccount pull secret) pull internally-built images (e.g.
-# a self-built openclaw-openshell, see values.yaml's internalRegistry
+# a self-built sandbox image, see values.yaml's internalRegistry
 # comment) from this namespace's registry without credentials. Standard
 # OpenShift pattern for exposing a namespace's ImageStreams for anonymous
 # pull; scoped to this namespace only.

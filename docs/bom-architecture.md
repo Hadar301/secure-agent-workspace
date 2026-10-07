@@ -83,7 +83,7 @@ in [Versioned BOM installer](versioned-bom-installer.md).
 │  │     │                                        │                 │  │
 │  │     │  ┌─────────────────────────────────┐   │                 │  │
 │  │     │  │  notebook (openclaw)             │  │                 │  │
-│  │     │  │  Image: openclaw-openshell:latest│  │                 │  │
+│  │     │  │  Image: aipcc openclaw:2026.9.6  │  │                 │  │
 │  │     │  │  Workspace: default              │  │                 │  │
 │  │     │  │  Provider: nvidia                │  │                 │  │
 │  │     │  │  OpenClaw Gateway (:18789)       │  │                 │  │
@@ -131,7 +131,7 @@ charts/saw-bom/profiles/
 | Type | Image | Use Case | Gateway | Entrypoint |
 |------|-------|----------|---------|------------|
 | nemoclaw | nemoclaw-sandbox:latest | NemoClaw-managed agent with inference | OpenClaw via sandbox exec | NemoClaw supervisor |
-| openclaw | openclaw-openshell:latest | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
+| openclaw | quay.io/aipcc/base-images/agentic/openclaw:2026.9.6 | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
 | generic | base | Plain sandbox for tools/scripts | None | OpenShell supervisor |
 
 ## Inference (OpenShell 0.1.x: no inference routes)
@@ -175,7 +175,7 @@ User → OpenClaw TUI/GUI
 │ └── No credentials inside sandbox containers    │
 ├─────────────────────────────────────────────────┤
 │ Identity Boundary                               │
-│ ├── OIDC via Keycloak (alice/alice)             │
+│ ├── OIDC via Keycloak (alice)                   │
 │ ├── mTLS for internal gateway communication     │
 │ ├── Gateway token for OpenClaw Control UI       │
 │ └── Sandbox user (UID 65532) — non-root         │
