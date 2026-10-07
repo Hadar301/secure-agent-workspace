@@ -107,7 +107,7 @@ def test_adds_the_dashboard_and_ui_callbacks_and_keeps_other_vms(run):
     kc = FakeKeycloak(dashboard_client())
     result = run(kc, ui_hosts="alice-default-notebook-ui.apps.example.com ")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Redirect URIs registered" in result.stdout
+    assert "Registered 2 dashboard redirect URI(s)" in result.stdout
     assert kc.client["redirectUris"] == sorted([
         "https://bob-webui/oauth2/callback",
         "https://alice-webui-saw-alice.apps.example.com/oauth2/callback",
@@ -136,13 +136,13 @@ def test_only_ui_routes_when_the_dashboard_is_off(run):
 def test_nothing_to_register_makes_no_keycloak_call(run):
     kc = FakeKeycloak(dashboard_client())
     result = run(kc, dashboard="false")
-    assert result.returncode == 0 and "No redirect URIs to register" in result.stdout
+    assert result.returncode == 0 and "No dashboard redirect URIs are required" in result.stdout
     assert kc.puts == 0
 
 
-def test_a_missing_client_is_reported_not_created(run):
+def test_a_missing_client_fails_the_prepare_step(run):
     kc = FakeKeycloak(None)
     result = run(kc)
-    assert result.returncode == 0                             # best effort: the prepare Job goes on
-    assert "openshell-dashboard' not found" in result.stdout
+    assert result.returncode != 0
+    assert "dashboard OIDC client was not found" in result.stderr
     assert kc.puts == 0

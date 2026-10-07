@@ -11,7 +11,7 @@ rules:
     verbs: ["get", "list", "create"]
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datasources"]
-    verbs: ["get", "create"]
+    verbs: ["get", "list", "create"]
   {{- if and .Values.job.waitForSecrets (include "openshell-sandbox.providerSecrets" . | fromJsonArray) }}
   - apiGroups: [""]
     resources: ["secrets"]

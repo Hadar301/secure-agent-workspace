@@ -1,33 +1,20 @@
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
-# Operator SSH access (used by `make openshell-saw-configure-gateway` to fetch
+# Operator SSH access (used by `make saw-configure` to fetch
 # the gateway CA). Provisioning does not use SSH. Keys are provisioned
 # dynamically by KubeVirt accessCredentials through the qemu guest agent:
 # updating the Secret updates cloud-user's authorized_keys in the running VM.
 # https://kubevirt.io/user-guide/user_workloads/accessing_virtual_machines/
 #
 # The chart creates an empty <name>-ssh-pubkey Secret for this;
-# `make openshell-saw-vm-ssh` adds your key to it when you need a shell.
+# `make saw-vm-ssh` adds your key to it when you need a shell.
 # Or name an existing Secret instead (every value in it is a public key):
 sshPublicKeySecret: ""
 # Optional: seed the chart-created Secret with one key (key1).
 sshPublicKey: ""
 
-# VM disk source — three modes:
-#
-# 1. DataSource (default): clone from a golden image DataSource (created by the
-#    openshell-gateway-image chart or CDI DataImportCron).
-#      source:
-#        dataSource: openshell-gateway
-#        dataSourceNamespace: openshell-agents
-#
-# 2. Registry: import a bootc/containerDisk image directly from a container registry.
-#      source:
-#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway:latest"
-#
-# 3. HTTP: download a qcow2 disk image from a URL.
-#      source:
-#        httpURL: "https://example.com/openshell-gateway.qcow2"
+# VM disk source. See docs/deployment-guide.md for DataSource, registry,
+# and HTTP examples. DataSource is the default.
 source:
   # Leave empty for the default "openshell-gateway" DataSource.
   dataSource: ""
@@ -193,7 +180,7 @@ sandboxUiProxy:
   # asking for its gateway token, and approves their UI devices. Only
   # requests from `cidrs` are trusted; the forward arrives over loopback.
   # The CLI and TUI in the sandbox use the gateway secret as a password.
-  # Off: the UI asks for the token (make sandbox-ui prints it).
+  # Off: the UI asks for its token. make sandbox-ui lists routes only.
   trustedProxy:
     enabled: true
     cidrs: ["127.0.0.1/32", "::1/128"]
@@ -254,4 +241,4 @@ job:
 
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
-# governance interceptor accepts its VM (make openshell-saw-create does this).
+# governance interceptor accepts its VM (make saw-create does this).

@@ -5,14 +5,13 @@
 #   add-users [FILE]       Create each user in FILE (default
 #                          overrides/saw-users.yaml) that is not in the realm
 #                          yet, with a generated password; users that exist
-#                          are left alone. New passwords are printed and kept
-#                          in Secret $USERS_SECRET.
-#   password USER          Print USER's password (as last set by this script).
-#   reset-password USER    Give USER a new generated password and print it.
-#   show                   Print every user and password this script knows.
+#                          are left alone. Passwords stay in Secret $USERS_SECRET.
+#   password USER          Show which Secret holds USER's password.
+#   reset-password USER    Give USER a new generated password in the Secret.
+#   show                   List users that have stored passwords.
 #   ensure                 Create or complete Secret $SECRET: a generated
 #                          password per test user in the chart's values (the
-#                          realm import reads it; `make keycloak` runs this).
+#                          realm import reads it; `make keycloak-deploy` runs this).
 #                          In the Validated Pattern it comes from Vault
 #                          (values-secret keycloak-users) instead.
 #   harden                 For a realm imported before this: password policy,
@@ -75,7 +74,14 @@ EOF
 
 secret_json() {  # $1 Secret name; {} when it does not exist
   local out
-  out="$(oc get secret "$1" -n "${NS}" -o json 2>/dev/null || true)"
+  if out="$(oc get secret "$1" -n "${NS}" -o json 2>&1)"; then
+    :
+  elif [[ -z "${out}" || "${out}" == *NotFound* || "${out}" == *"not found"* ]]; then
+    out='{}'
+  else
+    echo "Error: cannot read Secret $1 in ${NS}. Check cluster access." >&2
+    return 1
+  fi
   printf '%s\n' "${out:-{\}}"
 }
 
@@ -103,7 +109,12 @@ print(base64.b64decode(v).decode() if v else "")' "$1"
 store_passwords() {  # $1 Secret, then user=password ...; existing keys are kept
   local secret="$1" args=() line
   shift
-  oc get namespace "${NS}" >/dev/null 2>&1 || oc create namespace "${NS}" >/dev/null
+  local namespaces
+  namespaces="$(oc get namespaces -o json)"
+  if ! jq -e --arg ns "${NS}" '.items | any(.metadata.name == $ns)' \
+      <<<"${namespaces}" >/dev/null; then
+    oc create namespace "${NS}" >/dev/null
+  fi
   for line in "$@"; do args+=("--from-literal=${line}"); done
   while IFS= read -r line; do
     [[ -n "${line}" ]] || continue
@@ -130,7 +141,7 @@ ensure() {
   fi
   store_passwords "${SECRET}" "${new[@]}"
   echo "Keycloak user passwords: generated for ${added[*]} (Secret ${SECRET} in ${NS})."
-  echo "  Show them with: make -f Makefile-quickstart keycloak-passwords"
+  echo "  Password values stay in the Kubernetes Secret."
 }
 
 show() {
@@ -140,11 +151,11 @@ show() {
     local pw
     pw="$(current_password "${user}")"
     [[ -n "${pw}" ]] || continue
-    printf '%-20s %s\n' "${user}" "${pw}"
+    printf '%-20s stored in a Keycloak user Secret\n' "${user}"
     found=1
   done
   if [[ ${found} -eq 0 ]]; then
-    echo "No passwords in Secrets ${SECRET} or ${USERS_SECRET} in ${NS}. Run: make -f Makefile-quickstart keycloak" >&2
+    echo "No passwords in Secrets ${SECRET} or ${USERS_SECRET} in ${NS}. Run: make keycloak-deploy" >&2
     exit 1
   fi
 }
@@ -155,10 +166,14 @@ password() {
   pw="$(current_password "${user}")"
   if [[ -z "${pw}" ]]; then
     echo "No password for ${user} in Secrets ${SECRET} or ${USERS_SECRET} in ${NS} (set outside this" >&2
-    echo "script?). Give them a new one: make -f Makefile-quickstart keycloak-reset-password KC_USER=${user}" >&2
+    echo "script?). Give them a new one: make keycloak-reset-password KC_USER=${user}" >&2
     exit 1
   fi
-  printf '%s\n' "${pw}"
+  if [[ -n "$(password_of "${user}" "${USERS_SECRET}")" ]]; then
+    echo "${user}: password is in Secret ${USERS_SECRET}, key ${user}, namespace ${NS}."
+  else
+    echo "${user}: password is in Secret ${SECRET}, key ${user}, namespace ${NS}."
+  fi
 }
 
 # --- Keycloak admin API -----------------------------------------------------
@@ -167,7 +182,11 @@ BASE=""
 AUTH=()
 admin_login() {
   local host admin_user admin_pass token
-  host="$(oc get keycloak "${KC_NAME}" -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null || true)"
+  local keycloaks
+  keycloaks="$(oc get keycloak -n "${NS}" -o json)"
+  host="$(jq -r --arg name "${KC_NAME}" \
+    'first(.items[] | select(.metadata.name == $name) | .status.externalURL) // empty' \
+    <<<"${keycloaks}")"
   BASE="${host:-https://$("$(dirname "$0")/keycloak-host.sh" "${NS}")}"
   admin_user="$(oc get secret "${KC_NAME}-initial-admin" -n "${NS}" -o jsonpath='{.data.username}' | base64 -d)"
   admin_pass="$(oc get secret "${KC_NAME}-initial-admin" -n "${NS}" -o jsonpath='{.data.password}' | base64 -d)"
@@ -202,7 +221,7 @@ set_password() {  # user id, password, temporary (true|false)
 
 harden() {
   admin_login
-  local settings code
+  local settings code failed=0
   settings="$(python3 - "${CHART}/values.yaml" <<'EOF'
 import sys, json, yaml
 kc = (yaml.safe_load(open(sys.argv[1])) or {}).get("keycloak") or {}
@@ -239,8 +258,10 @@ EOF
       echo "  ${user}: password set from the Secret"
     else
       echo "  ${user}: password reset failed (HTTP ${code})" >&2
+      failed=1
     fi
   done
+  return "${failed}"
 }
 
 # Checks FILE and prints one JSON object per user. User names name the VM
@@ -335,11 +356,7 @@ add_users() {
 
   if [[ ${#stored[@]} -gt 0 ]]; then
     store_passwords "${USERS_SECRET}" "${stored[@]}"
-    echo ""
-    echo "New passwords (kept in Secret ${USERS_SECRET} in ${NS}):"
-    for u in "${stored[@]}"; do
-      printf '  %-20s %s\n' "${u%%=*}" "${u#*=}"
-    done
+    echo "New passwords are in Secret ${USERS_SECRET} in ${NS}."
   fi
   return "${failed}"
 }
@@ -354,8 +371,7 @@ reset_password() {
   code="$(set_password "${id}" "${pw}" false)"
   [[ "${code}" == 204 ]] || { echo "Error: password reset for ${user} failed (HTTP ${code})" >&2; exit 1; }
   store_passwords "${USERS_SECRET}" "${user}=${pw}"
-  echo "New password for ${user} (kept in Secret ${USERS_SECRET} in ${NS}):"
-  printf '%s\n' "${pw}"
+  echo "Password for ${user} was reset in Secret ${USERS_SECRET} in ${NS}."
 }
 
 case "${1:-}" in

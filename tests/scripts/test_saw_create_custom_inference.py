@@ -74,3 +74,54 @@ def test_defaults_are_unchanged(run):
     assert not bom_values.exists()
     bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom"))
     assert " -f " not in bom
+    assert "oc get route cinf-dashboard" not in log
+
+
+def test_external_issuer_does_not_require_local_keycloak(run):
+    issuer = "https://external.example.test/realms/test"
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k", OIDC_ISSUER=issuer)
+    assert "oc get keycloak" not in log
+    saw = next(line for line in log.splitlines()
+               if line.startswith("helm upgrade --install cinf charts/openshell-saw"))
+    assert f"oidc.issuerUrl={issuer}" in saw
+    assert "dashboard.enabled=false" in saw
+    assert "route.webui=false" in saw
+    assert "agent=" not in saw and "sandboxImage=" not in saw and "vertexSaJson=" not in saw
+    assert "inference.provider=" not in saw and "inference.model=" not in saw
+    assert "inference.endpointUrl=" not in saw and "inference.webSearch=" not in saw
+    assert "oc get route cinf-dashboard" not in log
+
+
+def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "oc-called"
+    oc = bindir / "oc"
+    oc.write_text('#!/bin/sh\nprintf called > "$MARKER"\n')
+    oc.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MARKER=str(marker),
+               OPENSHELL_SAW_NAME="cinf", SAW_CHART="charts/openshell-saw",
+               OWNER="alice", PROVIDER="build", MODEL="", API_KEY="k")
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "PROVIDER, MODEL, and API_KEY" in result.stderr
+    assert not marker.exists()
+
+
+def test_unsupported_web_search_setting_fails_before_cluster_work(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "oc-called"
+    oc = bindir / "oc"
+    oc.write_text('#!/bin/sh\nprintf called > "$MARKER"\n')
+    oc.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MARKER=str(marker),
+               OPENSHELL_SAW_NAME="cinf", SAW_CHART="charts/openshell-saw",
+               OWNER="alice", PROVIDER="build", MODEL="m", API_KEY="k",
+               WEB_SEARCH="brave")
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "WEB_SEARCH is unsupported" in result.stderr
+    assert not marker.exists()

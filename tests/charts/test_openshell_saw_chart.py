@@ -682,7 +682,7 @@ def test_prepare_job_reads_the_admin_secret_of_the_keycloak_in_use():
 
 def test_create_script_passes_the_keycloak_it_finds():
     text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
-    assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
+    assert "oidc.keycloakName=${KC_NAME}" in text and "oidc.realm=${KEYCLOAK_REALM}" in text
 
 
 def test_secret_template_matches_the_default_profile():

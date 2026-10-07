@@ -2,14 +2,19 @@
 # Phase: ensure the golden image DataSource exists and the VM DataVolume is provisioned.
 # Expects: GOLDEN_DS, GOLDEN_NS, GOLDEN_DISK_SIZE, GOLDEN_IMAGE_URL, PULL_METHOD,
 #          VM_NAME, NS
+set -euo pipefail
 
 if [[ -z "${GOLDEN_IMAGE_URL}" ]]; then
   GOLDEN_IMAGE_URL="docker://image-registry.openshift-image-registry.svc:5000/${GOLDEN_NS}/${GOLDEN_DS}:latest"
 fi
 
 if [[ -n "${GOLDEN_DS}" ]]; then
-  DS_EXISTS="$(kubectl get datasource "${GOLDEN_DS}" -n "${GOLDEN_NS}" -o name 2>/dev/null || true)"
-  DV_PHASE="$(kubectl get dv "${GOLDEN_DS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  sources="$(kubectl get datasources -n "${GOLDEN_NS}" -o json)"
+  DS_EXISTS="$(jq -r --arg name "${GOLDEN_DS}" \
+    '.items[] | select(.metadata.name == $name) | .metadata.name' <<<"${sources}")"
+  dvs="$(kubectl get dv -n "${GOLDEN_NS}" -o json)"
+  DV_PHASE="$(jq -r --arg name "${GOLDEN_DS}-golden" \
+    '.items[] | select(.metadata.name == $name) | .status.phase // empty' <<<"${dvs}")"
 
   # Case 1: No DataVolume — create both DV + DS and wait
   if [[ -z "${DV_PHASE}" ]]; then
@@ -42,8 +47,11 @@ DVEOF
     echo "Waiting for golden image import..."
     golden_deadline=$((SECONDS + 900))
     while true; do
-      DV_PHASE="$(kubectl get dv "${GOLDEN_DS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-      gprog="$(kubectl get dv "${GOLDEN_DS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.progress}' 2>/dev/null || true)"
+      dvs="$(kubectl get dv -n "${GOLDEN_NS}" -o json)"
+      DV_PHASE="$(jq -r --arg name "${GOLDEN_DS}-golden" \
+        '.items[] | select(.metadata.name == $name) | .status.phase // empty' <<<"${dvs}")"
+      gprog="$(jq -r --arg name "${GOLDEN_DS}-golden" \
+        '.items[] | select(.metadata.name == $name) | .status.progress // empty' <<<"${dvs}")"
       echo "  golden image: phase=${DV_PHASE:-pending} progress=${gprog:-N/A}"
       if [[ "${DV_PHASE}" == "Succeeded" ]]; then break; fi
       if (( SECONDS > golden_deadline )); then
@@ -76,9 +84,11 @@ DSEOF
   # If the VM was created before the DataSource existed, its DataVolume
   # was never created by KubeVirt. Create it directly so the VM can boot.
   DV_NAME="${VM_NAME}-root"
-  if ! kubectl get dv "${DV_NAME}" -n "${NS}" >/dev/null 2>&1; then
+  vm_dvs="$(kubectl get dv -n "${NS}" -o json)"
+  if ! jq -e --arg name "${DV_NAME}" \
+      '.items | any(.metadata.name == $name)' <<<"${vm_dvs}" >/dev/null; then
     echo "VM DataVolume '${DV_NAME}' missing — creating clone from DataSource..."
-    kubectl apply -f - <<CLONEDV || echo "DataVolume already exists or conflict — continuing"
+    kubectl apply -f - <<CLONEDV
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
@@ -106,7 +116,9 @@ DV_NAME="${VM_NAME}-root"
 echo "Waiting for DataVolume ${DV_NAME} to be provisioned..."
 deadline=$((SECONDS + 900))
 while true; do
-  dv_phase="$(kubectl -n "${NS}" get datavolume "${DV_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  vm_dvs="$(kubectl get dv -n "${NS}" -o json)"
+  dv_phase="$(jq -r --arg name "${DV_NAME}" \
+    '.items[] | select(.metadata.name == $name) | .status.phase // empty' <<<"${vm_dvs}")"
   echo "  datavolume phase=${dv_phase:-unknown}"
   if [[ "${dv_phase}" == "Succeeded" ]]; then
     break
