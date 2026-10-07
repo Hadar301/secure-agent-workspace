@@ -150,7 +150,18 @@ SB_SECRETS="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set 'additionalProviderSecrets[0]=web-search' 2>&1)"
 assert_contains "${SB_SECRETS}" "secretName: gemini" "provider Secret attached as a VM disk"
 assert_contains "${SB_SECRETS}" "secretName: web-search" "additional provider Secret attached"
-assert_contains "${SB_SECRETS}" "optional: true" "provider Secret disks are optional"
+# Profiles ConfigMap stays optional. Provider Secrets do not: the VM must not
+# boot, and freeze an empty iso9660 disk, before those Secrets exist.
+assert_contains "${SB_SECRETS}" "optional: true" "profiles ConfigMap is optional"
+opt_count="$(grep -c 'optional: true' <<< "${SB_SECRETS}" || true)"
+echo -n "  provider Secret disks are required... "
+if [[ "${opt_count}" -eq 1 ]]; then
+  echo "OK"
+  PASS=$((PASS + 1))
+else
+  echo "FAILED (optional: true x${opt_count}, want 1 for the profiles ConfigMap only)"
+  FAIL=$((FAIL + 1))
+fi
 
 # ============================================================
 echo ""

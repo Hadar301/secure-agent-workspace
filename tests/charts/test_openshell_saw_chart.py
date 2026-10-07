@@ -122,7 +122,10 @@ def test_vm_attaches_inputs_as_serial_disks(default_docs):
     assert secret_volumes == {"inference": "saw-sec-0", "web-search": "saw-sec-1"}
     for name in secret_volumes.values():
         assert disks[name] == name
-        assert volumes[name]["secret"]["optional"] is True
+        # Required, so virt-launcher waits for the Secret. An optional iso9660
+        # disk is frozen empty when the VM starts first, and apply never sees
+        # the keys without a restart.
+        assert "optional" not in volumes[name]["secret"]
     assert set(disks) == set(volumes)
     assert volumes["cloudinitdisk"]["cloudInitNoCloud"]["secretRef"]["name"] == "saw-test-cloudinit"
 
