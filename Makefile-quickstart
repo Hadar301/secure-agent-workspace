@@ -617,7 +617,7 @@ test-agent-identity-live: ## Run live identity compatibility gate; exit 2 means 
 
 .PHONY: test-installer
 test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
-	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} uv run --no-project --with-requirements tests/requirements.txt -- python -m pytest -q -p no:cacheprovider \
+	uv run --no-project --with-requirements tests/requirements.txt --with-editable ./cli -- python -m pytest -q -p no:cacheprovider \
 		tests/installer tests/charts tests/scripts tests/portal cli/tests/test_kube.py cli/tests/test_cli.py
 
 .PHONY: openshell-saw-token-provider
