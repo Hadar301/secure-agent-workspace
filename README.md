@@ -31,6 +31,7 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
   - [Technical details](#technical-details)
     - [Security model](#security-model)
     - [Keycloak test users](#keycloak-test-users)
+    - [Web UI sign-in (redirect URIs)](#web-ui-sign-in-redirect-uris)
     - [Namespace modes](#namespace-modes)
     - [OIDC issuer resolution](#oidc-issuer-resolution)
   - [Tags](#tags)
@@ -378,7 +379,7 @@ Details: [docs/custom-inference.md](docs/custom-inference.md).
 
 ### Self-service workspaces and sandbox web UIs
 
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only. Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 
@@ -542,6 +543,58 @@ for a growing time after 5 failed sign-ins (`keycloak.bruteForce`). A realm
 imported before this kept its old settings and passwords (an import never
 changes an existing realm): run `make -f Makefile-quickstart keycloak-harden`
 once to apply them, turn registration off, and set the generated passwords.
+
+### Web UI sign-in (redirect URIs)
+
+Each workspace's web UIs (the VM's OpenShell dashboard, and each sandbox UI
+route) sign in through Keycloak's `openshell-dashboard` client, and Keycloak
+only sends the browser back to a redirect URI registered on that client. Every
+UI has its own host, and Keycloak takes no wildcard in a host name, so each
+one is registered.
+
+By default the **redirect registrar** does it: one Deployment in Keycloak's
+namespace (`charts/openshell-keycloak`, `redirectRegistrar`) registers each
+web UI route's `https://<host>/oauth2/callback` within about 15 seconds of
+the route appearing (from `overrides/saw-users.yaml` or the self-service
+portal), and removes the entries of workspaces that are gone. It signs in as
+its own Keycloak client that may only manage the OpenShell realm's clients;
+its init container uses the Keycloak admin Secret once per start to set that
+client up, and the registrar itself never sees it.
+
+To keep Keycloak admin access out of the cluster entirely, turn it off
+(`redirectRegistrar.enabled: false` in the `openshell-keycloak` values) and
+register as an administrator instead, with your own `oc` session. The same
+targets work alongside the registrar too:
+
+```bash
+make -f Makefile-quickstart keycloak-register KC_USER=carol   # account (if new) + carol's web UIs
+make -f Makefile-quickstart keycloak-redirects                # what is registered, what is missing
+make -f Makefile-quickstart keycloak-redirects-sync           # all workspaces; drops deleted ones
+```
+
+`keycloak-register` creates the Keycloak account if it does not exist yet
+(generated password, printed, as with `keycloak-add-users`), then adds
+`https://<host>/oauth2/callback` for each of the user's web UI routes,
+waiting up to `REDIRECT_WAIT` seconds (default 600) for Argo CD to create
+them. Until then, signing in to that workspace's UIs fails with Keycloak's
+"Invalid parameter: redirect_uri". `keycloak-redirects-sync` adds whatever is
+missing and removes the entries it added for workspaces that are gone;
+entries it did not add (registered by hand, other apps) are kept.
+
+The registrar and `keycloak-redirects-sync` apply the same rules.
+
+The web UI routes are the ones labelled `saw.redhat.com/oidc-redirect=true` in
+the `saw-*` namespaces. With another OIDC issuer, register their callbacks
+there instead; this lists them:
+
+```bash
+oc get routes -A -l saw.redhat.com/oidc-redirect=true \
+  -o jsonpath='{range .items[*]}https://{.spec.host}/oauth2/callback{"\n"}{end}'
+```
+
+The scripts verify Keycloak's certificate; for a router certificate signed by
+a private CA, set `KEYCLOAK_CA=<ca-bundle.pem>`. For a Keycloak CR not named
+`openshell-keycloak`, set `KEYCLOAK_NAME`.
 
 ### Namespaces
 

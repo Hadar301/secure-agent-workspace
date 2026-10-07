@@ -105,9 +105,9 @@ if [[ -n "${OIDC_ISSUER}" ]]; then
   # the VM's installer uses its local mTLS identity instead.
   OIDC_OPTS="--set oidc.issuerUrl=${OIDC_ISSUER} --set oidc.clientId=${OIDC_CLIENT_ID}"
   OIDC_OPTS="${OIDC_OPTS} --set oidc.realm=${KEYCLOAK_REALM}"
-  # The prepare Job reads <Keycloak CR name>-initial-admin to register the
-  # dashboard redirect URI; use the Keycloak actually running in KEYCLOAK_NS
-  # (the repo's openshell-keycloak if present, else e.g. an existing `keycloak`).
+  # The issuer URL names the Keycloak CR; use the Keycloak actually running
+  # in KEYCLOAK_NS (the repo's openshell-keycloak if present, else e.g. an
+  # existing `keycloak`).
   if oc get keycloak openshell-keycloak -n "${KEYCLOAK_NS}" >/dev/null 2>&1; then
     KC_NAME=openshell-keycloak
   else
@@ -154,6 +154,18 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
 
+# The chart lists inference and web-search by default, and the VM waits until
+# every listed Secret exists. Leave out only the Secrets that are not in the
+# namespace: a quickstart without a web-search key (or an API key) would stay
+# Starting, and a re-run without the keys must keep the Secrets already there.
+SECRET_SET=()
+if ! oc get secret inference -n "${DEPLOY_NS}" >/dev/null 2>&1; then
+  SECRET_SET+=(--set "inference.secretName=")
+fi
+if ! oc get secret web-search -n "${DEPLOY_NS}" >/dev/null 2>&1; then
+  SECRET_SET+=(--set "additionalProviderSecrets=null")
+fi
+
 # --- SAW-BOM profiles ---
 # The VM can only attach ConfigMaps from its own namespace, so each SAW gets
 # its own saw-bom-profiles ConfigMap.
@@ -193,7 +205,8 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set route.enabled=true --set route.dashboard=true \
   ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"} \
   ${APPS_DOMAIN:+--set route.webuiHost="${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"} \
-  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"}
+  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"} \
+  ${SECRET_SET[@]+"${SECRET_SET[@]}"}
 
 echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."

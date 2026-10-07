@@ -76,10 +76,18 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 - **Clients:**
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
     (effective lifetime capped to 10h by the realm's SSO Session Max)
-  - `openshell-dashboard` — public client, PKCE, redirect URIs registered dynamically per sandbox
+  - `openshell-dashboard` — public client, PKCE, redirect URIs registered by the redirect registrar or an administrator (below)
 - **Users:** developer, admin, alice, bob (test accounts)
 - **Roles:** `openshell-user`, `openshell-admin`
 - **Token mappers:** realm roles in access tokens, audience mapper so dashboard tokens are accepted by the gateway
+
+#### Web UI redirect URIs
+
+Every web UI has its own route host (each VM's dashboard, and each sandbox UI route), and Keycloak matches redirect URIs exactly apart from a trailing wildcard, so each host has to be registered on `openshell-dashboard`. The routes to register are labelled `saw.redhat.com/oidc-redirect=true` in namespaces labelled `openshell.pattern/saw=true`; their redirect URI is `https://<host>/oauth2/callback` and their web origin `https://<host>`. No pod in a SAW namespace holds Keycloak credentials for it.
+
+By default the redirect registrar registers them (`redirectRegistrar` in `openshell-keycloak`): one Deployment, `saw-redirect-registrar` in Keycloak's namespace, every 15 seconds adds the entries of routes it finds and removes those it added for routes that are gone from every SAW namespace. It keeps an entry while its route still exists (labelled or not), keeps entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`), and on its first run adopts the per-VM entries the prepare Jobs used to add. A failed route list removes nothing. It signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm; its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and hands the client secret over in memory, so the registrar container never sees the master admin. It reads routes, namespaces and the ingress domain only, and reaches Keycloak in-cluster (`http://<keycloak>-service.<namespace>.svc:8080`; set `redirectRegistrar.keycloakUrl` for an existing Keycloak without HTTP, and `redirectRegistrar.adminSecret` for another admin Secret name). `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
+
+With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak admin access for this: an administrator runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the workspace exists (it also creates the Keycloak account if it is new) and `keycloak-redirects-sync` after deleting workspaces (`scripts/keycloak-redirects.py`, with the administrator's `oc` session and Keycloak's admin Secret, like `scripts/keycloak-users.sh`). The script applies the registrar's rules. See the README's [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 ### Phase 3: Secrets
 
@@ -111,13 +119,19 @@ The VM boots from a clone of the golden image. Nothing logs in over SSH to insta
 
 Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
 
-#### Prepare Job
+#### Root disk
 
-The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource and registers the dashboard redirect URI in Keycloak. It does not install binaries or apply profiles.
+There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make copy-images` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), or `source.dataSource` to clone a golden image DataSource that already exists. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the redirect registrar in Keycloak's namespace, or by an administrator ([Web UI redirect URIs](#web-ui-redirect-uris)).
 
 #### Guest
 
 `saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, and sandboxes, and attaches each sandbox's providers (OpenShell 0.1.x has no inference routes: agents call their provider's own endpoint). The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
+
+A workspace that stays Starting is usually waiting on a provider Secret. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount, so the VM boots within about 2 minutes of the Secret appearing.
+
+```bash
+oc get events -n saw-<user> | grep FailedMount
+```
 
 ## Upgrading from the single-user layout
 

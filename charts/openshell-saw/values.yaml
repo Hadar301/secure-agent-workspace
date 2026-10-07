@@ -13,29 +13,38 @@ sshPublicKeySecret: ""
 # Optional: seed the chart-created Secret with one key (key1).
 sshPublicKey: ""
 
-# VM disk source — three modes:
+# VM root disk source. The disk is made once, when it does not exist; changing
+# the source later does not touch an existing VM's disk. Nothing runs in the
+# namespace for it (no Job): KubeVirt and CDI import or clone it.
 #
-# 1. DataSource (default): clone from a golden image DataSource (created by the
-#    openshell-gateway-image chart or CDI DataImportCron).
+# 1. Registry (default): import the golden image into the VM's own disk.
+#    Without registryURL, the internal registry's
+#    <dataSourceNamespace>/openshell-gateway:latest (make copy-images, or the
+#    openshell-gateway-image build); the namespace may pull it from there.
+#      source:
+#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway@sha256:<digest>"
+#
+# 2. DataSource: clone a golden image DataSource that already exists (the
+#    openshell-gateway-image chart's goldenImage, or a CDI DataImportCron).
 #      source:
 #        dataSource: openshell-gateway
 #        dataSourceNamespace: openshell-agents
 #
-# 2. Registry: import a bootc/containerDisk image directly from a container registry.
-#      source:
-#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway:latest"
-#
-# 3. HTTP: download a qcow2 disk image from a URL.
+# 3. HTTP: download a qcow2 disk image from a URL (the VM's namespace must
+#    reach that host; see egress).
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:
-  # Leave empty for the default "openshell-gateway" DataSource.
+  # Set to clone this DataSource instead of importing (mode 2).
   dataSource: ""
+  # The shared namespace of the golden image (its DataSource, or its image
+  # in the internal registry).
   dataSourceNamespace: "openshell-agents"
-  # Registry URL for golden image import. Used by the prepare Job to bootstrap
-  # the DataSource on first run. Defaults to the internal registry.
+  # Older name for registryURL.
   goldenImageURL: ""
-  # CDI pull method: "node" (uses node runtime, trusts internal CA) or "pod" (CDI importer pod)
+  internalRegistry: "image-registry.openshift-image-registry.svc:5000"
+  # CDI pull method: "node" (the node's runtime pulls, trusts the internal
+  # registry's CA, caches the image) or "pod" (the CDI importer pod).
   pullMethod: "node"
   registryURL: ""
   httpURL: ""
@@ -132,9 +141,9 @@ internalRegistry:
   allowAnonymousPull: false
 
 # Provider credential Secrets. Every `credentialSecret:` named in a SAW-BOM
-# profile must be listed here (or be inference.secretName). Each Secret is
-# attached to the VM as a read-only disk; a missing Secret is attached empty,
-# and the installer then reports which provider has no credential.
+# profile must be listed here (or be inference.secretName). The VM waits
+# until each listed Secret exists. A Secret that changes after boot still
+# needs a VM restart (`vm.liveInputs` shares the files over virtiofs instead).
 inference:
   secretName: "inference"
 additionalProviderSecrets:
@@ -206,9 +215,6 @@ dashboard:
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
-  # Override the Keycloak namespace for the admin Secret lookup only.
-  # Empty = oidc.keycloakNamespace.
-  keycloakNamespace: ""
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
@@ -242,15 +248,9 @@ governance:
 # user from the list keeps their VM unless pruneOnRemove is true.
 cleanupOnDelete: true
 
-# Cluster-side prepare Job. It never logs in to the VM: it only bootstraps
-# the golden image DataSource and registers the dashboard redirect URI in
-# Keycloak.
+# The pre-delete cleanup pod (cleanupOnDelete). There is no prepare Job.
 job:
   image: "registry.fedoraproject.org/fedora:44"
-  backoffLimit: 2
-  activeDeadlineSeconds: 1800
-  # Wait for ESO-managed secrets before starting the prepare Job.
-  waitForSecrets: false
 
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared

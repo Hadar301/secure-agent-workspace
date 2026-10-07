@@ -19,20 +19,21 @@ spec:
         annotations:
           cdi.kubevirt.io/storage.bind.immediate.requested: "true"
       spec:
-        {{- if .Values.source.registryURL }}
-        source:
-          registry:
-            url: {{ .Values.source.registryURL | quote }}
-            pullMethod: node
-        {{- else if .Values.source.httpURL }}
+        {{- /* The disk is made once, from this source; see source in values.yaml. */}}
+        {{- if eq (include "openshell-sandbox.diskSource" .) "http" }}
         source:
           http:
             url: {{ .Values.source.httpURL | quote }}
-        {{- else }}
+        {{- else if eq (include "openshell-sandbox.diskSource" .) "dataSource" }}
         sourceRef:
           kind: DataSource
           name: {{ include "openshell-sandbox.dataSourceName" . }}
           namespace: {{ include "openshell-sandbox.goldenNamespace" . }}
+        {{- else }}
+        source:
+          registry:
+            url: {{ include "openshell-sandbox.diskImageURL" . | quote }}
+            pullMethod: {{ .Values.source.pullMethod | default "node" }}
         {{- end }}
         storage:
           accessModes:
@@ -165,9 +166,15 @@ spec:
           configMap:
             name: saw-bom-profiles
             optional: true
+        {{- /* Required. The virt-launcher pod is scheduled and stays
+             ContainerCreating, with FailedMount "secret … not found", and the
+             VM shows Starting, until each Secret exists. The kubelet retries
+             the mount (backoff capped around 2 minutes), so the VM boots
+             within about 2 minutes of the Secret appearing. An optional
+             iso9660 disk would instead be frozen empty at start. The profiles
+             ConfigMap above stays optional. */}}
         {{- range $i, $name := $secrets }}
         - name: saw-sec-{{ $i }}
           secret:
             secretName: {{ $name }}
-            optional: true
         {{- end }}

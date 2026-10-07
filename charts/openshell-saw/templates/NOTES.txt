@@ -10,9 +10,9 @@ Follow the installer on the VM's serial console:
     $(oc -n {{ .Release.Namespace }} get pod -l vm.kubevirt.io/name={{ include "openshell-sandbox.fullname" . }} -o name) \
     -c guest-console-log
 
-The cluster-side prepare Job (golden image, Keycloak redirect) logs:
+The root disk is imported or cloned by CDI (no Job):
 
-  oc -n {{ .Release.Namespace }} logs -f job/{{ include "openshell-sandbox.fullname" . }}-prepare
+  oc -n {{ .Release.Namespace }} get dv {{ include "openshell-sandbox.fullname" . }}-root -w
 
 To apply a changed BOM, restart the VM: virtctl restart {{ include "openshell-sandbox.fullname" . }} -n {{ .Release.Namespace }}
 

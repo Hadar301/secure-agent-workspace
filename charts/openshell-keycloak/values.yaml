@@ -38,9 +38,10 @@ keycloak:
       # Keycloak's redirect URI matching only supports a *trailing* wildcard —
       # confirmed live that "https://*/oauth2/callback" is rejected outright
       # ("Invalid parameter: redirect_uri") — so a single static entry can't
-      # cover every sandbox. Each sandbox's prepare Job registers its own exact
-      # redirect URI onto this client via the Keycloak Admin API instead (see
-      # charts/openshell-saw/files/register-keycloak-redirect.sh).
+      # cover every sandbox. Each web UI route's exact redirect URI is
+      # registered on this client: by the redirect registrar below (on by
+      # default), or by an administrator (make keycloak-register KC_USER=...,
+      # make keycloak-redirects-sync).
       # These are just the initial (empty) values before any sandbox exists.
       redirectUris: []
       webOrigins: []
@@ -105,3 +106,29 @@ keycloak:
   roles:
     - openshell-user
     - openshell-admin
+
+# The redirect registrar: registers the SAW web UIs' redirect URIs from
+# inside the cluster. On by default: one Deployment in this namespace keeps
+# the dashboard client's redirect URIs and web origins in step with the SAW
+# web UI routes (routes labelled routeSelector in namespaces labelled
+# namespaceSelector, with a host under hostSuffix), every intervalSeconds.
+# Off: nothing in the cluster holds Keycloak admin access for this, and an
+# administrator registers them instead (make keycloak-register,
+# make keycloak-redirects-sync; README "Web UI sign-in"). Its init container uses the master admin
+# (adminSecret) once per start to set up the registrar's own client, which
+# may only manage this realm's clients; the registrar itself never sees the
+# master admin. Same rules as scripts/keycloak-redirects.py sync.
+redirectRegistrar:
+  enabled: true
+  image: registry.access.redhat.com/ubi9/python-311:latest
+  clientId: saw-redirect-registrar
+  # Empty: http://<keycloak>-service.<namespace>.svc:8080 (in-cluster).
+  keycloakUrl: ""
+  # Empty: <keycloak>-initial-admin (the operator's).
+  adminSecret: ""
+  namespaceSelector: openshell.pattern/saw=true
+  routeSelector: saw.redhat.com/oidc-redirect=true
+  # Empty: the cluster's ingress domain (ingresses.config.openshift.io).
+  hostSuffix: ""
+  intervalSeconds: 15
+

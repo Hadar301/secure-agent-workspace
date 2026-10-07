@@ -1,0 +1,175 @@
+{{- /*
+The redirect registrar: keeps the dashboard client's redirect URIs in step
+with the SAW web UI routes (files/redirect-registrar.py). One per cluster,
+in Keycloak's namespace, so no user namespace needs Keycloak credentials.
+Its init container uses the master admin once per start to set up the
+registrar's own client; the registrar itself only has realm-management
+manage-clients in the OpenShell realm.
+*/ -}}
+{{- if .Values.redirectRegistrar.enabled }}
+{{- $r := .Values.redirectRegistrar }}
+{{- $kc := .Values.keycloak.existing | default .Values.keycloak.name }}
+{{- $kcUrl := $r.keycloakUrl | default (printf "http://%s-service.%s.svc:8080" $kc .Release.Namespace) }}
+{{- $name := "saw-redirect-registrar" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+rules:
+  # Read only: which SAW web UI routes exist, in which namespaces.
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    resourceNames: ["cluster"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+data:
+  redirect-registrar.py: |
+{{ .Files.Get "files/redirect-registrar.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        checksum/script: {{ .Files.Get "files/redirect-registrar.py" | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The only place the master admin is used: set up the registrar's
+        # client and hand its secret to the registrar in memory.
+        - name: bootstrap
+          image: {{ $r.image | quote }}
+          command: ["python3", "/scripts/redirect-registrar.py", "bootstrap"]
+          env:
+            - name: KC_URL
+              value: {{ $kcUrl | quote }}
+            - name: REALM
+              value: {{ .Values.keycloak.realm | quote }}
+            - name: CLIENT_ID
+              value: {{ $r.clientId | quote }}
+            - name: ADMIN_DIR
+              value: /admin
+            - name: OUT
+              value: /run/registrar/client-secret
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+            - name: admin
+              mountPath: /admin
+              readOnly: true
+            - name: run
+              mountPath: /run/registrar
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+      containers:
+        - name: registrar
+          image: {{ $r.image | quote }}
+          command: ["python3", "/scripts/redirect-registrar.py", "run"]
+          env:
+            - name: KC_URL
+              value: {{ $kcUrl | quote }}
+            - name: REALM
+              value: {{ .Values.keycloak.realm | quote }}
+            - name: CLIENT_ID
+              value: {{ $r.clientId | quote }}
+            - name: SECRET_FILE
+              value: /run/registrar/client-secret
+            - name: DASHBOARD_CLIENT_ID
+              value: {{ .Values.keycloak.clients.dashboard.clientId | quote }}
+            - name: NAMESPACE_SELECTOR
+              value: {{ $r.namespaceSelector | quote }}
+            - name: ROUTE_SELECTOR
+              value: {{ $r.routeSelector | quote }}
+            - name: HOST_SUFFIX
+              value: {{ $r.hostSuffix | quote }}
+            - name: INTERVAL
+              value: {{ $r.intervalSeconds | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+            - name: run
+              mountPath: /run/registrar
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: script
+          configMap:
+            name: {{ $name }}
+        - name: admin
+          secret:
+            secretName: {{ $r.adminSecret | default (printf "%s-initial-admin" $kc) }}
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+{{- end }}

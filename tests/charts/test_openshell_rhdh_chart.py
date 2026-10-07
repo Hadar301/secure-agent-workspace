@@ -459,7 +459,7 @@ def test_tls_is_verified_everywhere_by_default(docs):
     assert {"name": "saw-ca", "mountPath": "/opt/saw-ca", "readOnly": True} in pod["containers"][0]["volumeMounts"]
     assert s["proxy"] == [True, True]
     assert s["kubernetes"]["skipTLSVerify"] is False
-    assert s["kubernetes"]["caFile"] == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    assert s["kubernetes"]["caFile"] == "/opt/saw-ca/ca-bundle.crt"
     gen_env = _envs(s["generator"]["containers"][0])
     assert gen_env["KEYCLOAK_SKIP_VERIFY"] == "false" and gen_env["KEYCLOAK_CA_FILE"] == "/opt/saw-ca/ca-bundle.crt"
     assert [c["name"] for c in s["generator"]["initContainers"]] == ["saw-ca-bundle"]
@@ -474,10 +474,26 @@ def test_one_switch_turns_verification_off(docs):
     s = tls_settings(render("--set", "tls.insecureSkipVerify=true"))
     assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0" and s["patch"] is None
     assert s["proxy"] == [False, False]
-    assert s["kubernetes"]["skipTLSVerify"] is True
+    assert s["kubernetes"]["skipTLSVerify"] is True and "caFile" not in s["kubernetes"]
     assert _envs(s["generator"]["containers"][0])["KEYCLOAK_SKIP_VERIFY"] == "true"
     assert _envs(s["job"]["containers"][0])["INSECURE"] == "true"
     assert s["task"]["VAULT_SKIP_VERIFY"] == "true"
+
+
+def test_the_ca_bundle_gets_the_api_ca_without_a_service_account_mount(docs):
+    # The RHDH operator's pod has no service account mount: the init
+    # container gets the token and the API and service CAs projected.
+    s = tls_settings(docs)
+    for pod in (s["patch"]["spec"]["template"]["spec"], s["generator"], s["job"]):
+        init = pod["initContainers"][0]
+        assert _envs(init)["SA_DIR"] == "/opt/saw-ca-sa"
+        assert {"name": "saw-ca-sa", "mountPath": "/opt/saw-ca-sa", "readOnly": True} in init["volumeMounts"]
+        vol = next(v for v in pod["volumes"] if v["name"] == "saw-ca-sa")["projected"]["sources"]
+        assert vol[0]["serviceAccountToken"]["path"] == "token"
+        assert vol[1]["configMap"] == {"name": "kube-root-ca.crt", "items": [{"key": "ca.crt", "path": "ca.crt"}]}
+        assert vol[2]["configMap"]["name"] == "openshift-service-ca.crt"
+        # Only the init container sees the token.
+        assert all(m["name"] != "saw-ca-sa" for c in pod["containers"] for m in c.get("volumeMounts", []))
 
 
 def test_the_ca_bundle_sources_are_in_each_namespace(docs):
