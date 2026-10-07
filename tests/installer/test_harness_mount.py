@@ -195,6 +195,23 @@ def test_a_dropped_live_mcp_server_fails_verify(
     assert any("does not list MCP server(s) echo" in f for f in failures)
 
 
+def test_a_server_name_that_is_a_prefix_of_another_still_fails_verify(
+        ab, fake_env, config, profiles, creds):
+    """A plain `\\b` regex does not stop at a hyphen (it is a non-word
+    character, same as a space), so `\\bsearch\\b` still matches inside
+    "search-internal" -- exactly the false positive the whole-token match
+    was supposed to prevent. Server names are kebab-case, so the hyphen
+    must count as part of the token, not a boundary."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    assert applier.verify(profiles) == []
+    (fake_env.state / "mcp-inspect.json").write_text(json.dumps({"demo": ["echo-internal"]}))
+    failures = applier.verify(profiles)
+    assert any("does not list MCP server(s) echo" in f for f in failures)
+
+
 def test_an_unparseable_plugins_list_fails_verify(
         ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})

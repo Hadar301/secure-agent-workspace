@@ -2974,9 +2974,14 @@ class ProfileApplier:
                 # Whole-token match: a plain substring check would call a
                 # declared server "present" when it is only a fragment of a
                 # different, unrelated server's name in the output (e.g.
-                # declared "search" matching listed "search-internal").
+                # declared "search" matching listed "search-internal"). `\b`
+                # alone does not catch this: `-` is a non-word character, so
+                # `\bsearch\b` still matches inside "search-internal". Server
+                # names are kebab-case, so a hyphen must not count as a
+                # boundary either.
                 missing_servers = [s for s in info["mcpServers"]
-                                   if not re.search(rf"\b{re.escape(s)}\b", listed.out)]
+                                   if not re.search(rf"(?<![\w-]){re.escape(s)}(?![\w-])",
+                                                    listed.out)]
                 if missing_servers:
                     return [f"OpenClaw does not list MCP server(s) {', '.join(missing_servers)} "
                             f"from {source}"]
