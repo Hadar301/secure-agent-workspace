@@ -1,0 +1,56 @@
+sandboxName: identity-p
+source:
+  dataSource: openshell-gateway
+  dataSourceNamespace: saw-identity-verified-image
+vm:
+  cores: 2
+  memory: 4Gi
+  readinessProbe: true
+route:
+  enabled: false
+  dashboard: false
+  webui: false
+governance:
+  enabled: false
+dashboard:
+  enabled: false
+inference:
+  secretName: ''
+additionalProviderSecrets: []
+spiffe:
+  enabled: true
+  trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
+  serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local
+  serverPort: 443
+  serverTransport: tcp
+  gatewayUID: 1000
+  testMode: true
+  testRunID: agent-identity-pattern-20261007
+signing:
+  mode: warn
+  trustKeys:
+  - saw-test
+providerProfiles:
+  saw-demo-cc:
+    id: saw-demo-cc
+    display_name: SAW identity acceptance
+    category: other
+    credentials:
+    - name: access_token
+      required: false
+      auth_style: bearer
+      header_name: Authorization
+      token_grant:
+        grant_type: client_credentials
+        token_endpoint: http://identity-demo.saw-identity-demo.svc.cluster.local:8080/token
+        audience: saw-protected-service
+        jwt_svid_audience: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+        cache_ttl_seconds: 30
+    endpoints:
+    - host: identity-demo.saw-identity-demo.svc.cluster.local
+      port: 8080
+      protocol: rest
+      access: read-write
+      enforcement: enforce
+    binaries:
+    - /usr/bin/curl

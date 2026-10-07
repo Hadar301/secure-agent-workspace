@@ -1,0 +1,17 @@
+clusterGroup:
+  name: agent-identity
+  namespaces:
+    saw-identity-p: {}
+  applications:
+    identity-p-bom:
+      name: identity-p-bom
+      namespace: saw-identity-p
+      path: charts/saw-bom
+      extraValueFiles:
+      - /overrides/agent-identity-bom.yaml
+    identity-p:
+      name: identity-p
+      namespace: saw-identity-p
+      path: charts/openshell-saw
+      extraValueFiles:
+      - /overrides/agent-identity-saw.yaml

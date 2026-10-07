@@ -1,10 +1,12 @@
 global:
-  pattern: secure-agent-workspace
+  pattern: agent-identity-canary
   singleArgoCD: true
   secretLoader:
-    disabled: false
+    disabled: true
 main:
-  clusterGroupName: prod
+  patternsOperator:
+    enableSubscription: false
+  clusterGroupName: agent-identity
   multiSourceConfig:
     enabled: true
     clusterGroupChartVersion: 0.9.*
