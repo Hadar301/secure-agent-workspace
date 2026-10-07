@@ -166,9 +166,13 @@ spec:
           configMap:
             name: saw-bom-profiles
             optional: true
+        {{- /* Required. An optional iso9660 disk is built when the VM starts
+             and is not refreshed while it runs. If External Secrets has not
+             created these yet, the guest keeps an empty disk and apply stays
+             failed until a restart. The profiles ConfigMap above stays
+             optional: a workspace can boot before its BOM profiles exist. */}}
         {{- range $i, $name := $secrets }}
         - name: saw-sec-{{ $i }}
           secret:
             secretName: {{ $name }}
-            optional: true
         {{- end }}
