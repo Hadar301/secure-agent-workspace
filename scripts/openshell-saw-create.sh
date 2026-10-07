@@ -154,6 +154,17 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
 
+# The chart lists inference and web-search by default, and the VM waits until
+# every listed Secret exists. Pass only the Secrets this run created, or a
+# quickstart without a web-search key (or without an API key) stays Starting.
+SECRET_SET=()
+if [[ -z "${API_KEY}" ]]; then
+  SECRET_SET+=(--set "inference.secretName=")
+fi
+if [[ -z "${WEB_SEARCH_API_KEY}" ]]; then
+  SECRET_SET+=(--set "additionalProviderSecrets=null")
+fi
+
 # --- SAW-BOM profiles ---
 # The VM can only attach ConfigMaps from its own namespace, so each SAW gets
 # its own saw-bom-profiles ConfigMap.
@@ -193,7 +204,8 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set route.enabled=true --set route.dashboard=true \
   ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"} \
   ${APPS_DOMAIN:+--set route.webuiHost="${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"} \
-  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"}
+  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"} \
+  ${SECRET_SET[@]+"${SECRET_SET[@]}"}
 
 echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."

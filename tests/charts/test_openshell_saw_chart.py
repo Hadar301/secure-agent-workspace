@@ -130,6 +130,13 @@ def test_vm_attaches_inputs_as_serial_disks(default_docs):
     assert volumes["cloudinitdisk"]["cloudInitNoCloud"]["secretRef"]["name"] == "saw-test-cloudinit"
 
 
+def test_unlisted_provider_secrets_are_not_attached():
+    """Quickstart omits a Secret it did not create, so the VM does not wait for it."""
+    docs = render("--set", "inference.secretName=", "--set", "additionalProviderSecrets=null")
+    volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+    assert [v["name"] for v in volumes if v["name"].startswith("saw-sec")] == []
+
+
 def test_duplicate_secret_names_attach_once():
     docs = render("--set", "inference.secretName=web-search")
     volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]

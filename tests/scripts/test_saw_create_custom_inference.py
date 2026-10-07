@@ -74,3 +74,22 @@ def test_defaults_are_unchanged(run):
     assert not bom_values.exists()
     bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom"))
     assert " -f " not in bom
+
+
+def _saw_helm(log):
+    return next(line for line in log.splitlines() if line.startswith("helm upgrade --install cinf "))
+
+
+def test_without_a_web_search_key_the_vm_does_not_wait_for_that_secret(run):
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k")
+    helm = _saw_helm(log)
+    assert "additionalProviderSecrets=null" in helm
+    assert "inference.secretName=" not in helm
+
+
+def test_without_an_api_key_the_vm_does_not_wait_for_inference(run):
+    log, _ = run(PROVIDER="build", MODEL="m")
+    assert not any(line.startswith("oc create secret generic inference") for line in log.splitlines())
+    helm = _saw_helm(log)
+    assert "inference.secretName=" in helm
+    assert "additionalProviderSecrets=null" in helm

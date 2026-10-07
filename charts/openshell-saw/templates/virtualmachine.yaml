@@ -166,11 +166,13 @@ spec:
           configMap:
             name: saw-bom-profiles
             optional: true
-        {{- /* Required. An optional iso9660 disk is built when the VM starts
-             and is not refreshed while it runs. If External Secrets has not
-             created these yet, the guest keeps an empty disk and apply stays
-             failed until a restart. The profiles ConfigMap above stays
-             optional: a workspace can boot before its BOM profiles exist. */}}
+        {{- /* Required. The virt-launcher pod is scheduled and stays
+             ContainerCreating, with FailedMount "secret … not found", and the
+             VM shows Starting, until each Secret exists. The kubelet retries
+             the mount (backoff capped around 2 minutes), so the VM boots
+             within about 2 minutes of the Secret appearing. An optional
+             iso9660 disk would instead be frozen empty at start. The profiles
+             ConfigMap above stays optional. */}}
         {{- range $i, $name := $secrets }}
         - name: saw-sec-{{ $i }}
           secret:
