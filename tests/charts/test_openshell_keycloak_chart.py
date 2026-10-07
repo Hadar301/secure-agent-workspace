@@ -40,8 +40,10 @@ def test_default_deploys_keycloak_database_and_realm():
 
 def test_existing_mode_imports_only_the_realm_into_that_keycloak():
     docs = render("--set", "keycloak.existing=keycloak", "--set", "keycloak.realm=openshell")
-    assert [d["kind"] for d in docs] == ["KeycloakRealmImport"]
-    spec = docs[0]["spec"]
+    assert not {"Keycloak", "StatefulSet", "Service", "PersistentVolumeClaim"} & {d["kind"] for d in docs}
+    assert [d["kind"] for d in render("--set", "keycloak.existing=keycloak",
+                                      "--set", "redirectRegistrar.enabled=false")] == ["KeycloakRealmImport"]
+    spec = realm_of(docs)["spec"]
     assert spec["keycloakCRName"] == "keycloak"
     assert spec["realm"]["realm"] == "openshell"
     clients = {c["clientId"]: c for c in spec["realm"]["clients"]}
@@ -60,7 +62,7 @@ def test_client_lists_are_never_null(tmp_path):
         for client in realm["spec"]["realm"]["clients"]:
             for key in ("redirectUris", "webOrigins"):
                 assert isinstance(client.get(key), list), (args, client["clientId"], key)
-    (realm,) = render("-f", str(with_uri))
+    realm = realm_of(render("-f", str(with_uri)))
     dash = next(c for c in realm["spec"]["realm"]["clients"] if c["clientId"] == "openshell-dashboard")
     assert dash["redirectUris"] == ["https://a.example.com/oauth2/callback"]
 
@@ -154,3 +156,79 @@ def test_values_secret_generates_every_test_users_password():
     for field in entry["fields"]:
         assert field["onMissingValue"] == "generate"
         assert field["vaultPolicy"] == "validatedPatternDefaultPolicy"
+
+
+def test_the_registrar_is_on_by_default_and_can_be_turned_off():
+    """On by default, in plain and existing-Keycloak mode alike. Off: nothing
+    in Keycloak's namespace registers redirect URIs or holds cluster-wide
+    access (an administrator runs scripts/keycloak-redirects.py)."""
+    for args in ((), ("--set", "keycloak.existing=keycloak")):
+        on = render(*args)
+        assert [d["metadata"]["name"] for d in on if d["kind"] == "Deployment"
+                and "redirect" in d["metadata"]["name"]] == ["saw-redirect-registrar"]
+        off = render(*args, "--set", "redirectRegistrar.enabled=false")
+        assert not [d for d in off if "redirect" in d["metadata"]["name"]]
+        assert not [d for d in off if d["kind"] in ("ClusterRole", "ClusterRoleBinding")]
+
+
+# -- the redirect registrar (redirectRegistrar, on by default) ----------------------------------------------------------
+
+def registrar(docs):
+    (dep,) = [d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "saw-redirect-registrar"]
+    return dep["spec"]["template"]["spec"]
+
+
+def env_of(container):
+    return {e["name"]: e["value"] for e in container.get("env", [])}
+
+
+def test_the_registrar_runs_in_keycloaks_namespace_with_its_own_client():
+    pod = registrar(render("--set", "redirectRegistrar.enabled=true"))
+    (init,), (main,) = pod["initContainers"], pod["containers"]
+    assert env_of(init)["KC_URL"] == env_of(main)["KC_URL"] == "http://openshell-keycloak-service.keycloak.svc:8080"
+    assert env_of(main)["DASHBOARD_CLIENT_ID"] == "openshell-dashboard"
+    assert env_of(main)["CLIENT_ID"] == env_of(init)["CLIENT_ID"] == "saw-redirect-registrar"
+    assert env_of(main)["NAMESPACE_SELECTOR"] == "openshell.pattern/saw=true"
+    assert env_of(main)["ROUTE_SELECTOR"] == "saw.redhat.com/oidc-redirect=true"
+
+
+def test_only_the_init_container_sees_the_master_admin():
+    pod = registrar(render("--set", "redirectRegistrar.enabled=true"))
+    (admin,) = [v for v in pod["volumes"] if "secret" in v]
+    assert admin["secret"]["secretName"] == "openshell-keycloak-initial-admin"
+    (init,), (main,) = pod["initContainers"], pod["containers"]
+    assert admin["name"] in {m["name"] for m in init["volumeMounts"]}
+    assert admin["name"] not in {m["name"] for m in main["volumeMounts"]}
+    assert not any("valueFrom" in e for c in (init, main) for e in c.get("env", []))
+    # The registrar's own secret is handed over in memory, read-only.
+    (run,) = [v for v in pod["volumes"] if v["name"] == "run"]
+    assert run["emptyDir"]["medium"] == "Memory"
+    assert next(m for m in main["volumeMounts"] if m["name"] == "run")["readOnly"] is True
+
+
+def test_the_registrar_may_only_read_routes_and_namespaces():
+    docs = render("--set", "redirectRegistrar.enabled=true")
+    (role,) = [d for d in docs if d["kind"] == "ClusterRole"]
+    verbs = {v for r in role["rules"] for v in r["verbs"]}
+    assert verbs <= {"get", "list"}
+    assert {res for r in role["rules"] for res in r["resources"]} == {"routes", "namespaces", "ingresses"}
+    (binding,) = [d for d in docs if d["kind"] == "ClusterRoleBinding"]
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "saw-redirect-registrar",
+                                    "namespace": "keycloak"}]
+    assert not [d for d in docs if d["kind"] in ("Role", "RoleBinding")]
+
+
+def test_an_existing_keycloak_is_reached_by_its_own_name():
+    pod = registrar(render("--set", "redirectRegistrar.enabled=true", "--set", "keycloak.existing=sso"))
+    assert env_of(pod["containers"][0])["KC_URL"] == "http://sso-service.keycloak.svc:8080"
+    assert any(v.get("secret", {}).get("secretName") == "sso-initial-admin" for v in pod["volumes"])
+    pod = registrar(render("--set", "redirectRegistrar.enabled=true", "--set", "keycloak.existing=sso", "--set", "redirectRegistrar.adminSecret=sso-admin",
+                           "--set", "redirectRegistrar.keycloakUrl=https://sso.example.com"))
+    assert env_of(pod["containers"][0])["KC_URL"] == "https://sso.example.com"
+    assert any(v.get("secret", {}).get("secretName") == "sso-admin" for v in pod["volumes"])
+
+
+def test_the_registrar_script_is_shipped_byte_for_byte():
+    docs = render("--set", "redirectRegistrar.enabled=true")
+    (cm,) = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-redirect-registrar"]
+    assert cm["data"]["redirect-registrar.py"] == (CHART / "files" / "redirect-registrar.py").read_text()

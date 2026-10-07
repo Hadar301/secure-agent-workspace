@@ -14,7 +14,15 @@ FAKE_OC = r'''#!/usr/bin/env bash
 echo "oc $*" >> "$FAKE_LOG"
 case "$1" in
   whoami) echo admin ;;
-  create) echo "kind: Secret # $*" ;;   # --dry-run=client -o yaml
+  # Secrets in the namespace: EXISTING_SECRETS, plus those this run creates.
+  get) if [[ "$2" == secrets ]]; then
+         if [[ -f "$FAKE_DIR/secrets" ]]; then
+           sed 's#^#secret/#' "$FAKE_DIR/secrets"
+         fi
+         for name in ${EXISTING_SECRETS:-}; do printf 'secret/%s\n' "$name"; done
+       fi ;;
+  create) echo "kind: Secret # $*"      # --dry-run=client -o yaml
+          [[ "$2" == secret ]] && echo "$4" >> "$FAKE_DIR/secrets" ;;
   apply) cat >> "$FAKE_LOG" ;;
 esac
 exit 0
@@ -125,3 +133,22 @@ def test_unsupported_web_search_setting_fails_before_cluster_work(tmp_path):
     assert result.returncode != 0
     assert "WEB_SEARCH is unsupported" in result.stderr
     assert not marker.exists()
+
+
+def _saw_helm(log):
+    return next(line for line in log.splitlines() if line.startswith("helm upgrade --install cinf "))
+
+
+def test_without_a_web_search_key_the_vm_does_not_wait_for_that_secret(run):
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k")
+    helm = _saw_helm(log)
+    assert "additionalProviderSecrets=null" in helm
+    assert "inference.secretName=" not in helm
+
+
+def test_a_rerun_keeps_the_existing_web_search_secret(run):
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
+                 EXISTING_SECRETS="web-search")
+    helm = _saw_helm(log)
+    assert "inference.secretName=" not in helm
+    assert "additionalProviderSecrets=null" not in helm

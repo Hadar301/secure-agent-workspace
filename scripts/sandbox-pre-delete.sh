@@ -9,7 +9,7 @@ if ! jq -e --arg ns "${namespace}" '.items | any(.metadata.name == $ns)' \
   echo "Namespace ${namespace} is already absent."
   exit 0
 fi
-echo "Scheduling VM, disk, and prepare job deletion in ${namespace}."
+echo "Scheduling VM and disk deletion in ${namespace}."
 resources="$(oc api-resources -o name)"
 if grep -q '^virtualmachines.kubevirt.io$' <<<"${resources}"; then
   oc delete vm "${name}" -n "${namespace}" --wait=false --ignore-not-found=true
@@ -17,4 +17,3 @@ fi
 if grep -q '^datavolumes.cdi.kubevirt.io$' <<<"${resources}"; then
   oc delete dv "${name}-root" -n "${namespace}" --wait=false --ignore-not-found=true
 fi
-oc delete job "${name}-prepare" -n "${namespace}" --wait=false --ignore-not-found=true

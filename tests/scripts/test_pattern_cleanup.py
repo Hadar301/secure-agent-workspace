@@ -57,10 +57,9 @@ def test_pre_uninstall_deletes_only_pattern_owned_gateway(tmp_path):
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     calls = log.read_text().splitlines()
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert any("delete vm alice -n saw-alice" in call for call in calls)
     assert any("delete dv alice-root -n saw-alice" in call for call in calls)
-    assert any("delete job alice-prepare -n saw-alice" in call for call in calls)
     assert all("--all" not in call and "saw-bob" not in call for call in calls)
 
 

@@ -116,9 +116,8 @@ if [[ -n "${OIDC_ISSUER}" ]]; then
   OIDC_OPTS=(--set-string "oidc.issuerUrl=${OIDC_ISSUER}"
              --set-string "oidc.clientId=${OIDC_CLIENT_ID}"
              --set-string "oidc.realm=${KEYCLOAK_REALM}")
-  # The prepare Job reads <Keycloak CR name>-initial-admin to register the
-  # dashboard redirect URI; use the Keycloak actually running in KEYCLOAK_NS
-  # (the repo's openshell-keycloak if present, else e.g. an existing `keycloak`).
+  # The chart uses the Keycloak CR name to derive the issuer when needed.
+  # Use the Keycloak running in KEYCLOAK_NS.
   if [[ "${local_keycloak}" == true ]]; then
     keycloak_list="$(oc get keycloak -n "${KEYCLOAK_NS}" -o json)"
     KC_NAME="$(jq -r '[.items[]?.metadata.name] |
@@ -179,6 +178,17 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
 
+# The chart lists inference and web-search by default. Do not wait for an
+# optional Secret that is absent from this namespace.
+SECRET_SET=()
+secret_names="$(oc get secrets -n "${DEPLOY_NS}" -o name)"
+if ! grep -qx 'secret/inference' <<<"${secret_names}"; then
+  SECRET_SET+=(--set "inference.secretName=")
+fi
+if ! grep -qx 'secret/web-search' <<<"${secret_names}"; then
+  SECRET_SET+=(--set "additionalProviderSecrets=null")
+fi
+
 # --- SAW-BOM profiles ---
 # The VM can only attach ConfigMaps from its own namespace, so each SAW gets
 # its own saw-bom-profiles ConfigMap.
@@ -219,6 +229,7 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
   fi
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
+helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   "${helm_opts[@]}"

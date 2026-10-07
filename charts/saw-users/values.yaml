@@ -40,9 +40,6 @@ defaults:
     prune:
       mode: report
       sandboxes: false
-    job:
-      waitForSecrets: true
-      backoffLimit: 5
     dashboard:
       insecureSkipIssuerTlsVerify: true
 

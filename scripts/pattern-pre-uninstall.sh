@@ -32,8 +32,6 @@ while IFS=$'\t' read -r namespace owner; do
     oc delete dv "${owner}-root" -n "${namespace}" \
       --wait=false --ignore-not-found=true
   fi
-  oc delete job "${owner}-prepare" -n "${namespace}" \
-    --wait=false --ignore-not-found=true
   if grep -q '^virtualmachineinstances.kubevirt.io$' <<<"${resources}"; then
     vmis="$(oc get vmi -n "${namespace}" -o json)"
     if jq -e --arg name "${owner}" \

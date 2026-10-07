@@ -37,6 +37,8 @@ KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= saw-keycloak
 KEYCLOAK_REALM ?= openshell
+# The Keycloak CR in KEYCLOAK_NS (another name for a Keycloak the cluster already runs)
+KEYCLOAK_NAME  ?= openshell-keycloak
 # yes/no: let `make keycloak-deploy` import the realm into an existing Keycloak
 USE_EXISTING_KEYCLOAK ?=
 SCRIPTS_DIR    := scripts
@@ -49,7 +51,7 @@ export NS BUILD_NS QUAY_REPO MIRROR_IMAGES OPENSHELL_VERSION OPENSHELL_INTERCEPT
 export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
-export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM SANDBOX_NAME
+export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
 
 ##@ Internal Checks
@@ -79,6 +81,7 @@ export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
+        keycloak-register keycloak-redirects keycloak-redirects-sync \
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
@@ -231,7 +234,7 @@ pattern-uninstall: uninstall ## Uninstall the Validated Pattern
 # silently attach this namespace-wide cleanup to every future call of the
 # framework's own uninstall target, deleting every sandbox VM/DataVolume in
 # a shared namespace instead of just this one.
-sandbox-pre-delete: .check-saw-name ## Schedule deletion of a sandbox's VM, disk, and prepare job
+sandbox-pre-delete: .check-saw-name ## Schedule deletion of a sandbox's VM and disk
 	@$(SCRIPTS_DIR)/sandbox-pre-delete.sh
 
 # --- Keycloak / OIDC ---
@@ -250,6 +253,8 @@ keycloak-harden: ## For a realm imported earlier: password policy, brute-force l
 
 USERS_FILE ?= overrides/saw-users.yaml
 KC_USER    ?=
+KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME)
+
 keycloak-add-users: ## Create the Keycloak users in USERS_FILE (default overrides/saw-users.yaml) that do not exist yet, with generated passwords
 	@$(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
 
@@ -260,6 +265,26 @@ keycloak-password: ## Show the Secret location for one user (KC_USER=carol)
 keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=carol)
 	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
+
+# Web UI sign-in: each workspace's web UIs (the VM dashboard, each sandbox
+# UI route) need their redirect URI on Keycloak's dashboard client. The
+# redirect registrar (charts/openshell-keycloak, on by default) registers
+# them; with it off, run keycloak-register once the workspace exists (it waits
+# up to REDIRECT_WAIT seconds for its routes) and keycloak-redirects-sync after
+# deleting workspaces. See README, "Web UI sign-in".
+REDIRECT_WAIT ?= 600
+KC_REDIRECTS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME) WAIT=$(REDIRECT_WAIT)
+
+keycloak-register: ## Register a user: Keycloak account (if new, password printed) and their workspace's web UI redirect URIs (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@printf 'users:\n  - name: %s\n' "$(KC_USER)" | $(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users -
+	@$(KC_REDIRECTS_ENV) uv run --locked $(SCRIPTS_DIR)/keycloak-redirects.py register "$(KC_USER)"
+
+keycloak-redirects: ## List the dashboard client's redirect URIs, and the web UI routes that have none yet
+	@$(KC_REDIRECTS_ENV) uv run --locked $(SCRIPTS_DIR)/keycloak-redirects.py list
+
+keycloak-redirects-sync: ## Register every workspace's web UI redirect URIs, and remove those of deleted workspaces
+	@$(KC_REDIRECTS_ENV) uv run --locked $(SCRIPTS_DIR)/keycloak-redirects.py sync
 
 keycloak-check: ## Check the Keycloak in KEYCLOAK_NS is configured for OpenShell (realm, CLI client, roles)
 	@$(SCRIPTS_DIR)/keycloak-check.sh
@@ -401,7 +426,7 @@ lint: ## Lint charts, shell syntax, and the Make interface
 		done
 	@for script in scripts/*.sh tests/*.sh charts/openshell-saw/files/*.sh \
 		charts/openshell-saw/files/installer/*.sh charts/openshell-saw/files/guest/*.sh; do \
-		if [ "$$script" = charts/openshell-saw/files/prepare.sh ]; then continue; fi; \
+		test -f "$$script" || continue; \
 		bash -n "$$script" || exit; \
 		done
 	@if [ "$${CI:-}" = true ]; then \

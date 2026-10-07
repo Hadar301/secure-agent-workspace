@@ -81,8 +81,32 @@ Used to add the route FQDN to the gateway TLS certificate SANs.
 {{- end }}
 
 {{/*
-Resolve the golden image DataSource name.
-Priority: explicit source.dataSource > derived from containerRuntime.
+Where the VM's root disk comes from, made once when the disk does not exist:
+"registry" (source.registryURL, or by default the golden image in the
+internal registry), "http" (source.httpURL), or "dataSource" (a clone of
+source.dataSource, which must exist). No Job: KubeVirt and CDI do it all.
+*/}}
+{{- define "openshell-sandbox.diskSource" -}}
+{{- if .Values.source.registryURL -}}registry
+{{- else if .Values.source.httpURL -}}http
+{{- else if .Values.source.dataSource -}}dataSource
+{{- else -}}registry
+{{- end -}}
+{{- end }}
+
+{{/*
+The registry image the root disk is imported from: source.registryURL, else
+the golden image in the internal registry,
+<source.dataSourceNamespace>/<golden name>:latest (built by
+openshell-gateway-image, or mirrored by make copy-images).
+*/}}
+{{- define "openshell-sandbox.diskImageURL" -}}
+{{- .Values.source.registryURL | default .Values.source.goldenImageURL | default (printf "docker://%s/%s/%s:latest" .Values.source.internalRegistry (include "openshell-sandbox.goldenNamespace" .) (include "openshell-sandbox.dataSourceName" .)) -}}
+{{- end }}
+
+{{/*
+The golden image name: the DataSource to clone, and the internal registry
+image. Priority: explicit source.dataSource > derived from containerRuntime.
 */}}
 {{- define "openshell-sandbox.dataSourceName" -}}
 {{- if .Values.source.dataSource -}}
@@ -140,13 +164,6 @@ Governance interceptor gRPC endpoint reachable from the VM.
 */}}
 {{- define "openshell-sandbox.governanceEndpoint" -}}
 {{- .Values.governance.endpoint | default (printf "http://governance-interceptor.%s.svc.cluster.local:%v" (.Values.governance.namespace | default .Release.Namespace) (.Values.governance.port | default 18081)) -}}
-{{- end }}
-
-{{/*
-Namespace of Keycloak's "<keycloakName>-initial-admin" Secret.
-*/}}
-{{- define "openshell-sandbox.keycloakNamespace" -}}
-{{- .Values.dashboard.keycloakNamespace | default .Values.oidc.keycloakNamespace | default .Release.Namespace -}}
 {{- end }}
 
 {{/*
