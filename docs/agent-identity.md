@@ -977,13 +977,41 @@ were removed. The actual BOM's CLI, gateway, supervisor, and sandbox images
 still record `unsigned` under `warn`, so this is a component-policy mechanism
 test, not a production `enforce` install or proof of the publisher's key.
 
-The Pattern install path remains unverified on this cluster. The first
+The first Pattern install attempt on this cluster was not complete. The first
 `./pattern.sh make install` attempt stopped at the framework's DNS-name length
 check. With shorter names, its no-secrets deployment target reached the API,
 but the Pattern admission webhook rejected the separate canary: only one
 Pattern resource is allowed. The existing `secure-agent-workspace` Pattern and
-`alice` VM retained their UIDs and configuration. Completing this path needs a
-cluster without another Pattern or a carefully scoped addition under the
-existing Pattern owner; changing that owner's source revision would affect
-other applications. [Sanitized evidence](evidence/agent-identity-signed-image-2026-10-07.json)
+`alice` VM retained their UIDs and configuration. This led to a separate test
+through the existing Pattern owner. [Sanitized evidence](evidence/agent-identity-signed-image-2026-10-07.json)
 records the passes, blocker, and remaining signature limits.
+
+### Existing Pattern owner and custom-profile refresh, 2026-10-07
+
+The user authorized changing the existing Pattern source to the PR branch.
+`./pattern.sh make install` set that source to `codex/agent-identity` and left
+the Pattern resource UID unchanged. Its health wait did not finish. Three
+legacy Argo Applications still target `codex/custom-inference-vm-installer`;
+the old `openshell-saw` Application is Degraded because its setup Job reached
+`DeadlineExceeded` on 2026-09-27. That Application owns resources in
+`saw-alice`, so this test did not delete it. The shared SPIRE Helm release and
+existing `alice` VM were not replaced. The full Pattern install command remains
+an open check.
+
+A dedicated run-labelled SAW and BOM pair was then applied through Argo on the
+PR branch. Both Applications were Synced and Healthy. `identity-pattern`
+enrolled automatically at generation 1 and reached Ready on OpenShell 0.1.2.
+Its first protected request could not connect to the run-owned demo Service:
+the running guest still mounted the old installer ConfigMap disk. A VM restart
+mounted the new file, but OpenShell's profile import kept the old custom
+profile. A resource-version-safe `provider profile update` changed only the
+canary profile. The sandbox then loaded the new host and its protected request
+returned HTTP 200, with `saw-protected-service` as audience and its own SPIFFE
+ID in `sub`, `azp`, and `client_id`. No raw token was retained.
+
+The installer now has a profile-reconciliation change under test: it exports
+the current custom profile, compares it with the approved shipped fields, and
+uses the exported resource version for an update when they differ. This code
+change has not yet been deployed through the Pattern. The canary and its demo
+issuer remain until that check is complete. [Sanitized Pattern evidence](evidence/agent-identity-pattern-2026-10-07.json)
+records the partial install result, canary identity, and grant.

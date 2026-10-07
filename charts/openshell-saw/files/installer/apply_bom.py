@@ -2341,13 +2341,13 @@ class ProfileApplier:
             if provider.externally_managed:
                 if not grants or any(g.get("grant_type") != "token_exchange" for g in grants):
                     raise InstallerError("externally managed providers require a token_exchange profile")
-                self.import_provider_profile(ws, provider.type)
+                self.reconcile_dynamic_profile(ws, provider.type)
                 if not self.cli("provider", "get", provider.name, *ws_args(ws.name), check=False, quiet=True).ok:
                     raise InstallerError(f"provider '{provider.name}' must be created with openshell-saw-token-provider")
                 return
             if not grants or any(g.get("grant_type", "client_credentials") != "client_credentials" for g in grants):
                 raise InstallerError("runtime providers require a client_credentials token-grant profile")
-            self.import_provider_profile(ws, provider.type)
+            self.reconcile_dynamic_profile(ws, provider.type)
             result = self.cli("provider", "create", "--name", provider.name, "--type", provider.type,
                               *ws_args(ws.name), "--runtime-credentials", ok_if_exists=True, check=False)
             if not result.ok:
@@ -2412,6 +2412,73 @@ class ProfileApplier:
         if not result.ok:
             raise InstallerError(f"could not import the '{profile_id}' provider profile into "
                                  f"workspace '{ws.name}'")
+        self.remember("profile", ws.name, profile_id)
+
+    @staticmethod
+    def profile_contains(current, desired):
+        """Compare shipped fields with an export that includes server defaults."""
+        if isinstance(desired, dict):
+            return isinstance(current, dict) and all(
+                key in current and ProfileApplier.profile_contains(current[key], value)
+                for key, value in desired.items())
+        if isinstance(desired, list):
+            return isinstance(current, list) and len(current) == len(desired) and all(
+                ProfileApplier.profile_contains(actual, value)
+                for actual, value in zip(current, desired))
+        return current == desired
+
+    def reconcile_dynamic_profile(self, ws, profile_id):
+        """Keep an approved custom profile aligned with the installer disk.
+
+        OpenShell import accepts an existing profile without changing it.
+        Updates need the resource_version from the gateway export.
+        """
+        desired = _yaml(self.provider_profiles[profile_id], profile_id)
+        current = self.cli("provider", "profile", "export", profile_id,
+                           *ws_args(ws.name), check=False, quiet=True, force=True)
+        if not current.ok:
+            detail = current.out + " " + current.err
+            if not ("provider profile" in detail.lower() and "not found" in detail.lower()):
+                raise InstallerError(f"could not export the '{profile_id}' provider profile")
+            self.import_provider_profile(ws, profile_id)
+            return
+        try:
+            exported = _yaml(current.out, f"exported {profile_id}")
+        except InstallerError as exc:
+            raise InstallerError(f"could not parse the '{profile_id}' provider profile export") from exc
+        if not isinstance(exported, dict):
+            raise InstallerError(f"invalid '{profile_id}' provider profile export")
+
+        # OpenShell exports the default grant type without a grant_type key
+        # and turns cache_ttl_seconds into a duration string.
+        for credential in desired.get("credentials", []):
+            grant = credential.get("token_grant")
+            if not isinstance(grant, dict):
+                continue
+            grant_type = grant.pop("grant_type", None)
+            if grant_type not in ("client_credentials", "token_exchange"):
+                raise InstallerError(f"unsupported grant type in '{profile_id}' provider profile")
+            seconds = grant.pop("cache_ttl_seconds", None)
+            if seconds is not None:
+                grant["cache_ttl"] = f"{seconds}s"
+        if self.profile_contains(exported, desired):
+            self.remember("profile", ws.name, profile_id)
+            return
+        if exported.get("scope") != "workspace" or exported.get("source") != "user":
+            raise InstallerError(f"'{profile_id}' provider profile differs from the approved "
+                                 "profile and is not a workspace custom profile")
+        version = exported.get("resource_version")
+        if not isinstance(version, int) or version <= 0:
+            raise InstallerError(f"'{profile_id}' provider profile has no resource version")
+        replacement = _yaml(self.provider_profiles[profile_id], profile_id)
+        replacement["resource_version"] = version
+        with tempfile.TemporaryDirectory(prefix="saw-profile-") as tmp:
+            path = Path(tmp) / f"{profile_id}.yaml"
+            path.write_text(yaml.safe_dump(replacement), encoding="utf-8")
+            result = self.cli("provider", "profile", "update", profile_id,
+                              "-f", str(path), *ws_args(ws.name), check=False)
+        if not result.ok:
+            raise InstallerError(f"could not update the '{profile_id}' provider profile")
         self.remember("profile", ws.name, profile_id)
 
     # -- sandboxes -------------------------------------------------------
