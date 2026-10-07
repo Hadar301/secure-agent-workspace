@@ -83,7 +83,7 @@ assert_contains "${KC_OUTPUT}" "alice@openshell.local" "test user 'alice' presen
 assert_contains "${KC_OUTPUT}" "bob@openshell.local" "test user 'bob' present"
 assert_contains "${KC_OUTPUT}" "pkce.code.challenge.method" "PKCE configured"
 assert_contains "${KC_OUTPUT}" "device.authorization.grant.enabled" "device code flow enabled"
-assert_contains "${KC_OUTPUT}" "registrationAllowed.*true" "user registration enabled"
+assert_contains "${KC_OUTPUT}" "registrationAllowed: false" "user registration is off"
 assert_contains "${KC_OUTPUT}" "keycloakCRName" "realm import references Keycloak CR"
 
 # ============================================================
@@ -153,13 +153,17 @@ assert_contains "${SB_SECRETS}" "secretName: web-search" "additional provider Se
 # Profiles ConfigMap stays optional. Provider Secrets do not: the VM must not
 # boot, and freeze an empty iso9660 disk, before those Secrets exist.
 assert_contains "${SB_SECRETS}" "optional: true" "profiles ConfigMap is optional"
-opt_count="$(grep -c 'optional: true' <<< "${SB_SECRETS}" || true)"
 echo -n "  provider Secret disks are required... "
-if [[ "${opt_count}" -eq 1 ]]; then
+if printf '%s\n' "${SB_SECRETS}" | awk '
+  /name: saw-sec-/ {sec=1; next}
+  sec && /optional:/ {bad=1}
+  sec && /^        - name:/ {sec=0}
+  END {exit bad ? 1 : 0}
+'; then
   echo "OK"
   PASS=$((PASS + 1))
 else
-  echo "FAILED (optional: true x${opt_count}, want 1 for the profiles ConfigMap only)"
+  echo "FAILED (a saw-sec volume is optional)"
   FAIL=$((FAIL + 1))
 fi
 

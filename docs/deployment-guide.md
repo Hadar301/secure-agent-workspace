@@ -127,6 +127,12 @@ There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM'
 
 `saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, and sandboxes, and attaches each sandbox's providers (OpenShell 0.1.x has no inference routes: agents call their provider's own endpoint). The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
 
+A workspace that stays Starting is usually waiting on a provider Secret. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount, so the VM boots within about 2 minutes of the Secret appearing.
+
+```bash
+oc get events -n saw-<user> | grep FailedMount
+```
+
 ## Upgrading from the single-user layout
 
 Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:

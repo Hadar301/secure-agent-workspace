@@ -141,9 +141,9 @@ internalRegistry:
   allowAnonymousPull: false
 
 # Provider credential Secrets. Every `credentialSecret:` named in a SAW-BOM
-# profile must be listed here (or be inference.secretName). Each Secret is
-# attached to the VM as a read-only disk; a missing Secret is attached empty,
-# and the installer then reports which provider has no credential.
+# profile must be listed here (or be inference.secretName). The VM waits
+# until each listed Secret exists. A Secret that changes after boot still
+# needs a VM restart (`vm.liveInputs` shares the files over virtiofs instead).
 inference:
   secretName: "inference"
 additionalProviderSecrets:
