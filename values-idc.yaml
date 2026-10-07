@@ -1,5 +1,5 @@
 clusterGroup:
-  name: agent-identity
+  name: idc
   namespaces:
     saw-identity-p: {}
   applications:

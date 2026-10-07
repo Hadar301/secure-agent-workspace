@@ -1,12 +1,12 @@
 global:
-  pattern: agent-identity-canary
+  pattern: idp
   singleArgoCD: true
   secretLoader:
     disabled: true
 main:
   patternsOperator:
     enableSubscription: false
-  clusterGroupName: agent-identity
+  clusterGroupName: idc
   multiSourceConfig:
     enabled: true
     clusterGroupChartVersion: 0.9.*
