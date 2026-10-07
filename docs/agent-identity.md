@@ -923,11 +923,29 @@ records the IDs, selectors, grant summaries, and cleanup.
 The old runner's direct JWT-SVID probe is not valid for this 0.1.2 sandbox:
 `podman exec` enters a workload view where `/spiffe-workload-api` is absent,
 including for uid 0. The supervisor obtains SVIDs for successful grants while
-the workload cannot use the socket. Direct gateway/peer ID rejection needs a
-supervisor-context probe or equivalent; the grant claims and registration
-selectors alone do not pass that negative test. The golden image still lacks
+the workload cannot use the socket. The golden image still lacks
 `verify-bundle`, so this deployment also does not establish signed-component
 verification.
+
+### Supervisor-context negative identity, 2026-10-06
+
+The live runner now executes its SVID probe in the managed supervisor
+container, after checking the container's isolation-role, workspace, and
+sandbox labels. The CLI binary is temporary and removed after each call; only
+claim summaries and `PermissionDenied` results are retained. Helm `saw-bom`
+revision 4 added the research profile to the dedicated `identity-u` VM, and
+the installer applied it after one VM restart. The VM UID and enrollment
+generation 1 stayed unchanged. Gateway, default, and research entries were
+parented to the same attested agent with distinct workspace selectors.
+
+At 15:38:55 UTC, each supervisor fetched exactly its own JWT-SVID for the demo
+audience. Both gateway-ID requests and both cross-workspace ID requests
+returned `PermissionDenied: no identity issued`. Neither workload container
+could see `/spiffe-workload-api/agent.sock`. The result is
+[recorded here](evidence/agent-identity-supervisor-2026-10-06.json). This
+completes the same-VM gateway and peer-workspace rejection check on the pinned
+0.1.2 supervisor; cross-VM repetition and the full unattended suite remain
+separate checks.
 
 The compatibility gate on OpenShift 4.22.14 passed SPIRE readiness, HTTPS
 discovery/JWKS, the pinned 0.1.2 gateway, CLI, and supervisor binary checks,

@@ -267,42 +267,11 @@ def grant(ws):
     return summary
 
 def svid(ws):
-    names = cu(["podman", "ps", "--format", "{{.Names}}"]).stdout.split()
-    matches = [name for name in names if ws + "--agent" in name]
-    if not matches:
-        return {"error": "container missing"}
-    container = matches[0]
-    visible = cu(["podman", "exec", container, "/bin/sh", "-c",
-                  "test -S /spiffe-workload-api/agent.sock"])
-    if visible.returncode == 1:
-        return {"error": "supervisor-only Workload API socket is absent from podman exec"}
-    if visible.returncode:
-        return {"error": "socket visibility probe failed"}
-    copied = cu(["podman", "cp", "/usr/local/bin/spire-agent", container + ":/tmp/spire-agent"])
-    if copied.returncode:
-        return {"error": "copy"}
     spiffe = "spiffe://%s/saw/%s/%s/ws/%s/sandbox/agent" % (TD, NS, VM, ws)
-    fetched = cu(["podman", "exec", container, "/tmp/spire-agent", "api", "fetch", "jwt",
-                  "-socketPath", "/spiffe-workload-api/agent.sock", "-audience", AUDIENCE,
-                  "-output", "json", "-spiffeID", spiffe], timeout=30)
-    removed = cu(["podman", "exec", container, "/bin/rm", "-f", "/tmp/spire-agent"])
-    if removed.returncode:
-        return {"error": "probe binary cleanup failed"}
-    if fetched.returncode:
-        if "dial unix /spiffe-workload-api/agent.sock: connect: no such file or directory" in (fetched.stderr or ""):
-            return {"error": "supervisor-only Workload API socket is absent from podman exec"}
-        return {"error": "fetch"}
-    data = json.loads(fetched.stdout)
-    token = ""
-    items = data if isinstance(data, list) else [data]
-    for item in items:
-        for entry in item.get("svids") or []:
-            if entry.get("spiffe_id") == spiffe:
-                token = entry.get("svid") or ""
-    if token.count(".") != 2:
-        return {"error": "missing"}
-    body = claims(token)
-    return {"exp": body.get("exp"), "sub": body.get("sub"), "aud": body.get("aud")}
+    result = fetch_svid(ws, spiffe)
+    if not result.get("ok"):
+        return {"error": result.get("error", "fetch failed")}
+    return {key: result.get(key) for key in ("exp", "sub", "aud")}
 
 def snapshot():
     status = json.loads(subprocess.run(["/usr/libexec/saw-identity-status"], capture_output=True, text=True, timeout=20).stdout)
@@ -348,47 +317,69 @@ def research_probe():
         out["providers"][ws] = redact(listed.stdout)
     print(json.dumps(out))
 
-def fetch_svid(ws, spiffe):
+def supervisor_container(ws):
     names = cu(["podman", "ps", "--format", "{{.Names}}"]).stdout.split()
-    matches = [name for name in names if (ws + "--agent") in name]
-    if not matches:
-        return {"ok": False, "error": "container missing"}
-    container = matches[0]
+    matches = []
+    for name in names:
+        if not name.startswith("openshell-supervisor-"):
+            continue
+        inspected = cu(["podman", "inspect", name, "--format", "{{json .Config.Labels}}"])
+        if inspected.returncode:
+            continue
+        labels = json.loads(inspected.stdout)
+        if (labels.get("openshell.managed") == "true" and
+            labels.get("openshell.ai/isolation-role") == "supervisor" and
+            labels.get("openshell.ai/sandbox-workspace") == ws and
+            labels.get("openshell.ai/sandbox-name") == "agent"):
+            matches.append(name)
+    return matches[0] if len(matches) == 1 else ""
+
+def fetch_svid(ws, spiffe):
+    # OpenShell 0.1.2 mounts the socket only into its supervisor container.
+    # podman exec against the workload container correctly cannot see it.
+    container = supervisor_container(ws)
+    if not container:
+        return {"ok": False, "error": "exactly one managed supervisor container is required"}
     visible = cu(["podman", "exec", container, "/bin/sh", "-c",
                   "test -S /spiffe-workload-api/agent.sock"])
-    if visible.returncode == 1:
-        return {"ok": False, "probeUnavailable": True,
-                "error": "supervisor-only Workload API socket is absent from podman exec"}
     if visible.returncode:
-        return {"ok": False, "error": "socket visibility probe failed"}
-    copied = cu(["podman", "cp", "/usr/local/bin/spire-agent", container + ":/tmp/spire-agent"])
+        return {"ok": False, "error": "supervisor socket is unavailable"}
+    probe = "/usr/local/bin/saw-spire-probe-%s" % os.getpid()
+    copied = cu(["podman", "cp", "/usr/local/bin/spire-agent", container + ":" + probe])
     if copied.returncode:
-        return {"ok": False, "error": "copy"}
-    fetched = cu(["podman", "exec", container, "/tmp/spire-agent", "api", "fetch", "jwt",
-                  "-socketPath", "/spiffe-workload-api/agent.sock", "-audience", AUDIENCE,
-                  "-output", "json", "-spiffeID", spiffe], timeout=25)
-    removed = cu(["podman", "exec", container, "/bin/rm", "-f", "/tmp/spire-agent"])
+        return {"ok": False, "error": "probe binary copy failed"}
+    try:
+        fetched = cu(["podman", "exec", container, probe, "api", "fetch", "jwt",
+                      "-socketPath", "/spiffe-workload-api/agent.sock", "-audience", AUDIENCE,
+                      "-output", "json", "-spiffeID", spiffe], timeout=25)
+    finally:
+        removed = cu(["podman", "exec", "--user", "0", container, "/bin/rm", "-f", probe])
     if removed.returncode:
         return {"ok": False, "error": "probe binary cleanup failed"}
     if fetched.returncode:
-        if "dial unix /spiffe-workload-api/agent.sock: connect: no such file or directory" in (fetched.stderr or ""):
-            return {"ok": False, "probeUnavailable": True,
-                    "error": "supervisor-only Workload API socket is absent from podman exec"}
-        return {"ok": False, "error": redact(fetched.stderr or fetched.stdout) or "fetch failed"}
+        error = fetched.stderr or fetched.stdout or ""
+        if "PermissionDenied" in error and "no identity issued" in error:
+            return {"ok": False, "denied": True, "error": "PermissionDenied: no identity issued"}
+        return {"ok": False, "error": redact(error) or "fetch failed"}
     try:
         data = json.loads(fetched.stdout)
     except Exception:
         return {"ok": False, "error": "unparsed"}
-    token = ""
+    tokens = []
     items = data if isinstance(data, list) else [data]
     for item in items:
         for entry in item.get("svids") or []:
-            if entry.get("spiffe_id") == spiffe:
-                token = entry.get("svid") or ""
+            tokens.append((entry.get("spiffe_id"), entry.get("svid") or ""))
+    if len(tokens) != 1 or tokens[0][0] != spiffe:
+        return {"ok": False, "error": "unexpected identity set"}
+    token = tokens[0][1]
     if token.count(".") != 2:
         return {"ok": False, "error": "missing"}
     body = claims(token)
-    return {"ok": True, "sub": body.get("sub"), "exp": body.get("exp")}
+    audiences = body.get("aud")
+    if body.get("sub") != spiffe or audiences not in (AUDIENCE, [AUDIENCE]):
+        return {"ok": False, "error": "unexpected SVID claims"}
+    return {"ok": True, "sub": body.get("sub"), "aud": AUDIENCE, "exp": body.get("exp")}
 
 def isolation():
     base = "spiffe://%s/saw/%s/%s" % (TD, NS, VM)
@@ -397,6 +388,19 @@ def isolation():
               "research": base + "/ws/research/sandbox/agent"}
     print(json.dumps({ws: {name: fetch_svid(ws, spiffe) for name, spiffe in wanted.items()}
                       for ws in ("default", "research")}))
+
+def workload_sockets():
+    names = cu(["podman", "ps", "--format", "{{.Names}}"]).stdout.split()
+    result = {}
+    for ws in ("default", "research"):
+        matches = [name for name in names if name.startswith("openshell-%s--agent-" % ws)]
+        if len(matches) != 1:
+            result[ws] = {"error": "exactly one workload container is required"}
+            continue
+        checked = cu(["podman", "exec", matches[0], "/bin/sh", "-c",
+                      "test -S /spiffe-workload-api/agent.sock"])
+        result[ws] = {"hidden": checked.returncode == 1, "probeExit": checked.returncode}
+    print(json.dumps(result))
 
 def attest():
     import re
@@ -451,6 +455,8 @@ elif ACTION == "attest":
     attest()
 elif ACTION == "cross":
     cross_fetch()
+elif ACTION == "workload-sockets":
+    workload_sockets()
 elif ACTION == "epoch":
     print(json.dumps({"epoch": int(subprocess.run(["date", "+%s"], capture_output=True, text=True).stdout.strip())}))
 elif ACTION == "dial":
@@ -498,11 +504,6 @@ def run_vm_spire_deny_expiry(args):
         guest = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "snapshot", timeout=100)
         if not all(str(guest["providers"].get(ws, "")).strip() for ws in ("default", "research")):
             raise AssertionError("active providers were not recorded")
-        if any(guest["svids"].get(ws, {}).get("error", "").startswith("supervisor-only Workload API")
-               for ws in ("default", "research")):
-            report["status"] = "blocked"
-            report["detail"] = "direct SVID expiry probe runs in podman exec, where the supervisor-only socket is absent"
-            return report
         access_exp = min(guest["grants"][ws]["exp"] for ws in ("default", "research"))
         svid_exp = min(guest["svids"][ws]["exp"] for ws in ("default", "research"))
         before = {**before_id, "registrarReady": before_id["registrarReady"],
@@ -1923,13 +1924,84 @@ def run_cross_vm_isolation(args):
                 raise AssertionError("VM is not one of the dedicated cross-VM instances")
             sides[vm] = _vm_side(oc, namespace, vm, trust_domain, audience, spire_ip, peer)
             report[vm] = _sanitize(sides[vm])
-        if any(sides[vm]["isolation"].get(ws, {}).get(ws, {}).get("probeUnavailable")
-               for vm in (left_vm, right_vm) for ws in ("default", "research")):
-            report["status"] = "blocked"
-            report["detail"] = "direct negative-ID probe runs in podman exec, where the supervisor-only socket is absent"
-            return report
         report["result"] = cross_vm_result(sides[left_vm], sides[right_vm])
         report["status"] = "pass"
+    except (AssertionError, KeyError, TypeError, subprocess.SubprocessError, OSError, json.JSONDecodeError) as error:
+        report["detail"] = str(error)[:500]
+        report["status"] = "fail"
+    return report
+
+
+def supervisor_identity_result(paths, probes, workload_sockets):
+    """Require registered identities and a private supervisor socket."""
+    if "gateway" not in paths or "default" not in paths:
+        raise AssertionError("gateway and default sandbox registrations are required")
+    for ws in ("default", "research"):
+        if ws not in paths:
+            continue
+        own = probes[ws][ws]
+        if own.get("ok") is not True or not own.get("sub", "").endswith("/ws/%s/sandbox/agent" % ws):
+            raise AssertionError(ws + " supervisor did not receive its own identity")
+        if workload_sockets[ws].get("hidden") is not True:
+            raise AssertionError(ws + " workload can access the Workload API socket")
+        wrong = ["gateway"] + (["research" if ws == "default" else "default"] if "research" in paths else [])
+        for name in wrong:
+            row = probes[ws][name]
+            if row.get("ok") is not False or row.get("denied") is not True:
+                raise AssertionError(ws + " supervisor was not denied " + name + " identity")
+    if "research" in paths:
+        return "supervisor own identities succeed; gateway and peer identities are rejected"
+    return "default supervisor identity succeeds; gateway identity is rejected"
+
+
+def run_supervisor_identity(args):
+    """Probe SPIRE from the supervisor container, never the workload container."""
+    oc = ["oc", "--context", args.context, "--request-timeout=30s"]
+    namespace, vm = args.vm_namespace, args.vm
+    audience = "http://identity-demo.saw-identity-demo.svc.cluster.local:8080"
+    report = {"scenario": "supervisor-identity", "executed": True,
+              "acceptanceComplete": False, "status": "fail",
+              "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    try:
+        vm_obj = json.loads(command(oc + ["get", "vm", "-n", namespace, vm, "-o", "json"], timeout=30))
+        if (vm_obj["metadata"].get("labels") or {}).get("saw.redhat.com/spiffe") != "true":
+            raise AssertionError("VM is not opted into SPIFFE")
+        trust_domain = vm_obj["metadata"]["annotations"]["saw.redhat.com/trust-domain"]
+        service = json.loads(command(oc + ["get", "svc", "-n", NS, "spire-server", "-o", "json"], timeout=30))
+        spire_ip = service["spec"]["clusterIP"]
+        registration = _identity_view(oc, namespace, vm)
+        owned = _owned_entries(oc, vm_obj["metadata"]["uid"])
+        paths = sorted(_entry_names(owned, namespace, vm))
+        if not registration["agentPresent"] or {"gateway", "default"} - set(paths):
+            raise AssertionError("active agent and gateway/default registrations are required")
+        if len(owned) != len(paths) or "other" in paths or any(entry["admin"] for entry in owned):
+            raise AssertionError("unexpected, duplicate, or admin registration")
+        if {entry["parentHash"] for entry in owned} != {registration["pathHash"]}:
+            raise AssertionError("registrations are not parented to the attested agent")
+        selectors = _selector_map(owned, namespace, vm)
+        if set(selectors.get("gateway") or []) != {
+            "unix:uid:1000", "unix:path:/usr/local/bin/openshell-gateway"}:
+            raise AssertionError("gateway selectors changed")
+        for ws in ("default", "research"):
+            if ws in paths and set(selectors.get(ws) or []) != {
+                "docker:label:openshell.managed:true",
+                "docker:label:openshell.ai/sandbox-workspace:" + ws,
+                "docker:label:openshell.ai/sandbox-name:agent"}:
+                raise AssertionError(ws + " sandbox selectors changed")
+        probes = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip, "isolation", timeout=160)
+        sockets = _guest_action(oc, namespace, vm, trust_domain, audience, spire_ip,
+                                "workload-sockets", timeout=50)
+        report.update({"vmUid": vm_obj["metadata"]["uid"], "generation": registration["generation"],
+                       "agentHash": registration["pathHash"], "registeredPaths": paths,
+                       "parentHash": owned[0]["parentHash"], "selectors": selectors,
+                       "probes": _sanitize(probes), "workloadSockets": _sanitize(sockets)})
+        report["result"] = supervisor_identity_result(paths, probes, sockets)
+        if "research" in paths:
+            report["status"] = "pass"
+            report["acceptanceComplete"] = True
+        else:
+            report["status"] = "blocked"
+            report["detail"] = "gateway rejection passed; a registered research sandbox is required for peer rejection"
     except (AssertionError, KeyError, TypeError, subprocess.SubprocessError, OSError, json.JSONDecodeError) as error:
         report["detail"] = str(error)[:500]
         report["status"] = "fail"
@@ -1939,6 +2011,7 @@ def run_cross_vm_isolation(args):
 def execute_scenario(args):
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
     runners = {"vm-spire-deny-expiry": run_vm_spire_deny_expiry,
+               "supervisor-identity": run_supervisor_identity,
                "spire-server-outage": run_spire_server_outage,
                "profile-remove-restore": run_profile_remove_restore,
                "research-expiry-denial": run_research_expiry_denial,
@@ -1967,7 +2040,7 @@ if __name__ == "__main__":
     parser.add_argument("--namespace-prefix", required=True)
     parser.add_argument("--transport", required=True, choices=("tcp",))
     parser.add_argument("--artifact-dir", required=True, type=Path)
-    parser.add_argument("--scenario", choices=("vm-spire-deny-expiry", "spire-server-outage", "profile-remove-restore",
+    parser.add_argument("--scenario", choices=("supervisor-identity", "vm-spire-deny-expiry", "spire-server-outage", "profile-remove-restore",
                                               "research-expiry-denial", "vm-recreate", "vm-recreate-verify",
                                               "namespace-delete", "cross-vm-isolation", "networkpolicy"))
     parser.add_argument("--vm-namespace")

@@ -129,6 +129,32 @@ def test_cross_vm_rejects_the_other_vms_identity():
     assert "cross-VM" in live.cross_vm_result(side("identity-c", "uid-c"), side("identity-d", "uid-d"))
 
 
+def test_supervisor_probe_requires_registered_peer_and_hidden_workload_socket():
+    live = load("test-agent-identity-live")
+    own = lambda ws: {"ok": True, "sub": "spiffe://test/saw/ns/vm/ws/%s/sandbox/agent" % ws}
+    denied = {"ok": False, "denied": True, "error": "PermissionDenied: no identity issued"}
+    probes = {"default": {"default": own("default"), "gateway": denied, "research": denied},
+              "research": {"research": own("research"), "gateway": denied, "default": denied}}
+    sockets = {"default": {"hidden": True}, "research": {"hidden": True}}
+    assert "peer identities are rejected" in live.supervisor_identity_result(
+        ["gateway", "default", "research"], probes, sockets)
+    probes["research"]["default"] = {"ok": False, "error": "socket unavailable"}
+    try:
+        live.supervisor_identity_result(["gateway", "default", "research"], probes, sockets)
+    except AssertionError as error:
+        assert "not denied" in str(error)
+    else:
+        raise AssertionError("an unavailable socket was accepted as selector rejection")
+    probes["research"]["default"] = denied
+    sockets["default"]["hidden"] = False
+    try:
+        live.supervisor_identity_result(["gateway", "default", "research"], probes, sockets)
+    except AssertionError as error:
+        assert "workload can access" in str(error)
+    else:
+        raise AssertionError("a workload-visible socket was accepted")
+
+
 def test_vm_recreate_requires_a_new_parent_and_rejects_peer_identities():
     live = load("test-agent-identity-live")
     selectors = {"gateway": ["unix:uid:1000"], "default": ["docker:label:openshell.managed:true"],
