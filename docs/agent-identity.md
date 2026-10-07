@@ -951,3 +951,39 @@ The compatibility gate on OpenShift 4.22.14 passed SPIRE readiness, HTTPS
 discovery/JWKS, the pinned 0.1.2 gateway, CLI, and supervisor binary checks,
 and run-namespace cleanup. Its aggregate result remains `blocked` because the
 default gate does not execute the complete acceptance suite.
+
+### Signed golden image and Pattern-path constraint, 2026-10-07
+
+A dedicated image build (`openshell-gateway-2`, digest
+`sha256:57152dbd6ee7f329b8ae5a80150fa4270a22c80a4176952c206f1b98b35cb384`)
+published a new DataSource in `saw-identity-verified-image`. It includes
+`verify-bundle`, cosign, and a test public key. An isolated test branch carried
+the matching installer bundle; the key and cluster-specific values are not in
+the PR branch. The `identity-p` VM booted from this image on the cluster's
+`selinux-policy-43.3-1.fc44`, enrolled at generation 1, completed both
+installer phases for `0.1.2-rhaiv.0`, and recorded
+`bundle.signature=verified`. Both workspace protected requests were HTTP 200
+with their own sandbox identities. The demo issuer allowlist update recreated
+its pod, so these grants belong to the new signer.
+
+An isolated guest probe copied the installer into temporary paths and applied
+an `enforce` signing floor. The unchanged copy verified and published; adding
+one line to `apply_bom.py` made verification exit 1 without publishing the
+tampered copy. The guest's verified `ComponentInstaller._verify_signature`
+accepted a byte-identical CLI image mirrored into a run-owned registry and
+signed with the test key. It rejected the original image when asked to trust
+that same key. The temporary registry setting and short-lived pull credential
+were removed. The actual BOM's CLI, gateway, supervisor, and sandbox images
+still record `unsigned` under `warn`, so this is a component-policy mechanism
+test, not a production `enforce` install or proof of the publisher's key.
+
+The Pattern install path remains unverified on this cluster. The first
+`./pattern.sh make install` attempt stopped at the framework's DNS-name length
+check. With shorter names, its no-secrets deployment target reached the API,
+but the Pattern admission webhook rejected the separate canary: only one
+Pattern resource is allowed. The existing `secure-agent-workspace` Pattern and
+`alice` VM retained their UIDs and configuration. Completing this path needs a
+cluster without another Pattern or a carefully scoped addition under the
+existing Pattern owner; changing that owner's source revision would affect
+other applications. [Sanitized evidence](evidence/agent-identity-signed-image-2026-10-07.json)
+records the passes, blocker, and remaining signature limits.
