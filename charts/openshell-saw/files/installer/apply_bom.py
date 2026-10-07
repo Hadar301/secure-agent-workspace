@@ -2960,16 +2960,16 @@ class ProfileApplier:
             return [f"OpenClaw does not list enabled plugin(s) {', '.join(missing)} "
                     f"from {source}"]
         if info["mcpServers"]:
-            # `plugins list --json` says only "this bundle has MCP servers",
-            # never which ones, so a server OpenClaw dropped (bad entry,
-            # failed load) is invisible there; `mcp status` names them. An
-            # agent without the subcommand is a WARN, not a failure, or
-            # every apply breaks on such a build.
-            listed = self.cli(*exec_cmd, "sh", "-c", f"{OPENCLAW_EXEC_ENV} openclaw mcp status",
+            # `mcp status` only lists servers added via `mcp add`/`mcp set`,
+            # never ones a bundle declares in its own mcp.json; `plugins
+            # inspect <bundle>` names them instead.
+            listed = self.cli(*exec_cmd, "sh", "-c",
+                              f"{OPENCLAW_EXEC_ENV} openclaw plugins inspect "
+                              f"{info['name']} --runtime",
                               check=False, quiet=True)
             if not listed.ok or not (listed.out or "").strip():
                 log(f"WARN: harness '{info['name']}': sandbox '{sb.name}' does not answer "
-                    "`openclaw mcp status`; MCP servers checked by bundle capability only")
+                    "`openclaw plugins inspect`; MCP servers checked by bundle capability only")
             else:
                 # Whole-token match: a plain substring check would call a
                 # declared server "present" when it is only a fragment of a

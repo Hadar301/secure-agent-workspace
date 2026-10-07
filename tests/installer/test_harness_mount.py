@@ -179,6 +179,22 @@ def test_a_bundle_openclaw_has_not_loaded_fails_verify(
     assert any("does not load the harness bundle" in f for f in failures)
 
 
+def test_a_dropped_live_mcp_server_fails_verify(
+        ab, fake_env, config, profiles, creds):
+    """`openclaw mcp status` never lists a bundle's MCP servers (regression:
+    it only shows ones added via `mcp add`/`mcp set`), so verify must read
+    `openclaw plugins inspect <bundle>` instead; an entry missing from its
+    live listing (OpenClaw dropped it) still fails the run."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    assert applier.verify(profiles) == []
+    (fake_env.state / "mcp-inspect.json").write_text(json.dumps({"demo": []}))
+    failures = applier.verify(profiles)
+    assert any("does not list MCP server(s) echo" in f for f in failures)
+
+
 def test_an_unparseable_plugins_list_fails_verify(
         ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
