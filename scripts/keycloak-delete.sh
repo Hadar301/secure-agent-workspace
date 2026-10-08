@@ -9,7 +9,7 @@ if ! jq -e --arg ns "${namespace}" '.items | any(.metadata.name == $ns)' \
   exit 0
 fi
 
-releases="$(helm list -n "${namespace}" --all -o json)"
+releases="$(helm list -n "${namespace}" -o json)"
 if jq -e '. | any(.name == "openshell-keycloak")' \
     <<<"${releases}" >/dev/null; then
   values="$(helm get values openshell-keycloak -n "${namespace}" -a -o json)"

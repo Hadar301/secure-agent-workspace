@@ -9,7 +9,7 @@ if ! jq -e --arg ns "${namespace}" '.items | any(.metadata.name == $ns)' \
   echo "Namespace ${namespace} is already absent."
   exit 0
 fi
-releases="$(helm list -n "${namespace}" --all -o json)"
+releases="$(helm list -n "${namespace}" -o json)"
 if jq -e --arg release "${release}" '. | any(.name == $release)' \
   <<<"${releases}" >/dev/null; then
   helm uninstall "${release}" -n "${namespace}"
