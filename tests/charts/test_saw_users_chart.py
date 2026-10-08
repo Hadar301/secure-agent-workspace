@@ -94,6 +94,10 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert application["spec"]["syncPolicy"] == {"automated": {"selfHeal": True},
                                                       "retry": {"limit": 20},
                                                       "syncOptions": ["ServerSideApply=true"]}
+        # Found on the GB200: without server-side diff the VM stayed
+        # OutOfSync on the fields KubeVirt defaults.
+        assert (application["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
+                == "ServerSideDiff=true")
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 

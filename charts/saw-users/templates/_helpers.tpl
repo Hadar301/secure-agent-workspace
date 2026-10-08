@@ -240,6 +240,11 @@ metadata:
     openshell.pattern/owner: {{ $user.name | quote }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ .wave | quote }}
+    # With ServerSideApply (syncOptions below) there is no last-applied
+    # annotation to diff against, so fields the cluster defaults (KubeVirt
+    # adds the VM's firmware serial/uuid and machine type) would show the
+    # VM OutOfSync forever. Let the API server compute the diff instead.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   {{- if include "saw-users.prune" (dict "root" $root "user" $user) }}
   finalizers:
     - {{ $root.Values.argo.finalizer }}
