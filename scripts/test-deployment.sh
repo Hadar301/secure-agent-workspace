@@ -402,6 +402,7 @@ run_check pattern.second-user-denied "${TEST_SECOND_USER_DENIED_CHECK}" "${TEST_
 run pattern.uninstall ./pattern.sh make uninstall
 run pattern.namespace-delete delete_pattern_namespace
 run pattern.uninstall-again ./pattern.sh make uninstall
+run pattern.remirror make images-mirror
 run pattern.reinstall ./pattern.sh make install
 run pattern.reinstall-health ./pattern.sh make argo-healthcheck
 check_argo_revision pattern.reinstall-revision

@@ -326,7 +326,9 @@ status, uninstalls twice, and reinstalls. Argo CD must report the tested
 commit as the synced revision for all three user applications. The default
 `pruneOnRemove: false` leaves the user namespace after pattern uninstall.
 The runner verifies the pattern ownership labels, checks that the VM is
-gone, then deletes only that test namespace. It performs a final uninstall
+gone, then deletes only that test namespace. It mirrors the gateway image
+again before reinstall because Pattern uninstall removes the managed image
+stream. It performs a final uninstall
 and cleanup after the reinstall. It records ISO 8601 timestamps,
 commit SHA, cluster context, component versions, initial resource state,
 check names, and exit codes in a local TSV
