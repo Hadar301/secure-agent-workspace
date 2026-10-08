@@ -151,3 +151,42 @@ def test_an_unknown_provider_type_still_gets_the_keepalive(ab, fake_env, config,
     make_applier(ab, config, creds).apply(profiles)
     units = [c for c in fake_env.other_calls("sudo") if "tee" in c["args"]]
     assert any("openshell-sandbox-notebook" in " ".join(c["args"]) for c in units)
+
+
+# -- caBundle: extra CAs for the OIDC issuer -----------------------------------------
+
+PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+
+
+def _ca_shell(ab, calls):
+    class Recorder(ab.Shell):
+        def run(self, argv, **kw):
+            calls.append(argv)
+            return ab.Result(0)
+    return Recorder()
+
+
+def test_ca_bundle_is_trusted_and_the_store_rebuilt(ab, tmp_path):
+    """The gateway verifies the OIDC issuer with the system trust store and
+    exits when it cannot: a cluster whose apps certificate is its own ingress
+    CA needs that CA trusted."""
+    calls, anchor = [], tmp_path / "anchors" / "saw-ca-bundle.crt"
+    assert ab.trust_ca_bundle(_ca_shell(ab, calls), PEM, anchor=anchor) is True
+    assert anchor.read_text() == PEM + "\n"
+    assert calls == [["update-ca-trust", "extract"]]
+    # Unchanged: nothing to do, no restart owed.
+    assert ab.trust_ca_bundle(_ca_shell(ab, calls), PEM, anchor=anchor) is False
+    assert len(calls) == 1
+
+
+def test_an_emptied_ca_bundle_is_removed(ab, tmp_path):
+    calls, anchor = [], tmp_path / "saw-ca-bundle.crt"
+    anchor.write_text(PEM + "\n")
+    assert ab.trust_ca_bundle(_ca_shell(ab, calls), "", anchor=anchor) is True
+    assert not anchor.exists() and calls == [["update-ca-trust", "extract"]]
+    assert ab.trust_ca_bundle(_ca_shell(ab, calls), "", anchor=anchor) is False
+
+
+def test_a_ca_bundle_that_is_not_pem_is_refused(ab, tmp_path):
+    with pytest.raises(ab.InstallerError, match="not a PEM"):
+        ab.trust_ca_bundle(_ca_shell(ab, []), "not a cert", anchor=tmp_path / "x.crt")

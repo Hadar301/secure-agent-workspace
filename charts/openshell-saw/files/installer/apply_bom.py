@@ -1718,6 +1718,45 @@ def allow_guest_agent_ssh_keys(shell):
         log("WARN: could not enable virt_qemu_ga_manage_ssh; SSH keys may not reach the VM")
 
 
+CA_ANCHOR = Path(os.environ.get("SAW_CA_ANCHOR", "/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt"))
+
+
+def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
+    """Make the VM trust config.json's caBundle (PEM): for example the
+    cluster's ingress CA when its apps certificate is not from a public CA.
+    The gateway fetches the OIDC issuer (Keycloak's route) at startup with
+    the system trust store, and exits when it cannot verify it. Written on
+    every run, not by cloud-init, which runs once per VM; an emptied setting
+    removes it. True when the trust store changed (the gateway must restart
+    to pick it up)."""
+    anchor = Path(anchor or CA_ANCHOR)
+    pem = (pem or "").strip()
+    if pem and "-----BEGIN CERTIFICATE-----" not in pem:
+        raise InstallerError("caBundle is not a PEM certificate bundle")
+    want = pem + "\n" if pem else ""
+    try:
+        have = anchor.read_text(encoding="utf-8")
+    except OSError:
+        have = ""
+    if want == have:
+        return False
+    if dry_run:
+        log(f"would {'update' if want else 'remove'} {anchor}")
+        return True
+    if want:
+        anchor.parent.mkdir(parents=True, exist_ok=True)
+        tmp = anchor.with_name(anchor.name + ".tmp")
+        tmp.write_text(want, encoding="utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, anchor)
+        log(f"Trusting the configured CA bundle ({want.count('BEGIN CERTIFICATE')} certificate(s)): {anchor}")
+    else:
+        anchor.unlink(missing_ok=True)
+        log(f"Removed {anchor}: no caBundle configured")
+    shell.run(["update-ca-trust", "extract"])
+    return True
+
+
 def ensure_user_manager(shell, env, timeout=90, sleep=1.0):
     """At boot the runtime user's systemd manager may not be up yet (linger
     starts it asynchronously). Start it and wait for its bus socket, the same
@@ -4310,11 +4349,12 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
+        trust_changed = trust_ca_bundle(shell, cfg.get("caBundle", ""), dry_run=args.dry_run)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
         state = read_json(state_file, {"components": {}})
-        if {"gateway", "supervisor"} & set(changed) or config_changed:
+        if {"gateway", "supervisor"} & set(changed) or config_changed or trust_changed:
             state["gatewayRestartPending"] = True
             if not args.dry_run:
                 write_json_atomic(state_file, state)

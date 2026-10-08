@@ -891,3 +891,12 @@ def test_bad_sandbox_ui_entries_fail_the_render(tmp_path, entry, message):
     values.write_text(yaml.safe_dump({"sandboxUi": [entry]}))
     result = helm_template(CHART, "--set", "sandboxName=saw-test", "-f", str(values))
     assert result.returncode != 0 and message in result.stderr
+
+
+def test_the_ca_bundle_reaches_the_installer(tmp_path):
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    config = json.loads(installer_data(render("-f", str(values)))["config.json"])
+    assert config["caBundle"] == pem
+    assert json.loads(installer_data(render())["config.json"])["caBundle"] == ""

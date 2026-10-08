@@ -167,6 +167,13 @@ oidc:
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"
   userRole: "openshell-user"
+  # Extra CAs (PEM) the VM trusts, for the issuer above: the gateway fetches
+  # it at startup and exits when it cannot verify its certificate. Needed
+  # when the cluster's apps certificate is not from a public CA, e.g. the
+  # cluster's own ingress CA:
+  #   oc get cm default-ingress-cert -n openshift-config-managed \
+  #     -o jsonpath='{.data.ca-bundle\.crt}'
+  caBundle: ""
 
 # Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's
 # OIDC subject (`openshell whoami`) and, when set, is added as admin to every
