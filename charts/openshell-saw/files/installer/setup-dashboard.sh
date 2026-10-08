@@ -44,6 +44,16 @@ AUTH_DISABLED=false
 ADMIN_ROLE=openshell-admin
 ENVEOF
 
+# The VM's trust store (public CAs plus the issuer CA the installer adds from
+# oidc.caBundle or the cluster's ingress CA) as the containers' system CAs, so
+# oauth2-proxy verifies the issuer instead of skipping verification. Not
+# relabelled: it is a system file, and containers may read cert_t.
+TRUST_BUNDLE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+TRUST_MOUNT=""
+if [[ -r "${TRUST_BUNDLE}" ]]; then
+  TRUST_MOUNT="-v ${TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro"
+fi
+
 cat > "${HOME}/.config/openshell/dashboard-proxy.env" <<ENVEOF
 OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:8080
 OAUTH2_PROXY_UPSTREAMS=http://localhost:8090
@@ -77,7 +87,7 @@ Description=OpenShell Dashboard (BFF + UI)
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard
-ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
+ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${TRUST_MOUNT} ${DASHBOARD_IMAGE}
 ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard
 Restart=on-failure
 RestartSec=5s
@@ -93,7 +103,7 @@ Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard-proxy
-ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
+ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${TRUST_MOUNT} ${DASHBOARD_PROXY_IMAGE}
 ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard-proxy
 Restart=on-failure
 RestartSec=5s

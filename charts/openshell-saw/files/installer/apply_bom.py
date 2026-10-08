@@ -1719,6 +1719,11 @@ def allow_guest_agent_ssh_keys(shell):
 
 
 CA_ANCHOR = Path(os.environ.get("SAW_CA_ANCHOR", "/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt"))
+# The VM's extracted trust store (public CAs plus CA_ANCHOR), mounted as the
+# system CAs of the oauth2-proxy containers, so they can verify the issuer
+# (dashboard.insecureSkipIssuerTlsVerify: false).
+TRUST_BUNDLE = Path(os.environ.get("SAW_TRUST_BUNDLE",
+                                   "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"))
 
 
 def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
@@ -4027,6 +4032,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
     users = "".join(f"{u}\n" for u in proxy.get("allowedUsers") or [])
     units, files = {}, {}
     limiter = config_dir / "saw-ui-limit.py"
+    trust_mount = f"-v {TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro "
     if cfg.get("sandboxUi"):
         files[limiter] = SANDBOX_UI_LIMIT_PY
     for e in cfg.get("sandboxUi") or []:
@@ -4090,6 +4096,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
             f"ExecStartPre=-/usr/bin/podman rm -f saw-ui-proxy-{tag}\n"
             f"ExecStart=/usr/bin/podman run --rm --name saw-ui-proxy-{tag} --network host "
             f"--env-file={env_file} -v {users_file}:/etc/saw/sandbox-ui-users:ro,Z "
+            f"{trust_mount}"
             f"{proxy.get('image', 'quay.io/oauth2-proxy/oauth2-proxy:v7.9.0')}\n"
             f"ExecStop=/usr/bin/podman stop -t 5 saw-ui-proxy-{tag}\n"
             f"Restart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")

@@ -167,10 +167,12 @@ oidc:
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"
   userRole: "openshell-user"
-  # Extra CAs (PEM) the VM trusts, for the issuer above: the gateway fetches
-  # it at startup and exits when it cannot verify its certificate. Needed
-  # when the cluster's apps certificate is not from a public CA, e.g. the
-  # cluster's own ingress CA:
+  # Extra CAs (PEM) the VM trusts for the issuer: the gateway fetches it at
+  # startup and exits when it cannot verify its certificate. Only needed when
+  # the issuer's certificate is not from a public CA: the in-cluster Keycloak
+  # on a cluster that keeps OpenShift's self-signed *.apps certificate, or an
+  # external issuer with a private CA. See docs/deployment-guide.md, "The
+  # issuer's certificate". For the cluster's own ingress CA:
   #   oc get cm default-ingress-cert -n openshift-config-managed \
   #     -o jsonpath='{.data.ca-bundle\.crt}'
   caBundle: ""

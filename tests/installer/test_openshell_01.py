@@ -190,3 +190,15 @@ def test_an_emptied_ca_bundle_is_removed(ab, tmp_path):
 def test_a_ca_bundle_that_is_not_pem_is_refused(ab, tmp_path):
     with pytest.raises(ab.InstallerError, match="not a PEM"):
         ab.trust_ca_bundle(_ca_shell(ab, []), "not a cert", anchor=tmp_path / "x.crt")
+
+
+def test_sandbox_ui_proxies_get_the_vm_trust_store(ab, tmp_path):
+    """oauth2-proxy sees the VM's trust store (with oidc.caBundle), so it can
+    verify the issuer when insecureSkipIssuerTlsVerify is false."""
+    cfg = {"oidcIssuer": "https://kc.example.com/realms/openshell",
+           "sandboxUi": [{"workspace": "ws", "sandbox": "sb", "host": "h.example.com",
+                          "proxyPort": 18800, "forwardPort": 18900, "portName": "ui-0"}],
+           "sandboxUiProxy": {"allowedUsers": ["alice"]}}
+    units, _ = ab.sandbox_ui_units(cfg, tmp_path, "cookie", "saw-installer")
+    (proxy,) = [t for n, t in units.items() if n.startswith("saw-ui-proxy-")]
+    assert f"-v {ab.TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro " in proxy
