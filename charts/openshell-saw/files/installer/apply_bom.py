@@ -1721,49 +1721,131 @@ def allow_guest_agent_ssh_keys(shell):
         log("WARN: could not enable virt_qemu_ga_manage_ssh; SSH keys may not reach the VM")
 
 
-CA_ANCHOR = Path(os.environ.get("SAW_CA_ANCHOR", "/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt"))
-# The VM's extracted trust store (public CAs plus CA_ANCHOR), mounted as the
-# system CAs of the oauth2-proxy containers, so they can verify the issuer
-# (dashboard.insecureSkipIssuerTlsVerify: false).
-TRUST_BUNDLE = Path(os.environ.get("SAW_TRUST_BUNDLE",
-                                   "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"))
+# Where releases before the trust was scoped put the issuer CA: the VM's
+# system trust store, trusted by every TLS client on the VM (podman pulls
+# included). Removed when found.
+LEGACY_CA_ANCHOR = Path(os.environ.get("SAW_CA_ANCHOR",
+                                       "/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt"))
+# The public CAs Fedora ships; the gateway's private trust file starts from it.
+SYSTEM_CA_BUNDLE = Path(os.environ.get("SAW_SYSTEM_CA_BUNDLE",
+                                       "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"))
+# The issuer CA is trusted only by the gateway and the oauth2-proxies, never
+# by the system store: the cluster's ingress CA has no name constraints, and
+# a certificate it signed for quay.io must not verify for podman.
+#   issuer-ca.pem     the CA certificates alone: the oauth2-proxies'
+#                     OAUTH2_PROXY_PROVIDER_CA_FILES (issuer calls only)
+#   issuer-trust.pem  the public CAs plus those: the gateway's SSL_CERT_FILE
+# Both in the runtime user's config dir (owned by it, like the dashboard's
+# gateway CA), so rootless podman can mount issuer-ca.pem with :z.
+ISSUER_CA_NAME = "issuer-ca.pem"
+ISSUER_TRUST_NAME = "issuer-trust.pem"
+TRUST_DROPIN = Path(".config/systemd/user/openshell-gateway.service.d/issuer-ca.conf")
+PEM_CERT_RE = re.compile(r"-----BEGIN CERTIFICATE-----\s.*?-----END CERTIFICATE-----", re.S)
 
 
-def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
-    """Make the VM trust the issuer's CA bundle (PEM, configured_ca_bundle):
-    for example the cluster's ingress CA when its apps certificate is not
-    from a public CA.
-    The gateway fetches the OIDC issuer (Keycloak's route) at startup with
-    the system trust store, and exits when it cannot verify it. Written on
-    every run, not by cloud-init, which runs once per VM; an emptied setting
-    removes it. True when the trust store changed (the gateway must restart
-    to pick it up)."""
-    anchor = Path(anchor or CA_ANCHOR)
-    pem = (pem or "").strip()
-    if pem and "-----BEGIN CERTIFICATE-----" not in pem:
-        raise InstallerError("caBundle is not a PEM certificate bundle")
-    want = pem + "\n" if pem else ""
+def cert_is_ca(pem):
+    """True when the certificate says it is a CA (basicConstraints CA:TRUE)."""
     try:
-        have = anchor.read_text(encoding="utf-8")
+        out = subprocess.run(["openssl", "x509", "-noout", "-ext", "basicConstraints"],
+                             input=pem, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise InstallerError(f"caBundle: cannot inspect a certificate: {exc}") from None
+    if out.returncode != 0:
+        raise InstallerError("caBundle: a certificate in it cannot be parsed")
+    return re.search(r"\bCA:TRUE\b", out.stdout) is not None
+
+
+def issuer_ca_certs(pem, is_ca=cert_is_ca):
+    """The CA certificates of a caBundle, as PEM, or "" for none. Refuses a
+    bundle with a private key in it (someone pasted the TLS Secret instead of
+    its ca-bundle.crt: config.json and the VM would expose the key) and one
+    without a CA. Leaf certificates are dropped: only a CA can sign the
+    issuer's certificate, so a leaf adds nothing but a pinned name."""
+    pem = (pem or "").strip()
+    if not pem:
+        return ""
+    if "PRIVATE KEY-----" in pem:
+        raise InstallerError(
+            "caBundle contains a private key; give only the CA certificate(s), "
+            "e.g. the ca-bundle.crt of default-ingress-cert, never a TLS Secret")
+    certs = PEM_CERT_RE.findall(pem)
+    if not certs:
+        raise InstallerError("caBundle is not a PEM certificate bundle")
+    cas = [c for c in certs if is_ca(c)]
+    if not cas:
+        raise InstallerError("caBundle has no CA certificate (basicConstraints CA:TRUE)")
+    if len(cas) < len(certs):
+        log(f"caBundle: ignoring {len(certs) - len(cas)} certificate(s) that are not a CA")
+    return "\n".join(cas) + "\n"
+
+
+def issuer_trust_paths(home):
+    config = Path(home) / ".config" / "openshell"
+    return config / ISSUER_CA_NAME, config / ISSUER_TRUST_NAME
+
+
+def trust_dropin(trust_file):
+    return f"[Service]\nEnvironment=SSL_CERT_FILE={trust_file}\n"
+
+
+def trust_issuer_ca(shell, pem, home, owner=None, dry_run=False, is_ca=cert_is_ca):
+    """Let the gateway and the oauth2-proxies (and nothing else on the VM)
+    trust the issuer's CA (configured_ca_bundle): for example the cluster's
+    ingress CA when its *.apps certificate is not from a public CA. The
+    gateway fetches the issuer at startup with rustls' native roots and
+    exits when it cannot verify it; SSL_CERT_FILE in a drop-in points those
+    at the public CAs plus the issuer CA. Written on every run (cloud-init
+    runs once per VM), so an emptied setting removes it. Also removes what
+    older releases put in the system trust store. True when anything
+    changed (the gateway must restart)."""
+    cas = issuer_ca_certs(pem, is_ca)
+    home = Path(home)
+    ca_file, trust_file = issuer_trust_paths(home)
+    dropin = home / TRUST_DROPIN
+    changed = False
+    if LEGACY_CA_ANCHOR.exists():
+        if dry_run:
+            log(f"would remove {LEGACY_CA_ANCHOR} from the system trust store")
+        else:
+            LEGACY_CA_ANCHOR.unlink()
+            shell.run(["update-ca-trust", "extract"])
+            log(f"Removed {LEGACY_CA_ANCHOR}: the issuer CA is no longer trusted system-wide")
+        changed = True
+    if not cas:
+        for path in (ca_file, trust_file, dropin):
+            if path.exists():
+                if not dry_run:
+                    path.unlink()
+                changed = True
+        if changed and not dry_run:
+            log("No issuer CA configured; the gateway and the proxies use the public CAs")
+        return changed
+    try:
+        public = SYSTEM_CA_BUNDLE.read_text(encoding="utf-8")
     except OSError:
-        have = ""
-    if want == have:
-        return False
+        public = ""
+    if public and not public.endswith("\n"):
+        public += "\n"
+    wanted = {ca_file: cas, trust_file: public + cas, dropin: trust_dropin(trust_file)}
     if dry_run:
-        log(f"would {'update' if want else 'remove'} {anchor}")
-        return True
-    if want:
-        anchor.parent.mkdir(parents=True, exist_ok=True)
-        tmp = anchor.with_name(anchor.name + ".tmp")
-        tmp.write_text(want, encoding="utf-8")
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, anchor)
-        log(f"Trusting the configured CA bundle ({want.count('BEGIN CERTIFICATE')} certificate(s)): {anchor}")
-    else:
-        anchor.unlink(missing_ok=True)
-        log(f"Removed {anchor}: no caBundle configured")
-    shell.run(["update-ca-trust", "extract"])
-    return True
+        stale = [str(p) for p, text in wanted.items()
+                 if not p.is_file() or p.read_text(encoding="utf-8") != text]
+        if stale:
+            log(f"[dry-run] issuer trust files to update: {stale}")
+        return changed or bool(stale)
+    wrote_ca = False
+    for path, text in wanted.items():
+        if write_if_changed(path, text, 0o644, owner):
+            changed = True
+            wrote_ca = wrote_ca or path == ca_file
+    if owner and os.geteuid() == 0:
+        for directory in (dropin.parent.parent, dropin.parent):
+            if directory.is_dir():
+                os.chown(directory, *owner)
+    if wrote_ca:
+        log(f"Trusting the issuer CA ({cas.count('BEGIN CERTIFICATE')} certificate(s)) "
+            f"for the gateway and the oauth2-proxies only: {ca_file}")
+    return changed
 
 
 CA_BUNDLE_HELP = (
@@ -1775,9 +1857,10 @@ CA_BUNDLE_HELP = (
     "\"The issuer's certificate\"")
 
 
-def check_issuer_trusted(issuer, timeout=10, opener=urlopen):
-    """Fetch the issuer's OIDC configuration with the VM's trust store, as
-    the gateway does at startup, before starting it. The gateway only says
+def check_issuer_trusted(issuer, timeout=10, opener=urlopen, cafile=None):
+    """Fetch the issuer's OIDC configuration with the gateway's trust (the
+    public CAs, plus the issuer CA when one is configured), as the gateway
+    does at startup, before starting it. The gateway only says
     "OIDC discovery request failed" and exits, and install then times out
     waiting for its port; an untrusted certificate is the usual cause and
     oidc.caBundle the fix, so say that. Other failures (DNS, timeouts) are
@@ -1785,8 +1868,11 @@ def check_issuer_trusted(issuer, timeout=10, opener=urlopen):
     if not issuer:
         return
     url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    # The gateway's trust (issuer-trust.pem when an issuer CA is configured),
+    # so a bundle that does not sign the issuer's certificate fails here.
+    context = ssl.create_default_context(cafile=str(cafile)) if cafile else None
     try:
-        with opener(url, timeout=timeout) as resp:
+        with opener(url, timeout=timeout, context=context) as resp:
             resp.read(1)
     except ssl.SSLCertVerificationError as exc:
         raise InstallerError(
@@ -4067,8 +4153,10 @@ if __name__ == "__main__":
 
 
 
-def sandbox_ui_units(cfg, home, cookie, gateway):
+def sandbox_ui_units(cfg, home, cookie, gateway, issuer_ca=None):
     """{unit file name: content} plus {file: content} for every sandbox UI.
+    issuer_ca: the issuer CA file (issuer_trust_paths), when one is
+    configured; each proxy then verifies the issuer against it alone.
 
     Per entry of cfg["sandboxUi"] (rendered by the openshell-saw chart):
       saw-ui-forward-<ws>-<sb>  `openshell forward service`: VM
@@ -4092,7 +4180,9 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
     users = "".join(f"{u}\n" for u in proxy.get("allowedUsers") or [])
     units, files = {}, {}
     limiter = config_dir / "saw-ui-limit.py"
-    trust_mount = f"-v {TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro "
+    # Only the proxy's calls to the issuer use the CA (provider CA files),
+    # not its system store. :z, not :Z: every proxy mounts the same file.
+    ca_mount = f"-v {issuer_ca}:/etc/saw/issuer-ca.pem:ro,z " if issuer_ca else ""
     if cfg.get("sandboxUi"):
         files[limiter] = SANDBOX_UI_LIMIT_PY
     for e in cfg.get("sandboxUi") or []:
@@ -4128,6 +4218,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
             "OAUTH2_PROXY_SKIP_PROVIDER_BUTTON": "true",
             "OAUTH2_PROXY_REVERSE_PROXY": "true",
             "OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY": str(bool(proxy.get("insecureSkipTlsVerify"))).lower(),
+            **({"OAUTH2_PROXY_PROVIDER_CA_FILES": "/etc/saw/issuer-ca.pem"} if issuer_ca else {}),
         }.items())
         internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
         limit_unit = f"saw-ui-limit-{tag}.service"
@@ -4156,7 +4247,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
             f"ExecStartPre=-/usr/bin/podman rm -f saw-ui-proxy-{tag}\n"
             f"ExecStart=/usr/bin/podman run --rm --name saw-ui-proxy-{tag} --network host "
             f"--env-file={env_file} -v {users_file}:/etc/saw/sandbox-ui-users:ro,Z "
-            f"{trust_mount}"
+            f"{ca_mount}"
             f"{proxy.get('image', 'quay.io/oauth2-proxy/oauth2-proxy:v7.9.0')}\n"
             f"ExecStop=/usr/bin/podman stop -t 5 saw-ui-proxy-{tag}\n"
             f"Restart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
@@ -4189,7 +4280,9 @@ def setup_sandbox_ui(shell, cfg, home):
                 cookie_file.write_text(cookie, encoding="utf-8")
                 os.chmod(cookie_file, 0o600)
             shell.add_secret(cookie)
-            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"))
+            issuer_ca = issuer_trust_paths(home)[0]
+            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"),
+                                            issuer_ca if issuer_ca.is_file() else None)
     stale = sorted(existing - set(units))
     for name in stale:
         log(f"Removing sandbox UI unit {name}; its sandbox no longer has a UI route")
@@ -4238,6 +4331,7 @@ def setup_dashboard(shell, cfg, script, home):
         cookie_file.write_text(cookie, encoding="utf-8")
         os.chmod(cookie_file, 0o600)
     shell.add_secret(cookie)
+    issuer_ca = issuer_trust_paths(home)[0]
     result = shell.run(["bash", str(script)], check=False, timeout=600, env={
         "RUNTIME": "podman",
         "DASHBOARD_ENABLED": "true",
@@ -4248,6 +4342,7 @@ def setup_dashboard(shell, cfg, script, home):
         "DASHBOARD_REDIRECT_URL": dash["redirectUrl"],
         "DASHBOARD_INSECURE_SKIP_TLS": str(bool(dash.get("insecureSkipTlsVerify"))).lower(),
         "OIDC_ISSUER": cfg["oidcIssuer"],
+        "DASHBOARD_ISSUER_CA": str(issuer_ca) if issuer_ca.is_file() else "",
     })
     if not result.ok:
         log("WARN: dashboard setup failed (the workspaces are still usable)")
@@ -4416,8 +4511,8 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
-        trust_changed = trust_ca_bundle(shell, configured_ca_bundle(cfg, inputs.secrets),
-                                        dry_run=args.dry_run)
+        trust_changed = trust_issuer_ca(shell, configured_ca_bundle(cfg, inputs.secrets),
+                                        home, owner, dry_run=args.dry_run)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
@@ -4428,7 +4523,9 @@ def cmd_install(args):
                 write_json_atomic(state_file, state)
         if not args.skip_gateway:
             if not args.dry_run:
-                check_issuer_trusted(cfg.get("oidcIssuer", ""))
+                trust_file = issuer_trust_paths(home)[1]
+                check_issuer_trusted(cfg.get("oidcIssuer", ""),
+                                     cafile=trust_file if trust_file.is_file() else None)
             ensure_gateway(shell, cfg["runtimeUser"], env,
                            restart=bool(state.get("gatewayRestartPending")))
         if state.pop("gatewayRestartPending", None) and not args.dry_run:

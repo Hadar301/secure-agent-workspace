@@ -951,3 +951,21 @@ def test_the_installer_configmap_needs_server_side_apply(default_docs):
     cm = default_docs[("ConfigMap", "saw-test-installer")]
     size = len(json.dumps(cm, separators=(",", ":")))
     assert size < 768 * 1024, size
+
+
+def test_a_ca_bundle_with_a_private_key_does_not_render(tmp_path):
+    """Pasting the TLS Secret instead of its ca-bundle.crt would put the key
+    into the installer ConfigMap's config.json."""
+    pem = ("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+           "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----")
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    assert "private key" in render_error("-f", str(values))
+
+
+def test_the_ca_job_verifies_vault_before_sending_the_root_token():
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    calls = [t["ansible.builtin.uri"] for t in play["tasks"] if "ansible.builtin.uri" in t]
+    assert calls and all(c["validate_certs"] is True and c["ca_path"] == "{{ vault_ca }}"
+                         for c in calls)
+    assert play["vars"]["vault_ca"].endswith("/serviceaccount/service-ca.crt")

@@ -44,14 +44,14 @@ AUTH_DISABLED=false
 ADMIN_ROLE=openshell-admin
 ENVEOF
 
-# The VM's trust store (public CAs plus the issuer CA the installer adds from
-# oidc.caBundle or the cluster's ingress CA) as the containers' system CAs, so
-# oauth2-proxy verifies the issuer instead of skipping verification. Not
-# relabelled: it is a system file, and containers may read cert_t.
-TRUST_BUNDLE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-TRUST_MOUNT=""
-if [[ -r "${TRUST_BUNDLE}" ]]; then
-  TRUST_MOUNT="-v ${TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro"
+# The issuer CA (oidc.caBundle / oidc.clusterCaSecret), when one is
+# configured, for the proxy's calls to the issuer only (provider CA files):
+# never the container's or the VM's system store.
+CA_MOUNT=""
+CA_ENV=""
+if [[ -n "${DASHBOARD_ISSUER_CA:-}" && -r "${DASHBOARD_ISSUER_CA}" ]]; then
+  CA_MOUNT="-v ${DASHBOARD_ISSUER_CA}:/etc/saw/issuer-ca.pem:ro,z"
+  CA_ENV="OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/saw/issuer-ca.pem"
 fi
 
 cat > "${HOME}/.config/openshell/dashboard-proxy.env" <<ENVEOF
@@ -69,6 +69,7 @@ OAUTH2_PROXY_EMAIL_DOMAINS=*
 OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
 OAUTH2_PROXY_COOKIE_SECURE=true
 OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=${DASHBOARD_INSECURE_SKIP_TLS:-false}
+${CA_ENV}
 # oauth2-proxy rejects the id_token by default if the OIDC provider's
 # email_verified claim is false — true for real SSO-federated Keycloak
 # accounts.
@@ -87,7 +88,7 @@ Description=OpenShell Dashboard (BFF + UI)
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard
-ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${TRUST_MOUNT} ${DASHBOARD_IMAGE}
+ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
 ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard
 Restart=on-failure
 RestartSec=5s
@@ -103,7 +104,7 @@ Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard-proxy
-ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${TRUST_MOUNT} ${DASHBOARD_PROXY_IMAGE}
+ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${CA_MOUNT} ${DASHBOARD_PROXY_IMAGE}
 ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard-proxy
 Restart=on-failure
 RestartSec=5s

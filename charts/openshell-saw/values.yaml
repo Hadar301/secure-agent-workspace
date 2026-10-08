@@ -167,9 +167,11 @@ oidc:
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"
   userRole: "openshell-user"
-  # Extra CAs (PEM) the VM trusts for the issuer: the gateway fetches it at
-  # startup and exits when it cannot verify its certificate. Only needed when
-  # the issuer's certificate is not from a public CA. For the in-cluster
+  # Extra CAs (PEM) the gateway and the oauth2-proxies trust for the issuer,
+  # never the VM's system trust store; a private key in it is refused. The
+  # gateway fetches the issuer at startup and exits when it cannot verify its
+  # certificate. Only needed when the issuer's certificate is not from a
+  # public CA. For the in-cluster
   # Keycloak on a cluster with OpenShift's self-signed *.apps certificate the
   # pattern does it for you (clusterCaSecret below); set caBundle for an
   # external issuer (issuerUrl) with a private CA, e.g. your corporate root CA,
@@ -236,8 +238,9 @@ dashboard:
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
-  # The dashboard and sandbox-UI oauth2-proxies verify the issuer against the
-  # VM's trust store, which includes oidc.caBundle / oidc.clusterCaSecret.
+  # The dashboard and sandbox-UI oauth2-proxies verify the issuer: with the
+  # issuer CA (oidc.caBundle / oidc.clusterCaSecret) when one is configured,
+  # else with the image's public CAs.
   # Skipping verification is only for debugging.
   insecureSkipIssuerTlsVerify: false
 

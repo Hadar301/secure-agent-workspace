@@ -12,6 +12,10 @@
   gather_facts: false
   vars:
     vault_addr: https://vault.vault.svc:8200
+    # Vault's in-cluster certificate is issued by OpenShift's service CA,
+    # which every pod gets with its service account. Verified: this play
+    # sends Vault's root token.
+    vault_ca: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
     keys_ns: imperative
     kv_mount: secret
     prefix_base: hub
@@ -24,11 +28,12 @@
         name: default-ingress-cert
       register: ingress_ca
 
-    - name: Skip when the cluster publishes no ingress CA
+    - name: Skip when the cluster publishes no ingress CA (or a bundle with a key in it)
       ansible.builtin.meta: end_play
       when: >-
         ingress_ca.resources | length == 0 or
-        'BEGIN CERTIFICATE' not in (ingress_ca.resources[0].data['ca-bundle.crt'] | default(''))
+        'BEGIN CERTIFICATE' not in (ingress_ca.resources[0].data['ca-bundle.crt'] | default('')) or
+        'PRIVATE KEY-----' in (ingress_ca.resources[0].data['ca-bundle.crt'] | default(''))
 
     - name: Read the Vault root token
       kubernetes.core.k8s_info:
@@ -54,7 +59,8 @@
         headers:
           X-Vault-Token: "{{ vault_token }}"
         status_code: [200, 404]
-        validate_certs: false
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
       register: current
       no_log: true
 
@@ -69,7 +75,8 @@
           data:
             ca-bundle.crt: "{{ ca_pem }}"
         status_code: [200, 204]
-        validate_certs: false
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
       when: >-
         current.status == 404 or
         (current.json.data.data['ca-bundle.crt'] | default('')) != ca_pem

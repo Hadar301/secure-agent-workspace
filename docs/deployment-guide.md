@@ -91,7 +91,14 @@ With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak a
 
 #### The issuer's certificate
 
-The OpenShell gateway in each workspace VM fetches the issuer's OIDC configuration at startup with the VM's system trust store (the public CAs Fedora ships). If it cannot verify the certificate, it exits. Then `install` fails with "cannot verify the OIDC issuer's certificate" and `apply` keeps failing with "install has not finished". The dashboard and sandbox-UI oauth2-proxies verify the issuer with the same trust store. Set `dashboard.insecureSkipIssuerTlsVerify: true` only to debug.
+The OpenShell gateway in each workspace VM fetches the issuer's OIDC configuration at startup. It verifies the certificate with the public CAs Fedora ships, and exits if it cannot. Then `install` fails with "cannot verify the OIDC issuer's certificate" and `apply` keeps failing with "install has not finished". The dashboard and sandbox-UI oauth2-proxies verify the issuer too. Set `dashboard.insecureSkipIssuerTlsVerify: true` only to debug.
+
+When an issuer CA is configured (below), only the gateway and the oauth2-proxies trust it, never the VM's system trust store. The cluster's ingress CA has no name constraints. In the system store, a certificate it signed for `quay.io` would verify for podman and every other TLS client on the VM. Instead, the installer writes two files to the runtime user's `~/.config/openshell/`, then restarts the gateway:
+
+- `issuer-ca.pem`: the CA certificates alone (leaf certificates are dropped). The oauth2-proxies mount it and use it only for their calls to the issuer (`OAUTH2_PROXY_PROVIDER_CA_FILES`).
+- `issuer-trust.pem`: the public CAs plus that CA. The gateway gets it as `SSL_CERT_FILE`, through a systemd drop-in (`openshell-gateway.service.d/issuer-ca.conf`).
+
+A bundle with a private key in it is refused, by the chart and by the installer, and so is a bundle without a CA certificate. Before starting the gateway, the installer verifies the issuer with `issuer-trust.pem`, so a CA that does not sign the issuer's certificate fails install with the fix. The gateway trusts the issuer CA for all of its HTTPS, not only discovery, because OpenShell has no setting that limits a CA to the issuer.
 
 Most clusters need nothing here. A certificate that is not from a public CA does:
 
@@ -135,9 +142,10 @@ No workspace needs RBAC on `openshift-config-managed`, and nothing reads a priva
 2. **Set it.** It wins over the cluster CA.
    - Validated pattern, every user: put it under `defaults.openshellSaw.oidc.caBundle` (a literal block, `caBundle: |`) in the saw-users values.
    - Validated pattern, one user: put it under that user's `values.oidc.caBundle` in `overrides/saw-users.yaml`.
+     A user's `values` are admin input: whoever can change `overrides/saw-users.yaml` decides which CA that user's gateway and proxies trust, and can also turn off the proxies' verification (`dashboard.insecureSkipIssuerTlsVerify`). Treat write access to that file like admin access to those workspaces. The self-service portal never writes `values`.
    - Quickstart, after `make -f Makefile-quickstart openshell-saw-create`: `helm upgrade <name> charts/openshell-saw -n <namespace> --reuse-values --set-file oidc.caBundle=ingress-ca.pem`.
 
-3. **Restart the VM** so it reads the new config: `virtctl restart <user> -n saw-<user>`. On boot, the installer writes the bundle to `/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt`, runs `update-ca-trust extract` and starts the gateway. The console log shows `Trusting the configured CA bundle (N certificate(s))`, then `install: Done`. Emptying the setting removes the file again.
+3. **Restart the VM** so it reads the new config: `virtctl restart <user> -n saw-<user>`. On boot, the installer writes the issuer trust files described above and restarts the gateway. The console log shows `Trusting the issuer CA (N certificate(s)) for the gateway and the oauth2-proxies only`, then `install: Done`. Emptying the setting removes the files again.
 
 A CA you set by hand does not follow rotation. Repeat these steps when the CA changes.
 

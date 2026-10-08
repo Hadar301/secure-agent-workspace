@@ -8,6 +8,9 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- fail (printf "bom.spec.openshell.%s.image must be pinned by digest (repo@sha256:...), got %q" $name ($c.image | default "")) }}
 {{- end }}
 {{- end }}
+{{- if contains "PRIVATE KEY-----" (.Values.oidc.caBundle | default "") }}
+{{- fail "oidc.caBundle contains a private key: give only the CA certificate(s), e.g. the ca-bundle.crt of default-ingress-cert, never a TLS Secret" }}
+{{- end }}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
 {{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
 {{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
