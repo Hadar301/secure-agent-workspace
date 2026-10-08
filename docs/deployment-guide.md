@@ -91,12 +91,14 @@ With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak a
 
 #### The issuer's certificate
 
-The OpenShell gateway in each workspace VM fetches the issuer's OIDC configuration at startup, using the VM's system trust store (the public CAs Fedora ships). If it cannot verify the certificate it exits, `install` fails with "openshell-gateway did not listen on port 17670", and `apply` keeps failing with "install has not finished". Most clusters do not need anything here. You only need it when the issuer's certificate is not from a public CA:
+The OpenShell gateway in each workspace VM fetches the issuer's OIDC configuration at startup with the VM's system trust store (the public CAs Fedora ships). If it cannot verify the certificate, it exits. Then `install` fails with "cannot verify the OIDC issuer's certificate" and `apply` keeps failing with "install has not finished". The dashboard and sandbox-UI oauth2-proxies verify the issuer with the same trust store. Set `dashboard.insecureSkipIssuerTlsVerify: true` only to debug.
 
-- **The in-cluster Keycloak on a cluster that keeps OpenShift's self-signed `*.apps` certificate** (common on lab, bare-metal and LaunchPad clusters).
-- **An external issuer (`oidc.issuerUrl`) with a private CA.**
+Most clusters need nothing here. A certificate that is not from a public CA does:
 
-Before installing, `make check-oidc-ca` tells you whether the cluster needs it. It looks at the default IngressController's certificate and verifies `*.apps` against public CAs only. For an external issuer, run `make check-oidc-ca ISSUER=<url>`. When the setting is needed, it saves the cluster's ingress CA to `ingress-ca.pem` and prints the `overrides/saw-users.yaml` snippet. `make check-prereqs` runs it too. If it was missed, the installer in each VM checks the issuer before starting the gateway and fails with the same instructions (`install: Failed - cannot verify the OIDC issuer's certificate …; set oidc.caBundle …`).
+- **The in-cluster Keycloak on a cluster that keeps OpenShift's self-signed `*.apps` certificate** (common on lab, bare-metal and LaunchPad clusters). The pattern handles this one for you. See [The cluster's ingress CA, automatically](#the-clusters-ingress-ca-automatically).
+- **An external issuer (`oidc.issuerUrl`) with a private CA, or the quickstart.** Set `oidc.caBundle` yourself. See [Setting oidc.caBundle](#setting-oidccabundle).
+
+Before installing, `make check-oidc-ca` tells you which case you are in. It looks at the default IngressController's certificate and verifies `*.apps` against public CAs only. Run `make check-oidc-ca ISSUER=<url>` for an external issuer. If something was missed, the installer in each VM checks the issuer before starting the gateway and fails with the fix (`install: Failed - cannot verify the OIDC issuer's certificate …; set oidc.caBundle …`).
 
 To check from inside a VM (`make openshell-saw-vm-ssh` or `virtctl ssh`):
 
@@ -104,7 +106,23 @@ To check from inside a VM (`make openshell-saw-vm-ssh` or `virtctl ssh`):
 curl -sS -o /dev/null -w '%{http_code}\n' <issuer>/.well-known/openid-configuration
 ```
 
-`200` means nothing to do. An SSL certificate error means set `oidc.caBundle` to the CA in PEM.
+`200` means the issuer is trusted.
+
+##### The cluster's ingress CA, automatically
+
+With the in-cluster Keycloak (`oidc.issuerUrl` empty) and no `oidc.caBundle`, every workspace VM trusts the cluster's own ingress CA:
+
+1. The `saw-ingress-ca` imperative job (`ansible/playbooks/saw-ingress-ca.yaml`, every 10 minutes) copies `openshift-config-managed/default-ingress-cert` to Vault at `secret/data/hub/cluster-ingress-ca`. That ConfigMap is public data, and the job only writes when the CA changed.
+2. Each user's `saw-<user>-secrets` app syncs it into their namespace as the Secret `saw-ingress-ca` (pattern-secrets, from saw-users `defaults.clusterCaSecret`).
+3. The VM mounts that Secret like a provider Secret (openshell-saw `oidc.clusterCaSecret`). On every boot, the installer trusts its `ca-bundle.crt`.
+
+No workspace needs RBAC on `openshift-config-managed`, and nothing reads a private key. On clusters whose `*.apps` certificate is from a public CA it is harmless.
+
+- **First install.** The VM waits for the Secret, as it does for the provider Secrets, so a VM created before the job's first run starts within about 10 minutes. To skip the wait, run the job once: `oc create job -n imperative --from=cronjob/<the saw-ingress-ca cronjob> saw-ingress-ca-now`.
+- **Rotation.** A rotated CA reaches Vault and the Secret on its own, and each VM on its next restart.
+- **Turning it off.** Set saw-users `defaults.clusterCaSecret: ""`, for example when the issuer is external or the cluster has a public certificate.
+
+##### Setting oidc.caBundle
 
 1. **Get the CA.** For the cluster's own ingress CA:
 
@@ -114,15 +132,23 @@ curl -sS -o /dev/null -w '%{http_code}\n' <issuer>/.well-known/openid-configurat
 
    For an external issuer, use your organisation's root CA (and any intermediates).
 
-2. **Set it.**
-   - Validated pattern: for every user, put it under `defaults.openshellSaw.oidc.caBundle` (a literal block, `caBundle: |`) in the saw-users values. For one user, put it under that user's `values.oidc.caBundle` in `overrides/saw-users.yaml`. Push, and Argo CD updates the VM's installer config.
+2. **Set it.** It wins over the cluster CA.
+   - Validated pattern, every user: put it under `defaults.openshellSaw.oidc.caBundle` (a literal block, `caBundle: |`) in the saw-users values.
+   - Validated pattern, one user: put it under that user's `values.oidc.caBundle` in `overrides/saw-users.yaml`.
    - Quickstart, after `make -f Makefile-quickstart openshell-saw-create`: `helm upgrade <name> charts/openshell-saw -n <namespace> --reuse-values --set-file oidc.caBundle=ingress-ca.pem`.
 
-3. **Restart the VM** so it reads the new config: `virtctl restart <user> -n saw-<user>`. On boot the installer writes the bundle to `/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt`, runs `update-ca-trust extract` and starts the gateway. The console log shows `Trusting the configured CA bundle (N certificate(s))` followed by `install: Done`. Emptying the setting removes the file again.
+3. **Restart the VM** so it reads the new config: `virtctl restart <user> -n saw-<user>`. On boot, the installer writes the bundle to `/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt`, runs `update-ca-trust extract` and starts the gateway. The console log shows `Trusting the configured CA bundle (N certificate(s))`, then `install: Done`. Emptying the setting removes the file again.
 
-The CA is the cluster's or your organisation's, so it changes when they rotate it (OpenShift's ingress CA lasts two years). Repeat the steps then.
+A CA you set by hand does not follow rotation. Repeat these steps when the CA changes.
 
-The dashboard and sandbox-UI oauth2-proxies use the same trust store. To have them verify the issuer too, set `dashboard.insecureSkipIssuerTlsVerify: false`; saw-users sets it to `true` by default.
+#### Using your own OIDC provider
+
+Set `oidc.issuerUrl` (in saw-users `defaults.openshellSaw`, or per user) to your provider's issuer, for example `https://sso.example.com/realms/corp`. The cluster's ingress CA is then not used, because it has nothing to do with an external issuer. The provider needs:
+
+- a public client `openshell-cli` (`oidc.clientId`) for the CLI's browser and device-code login;
+- a public client `openshell-dashboard` (`dashboard.clientId`) with PKCE (S256), whose redirect URIs include `https://<host>/oauth2/callback` for every web UI route (see [Web UI redirect URIs](#web-ui-redirect-uris); the redirect registrar only manages the in-cluster Keycloak);
+- a roles claim the gateway reads (`oidc.rolesClaim`, default `realm_access.roles`) with `openshell-admin` / `openshell-user` (`oidc.adminRole`, `oidc.userRole`), and `preferred_username` matching the workspace owner for the sandbox-UI allow-list;
+- a certificate the VM trusts: from a public CA, or set `oidc.caBundle` to your private root CA (and intermediates).
 
 ### Phase 3: Secrets
 

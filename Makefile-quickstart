@@ -128,7 +128,7 @@ WORKSPACE      ?= default
 		oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null 2>&1; \
 	fi; \
 	echo "  Image registry route: enabled"
-	@$(SCRIPTS_DIR)/check-oidc-ca.sh || [ $$? -ne 2 ] || echo "Warning: set oidc.caBundle (above) before creating workspaces."
+	@$(SCRIPTS_DIR)/check-oidc-ca.sh; rc=$$?; [ $$rc -lt 2 ] || echo "Warning: set oidc.caBundle (above) before make openshell-saw-create."
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs check-oidc-ca keycloak-check generate-keys \

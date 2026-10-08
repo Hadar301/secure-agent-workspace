@@ -93,6 +93,13 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $extra := list -}}
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
+{{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
+     uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
+{{- $oidc := deepCopy (index $base "oidc" | default dict) -}}
+{{- if not (hasKey $oidc "clusterCaSecret") -}}
+{{- $_ := set $oidc "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- end -}}
+{{- $_ := set $base "oidc" $oidc -}}
 {{- /* harnessEnabled puts a harnessRef on a sandbox, which OpenShell 0.1.x
      refuses to mount without allow_driver_config; derive it here so the two
      flags can't drift apart. The user's own `values.allowDriverConfig`
@@ -216,7 +223,8 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- $root := .root -}}
 {{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
-      "secrets" (include "saw-users.secretNames" . | fromJsonArray)) -}}
+      "secrets" (include "saw-users.secretNames" . | fromJsonArray)
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}

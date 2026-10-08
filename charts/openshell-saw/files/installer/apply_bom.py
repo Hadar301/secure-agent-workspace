@@ -1730,8 +1730,9 @@ TRUST_BUNDLE = Path(os.environ.get("SAW_TRUST_BUNDLE",
 
 
 def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
-    """Make the VM trust config.json's caBundle (PEM): for example the
-    cluster's ingress CA when its apps certificate is not from a public CA.
+    """Make the VM trust the issuer's CA bundle (PEM, configured_ca_bundle):
+    for example the cluster's ingress CA when its apps certificate is not
+    from a public CA.
     The gateway fetches the OIDC issuer (Keycloak's route) at startup with
     the system trust store, and exits when it cannot verify it. Written on
     every run, not by cloud-init, which runs once per VM; an emptied setting
@@ -1767,8 +1768,9 @@ def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
 
 CA_BUNDLE_HELP = (
     "set oidc.caBundle to the issuer's CA (PEM) and restart the VM. For the "
-    "in-cluster Keycloak on a cluster with OpenShift's self-signed *.apps "
-    "certificate: oc get cm default-ingress-cert -n openshift-config-managed "
+    "in-cluster Keycloak the validated pattern does this itself (saw-users "
+    "clusterCaSecret, the saw-ingress-ca imperative job); with the quickstart: "
+    "oc get cm default-ingress-cert -n openshift-config-managed "
     "-o jsonpath='{.data.ca-bundle\\.crt}'. See docs/deployment-guide.md, "
     "\"The issuer's certificate\"")
 
@@ -1798,6 +1800,26 @@ def check_issuer_trusted(issuer, timeout=10, opener=urlopen):
         log(f"WARN: cannot reach the OIDC issuer {url}: {exc.reason}")
     except (OSError, ValueError) as exc:
         log(f"WARN: cannot reach the OIDC issuer {url}: {exc}")
+
+
+def configured_ca_bundle(cfg, secrets_dir):
+    """The PEM the VM should trust for the issuer: config.json's caBundle, or
+    else the cluster's ingress CA from the caBundleSecret Secret (key
+    ca-bundle.crt, mounted under secrets_dir like the provider Secrets), or
+    "". The chart only sets caBundleSecret for the in-cluster Keycloak."""
+    pem = (cfg.get("caBundle") or "").strip()
+    name = cfg.get("caBundleSecret") or ""
+    if pem or not name:
+        return pem
+    if not NAME_RE.match(name):
+        raise InstallerError(f"installer config: invalid caBundleSecret {name!r}")
+    path = Path(secrets_dir) / name / "ca-bundle.crt"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        raise InstallerError(
+            f"the cluster CA Secret {name} is not mounted ({path}); it is "
+            "filled from Vault by the saw-ingress-ca imperative job") from None
 
 
 def ensure_user_manager(shell, env, timeout=90, sleep=1.0):
@@ -4394,7 +4416,8 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
-        trust_changed = trust_ca_bundle(shell, cfg.get("caBundle", ""), dry_run=args.dry_run)
+        trust_changed = trust_ca_bundle(shell, configured_ca_bundle(cfg, inputs.secrets),
+                                        dry_run=args.dry_run)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.

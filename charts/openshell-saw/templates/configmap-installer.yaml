@@ -40,6 +40,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "oidcIssuer" $oidcIssuer
       "caBundle" (.Values.oidc.caBundle | default "")
+      "caBundleSecret" (include "openshell-sandbox.caBundleSecret" .)
       "routeHost" (include "openshell-sandbox.routeHost" .)
       "sandboxDashboardRoute" $sandboxRoute
       "dashboard" (dict

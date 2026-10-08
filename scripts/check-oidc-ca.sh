@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Does this cluster need oidc.caBundle? Run before `./pattern.sh make install`
-# (make check-oidc-ca). Each workspace VM's gateway verifies the OIDC issuer
-# with Fedora's public CAs and exits when it cannot, so a cluster that keeps
-# OpenShift's self-signed *.apps certificate (or an external issuer with a
-# private CA) needs the CA in oidc.caBundle. Prints what to add, and where.
+# Will workspace VMs trust the OIDC issuer? Run before `./pattern.sh make
+# install` (make check-oidc-ca). Each workspace VM's gateway verifies the
+# issuer with Fedora's public CAs and exits when it cannot.
+#  - In-cluster Keycloak on OpenShift's self-signed *.apps certificate: the
+#    validated pattern trusts the cluster's ingress CA by itself (saw-ingress-ca
+#    imperative job); the quickstart needs oidc.caBundle.
+#  - External issuer with a private CA: oidc.caBundle, always.
+# Prints what to add, and where.
 #
 #   ISSUER=<url>   check an external issuer instead of the cluster's *.apps
 #   CA_OUT=<file>  where to save the cluster's ingress CA (default ingress-ca.pem)
 #
-# Exit 0: nothing to do. Exit 2: oidc.caBundle is needed. Exit 1: could not tell.
+# Exit 0: nothing to do. Exit 2: oidc.caBundle is needed. Exit 3: the
+# validated pattern handles it; the quickstart needs oidc.caBundle.
+# Exit 1: could not tell.
 set -uo pipefail
 
 ISSUER="${ISSUER:-}"
@@ -18,14 +23,24 @@ trap 'rm -f "${ERR}"' EXIT
 
 need() {
   echo
-  echo "  => Workspace VMs will not trust ${1}. Set oidc.caBundle before installing,"
-  echo "     or every workspace's gateway fails to start (install: openshell-gateway"
-  echo "     did not listen on port 17670)."
+  echo "  => Workspace VMs will not trust ${1} on their own. Set oidc.caBundle before"
+  echo "     installing, or every workspace's install fails (cannot verify the OIDC"
+  echo "     issuer's certificate)."
+}
+
+in_cluster() {
+  echo
+  echo "  => Workspace VMs do not trust this certificate on their own."
+  echo "     Validated pattern (./pattern.sh make install): nothing to do. The"
+  echo "     saw-ingress-ca imperative job puts the cluster's ingress CA in Vault and"
+  echo "     every workspace trusts it (saw-users defaults.clusterCaSecret)."
+  echo "     Quickstart (make openshell-saw-create), or with clusterCaSecret turned off:"
+  echo "     set oidc.caBundle, below."
 }
 
 snippet() {
   echo
-  echo "  Add this to overrides/saw-users.yaml (all users), then install:"
+  echo "  oidc.caBundle for all users, in overrides/saw-users.yaml:"
   echo
   echo "    defaults:"
   echo "      openshellSaw:"
@@ -90,9 +105,9 @@ save_ca() {
 
 if [[ -z "${custom}" ]]; then
   echo "  *.apps certificate: OpenShift's self-signed default (no custom certificate on the default IngressController)."
-  need "the in-cluster Keycloak"
+  in_cluster
   save_ca
-  exit 2
+  exit 3
 fi
 
 echo "  *.apps certificate: custom (Secret ${custom} in openshift-ingress)."
@@ -107,9 +122,9 @@ if verifies "$url"; then
 fi
 if grep -qiE 'certificate|SSL' "${ERR}"; then
   echo "  It does not verify against public CAs: $(head -1 "${ERR}")"
-  need "the in-cluster Keycloak"
+  in_cluster
   save_ca
-  exit 2
+  exit 3
 fi
 echo "  Could not reach ${url} from here: $(head -1 "${ERR}")"
 echo "  Run this where the cluster's routes are reachable, or check from a workspace VM."

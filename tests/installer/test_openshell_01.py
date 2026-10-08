@@ -192,6 +192,26 @@ def test_a_ca_bundle_that_is_not_pem_is_refused(ab, tmp_path):
         ab.trust_ca_bundle(_ca_shell(ab, []), "not a cert", anchor=tmp_path / "x.crt")
 
 
+def test_the_ca_bundle_comes_from_config_or_the_cluster_ca_secret(ab, tmp_path):
+    """caBundle wins; else caBundleSecret's ca-bundle.crt (the cluster's
+    ingress CA, mounted like a provider Secret); else nothing."""
+    secrets = tmp_path / "secrets"
+    (secrets / "saw-ingress-ca").mkdir(parents=True)
+    (secrets / "saw-ingress-ca" / "ca-bundle.crt").write_text(PEM + "\n")
+    assert ab.configured_ca_bundle({"caBundleSecret": "saw-ingress-ca"}, secrets) == PEM
+    assert ab.configured_ca_bundle({"caBundle": "X", "caBundleSecret": "saw-ingress-ca"}, secrets) == "X"
+    assert ab.configured_ca_bundle({}, secrets) == ""
+
+
+def test_a_missing_cluster_ca_secret_fails_install(ab, tmp_path):
+    """Not mounted yet: fail (install retries at the next boot) rather than
+    start a gateway that cannot verify the issuer."""
+    with pytest.raises(ab.InstallerError, match="saw-ingress-ca is not mounted"):
+        ab.configured_ca_bundle({"caBundleSecret": "saw-ingress-ca"}, tmp_path)
+    with pytest.raises(ab.InstallerError, match="invalid caBundleSecret"):
+        ab.configured_ca_bundle({"caBundleSecret": "../etc"}, tmp_path)
+
+
 def test_sandbox_ui_proxies_get_the_vm_trust_store(ab, tmp_path):
     """oauth2-proxy sees the VM's trust store (with oidc.caBundle), so it can
     verify the issuer when insecureSkipIssuerTlsVerify is false."""

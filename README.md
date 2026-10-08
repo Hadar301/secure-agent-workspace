@@ -194,9 +194,11 @@ make generate-keys
 # No build needed — images are pre-built by maintainers.
 make copy-images
 
-# 5b. Check whether workspace VMs will trust Keycloak's certificate. On a
-# cluster with OpenShift's self-signed *.apps certificate it saves the CA and
-# prints the oidc.caBundle snippet to add to overrides/saw-users.yaml.
+# 5b. Optional: check whether workspace VMs will trust Keycloak's
+# certificate. On a cluster with OpenShift's self-signed *.apps certificate the
+# pattern trusts the cluster's ingress CA by itself (saw-ingress-ca imperative
+# job); for an external issuer with a private CA (ISSUER=<url>) it prints the
+# oidc.caBundle snippet to add to overrides/saw-users.yaml.
 make check-oidc-ca
 
 # 6. Deploy the pattern (runs inside the VP utility container)

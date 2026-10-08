@@ -29,7 +29,8 @@ BOB = {
     "ownerSubject": "3f2c-subject",
     "vaultPrefix": "secret/data/hub/saw-bob",
     "profiles": ["custom"],
-    "values": {"dashboard": {"insecureSkipIssuerTlsVerify": False}},
+    "values": {"dashboard": {"insecureSkipIssuerTlsVerify": True},
+               "oidc": {"issuerUrl": "https://sso.example.com/realms/corp"}},
 }
 
 
@@ -103,12 +104,14 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert secrets["spec"]["destination"]["namespace"] == "saw-alice"
     assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
                                     "sshVaultPrefix": "secret/data/hub",
-                                    "secrets": ["inference", "web-search"]}
+                                    "secrets": ["inference", "web-search"],
+                                    "clusterCaSecret": "saw-ingress-ca"}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
     assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
                            "sshVaultPrefix": "secret/data/hub",
-                           "secrets": ["inference", "web-search"]}
+                           "secrets": ["inference", "web-search"],
+                           "clusterCaSecret": "saw-ingress-ca"}
 
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
@@ -125,14 +128,19 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     alice_values = helm_values(alice)
     assert alice_values["accessControl"] == {"owner": "alice", "ownerSubject": ""}
     assert "job" not in alice_values      # no prepare Job to tune
-    assert alice_values["dashboard"]["insecureSkipIssuerTlsVerify"] is True
+    # The proxies verify the issuer; the VM trusts the cluster's ingress CA.
+    assert "insecureSkipIssuerTlsVerify" not in alice_values.get("dashboard", {})
+    assert alice_values["oidc"] == {"clusterCaSecret": "saw-ingress-ca"}
     assert alice_values["global"]["clusterDomain"] == "example.com"
     assert "originURL" not in alice_values["global"]
     assert "mtalvi" not in alice["spec"]["source"]["repoURL"]
 
     bob_values = helm_values(app(docs, "saw-bob"))
     assert bob_values["accessControl"] == {"owner": "bob", "ownerSubject": "3f2c-subject"}
-    assert bob_values["dashboard"]["insecureSkipIssuerTlsVerify"] is False
+    assert bob_values["dashboard"]["insecureSkipIssuerTlsVerify"] is True
+    # A user's own values win; openshell-saw ignores clusterCaSecret for an
+    # external issuer.
+    assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
 
 
 def test_empty_global_values_are_left_out(tmp_path):

@@ -900,3 +900,43 @@ def test_the_ca_bundle_reaches_the_installer(tmp_path):
     config = json.loads(installer_data(render("-f", str(values)))["config.json"])
     assert config["caBundle"] == pem
     assert json.loads(installer_data(render())["config.json"])["caBundle"] == ""
+
+
+def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path):
+    """oidc.clusterCaSecret: the VM mounts that Secret like a provider Secret
+    (it waits for it) and the installer trusts its ca-bundle.crt. Not for an
+    external issuer, and an explicit caBundle wins."""
+    def secret_volumes(docs):
+        vols = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+        return [v["secret"]["secretName"] for v in vols if "secret" in v]
+
+    docs = render("--set", "oidc.clusterCaSecret=saw-ingress-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["caBundleSecret"] == "saw-ingress-ca"
+    assert "saw-ingress-ca" in config["secrets"]
+    assert "saw-ingress-ca" in secret_volumes(docs)
+
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    for extra in ({"issuerUrl": "https://sso.example.com/realms/corp"}, {"caBundle": pem}):
+        values = tmp_path / "v.yaml"
+        values.write_text(yaml.safe_dump({"oidc": {"clusterCaSecret": "saw-ingress-ca", **extra}}))
+        docs = render("-f", str(values))
+        config = json.loads(installer_data(docs)["config.json"])
+        assert config["caBundleSecret"] == ""
+        assert "saw-ingress-ca" not in config["secrets"]
+        assert "saw-ingress-ca" not in secret_volumes(docs)
+
+    assert json.loads(installer_data(render())["config.json"])["caBundleSecret"] == ""
+
+
+def test_the_imperative_jobs_run_playbooks_that_exist():
+    """values-prod's imperative jobs, including saw-ingress-ca (the cluster's
+    ingress CA into Vault for the users' saw-ingress-ca Secret)."""
+    jobs = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["imperative"]["jobs"]
+    by_name = {j["name"]: j for j in jobs}
+    assert by_name["saw-ingress-ca"]["playbook"] == "ansible/playbooks/saw-ingress-ca.yaml"
+    for job in jobs:
+        (play,) = yaml.safe_load((ROOT / job["playbook"]).read_text())
+        assert play["hosts"] == "localhost", job["name"]
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"

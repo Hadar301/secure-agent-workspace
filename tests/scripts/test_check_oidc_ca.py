@@ -26,10 +26,11 @@ esac
     return subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=tmp_path)
 
 
-def test_the_self_signed_default_needs_the_ca_and_says_where(tmp_path):
+def test_the_self_signed_default_is_handled_by_the_pattern_not_the_quickstart(tmp_path):
     r = run(tmp_path)
-    assert r.returncode == 2, r.stdout + r.stderr
+    assert r.returncode == 3, r.stdout + r.stderr
     assert "self-signed default" in r.stdout
+    assert "Validated pattern (./pattern.sh make install): nothing to do" in r.stdout
     assert (tmp_path / "ca.pem").read_text().startswith("-----BEGIN CERTIFICATE-----")
     assert "caBundle: |" in r.stdout and "            -----BEGIN CERTIFICATE-----" in r.stdout
     assert "overrides/saw-users.yaml" in r.stdout
@@ -44,9 +45,17 @@ def test_a_publicly_trusted_custom_certificate_needs_nothing(tmp_path):
 def test_a_private_custom_certificate_needs_the_ca(tmp_path):
     r = run(tmp_path, custom_cert="corp-apps", curl_rc=60,
             curl_err="curl: (60) SSL certificate problem: unable to get local issuer certificate")
-    assert r.returncode == 2 and "does not verify against public CAs" in r.stdout
+    assert r.returncode == 3 and "does not verify against public CAs" in r.stdout
 
 
 def test_unreachable_routes_are_not_a_verdict(tmp_path):
     r = run(tmp_path, custom_cert="corp-apps", curl_rc=6, curl_err="curl: (6) Could not resolve host")
     assert r.returncode == 1 and "Could not reach" in r.stdout
+
+
+def test_an_external_issuer_with_a_private_ca_needs_the_bundle(tmp_path):
+    bin_dir = tmp_path / "bin"
+    r = run(tmp_path, curl_rc=60, curl_err="curl: (60) SSL certificate problem: self-signed certificate")
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ISSUER": "https://sso.corp/realms/x"}
+    r = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=tmp_path)
+    assert r.returncode == 2 and "Set oidc.caBundle" in r.stdout
