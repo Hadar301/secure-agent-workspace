@@ -19,8 +19,10 @@ spec:
     dockerStrategy:
       dockerfilePath: Dockerfile
       buildArgs:
+        {{- with .Values.build.targetArch }}
         - name: TARGETARCH
-          value: {{ .Values.build.targetArch | quote }}
+          value: {{ . | quote }}
+        {{- end }}
         - name: BASE_IMAGE
           value: {{ .Values.build.baseImage | quote }}
         - name: NEMOCLAW_MODEL

@@ -11,6 +11,10 @@ PUSH           ?= true
 # NemoClaw CLI images from quay itself.
 MIRROR_IMAGES  ?= openshell-gateway
 OPENSHELL_VERSION ?= 0.0.116
+# Where CI publishes the multi-arch (amd64 + arm64) NemoClaw and governance
+# interceptor images; `make nemoclaw-publish` copies them to QUAY_REPO.
+GHCR_REPO      ?= ghcr.io/validatedpatterns-sandbox
+NEMOCLAW_IMAGES ?= nemoclaw-sandbox nemoclaw-cli
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
 OPENSHELL_INTERCEPTOR_REF ?= v0.1.2
@@ -58,7 +62,7 @@ export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OW
 export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
-.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
+.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build nemoclaw-publish \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
@@ -114,6 +118,14 @@ cli-build: ## Build the NemoClaw CLI image and push to Quay
 	else \
 		echo "PUSH=false: nemoclaw-cli:latest stays in this cluster's internal registry ($(BUILD_NS))."; \
 	fi
+
+nemoclaw-publish: ## Copy the multi-arch NemoClaw images CI built (GHCR_REPO) to QUAY_REPO
+	@for img in $(NEMOCLAW_IMAGES); do \
+		echo "$(GHCR_REPO)/$$img:latest -> $(QUAY_REPO)/$$img:latest (+ :$(OPENSHELL_VERSION))"; \
+		oc image info --show-multiarch $(GHCR_REPO)/$$img:latest | grep -E '^ *(OS|Arch)' | sort -u; \
+		oc image mirror --keep-manifest-list=true $(GHCR_REPO)/$$img:latest $(QUAY_REPO)/$$img:latest || exit 1; \
+		oc image mirror --keep-manifest-list=true $(GHCR_REPO)/$$img:latest $(QUAY_REPO)/$$img:$(OPENSHELL_VERSION) || exit 1; \
+	done
 
 # --- Governance interceptor image ---
 

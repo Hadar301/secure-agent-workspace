@@ -4,8 +4,10 @@ source:
     ref: "6f3cced4230ae9660c049cc11804daf37797c595" # v0.0.124
 
 build:
-  targetArch: "amd64"
-  # NemoClaw v0.0.124 amd64 base image.
+  # Empty: the build node's architecture (buildah sets TARGETARCH), so an
+  # arm64 cluster builds an arm64 image. Set amd64/arm64 to force one.
+  targetArch: ""
+  # NemoClaw v0.0.124 base image (multi-arch: amd64 and arm64).
   baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.124"
   model: "claude-sonnet-4-6"
   inferenceBaseUrl: "https://inference.local/v1"

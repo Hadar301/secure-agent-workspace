@@ -12,8 +12,8 @@ build.
 | OpenShell cli, gateway, supervisor, sandbox (`quay.io/opendatahub/odh-openshell-*`, `v0.1.2-rhaiv.6`) | the installer inside the VM | yes: the InstallerBOM pins their multi-arch indexes; podman in the VM pulls its own architecture |
 | AIPCC OpenClaw (`quay.io/aipcc/base-images/agentic/openclaw`) | the `notebook` sandbox | yes |
 | The golden VM image (`openshell-gateway`) | every workspace VM's root disk | build it on the cluster (below); the prebuilt quay image is x86_64 |
-| NemoClaw sandbox and CLI (`quay.io/rh-ai-quickstart/nemoclaw-sandbox`, `nemoclaw-cli`) | `type: nemoclaw` sandboxes (data-science `cuda-sandbox`, personal-assistant `assistant`) | not published for arm64 yet; see below |
-| Governance interceptor (`ghcr.io/validatedpatterns-sandbox/governance-interceptor`) | admission for every gateway | build it on the cluster (below); the published image is x86_64 |
+| NemoClaw sandbox and CLI (`quay.io/rh-ai-quickstart/nemoclaw-sandbox`, `nemoclaw-cli`) | `type: nemoclaw` sandboxes (data-science `cuda-sandbox`, personal-assistant `assistant`) | CI builds them for both (ghcr); `make nemoclaw-publish` copies them to quay. See below |
+| Governance interceptor (`ghcr.io/validatedpatterns-sandbox/governance-interceptor`) | admission for every gateway | yes once CI has published it from a build with the multi-arch workflow; until then build it on the cluster (below) |
 
 Check any image with `oc image info --show-multiarch <image>`.
 
@@ -55,24 +55,31 @@ Check any image with `oc image info --show-multiarch <image>`.
    (an override on the `governance-interceptor` application in your values
    file).
 
-4. **NemoClaw images.** `make build-nemoclaw PUSH=false` and
-   `make build-nemoclaw-cli PUSH=false` build arm64 images on the cluster,
-   but the VM pulls them from quay (the profiles and the InstallerBOM name
-   `quay.io/rh-ai-quickstart/...`). Until those quay tags are multi-arch,
-   a NemoClaw sandbox does not start on arm64. To publish them, push the
-   arm64 builds next to the existing amd64 ones and join the two in one tag,
-   for example with podman on a workstation logged in to both registries:
+   The `build-governance-interceptor` workflow now builds amd64 and arm64
+   and publishes one multi-arch tag (`:v0.1.2` and `:latest`). Once it has
+   run on main, check with
+   `oc image info --show-multiarch ghcr.io/validatedpatterns-sandbox/governance-interceptor:v0.1.2`
+   and, if arm64 is listed, skip this step and drop the override.
+
+4. **NemoClaw images.** The `build-nemoclaw-sandbox` and `build-nemoclaw-cli`
+   workflows build each image natively on an amd64 and an arm64 runner and
+   join them into one multi-arch tag in `ghcr.io/validatedpatterns-sandbox`
+   (the upstream `sandbox-base` they build on is multi-arch too). The VM pulls
+   them from quay, so copy them there, keeping both architectures, from a
+   machine logged in to quay:
 
    ```bash
-   podman manifest create quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
-   podman manifest add quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest docker://quay.io/rh-ai-quickstart/nemoclaw-sandbox@<amd64 digest>
-   podman manifest add quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest docker://<arm64 build>
-   podman manifest push --all quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
+   make -f Makefile-quickstart publish-nemoclaw-multiarch
+   oc image info --show-multiarch quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
    ```
 
-   The same for `nemoclaw-cli`.
+   Do not push to quay with `make build-nemoclaw` (or `build-nemoclaw-cli`)
+   with `PUSH=true` afterwards: an in-cluster build is single-architecture and
+   would replace the multi-arch tag. On a single arm64 cluster,
+   `PUSH=false` builds an arm64 image into the internal registry instead
+   (the in-cluster build no longer forces `TARGETARCH=amd64`).
 
-   Until then, expect a NemoClaw sandbox to be slow rather than broken: the
+   Until the quay tags are multi-arch, expect a NemoClaw sandbox to be slow rather than broken: the
    VM's podman runs an x86_64 image under qemu user-mode emulation (`uname -m`
    in the sandbox prints `x86_64`), so the sandbox starts, but every `node`
    and `openclaw` call is many times slower, `apply` can take several
