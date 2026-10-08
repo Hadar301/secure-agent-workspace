@@ -264,4 +264,11 @@ spec:
       selfHeal: true
     retry:
       limit: {{ $root.Values.argo.retryLimit }}
+    # Server-side apply: client-side apply copies every object into its
+    # kubectl.kubernetes.io/last-applied-configuration annotation, and
+    # annotations may hold at most 256 KiB. The VM's installer ConfigMap
+    # (apply_bom.py and friends) is past that; ConfigMaps themselves may
+    # hold 1 MiB.
+    syncOptions:
+      - ServerSideApply=true
 {{- end -}}

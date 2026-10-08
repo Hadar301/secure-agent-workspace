@@ -88,10 +88,13 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert application["metadata"]["namespace"] == "vp-gitops"
         assert "finalizers" not in application["metadata"]
         assert application["spec"]["destination"]["name"] == "in-cluster"
+        # Server-side apply, and nothing else (no CreateNamespace: the chart
+        # makes the namespaces): client-side apply's last-applied annotation
+        # would hold the whole installer ConfigMap, past the 256 KiB limit.
         assert application["spec"]["syncPolicy"] == {"automated": {"selfHeal": True},
-                                                      "retry": {"limit": 20}}
+                                                      "retry": {"limit": 20},
+                                                      "syncOptions": ["ServerSideApply=true"]}
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
-        assert "syncOptions" not in application["spec"]["syncPolicy"]
 
 
 def test_waves_release_names_and_value_overrides(tmp_path):

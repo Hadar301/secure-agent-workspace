@@ -940,3 +940,14 @@ def test_the_imperative_jobs_run_playbooks_that_exist():
         assert play["hosts"] == "localhost", job["name"]
     (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
     assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
+
+
+def test_the_installer_configmap_needs_server_side_apply(default_docs):
+    """Found live: with client-side apply Argo CD copies an object into its
+    last-applied-configuration annotation, which may hold at most 262144
+    bytes, and the installer ConfigMap passed that ("metadata.annotations:
+    Too long"). saw-users syncs with ServerSideApply; this keeps the
+    ConfigMap itself well inside the 1 MiB object limit."""
+    cm = default_docs[("ConfigMap", "saw-test-installer")]
+    size = len(json.dumps(cm, separators=(",", ":")))
+    assert size < 768 * 1024, size
