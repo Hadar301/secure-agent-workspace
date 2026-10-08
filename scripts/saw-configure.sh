@@ -24,8 +24,9 @@ NS="${namespace}" VM_NAME="${name}" \
 
 if removal="$(openshell gateway remove "${name}" 2>&1)"; then
   :
-elif [[ "${removal}" != *"not found"* && "${removal}" != *"does not exist"* ]]; then
-  echo "Error: could not replace the existing gateway configuration." >&2
+elif [[ "${removal}" != *"not found"* && "${removal}" != *"does not exist"* &&
+        "${removal}" != *"No gateway metadata found"* ]]; then
+  echo "Error: could not replace the existing gateway configuration: ${removal}" >&2
   exit 1
 fi
 unset removal

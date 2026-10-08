@@ -155,7 +155,9 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 2. `oc` CLI logged in with cluster-admin
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
-5. The `openshell` CLI installed ([releases](https://github.com/NVIDIA/OpenShell/releases))
+5. The `openshell` CLI installed at the API version pinned by the gateway BOM
+   (`0.1.2` for the current `0.1.2-rhaiv.0` image;
+   [releases](https://github.com/NVIDIA/OpenShell/releases))
 
 Verify prerequisites:
 

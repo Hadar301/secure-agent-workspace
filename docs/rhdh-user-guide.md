@@ -276,6 +276,16 @@ Check that only the owner gets in: in a private window, open the same URL
 and sign in as another user (e.g. bob). Expected: 403 from the proxy, before
 OpenClaw.
 
+As tested on 2026-10-08, the `cuda-sandbox` image contains OpenClaw
+2026.7.1. Its first
+browser connection can stop at `pairing required` after Keycloak accepts the
+owner. In the sandbox, run `openclaw devices list` and verify the pending
+browser request before approving its exact request ID with
+`openclaw devices approve <requestId>`. The browser request can include
+`operator.admin`; approval grants that scope to the browser device. Remove
+the paired device after a temporary test. The `notebook` image uses a newer
+OpenClaw release and did not need this step in the live test.
+
 ### From the command line (admin)
 
 ```bash

@@ -196,7 +196,7 @@ sandboxes.
 ### Prerequisites
 
 ```bash
-make prereqs-check          # Verify operators and CLI tools
+make prereqs-check          # Verify operators and the CLI version against the gateway BOM
 ```
 
 ### Initial Setup

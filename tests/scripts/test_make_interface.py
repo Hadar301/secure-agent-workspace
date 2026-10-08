@@ -188,6 +188,7 @@ def test_key_generation_preserves_private_key_and_recovers_public_key(tmp_path):
 def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    executable(bindir / "openshell", 'printf "openshell 0.1.2\\n"\n')
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
@@ -208,3 +209,15 @@ esac
     assert denied.returncode != 0
     assert "Forbidden" in denied.stderr
     assert "not installed" not in denied.stderr
+
+
+def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable(bindir / "openshell", 'printf "openshell 0.0.116\\n"\n')
+    executable(bindir / "oc", 'echo "oc must not run" >&2\nexit 9\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("prereqs-check", env=env)
+    assert result.returncode != 0
+    assert "does not match gateway BOM 0.1.2-rhaiv.0" in result.stderr
+    assert "oc must not run" not in result.stderr

@@ -23,7 +23,13 @@ case "${mode}" in
   openclaw)
     exec openshell --gateway "${gateway}" sandbox exec -n "${sandbox}" \
       --workspace "${workspace}" --tty -- /bin/bash -ic \
-      'export HOME=/sandbox OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0 TERM=xterm-256color; exec openclaw tui'
+      'set -e
+       export HOME=/sandbox OPENCLAW_HOME=/sandbox OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json
+       export SQLITE_TMPDIR=/sandbox/.openclaw/state TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0 TERM=xterm-256color
+       password="$(node -e "const a=require(\"/sandbox/.openclaw/openclaw.json\").gateway.auth; if(typeof a.password===\"string\") process.stdout.write(a.password)")"
+       if [ -n "$password" ]; then export OPENCLAW_GATEWAY_PASSWORD="$password"; fi
+       unset password
+       exec openclaw tui'
     ;;
   *) echo "Error: mode must be nemoclaw or openclaw." >&2; exit 2 ;;
 esac
