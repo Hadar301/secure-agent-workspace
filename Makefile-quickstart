@@ -182,6 +182,7 @@ clean-stale-operators: ## Inspect stale CNV CRDs after operator cleanup
 # after the Ansible framework removes ArgoCD apps — otherwise ArgoCD
 # immediately recreates the Subscription we just deleted.
 pre-uninstall: ## Delete pattern VMs before framework uninstall
+	@$(SCRIPTS_DIR)/pattern-pipelines-mark.sh
 	@$(SCRIPTS_DIR)/pattern-pre-uninstall.sh
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
@@ -201,6 +202,7 @@ uninstall: pre-uninstall ## Uninstall the pattern, then clean operator state
 	fi
 	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
 	@$(SCRIPTS_DIR)/pattern-operator-cleanup.sh
+	@$(SCRIPTS_DIR)/pattern-pipelines-cleanup.sh
 
 pattern-uninstall: uninstall ## Uninstall the Validated Pattern
 
