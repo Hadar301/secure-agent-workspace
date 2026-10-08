@@ -349,13 +349,20 @@ def issuer(tmp_path_factory):
 
     def run(*args):
         subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=d)
+    # Shaped like OpenShift's ingress CA and certificate: Python 3.13+
+    # verifies with VERIFY_X509_STRICT, which wants key usage on the CA and
+    # an authority key identifier on the leaf.
     for name in ("ca", "other"):
         run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", f"{name}.key",
             "-out", f"{name}.pem", "-days", "2", "-subj", f"/CN={name}",
-            "-addext", "basicConstraints=critical,CA:TRUE")
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",
+            "-addext", "subjectKeyIdentifier=hash")
     run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "srv.key", "-out", "srv.csr",
         "-subj", "/CN=127.0.0.1")
-    (d / "ext").write_text("basicConstraints=CA:FALSE\nsubjectAltName=IP:127.0.0.1\n")
+    (d / "ext").write_text("basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
+                           "extendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\n"
+                           "authorityKeyIdentifier=keyid\nsubjectAltName=IP:127.0.0.1\n")
     run("x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
         "-out", "srv.pem", "-days", "2", "-extfile", "ext")
 
