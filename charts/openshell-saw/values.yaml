@@ -32,7 +32,11 @@ sshPublicKey: ""
 #
 # 3. HTTP: download a qcow2 disk image from a URL. An http(s) host is added
 #    to the namespace egress firewall unless that host and port are already
-#    allowed. A host inside the cluster needs no entry.
+#    allowed. A host inside the cluster needs no entry. A docker:// image on
+#    an outside registry with pullMethod: pod gets its registry host added
+#    the same way (pullMethod: node pulls on the node, outside the firewall);
+#    a registry that serves blobs from a CDN host needs that host under
+#    egress.extraAllow.
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:
@@ -287,7 +291,9 @@ job:
 # governance interceptor accepts its VM (make saw-create does this).
 
 # Default-deny egress for every pod in the sandbox namespace, including the
-# VM. OpenShell's own allowlist is a separate layer and does not replace this.
+# VM. Needs OVN-Kubernetes (k8s.ovn.org/v1 EgressFirewall, the OpenShift
+# default); on another network plugin set egress.enabled: false, or the
+# workspace's sync fails on the unknown kind. OpenShell's own allowlist is a separate layer and does not replace this.
 # Exact hostnames only: a wildcard needs the DNSNameResolver feature gate.
 # The Keycloak route host is added automatically from the OIDC issuer URL.
 # Add an enterprise system or a custom inference host under extraAllow
@@ -324,4 +330,17 @@ egress:
     - oauth2.googleapis.com
     - www.googleapis.com
     - iamcredentials.googleapis.com
+    # The personal-assistant demo's Gmail provider.
+    - gmail.googleapis.com
+  # Added when harness bundles are on (allowDriverConfig): the installer
+  # re-verifies a harness image's cosign signature on every apply (keyless:
+  # Sigstore's Rekor and TUF root) and pulls the image (GHCR serves blobs
+  # from pkg-containers.githubusercontent.com). Without them the first apply
+  # fails verification and the harness is removed from the sandbox. A harness
+  # image on another registry needs that registry under extraAllow.
+  harnessAllow:
+    - ghcr.io
+    - pkg-containers.githubusercontent.com
+    - rekor.sigstore.dev
+    - tuf-repo-cdn.sigstore.dev
   extraAllow: []

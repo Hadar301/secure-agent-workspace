@@ -428,6 +428,7 @@ DEFAULT_EGRESS_HOSTS = [
     "oauth2.googleapis.com",
     "www.googleapis.com",
     "iamcredentials.googleapis.com",
+    "gmail.googleapis.com",
 ]
 # A dnsName rule cannot express this. A new wildcard in a shipped profile
 # must be added here on purpose, not silently skipped.
@@ -1180,3 +1181,49 @@ def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
     guard = names.index("Refuse to send the root token to an unverified Vault")
     assert guard < names.index("Read the Vault root token")
     assert play["tasks"][guard]["when"] == "not vault_ca_file.stat.exists"
+
+
+# -- review follow-ups (harness hosts, gmail, docker:// with pullMethod pod) --
+
+HARNESS_EGRESS_HOSTS = ["ghcr.io", "pkg-containers.githubusercontent.com",
+                        "rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+
+
+def test_egress_allows_sigstore_and_ghcr_only_when_harness_bundles_are_on(default_docs):
+    """The installer re-verifies a harness image's cosign signature on every
+    apply and removes the harness when that fails; without these hosts every
+    image harness would be dropped on its first apply."""
+    _, allowed = _egress_names(default_docs)
+    assert not set(HARNESS_EGRESS_HOSTS) & set(allowed)
+    rules, allowed = _egress_names(render("--set", "allowDriverConfig=true"))
+    _assert_safe_order(rules)
+    assert set(HARNESS_EGRESS_HOSTS) <= set(allowed)
+    assert len(allowed) == len(set(allowed))
+    # Listed by hand as well: still one rule each.
+    _, allowed = _egress_names(render("--set", "allowDriverConfig=true",
+                                      "--set-string", "egress.extraAllow[0]=ghcr.io"))
+    assert allowed.count("ghcr.io") == 1
+
+
+def test_egress_allows_the_gmail_api():
+    _, allowed = _egress_names(render())
+    assert "gmail.googleapis.com" in allowed
+
+
+def test_egress_allows_an_outside_registry_only_for_pod_pulls():
+    image = "docker://registry.example.net:5000/x/disk@sha256:" + "a" * 64
+    _, allowed = _egress_names(render("--set-string", "source.registryURL=" + image))
+    assert "registry.example.net" not in allowed      # pullMethod node: the node pulls
+    rules, _ = _egress_names(render("--set-string", "source.registryURL=" + image,
+                                    "--set", "source.pullMethod=pod"))
+    (rule,) = [r for r in rules if r["to"].get("dnsName") == "registry.example.net"]
+    assert rule["ports"] == [{"protocol": "TCP", "port": 5000}]
+    # Already allowed on 443, in-cluster, or a Docker Hub short name: nothing added.
+    for url in ("docker://quay.io/x/disk:1",
+                "docker://image-registry.openshift-image-registry.svc:5000/ns/disk:latest",
+                "docker://fedora:latest"):
+        rules, allowed = _egress_names(render("--set-string", "source.registryURL=" + url,
+                                              "--set", "source.pullMethod=pod"))
+        assert len(allowed) == len(set(allowed)), url
+        assert not [r for r in rules if r["to"].get("dnsName") in
+                    ("image-registry.openshift-image-registry.svc", "fedora")], url

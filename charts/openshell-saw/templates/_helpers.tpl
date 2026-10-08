@@ -73,13 +73,27 @@ TCP port of the Keycloak issuer URL. 443 when the URL has no port.
 {{- end }}
 
 {{/*
-"host port" for an http(s) disk URL the CDI importer in this namespace must
-reach. Empty for docker://, the internal registry, or anything else.
-http defaults to port 80, https to 443, unless the URL names a port.
+"host port" for a disk URL the CDI importer in this namespace must reach:
+an http(s) URL (http defaults to port 80, https to 443, unless the URL names
+a port), or a docker:// image on a registry outside the cluster (its
+registry host, port 443 unless named). Empty for an in-cluster host (*.svc,
+the internal registry), a docker:// image without a registry host (a Docker
+Hub short name), or anything else. A registry that serves blobs from another
+host (a CDN) needs that host under egress.extraAllow too.
 */}}
 {{- define "openshell-sandbox.httpHostPort" -}}
 {{- $url := . | trim -}}
-{{- if regexMatch "^https?://" $url -}}
+{{- if hasPrefix "docker://" $url -}}
+{{- $authority := regexReplaceAll "/.*$" (trimPrefix "docker://" $url) "" -}}
+{{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- $port := "443" -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- $port = regexReplaceAll "^.*:" $authority "" -}}
+{{- end -}}
+{{- if and (contains "." $host) (contains "/" (trimPrefix "docker://" $url)) (not (hasSuffix ".svc" $host)) (not (contains ".svc." $host)) -}}
+{{- printf "%s %s" $host $port -}}
+{{- end -}}
+{{- else if regexMatch "^https?://" $url -}}
 {{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $url "") "" -}}
 {{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
 {{- $port := "443" -}}

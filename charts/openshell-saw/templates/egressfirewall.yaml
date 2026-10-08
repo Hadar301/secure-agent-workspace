@@ -11,6 +11,11 @@
 {{- end }}
 {{- if .Values.egress.enabled }}
 {{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) }}
+{{- if .Values.allowDriverConfig }}
+{{- range (.Values.egress.harnessAllow | default list) }}
+{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
+{{- end }}
+{{- end }}
 {{- range $hosts }}
 {{- include "openshell-sandbox.validateEgressHost" . }}
 {{- end }}
@@ -57,11 +62,15 @@ spec:
         - protocol: TCP
           port: {{ include "openshell-sandbox.keycloakRoutePort" . | trim }}
     {{- end }}
-    {{- /* CDI downloads an http(s) disk in this namespace. Skip a host and port already allowed. */}}
+    {{- /* CDI imports the disk in this namespace: an http(s) URL, or a docker:// image on a
+         registry outside the cluster. Skip a host and port already allowed. */}}
     {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
     {{- $seen := list }}
     {{- range $url := list ($.Values.source.httpURL | default "") ($.Values.source.goldenImageURL | default "") ($.Values.source.registryURL | default "") }}
-    {{- $pair := include "openshell-sandbox.httpHostPort" $url | trim }}
+    {{- /* pullMethod node (the default): the node's container runtime pulls a docker:// image, outside this namespace's firewall. */}}
+    {{- $nodePull := and (hasPrefix "docker://" ($url | trim)) (ne ($.Values.source.pullMethod | default "node") "pod") }}
+    {{- $pair := "" }}
+    {{- if not $nodePull }}{{- $pair = include "openshell-sandbox.httpHostPort" $url | trim }}{{- end }}
     {{- if and $pair (not (has $pair $seen)) }}
     {{- $seen = append $seen $pair }}
     {{- $parts := splitList " " $pair }}
