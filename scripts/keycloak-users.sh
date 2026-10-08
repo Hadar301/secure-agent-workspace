@@ -46,8 +46,16 @@ SECRET="${SECRET:-openshell-keycloak-user-passwords}"
 USERS_SECRET="${USERS_SECRET:-openshell-keycloak-users}"
 DEFAULT_USERS_FILE="${DEFAULT_USERS_FILE:-overrides/saw-users.yaml}"
 
+run_python() {
+  if [[ "${CI:-}" == true ]]; then
+    "${PYTHON:-python}" "$@"
+  else
+    uv run --locked python "$@"
+  fi
+}
+
 usernames() {
-  uv run --locked python - "${CHART}/values.yaml" <<'EOF'
+  run_python - "${CHART}/values.yaml" <<'EOF'
 import sys, yaml
 kc = (yaml.safe_load(open(sys.argv[1])) or {}).get("keycloak") or {}
 for u in kc.get("testUsers") or []:
@@ -59,7 +67,7 @@ EOF
 # 24 characters, at least one of each class Keycloak's policy asks for.
 # No quotes, $, & or spaces: the password survives shells and form posts.
 new_password() {
-  uv run --locked python - <<'EOF'
+  run_python - <<'EOF'
 import secrets, string
 special = "-_.!@#%^*+="
 alphabet = string.ascii_letters + string.digits + special
@@ -86,7 +94,7 @@ secret_json() {  # $1 Secret name; {} when it does not exist
 }
 
 secret_keys() {  # $1 Secret name: its keys, one per line
-  secret_json "$1" | uv run --locked python -c '
+  secret_json "$1" | run_python -c '
 import sys, json
 print("\n".join(sorted((json.load(sys.stdin).get("data") or {}))))'
 }
@@ -99,7 +107,7 @@ current_password() {  # user: the one this script set last, else the test-user S
 }
 
 password_of() {  # $1 user [$2 Secret]; empty when the Secret has none
-  secret_json "${2:-${SECRET}}" | uv run --locked python -c '
+  secret_json "${2:-${SECRET}}" | run_python -c '
 import sys, json, base64
 data = json.load(sys.stdin).get("data") or {}
 v = data.get(sys.argv[1])
@@ -120,7 +128,7 @@ store_passwords() {  # $1 Secret, then user=password ...; existing keys are kept
     [[ -n "${line}" ]] || continue
     case " $* " in *" ${line%%=*}="*) continue ;; esac   # replaced
     args+=("--from-literal=${line}")
-  done < <(secret_json "${secret}" | uv run --locked python -c '
+  done < <(secret_json "${secret}" | run_python -c '
 import sys, json, base64
 for k, v in (json.load(sys.stdin).get("data") or {}).items():
     print(k + "=" + base64.b64decode(v).decode())')
@@ -222,7 +230,7 @@ set_password() {  # user id, password, temporary (true|false)
 harden() {
   admin_login
   local settings code failed=0
-  settings="$(uv run --locked python - "${CHART}/values.yaml" <<'EOF'
+  settings="$(run_python - "${CHART}/values.yaml" <<'EOF'
 import sys, json, yaml
 kc = (yaml.safe_load(open(sys.argv[1])) or {}).get("keycloak") or {}
 bf = kc.get("bruteForce") or {}
@@ -311,7 +319,7 @@ if errors:
     sys.exit("users file:\n  " + "\n  ".join(errors))
 EOF
 )"
-  uv run --locked python -c "${prog}" "$1" "${CHART}/values.yaml"
+  run_python -c "${prog}" "$1" "${CHART}/values.yaml"
 }
 
 add_users() {
