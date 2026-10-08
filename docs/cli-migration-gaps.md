@@ -35,6 +35,7 @@ The proposed Make command pattern is component-action:
 
 ```text
 make prereqs-check
+make quickstart-prereqs-check
 make ssh-key-generate
 make images-mirror
 make gateway-build CONTAINER_RUNTIME=podman
@@ -54,11 +55,31 @@ These error examples show the intended tone and the missing action:
 Error: OPENSHELL_SAW_NAME is required. Pass OPENSHELL_SAW_NAME=my-saw.
 Error: OPENSHELL_SAW_NAME must be a lowercase DNS label of at most 19 characters.
 Error: CONTAINER_RUNTIME must be podman or docker.
+Error: KC_USER is required. Pass KC_USER=alice.
 Error: local port 18789 is in use. Set GUI_PORT to a free port.
 ```
 
-The UX designer must review the component-action names, alias messages,
-help order, required variable text, and errors before this interface is
-finalized. The examples above are the review package. Record the review
-decision before release. The CLI should keep the same terms when a
-migration starts. This review is pending.
+## Usability review: 2026-10-08
+
+An internal review checked the live `make help` output, safe error paths,
+the alias list, and the quickstart and Pattern examples. It found:
+
+| Finding | Decision |
+|---|---|
+| `prereqs-check` used to require operators that the Pattern installs. | Keep this target for tools and cluster capacity. Use `quickstart-prereqs-check` when CNV and RHBK must already exist. |
+| Keycloak help said new passwords were printed, but the script stores them in a Secret. | Correct the help and README. Document how Alice and Bob can copy their own test password without terminal output. |
+| Missing `KC_USER` printed only `Set KC_USER=<name>.` | Give an error and a complete example for password, reset, and register. |
+| `saw-list` said it listed sandboxes, but it lists SAW virtual machines. | Correct the help text. |
+| Internal checks appeared before the public setup commands. | Move them after the public help sections. |
+
+The component-action names are consistent across the main day-two targets.
+The old names remain aliases for one release. Their warning names the
+replacement. Missing SAW name, invalid SAW name, and invalid container
+runtime errors state the required fix. The help output still begins with
+framework tasks and is long. A designer should decide whether a short
+beginner view would help new users.
+
+This is an internal usability review. No UX designer approval is recorded.
+The UX designer still needs to review the names, help order, variable text,
+and errors before the interface is finalized. Record that decision before
+release. The CLI should keep the same terms when a migration starts.

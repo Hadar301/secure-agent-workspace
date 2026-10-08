@@ -54,29 +54,6 @@ export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OW
 export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
 
-##@ Internal Checks
-
-.check-saw-name: ## Internal: validate the selected SAW name
-	@$(SCRIPTS_DIR)/check-saw-name.sh
-
-.check-ssh-key: ## Internal: require an SSH public key
-	@test -f "$(SSH_KEY_PATH).pub" || { \
-		echo "Error: SSH key not found at $(SSH_KEY_PATH).pub"; \
-		echo "Generate one with: make ssh-key-generate"; \
-		echo "Or set SSH_KEY_PATH to your own key: make saw-create SSH_KEY_PATH=~/.ssh/my_key"; \
-		exit 1; \
-	}
-
-.check-gateway-ca: ## Internal: require the gateway CA certificate
-	@test -f "$(HOME)/.config/openshell/gateways/$(OPENSHELL_SAW_NAME)/mtls/ca.crt" || { \
-		echo "Error: Gateway CA certificate not found for '$(OPENSHELL_SAW_NAME)'."; \
-		echo "Run 'make saw-configure OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)' first."; \
-		exit 1; \
-	}
-
-.check-prereqs: ## Internal: check cluster prerequisites
-	@$(SCRIPTS_DIR)/prereqs-check.sh
-
 .PHONY: prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
@@ -258,15 +235,15 @@ USERS_FILE ?= overrides/saw-users.yaml
 KC_USER    ?=
 KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME)
 
-keycloak-add-users: ## Create the Keycloak users in USERS_FILE (default overrides/saw-users.yaml) that do not exist yet, with generated passwords
+keycloak-add-users: ## Create missing Keycloak users and store passwords in a Secret (USERS_FILE=...)
 	@$(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
 
-keycloak-password: ## Show the Secret location for one user (KC_USER=carol)
-	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+keycloak-password: ## Show the Secret location for one user (KC_USER=alice)
+	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh password "$(KC_USER)"
 
-keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=carol)
-	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=alice)
+	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
 
 # Web UI sign-in: each workspace's web UIs (the VM dashboard, each sandbox
@@ -278,8 +255,8 @@ keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=carol
 REDIRECT_WAIT ?= 600
 KC_REDIRECTS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_NAME=$(KEYCLOAK_NAME) WAIT=$(REDIRECT_WAIT)
 
-keycloak-register: ## Register a user: Keycloak account (if new, password printed) and their workspace's web UI redirect URIs (KC_USER=carol)
-	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+keycloak-register: ## Register a user's Keycloak account and web UI redirects (KC_USER=alice)
+	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@printf 'users:\n  - name: %s\n' "$(KC_USER)" | $(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users -
 	@$(KC_REDIRECTS_ENV) uv run --locked $(SCRIPTS_DIR)/keycloak-redirects.py register "$(KC_USER)"
 
@@ -322,7 +299,7 @@ saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 # Keep the token saved by `openshell gateway add`. The separate make-login token
 # may belong to another cluster and must not overwrite this gateway's login.
 
-saw-list: ## List all sandboxes across SAW namespaces
+saw-list: ## List SAW virtual machines across namespaces
 	@$(SCRIPTS_DIR)/saw-list.sh
 
 saw-logs: .check-saw-name ## Follow the VM installer log
@@ -474,6 +451,29 @@ test-installer: ## Run the complete local Python test suite with uv
 		uv run --locked pytest -q -p no:cacheprovider \
 			$(TEST_PATHS); \
 	fi
+
+##@ Internal Checks
+
+.check-saw-name: ## Internal: validate the selected SAW name
+	@$(SCRIPTS_DIR)/check-saw-name.sh
+
+.check-ssh-key: ## Internal: require an SSH public key
+	@test -f "$(SSH_KEY_PATH).pub" || { \
+		echo "Error: SSH key not found at $(SSH_KEY_PATH).pub"; \
+		echo "Generate one with: make ssh-key-generate"; \
+		echo "Or set SSH_KEY_PATH to your own key: make saw-create SSH_KEY_PATH=~/.ssh/my_key"; \
+		exit 1; \
+	}
+
+.check-gateway-ca: ## Internal: require the gateway CA certificate
+	@test -f "$(HOME)/.config/openshell/gateways/$(OPENSHELL_SAW_NAME)/mtls/ca.crt" || { \
+		echo "Error: Gateway CA certificate not found for '$(OPENSHELL_SAW_NAME)'."; \
+		echo "Run 'make saw-configure OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)' first."; \
+		exit 1; \
+	}
+
+.check-prereqs: ## Internal: check cluster prerequisites
+	@$(SCRIPTS_DIR)/prereqs-check.sh
 
 # Deprecated aliases are listed by the help recipe after canonical targets.
 ALIAS_HELP := check-prereqs:prereqs-check generate-keys:ssh-key-generate \

@@ -689,7 +689,7 @@ make -f Makefile-quickstart keycloak-redirects-sync           # all workspaces; 
 ```
 
 `keycloak-register` creates the Keycloak account if it does not exist yet
-(generated password, printed, as with `keycloak-add-users`), then adds
+(generated password stored in a Secret), then adds
 `https://<host>/oauth2/callback` for each of the user's web UI routes,
 waiting up to `REDIRECT_WAIT` seconds (default 600) for Argo CD to create
 them. Until then, signing in to that workspace's UIs fails with Keycloak's
