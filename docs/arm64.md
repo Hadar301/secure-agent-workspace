@@ -72,6 +72,12 @@ Check any image with `oc image info --show-multiarch <image>`.
 
    The same for `nemoclaw-cli`.
 
+   Until then, expect a NemoClaw sandbox to be slow rather than broken: the
+   VM's podman runs an x86_64 image under qemu user-mode emulation (`uname -m`
+   in the sandbox prints `x86_64`), so the sandbox starts, but every `node`
+   and `openclaw` call is many times slower, `apply` can take several
+   minutes on it, and CUDA in that image cannot use the node's GPUs.
+
 5. **The rest of the install** is the same as on x86_64: `./pattern.sh make
    install` (it needs podman on the machine you run it from).
 
