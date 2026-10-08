@@ -28,7 +28,7 @@ case "$1" in
     else
       cat "${OC_FIXTURES}/$2.json"
     fi ;;
-  delete|wait) printf '%s\\n' "$*" >> "${OC_LOG}" ;;
+  annotate|delete|wait) printf '%s\\n' "$*" >> "${OC_LOG}" ;;
   *) printf 'unexpected oc call: %s\\n' "$*" >&2; exit 9 ;;
 esac
 ''')
@@ -86,7 +86,9 @@ def test_operator_cleanup_removes_orphaned_hco_crd(tmp_path):
     namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
-    crd = {"metadata": {"labels": {
+    crd = {"metadata": {"annotations": {
+        "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
+        "labels": {
         "olm.managed": "true",
         "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
     env, log = fake_oc(tmp_path, [namespace], [], {
@@ -108,7 +110,9 @@ def test_operator_cleanup_preserves_crd_with_hco(tmp_path):
     namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
-    crd = {"metadata": {"labels": {
+    crd = {"metadata": {"annotations": {
+        "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
+        "labels": {
         "olm.managed": "true",
         "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
     env, log = fake_oc(tmp_path, [namespace], [], {
@@ -122,3 +126,61 @@ def test_operator_cleanup_preserves_crd_with_hco(tmp_path):
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert "delete crd" not in log.read_text()
+
+
+def test_operator_cleanup_removes_marked_crd_after_namespace_is_gone(tmp_path):
+    crd = {"metadata": {"annotations": {
+        "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
+        "labels": {
+            "olm.managed": "true",
+            "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": "",
+        }}}
+    env, log = fake_oc(tmp_path, [], [], {
+        "hyperconvergeds.hco.kubevirt.io": [],
+        "subscriptions.operators.coreos.com": [],
+    })
+    (tmp_path / "fixtures" / "crd.json").write_text(json.dumps(crd))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert "delete crd hyperconvergeds.hco.kubevirt.io --wait=true" in calls
+    assert not any(call.startswith("wait ") for call in calls)
+
+
+def test_operator_cleanup_keeps_unmarked_crd_after_namespace_is_gone(tmp_path):
+    crd = {"metadata": {"labels": {
+        "olm.managed": "true",
+        "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
+    env, log = fake_oc(tmp_path, [], [], {})
+    (tmp_path / "fixtures" / "crd.json").write_text(json.dumps(crd))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not log.exists()
+
+
+def test_cnv_mark_preserves_ownership_before_namespace_removal(tmp_path):
+    namespace = {"metadata": {"annotations": {
+        "argocd.argoproj.io/tracking-id":
+            "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
+    crd = {"metadata": {"labels": {
+        "olm.managed": "true",
+        "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
+    env, log = fake_oc(tmp_path, [], [], {})
+    (tmp_path / "fixtures" / "namespace.json").write_text(json.dumps(namespace))
+    (tmp_path / "fixtures" / "crd.json").write_text(json.dumps(crd))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-cnv-mark.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "annotate crd hyperconvergeds.hco.kubevirt.io " in log.read_text()
+
+
+def test_cnv_mark_keeps_crd_for_unowned_namespace(tmp_path):
+    namespace = {"metadata": {"annotations": {}}}
+    env, log = fake_oc(tmp_path, [], [], {})
+    (tmp_path / "fixtures" / "namespace.json").write_text(json.dumps(namespace))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-cnv-mark.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not log.exists()

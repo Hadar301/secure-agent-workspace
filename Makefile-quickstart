@@ -182,6 +182,7 @@ clean-stale-operators: ## Inspect stale CNV CRDs after operator cleanup
 # after the Ansible framework removes ArgoCD apps — otherwise ArgoCD
 # immediately recreates the Subscription we just deleted.
 pre-uninstall: ## Delete pattern VMs before framework uninstall
+	@$(SCRIPTS_DIR)/pattern-cnv-mark.sh
 	@$(SCRIPTS_DIR)/pattern-pipelines-mark.sh
 	@$(SCRIPTS_DIR)/pattern-pre-uninstall.sh
 
