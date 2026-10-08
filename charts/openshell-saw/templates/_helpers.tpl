@@ -73,6 +73,27 @@ TCP port of the Keycloak issuer URL. 443 when the URL has no port.
 {{- end }}
 
 {{/*
+"host port" for an http(s) disk URL the CDI importer in this namespace must
+reach. Empty for docker://, the internal registry, or anything else.
+http defaults to port 80, https to 443, unless the URL names a port.
+*/}}
+{{- define "openshell-sandbox.httpHostPort" -}}
+{{- $url := . | trim -}}
+{{- if regexMatch "^https?://" $url -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $url "") "" -}}
+{{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- $port := "443" -}}
+{{- if hasPrefix "http://" $url -}}{{- $port = "80" -}}{{- end -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- $port = regexReplaceAll "^.*:" $authority "" -}}
+{{- end -}}
+{{- if and $host (not (hasSuffix ".svc" $host)) (not (contains ".svc." $host)) -}}
+{{- printf "%s %s" $host $port -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate a Kubernetes secret name (RFC 1123 subdomain).
 */}}
 {{- define "openshell-sandbox.validateSecretName" -}}

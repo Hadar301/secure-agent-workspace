@@ -57,6 +57,29 @@ spec:
         - protocol: TCP
           port: {{ include "openshell-sandbox.keycloakRoutePort" . | trim }}
     {{- end }}
+    {{- /* CDI downloads an http(s) disk in this namespace. Skip a host and port already allowed. */}}
+    {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
+    {{- $seen := list }}
+    {{- range $url := list ($.Values.source.httpURL | default "") ($.Values.source.goldenImageURL | default "") ($.Values.source.registryURL | default "") }}
+    {{- $pair := include "openshell-sandbox.httpHostPort" $url | trim }}
+    {{- if and $pair (not (has $pair $seen)) }}
+    {{- $seen = append $seen $pair }}
+    {{- $parts := splitList " " $pair }}
+    {{- $diskHost := index $parts 0 }}
+    {{- $diskPort := index $parts 1 }}
+    {{- $listed := and (eq $diskPort "443") (has $diskHost $hosts) }}
+    {{- $sameKeycloak := and (eq $diskHost $keycloak) (eq $diskPort $kcPort) }}
+    {{- if and (not $listed) (not $sameKeycloak) }}
+    {{- include "openshell-sandbox.validateEgressHost" $diskHost }}
+    - type: Allow
+      to:
+        dnsName: {{ $diskHost | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $diskPort }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
     - type: Deny
       to:
         cidrSelector: 0.0.0.0/0

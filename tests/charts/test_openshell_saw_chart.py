@@ -498,6 +498,47 @@ def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
     assert keycloak["ports"] == [{"protocol": "TCP", "port": 443}]
 
 
+def _host_ports(rules):
+    return [(r["to"]["dnsName"], r["ports"][0]["port"]) for r in rules if "dnsName" in r["to"]]
+
+
+def test_egress_allows_an_external_golden_image_url():
+    docs = render("--set-string", "source.goldenImageURL=https://images.example.net/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 443) in _host_ports(rules)
+
+    docs = render("--set-string", "source.httpURL=http://images.example.net:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 8080) in _host_ports(rules)
+    assert ("images.example.net", 80) not in _host_ports(rules)
+
+
+def test_egress_does_not_repeat_a_disk_host_already_allowed():
+    docs = render("--set-string", "source.httpURL=https://quay.io/openshell-gateway.qcow2")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string", "source.goldenImageURL=https://vllm.example.net/disk.qcow2",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("vllm.example.net", 443)) == 1
+
+    docs = render("--set-string", "source.httpURL=http://quay.io:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    ports = _host_ports(rules)
+    assert ports.count(("quay.io", 443)) == 1
+    assert ("quay.io", 8080) in ports
+
+    docs = render("--set-string", "source.goldenImageURL=docker://quay.io/x/old:1")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string",
+                  "source.goldenImageURL=https://image-registry.openshift-image-registry.svc:5000/ns/img")
+    _, allowed = _egress_names(docs)
+    assert not any("image-registry" in host for host in allowed)
+
+
 def test_egress_keycloak_port_comes_from_the_issuer():
     docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
     rules, allowed = _egress_names(docs)

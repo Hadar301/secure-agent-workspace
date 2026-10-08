@@ -53,7 +53,8 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
   `openshell-saw` values (see [Egress from the VM](deployment-guide.md#egress-from-the-vm))
   **before** upgrading a sandbox that already runs. The firewall turns on at
   the next sync and cannot read the URL from Vault, so inference to that host
-  times out. A `*.svc` address needs no entry.
+  times out. A `*.svc` address needs no entry. An `http://` or `https://`
+  golden-image URL is allowed on its own; that does not cover the inference host.
 - `url` must be `http(s)://host[:port][/path]` without credentials, query or
   fragment. The installer rejects anything else without logging the value.
 - The `openai` provider profile must name the endpoint's host. With

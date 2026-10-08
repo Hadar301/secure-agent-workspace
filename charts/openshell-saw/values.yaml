@@ -30,8 +30,9 @@ sshPublicKey: ""
 #        dataSource: openshell-gateway
 #        dataSourceNamespace: openshell-agents
 #
-# 3. HTTP: download a qcow2 disk image from a URL (the VM's namespace must
-#    reach that host; see egress).
+# 3. HTTP: download a qcow2 disk image from a URL. An http(s) host is added
+#    to the namespace egress firewall unless that host and port are already
+#    allowed. A host inside the cluster needs no entry.
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:

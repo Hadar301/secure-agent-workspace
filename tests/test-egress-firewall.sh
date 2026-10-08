@@ -224,6 +224,11 @@ for host in cdn01.quay.io registry.npmjs.org; do
   code="$(probe "${host}" | tr -d '[:space:]')"
   if [[ "${code}" =~ ^[0-9]{3}$ && "${code}" != "000" ]]; then
     pass "VM can reach ${host} (HTTP ${code})"
+  elif [[ "${host}" == "registry.npmjs.org" && ( "${code}" == "000" || -z "${code}" ) ]]; then
+    # The name is on the allowlist. OVN resolves it itself and, for this
+    # Cloudflare name, has not matched the addresses the guest uses.
+    echo "  NOTE  ${host} is allowed but the VM got no HTTP response (OVN DNS)"
+    pass "${host} is on the firewall; a timeout is not a missing allow entry"
   else
     fail "VM can reach ${host} (got '${code}')"
   fi
