@@ -337,25 +337,81 @@ def test_other_issuer_failures_only_warn(ab, capsys):
     ab.check_issuer_trusted("", opener=unreachable)     # no issuer: nothing to check
 
 
-def test_the_issuer_check_uses_the_gateways_trust(ab, certs, tmp_path):
-    """With an issuer CA, the pre-check verifies with issuer-trust.pem, the
-    file the gateway gets as SSL_CERT_FILE, so a bundle that does not sign
-    the issuer's certificate fails install with the fix."""
+@pytest.fixture(scope="module")
+def issuer(tmp_path_factory):
+    """A real HTTPS issuer on 127.0.0.1 whose certificate a test CA signed,
+    plus an unrelated CA. Yields (issuer URL, its CA, the other CA)."""
+    import http.server
+    import ssl
+    import subprocess
+    import threading
+    d = tmp_path_factory.mktemp("issuer")
+
+    def run(*args):
+        subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=d)
+    for name in ("ca", "other"):
+        run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", f"{name}.key",
+            "-out", f"{name}.pem", "-days", "2", "-subj", f"/CN={name}",
+            "-addext", "basicConstraints=critical,CA:TRUE")
+    run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "srv.key", "-out", "srv.csr",
+        "-subj", "/CN=127.0.0.1")
+    (d / "ext").write_text("basicConstraints=CA:FALSE\nsubjectAltName=IP:127.0.0.1\n")
+    run("x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+        "-out", "srv.pem", "-days", "2", "-extfile", "ext")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(d / "srv.pem", d / "srv.key")
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield (f"https://127.0.0.1:{server.server_address[1]}/realms/openshell",
+           (d / "ca.pem").read_text(), (d / "other.pem").read_text())
+    server.shutdown()
+
+
+def test_the_issuer_ca_is_installed_only_when_it_signs_the_issuer(ab, issuer, tmp_path):
+    """Verified with the extra CA alone, over a real TLS connection."""
+    url, ca, other = issuer
+    assert ab.select_issuer_ca(url, ca) == ca
+    # Neither the extra CA nor the public CAs verify it: fail with the fix.
+    with pytest.raises(ab.InstallerError, match="does not sign the OIDC issuer"):
+        ab.select_issuer_ca(url, other)
+
+
+def test_a_publicly_trusted_issuer_gets_no_extra_ca(ab, issuer, tmp_path):
+    """The automatic cluster CA on a cluster whose *.apps certificate is
+    public: the extra CA signs nothing there and would only widen the
+    gateway's trust, so it is not installed. ("Public" is the test CA here.)"""
+    url, ca, other = issuer
+    public = tmp_path / "public.pem"
+    public.write_text(ca)
+    assert ab.select_issuer_ca(url, other, public_cafile=public) == ""
+
+
+def test_the_gateway_check_connects_with_the_installed_trust(ab, issuer, tmp_path):
+    url, ca, other = issuer
     trust = tmp_path / "issuer-trust.pem"
-    trust.write_text(certs["ca"] + "\n")
-    seen = []
+    trust.write_text(ca)
+    ab.check_issuer_trusted(url, cafile=trust)          # verifies
+    trust.write_text(other)
+    with pytest.raises(ab.InstallerError, match="cannot verify the OIDC issuer"):
+        ab.check_issuer_trusted(url, cafile=trust)
 
-    class Ok:
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *a):
-            return False
+def test_an_unreachable_issuer_keeps_the_configured_ca(ab, issuer, capsys):
+    from urllib.error import URLError
+    _, ca, _ = issuer
 
-        def read(self, n):
-            return b"{"
-
-    ab.check_issuer_trusted("https://kc.example.com/realms/openshell", cafile=trust,
-                            opener=lambda url, timeout, context=None: seen.append(context) or Ok())
-    (context,) = seen
-    assert context is not None and context.cert_store_stats()["x509_ca"] == 1
+    def unreachable(url, timeout, context=None):
+        raise URLError("Name or service not known")
+    assert ab.select_issuer_ca("https://kc.example.com/realms/x", ca, opener=unreachable) == ca
+    assert "cannot reach the OIDC issuer" in capsys.readouterr().out
+    assert ab.select_issuer_ca("", ca) == ca

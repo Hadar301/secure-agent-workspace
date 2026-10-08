@@ -1857,9 +1857,63 @@ CA_BUNDLE_HELP = (
     "\"The issuer's certificate\"")
 
 
+def probe_issuer(issuer, cafile=None, timeout=10, opener=urlopen):
+    """Fetch the issuer's OIDC configuration, verifying its certificate with
+    cafile alone (None: the VM's public CAs). Returns ("ok", ""),
+    ("untrusted", reason) or ("unreachable", reason)."""
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        context = ssl.create_default_context(cafile=str(cafile)) if cafile else None
+    except (OSError, ssl.SSLError) as exc:
+        return "untrusted", f"cannot load the CA file: {exc}"
+    try:
+        with opener(url, timeout=timeout, context=context) as resp:
+            resp.read(1)
+        return "ok", ""
+    except ssl.SSLCertVerificationError as exc:
+        return "untrusted", exc.verify_message or str(exc)
+    except URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            return "untrusted", exc.reason.verify_message or str(exc.reason)
+        return "unreachable", str(exc.reason)
+    except (OSError, ValueError) as exc:
+        return "unreachable", str(exc)
+
+
+def select_issuer_ca(issuer, cas, timeout=10, opener=urlopen, public_cafile=None):
+    """The issuer CA to install: cas when it signs the issuer's certificate,
+    "" when the issuer is publicly trusted anyway (an extra CA would only
+    widen the gateway's trust: the automatic cluster CA on a cluster whose
+    *.apps certificate is public), and an error when neither verifies it.
+    Verified with the extra CA alone, so a bundle that signs nothing is
+    never installed. Unreachable issuer: keep cas, the gateway reports it."""
+    if not issuer or not cas:
+        return cas
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as tmp:
+        tmp.write(cas)
+    try:
+        verdict, reason = probe_issuer(issuer, tmp.name, timeout, opener)
+    finally:
+        os.unlink(tmp.name)
+    if verdict == "ok":
+        return cas
+    if verdict == "unreachable":
+        log(f"WARN: cannot reach the OIDC issuer {url} to check the issuer CA: {reason}")
+        return cas
+    public, _ = probe_issuer(issuer, public_cafile, timeout, opener)
+    if public == "ok":
+        log(f"The OIDC issuer {url} is publicly trusted; not installing the configured "
+            "issuer CA, which does not sign its certificate")
+        return ""
+    raise InstallerError(
+        f"the configured issuer CA does not sign the OIDC issuer's certificate "
+        f"({url}: {reason}); {CA_BUNDLE_HELP}")
+
+
 def check_issuer_trusted(issuer, timeout=10, opener=urlopen, cafile=None):
     """Fetch the issuer's OIDC configuration with the gateway's trust (the
-    public CAs, plus the issuer CA when one is configured), as the gateway
+    public CAs, plus the issuer CA when one is installed), as the gateway
     does at startup, before starting it. The gateway only says
     "OIDC discovery request failed" and exits, and install then times out
     waiting for its port; an untrusted certificate is the usual cause and
@@ -1868,24 +1922,12 @@ def check_issuer_trusted(issuer, timeout=10, opener=urlopen, cafile=None):
     if not issuer:
         return
     url = issuer.rstrip("/") + "/.well-known/openid-configuration"
-    # The gateway's trust (issuer-trust.pem when an issuer CA is configured),
-    # so a bundle that does not sign the issuer's certificate fails here.
-    context = ssl.create_default_context(cafile=str(cafile)) if cafile else None
-    try:
-        with opener(url, timeout=timeout, context=context) as resp:
-            resp.read(1)
-    except ssl.SSLCertVerificationError as exc:
+    verdict, reason = probe_issuer(issuer, cafile, timeout, opener)
+    if verdict == "untrusted":
         raise InstallerError(
-            f"cannot verify the OIDC issuer's certificate ({url}: "
-            f"{exc.verify_message or exc}); {CA_BUNDLE_HELP}") from None
-    except URLError as exc:
-        if isinstance(exc.reason, ssl.SSLCertVerificationError):
-            raise InstallerError(
-                f"cannot verify the OIDC issuer's certificate ({url}: "
-                f"{exc.reason.verify_message or exc.reason}); {CA_BUNDLE_HELP}") from None
-        log(f"WARN: cannot reach the OIDC issuer {url}: {exc.reason}")
-    except (OSError, ValueError) as exc:
-        log(f"WARN: cannot reach the OIDC issuer {url}: {exc}")
+            f"cannot verify the OIDC issuer's certificate ({url}: {reason}); {CA_BUNDLE_HELP}")
+    if verdict == "unreachable":
+        log(f"WARN: cannot reach the OIDC issuer {url}: {reason}")
 
 
 def configured_ca_bundle(cfg, secrets_dir):
@@ -4511,8 +4553,10 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
-        trust_changed = trust_issuer_ca(shell, configured_ca_bundle(cfg, inputs.secrets),
-                                        home, owner, dry_run=args.dry_run)
+        issuer_ca = issuer_ca_certs(configured_ca_bundle(cfg, inputs.secrets))
+        if not args.dry_run:
+            issuer_ca = select_issuer_ca(cfg.get("oidcIssuer", ""), issuer_ca)
+        trust_changed = trust_issuer_ca(shell, issuer_ca, home, owner, dry_run=args.dry_run)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.

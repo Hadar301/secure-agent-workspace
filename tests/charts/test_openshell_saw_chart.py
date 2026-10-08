@@ -969,3 +969,13 @@ def test_the_ca_job_verifies_vault_before_sending_the_root_token():
     assert calls and all(c["validate_certs"] is True and c["ca_path"] == "{{ vault_ca }}"
                          for c in calls)
     assert play["vars"]["vault_ca"].endswith("/serviceaccount/service-ca.crt")
+
+
+def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
+    """Live on the GB200 the service CA was there (the Vault calls passed with
+    validate_certs); without it the play stops before it reads the token."""
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    names = [t["name"] for t in play["tasks"]]
+    guard = names.index("Refuse to send the root token to an unverified Vault")
+    assert guard < names.index("Read the Vault root token")
+    assert play["tasks"][guard]["when"] == "not vault_ca_file.stat.exists"

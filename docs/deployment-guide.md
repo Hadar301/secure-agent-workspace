@@ -98,7 +98,7 @@ When an issuer CA is configured (below), only the gateway and the oauth2-proxies
 - `issuer-ca.pem`: the CA certificates alone (leaf certificates are dropped). The oauth2-proxies mount it and use it only for their calls to the issuer (`OAUTH2_PROXY_PROVIDER_CA_FILES`).
 - `issuer-trust.pem`: the public CAs plus that CA. The gateway gets it as `SSL_CERT_FILE`, through a systemd drop-in (`openshell-gateway.service.d/issuer-ca.conf`).
 
-A bundle with a private key in it is refused, by the chart and by the installer, and so is a bundle without a CA certificate. Before starting the gateway, the installer verifies the issuer with `issuer-trust.pem`, so a CA that does not sign the issuer's certificate fails install with the fix. The gateway trusts the issuer CA for all of its HTTPS, not only discovery, because OpenShell has no setting that limits a CA to the issuer.
+A bundle with a private key in it is refused, by the chart and by the installer, and so is a bundle without a CA certificate. Before installing the CA, the installer connects to the issuer and verifies its certificate with the CA alone. If the CA signs it, the CA is installed. If the issuer is publicly trusted anyway (the automatic cluster CA on a cluster whose `*.apps` certificate is public), the CA is not installed, because it would only widen the gateway's trust. If neither verifies it, install fails with the fix. The gateway trusts the issuer CA for all of its HTTPS, not only discovery, because OpenShell has no setting that limits a CA to the issuer.
 
 Most clusters need nothing here. A certificate that is not from a public CA does:
 
