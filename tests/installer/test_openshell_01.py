@@ -202,3 +202,47 @@ def test_sandbox_ui_proxies_get_the_vm_trust_store(ab, tmp_path):
     units, _ = ab.sandbox_ui_units(cfg, tmp_path, "cookie", "saw-installer")
     (proxy,) = [t for n, t in units.items() if n.startswith("saw-ui-proxy-")]
     assert f"-v {ab.TRUST_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro " in proxy
+
+
+def test_an_untrusted_issuer_fails_install_with_the_fix(ab):
+    """The gateway only says "OIDC discovery request failed" and exits, and
+    install then times out on its port. Check first and name the fix."""
+    import ssl
+    from urllib.error import URLError
+
+    def untrusted(url, timeout):
+        err = ssl.SSLCertVerificationError(1, "certificate verify failed")
+        err.verify_message = "self-signed certificate in certificate chain"
+        raise URLError(err)
+
+    with pytest.raises(ab.InstallerError) as exc:
+        ab.check_issuer_trusted("https://kc.apps.example.com/realms/openshell", opener=untrusted)
+    msg = str(exc.value)
+    assert "\n" not in msg      # install's status keeps the first line only
+    assert "self-signed certificate in certificate chain" in msg
+    assert "oidc.caBundle" in msg and "default-ingress-cert" in msg
+
+
+def test_other_issuer_failures_only_warn(ab, capsys):
+    from urllib.error import URLError
+
+    def unreachable(url, timeout):
+        raise URLError("Name or service not known")
+
+    class Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"{"
+
+    ab.check_issuer_trusted("https://kc.example.com/realms/openshell", opener=unreachable)
+    assert "WARN: cannot reach the OIDC issuer" in capsys.readouterr().out
+    seen = []
+    ab.check_issuer_trusted("https://kc.example.com/realms/openshell/",
+                            opener=lambda url, timeout: seen.append(url) or Ok())
+    assert seen == ["https://kc.example.com/realms/openshell/.well-known/openid-configuration"]
+    ab.check_issuer_trusted("", opener=unreachable)     # no issuer: nothing to check

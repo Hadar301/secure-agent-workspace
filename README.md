@@ -194,6 +194,11 @@ make generate-keys
 # No build needed — images are pre-built by maintainers.
 make copy-images
 
+# 5b. Check whether workspace VMs will trust Keycloak's certificate. On a
+# cluster with OpenShift's self-signed *.apps certificate it saves the CA and
+# prints the oidc.caBundle snippet to add to overrides/saw-users.yaml.
+make check-oidc-ca
+
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on the remote (origin).
 # pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).

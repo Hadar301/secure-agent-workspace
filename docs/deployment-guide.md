@@ -96,6 +96,8 @@ The OpenShell gateway in each workspace VM fetches the issuer's OIDC configurati
 - **The in-cluster Keycloak on a cluster that keeps OpenShift's self-signed `*.apps` certificate** (common on lab, bare-metal and LaunchPad clusters).
 - **An external issuer (`oidc.issuerUrl`) with a private CA.**
 
+Before installing, `make check-oidc-ca` tells you whether the cluster needs it. It looks at the default IngressController's certificate and verifies `*.apps` against public CAs only. For an external issuer, run `make check-oidc-ca ISSUER=<url>`. When the setting is needed, it saves the cluster's ingress CA to `ingress-ca.pem` and prints the `overrides/saw-users.yaml` snippet. `make check-prereqs` runs it too. If it was missed, the installer in each VM checks the issuer before starting the gateway and fails with the same instructions (`install: Failed - cannot verify the OIDC issuer's certificate …; set oidc.caBundle …`).
+
 To check from inside a VM (`make openshell-saw-vm-ssh` or `virtctl ssh`):
 
 ```bash

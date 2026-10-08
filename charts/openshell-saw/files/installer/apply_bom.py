@@ -40,6 +40,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -49,7 +50,9 @@ import traceback
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 import yaml
 
@@ -1760,6 +1763,41 @@ def trust_ca_bundle(shell, pem, anchor=None, dry_run=False):
         log(f"Removed {anchor}: no caBundle configured")
     shell.run(["update-ca-trust", "extract"])
     return True
+
+
+CA_BUNDLE_HELP = (
+    "set oidc.caBundle to the issuer's CA (PEM) and restart the VM. For the "
+    "in-cluster Keycloak on a cluster with OpenShift's self-signed *.apps "
+    "certificate: oc get cm default-ingress-cert -n openshift-config-managed "
+    "-o jsonpath='{.data.ca-bundle\\.crt}'. See docs/deployment-guide.md, "
+    "\"The issuer's certificate\"")
+
+
+def check_issuer_trusted(issuer, timeout=10, opener=urlopen):
+    """Fetch the issuer's OIDC configuration with the VM's trust store, as
+    the gateway does at startup, before starting it. The gateway only says
+    "OIDC discovery request failed" and exits, and install then times out
+    waiting for its port; an untrusted certificate is the usual cause and
+    oidc.caBundle the fix, so say that. Other failures (DNS, timeouts) are
+    only warned about: the gateway reports them itself."""
+    if not issuer:
+        return
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        with opener(url, timeout=timeout) as resp:
+            resp.read(1)
+    except ssl.SSLCertVerificationError as exc:
+        raise InstallerError(
+            f"cannot verify the OIDC issuer's certificate ({url}: "
+            f"{exc.verify_message or exc}); {CA_BUNDLE_HELP}") from None
+    except URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise InstallerError(
+                f"cannot verify the OIDC issuer's certificate ({url}: "
+                f"{exc.reason.verify_message or exc.reason}); {CA_BUNDLE_HELP}") from None
+        log(f"WARN: cannot reach the OIDC issuer {url}: {exc.reason}")
+    except (OSError, ValueError) as exc:
+        log(f"WARN: cannot reach the OIDC issuer {url}: {exc}")
 
 
 def ensure_user_manager(shell, env, timeout=90, sleep=1.0):
@@ -4366,6 +4404,8 @@ def cmd_install(args):
             if not args.dry_run:
                 write_json_atomic(state_file, state)
         if not args.skip_gateway:
+            if not args.dry_run:
+                check_issuer_trusted(cfg.get("oidcIssuer", ""))
             ensure_gateway(shell, cfg["runtimeUser"], env,
                            restart=bool(state.get("gatewayRestartPending")))
         if state.pop("gatewayRestartPending", None) and not args.dry_run:
