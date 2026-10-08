@@ -318,6 +318,8 @@ SANDBOX_NAME=notebook \
 make openclaw-tui # OpenClaw
 
 # 18. Launch GUI (pick one): make ...-gui port-forwards to the sandbox UI.
+#     make sandbox-ui lists owner-restricted routes for enabled profile UIs.
+make sandbox-ui
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
@@ -331,7 +333,7 @@ make openclaw-gui # OpenClaw
 
 > **Shell in a sandbox:** `openshell sandbox connect` attaches to the sandbox's main process, which in SAW sandboxes is `sleep infinity` with no terminal, so it shows nothing. Open a shell with `openshell sandbox exec -n notebook -- sh` (use `--workspace cuda-dev` for `cuda-sandbox`). See [Shell access](docs/deployment-guide.md#shell-access).
 
-> **Agent UI:** `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI. The `<name>-dashboard` Route does not reach it on OpenShell 0.1.x; the pattern path (Option A) gives each sandbox with a UI its own signed-in Route instead. See [OpenClaw UI and the dashboard Route](docs/deployment-guide.md#openclaw-ui-and-the-dashboard-route). Web search and web fetch do not work in the default `notebook` sandbox; see [Web search in the default sandbox](docs/deployment-guide.md#web-search-in-the-default-sandbox).
+> **Agent UI:** `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI. `make saw-create` now also gives each enabled profile UI its own owner-restricted Route when it uses local Keycloak. The `<name>-dashboard` Route does not reach the sandbox UI on OpenShell 0.1.x. See [OpenClaw UI and the dashboard Route](docs/deployment-guide.md#openclaw-ui-and-the-dashboard-route). Web search and web fetch do not work in the default `notebook` sandbox; see [Web search in the default sandbox](docs/deployment-guide.md#web-search-in-the-default-sandbox).
 
 You can set `OPENSHELL_SAW_NAME` once via `export` and all `saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `alice` in `saw-alice`).
 

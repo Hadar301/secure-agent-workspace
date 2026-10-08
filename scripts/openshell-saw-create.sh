@@ -224,9 +224,20 @@ fi
 [[ -z "${ROUTE_HOST}" ]] || helm_opts+=(--set-string "route.host=${ROUTE_HOST}")
 if [[ -n "${APPS_DOMAIN}" ]]; then
   helm_opts+=(--set-string "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}")
+  if [[ "${APPS_DOMAIN}" == apps.* ]]; then
+    helm_opts+=(--set-string "global.clusterDomain=${APPS_DOMAIN#apps.}")
+  fi
   if [[ "${local_keycloak}" == true ]]; then
     helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
   fi
+fi
+if [[ "${local_keycloak}" == true ]]; then
+  ui_routes="$(uv run --locked python "${SCRIPTS_DIR}/sandbox-ui-values.py" "${PROFILES:-data-science}")"
+  if [[ "${ui_routes}" != '[]' && "${APPS_DOMAIN}" != apps.* ]]; then
+    echo "Error: sandbox UI routes need an apps.<cluster-domain> ingress domain." >&2
+    exit 1
+  fi
+  helm_opts+=(--set-json "sandboxUi=${ui_routes}")
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
 helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
