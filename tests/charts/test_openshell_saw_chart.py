@@ -891,3 +891,91 @@ def test_bad_sandbox_ui_entries_fail_the_render(tmp_path, entry, message):
     values.write_text(yaml.safe_dump({"sandboxUi": [entry]}))
     result = helm_template(CHART, "--set", "sandboxName=saw-test", "-f", str(values))
     assert result.returncode != 0 and message in result.stderr
+
+
+def test_the_ca_bundle_reaches_the_installer(tmp_path):
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    config = json.loads(installer_data(render("-f", str(values)))["config.json"])
+    assert config["caBundle"] == pem
+    assert json.loads(installer_data(render())["config.json"])["caBundle"] == ""
+
+
+def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path):
+    """oidc.clusterCaSecret: the VM mounts that Secret like a provider Secret
+    (it waits for it) and the installer trusts its ca-bundle.crt. Not for an
+    external issuer, and an explicit caBundle wins."""
+    def secret_volumes(docs):
+        vols = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+        return [v["secret"]["secretName"] for v in vols if "secret" in v]
+
+    docs = render("--set", "oidc.clusterCaSecret=saw-ingress-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["caBundleSecret"] == "saw-ingress-ca"
+    assert "saw-ingress-ca" in config["secrets"]
+    assert "saw-ingress-ca" in secret_volumes(docs)
+
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    for extra in ({"issuerUrl": "https://sso.example.com/realms/corp"}, {"caBundle": pem}):
+        values = tmp_path / "v.yaml"
+        values.write_text(yaml.safe_dump({"oidc": {"clusterCaSecret": "saw-ingress-ca", **extra}}))
+        docs = render("-f", str(values))
+        config = json.loads(installer_data(docs)["config.json"])
+        assert config["caBundleSecret"] == ""
+        assert "saw-ingress-ca" not in config["secrets"]
+        assert "saw-ingress-ca" not in secret_volumes(docs)
+
+    assert json.loads(installer_data(render())["config.json"])["caBundleSecret"] == ""
+
+
+def test_the_imperative_jobs_run_playbooks_that_exist():
+    """values-prod's imperative jobs, including saw-ingress-ca (the cluster's
+    ingress CA into Vault for the users' saw-ingress-ca Secret)."""
+    jobs = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["imperative"]["jobs"]
+    by_name = {j["name"]: j for j in jobs}
+    assert by_name["saw-ingress-ca"]["playbook"] == "ansible/playbooks/saw-ingress-ca.yaml"
+    for job in jobs:
+        (play,) = yaml.safe_load((ROOT / job["playbook"]).read_text())
+        assert play["hosts"] == "localhost", job["name"]
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
+
+
+def test_the_installer_configmap_needs_server_side_apply(default_docs):
+    """Found live: with client-side apply Argo CD copies an object into its
+    last-applied-configuration annotation, which may hold at most 262144
+    bytes, and the installer ConfigMap passed that ("metadata.annotations:
+    Too long"). saw-users syncs with ServerSideApply; this keeps the
+    ConfigMap itself well inside the 1 MiB object limit."""
+    cm = default_docs[("ConfigMap", "saw-test-installer")]
+    size = len(json.dumps(cm, separators=(",", ":")))
+    assert size < 768 * 1024, size
+
+
+def test_a_ca_bundle_with_a_private_key_does_not_render(tmp_path):
+    """Pasting the TLS Secret instead of its ca-bundle.crt would put the key
+    into the installer ConfigMap's config.json."""
+    pem = ("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+           "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----")
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    assert "private key" in render_error("-f", str(values))
+
+
+def test_the_ca_job_verifies_vault_before_sending_the_root_token():
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    calls = [t["ansible.builtin.uri"] for t in play["tasks"] if "ansible.builtin.uri" in t]
+    assert calls and all(c["validate_certs"] is True and c["ca_path"] == "{{ vault_ca }}"
+                         for c in calls)
+    assert play["vars"]["vault_ca"].endswith("/serviceaccount/service-ca.crt")
+
+
+def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
+    """Live on the GB200 the service CA was there (the Vault calls passed with
+    validate_certs); without it the play stops before it reads the token."""
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    names = [t["name"] for t in play["tasks"]]
+    guard = names.index("Refuse to send the root token to an unverified Vault")
+    assert guard < names.index("Read the Vault root token")
+    assert play["tasks"][guard]["when"] == "not vault_ca_file.stat.exists"

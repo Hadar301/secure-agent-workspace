@@ -124,3 +124,8 @@ clusterGroup:
       - name: saw-portal-vault
         playbook: ansible/playbooks/saw-portal-vault.yaml
         timeout: 300
+      # The cluster's ingress CA in Vault, for workspace VMs to trust the
+      # in-cluster Keycloak (ansible/playbooks/saw-ingress-ca.yaml).
+      - name: saw-ingress-ca
+        playbook: ansible/playbooks/saw-ingress-ca.yaml
+        timeout: 300

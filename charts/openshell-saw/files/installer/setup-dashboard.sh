@@ -44,6 +44,16 @@ AUTH_DISABLED=false
 ADMIN_ROLE=openshell-admin
 ENVEOF
 
+# The issuer CA (oidc.caBundle / oidc.clusterCaSecret), when one is
+# configured, for the proxy's calls to the issuer only (provider CA files):
+# never the container's or the VM's system store.
+CA_MOUNT=""
+CA_ENV=""
+if [[ -n "${DASHBOARD_ISSUER_CA:-}" && -r "${DASHBOARD_ISSUER_CA}" ]]; then
+  CA_MOUNT="-v ${DASHBOARD_ISSUER_CA}:/etc/saw/issuer-ca.pem:ro,z"
+  CA_ENV="OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/saw/issuer-ca.pem"
+fi
+
 cat > "${HOME}/.config/openshell/dashboard-proxy.env" <<ENVEOF
 OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:8080
 OAUTH2_PROXY_UPSTREAMS=http://localhost:8090
@@ -59,6 +69,7 @@ OAUTH2_PROXY_EMAIL_DOMAINS=*
 OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
 OAUTH2_PROXY_COOKIE_SECURE=true
 OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=${DASHBOARD_INSECURE_SKIP_TLS:-false}
+${CA_ENV}
 # oauth2-proxy rejects the id_token by default if the OIDC provider's
 # email_verified claim is false — true for real SSO-federated Keycloak
 # accounts.
@@ -93,7 +104,7 @@ Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard-proxy
-ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
+ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${CA_MOUNT} ${DASHBOARD_PROXY_IMAGE}
 ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard-proxy
 Restart=on-failure
 RestartSec=5s
