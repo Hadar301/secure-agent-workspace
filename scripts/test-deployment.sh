@@ -331,7 +331,7 @@ record initial.virtual-machines 0 "$(oc get vm -A -o json | jq -r \
   '[.items[] | "\(.metadata.namespace)/\(.metadata.name)"] | join(",")')"
 record initial.operators 0 "$(oc get csv -A -o json | jq -r \
   '[.items[] | "\(.metadata.namespace)/\(.metadata.name)"] | join(",")')"
-run manual.prereqs make prereqs-check
+run manual.prereqs make quickstart-prereqs-check
 confirm 'initial.capacity: confirm a virtualization node has at least 4 vCPU, 8 GiB memory, and 40 GiB suitable storage'
 run manual.keys make ssh-key-generate
 run manual.images make images-mirror

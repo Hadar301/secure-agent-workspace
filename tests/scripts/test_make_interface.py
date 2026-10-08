@@ -26,7 +26,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     targets = (
         "pattern-install pattern-uninstall uninstall pre-uninstall lint test test-deployment "
-        "prereqs-check ssh-key-generate sandbox-build cli-build gateway-build "
+        "prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build gateway-build "
         "gateway-build-podman gateway-build-docker images-mirror keycloak-deploy "
         "keycloak-delete keycloak-check keycloak-password login logout whoami "
         "saw-create saw-configure saw-list saw-logs saw-status saw-restart "
@@ -192,6 +192,10 @@ def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
+  "get storageclass -o json")
+    echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
+  "get nodes -o json")
+    echo '{"items":[{"spec":{},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}' ;;
   "get csv -n openshift-cnv -o json")
     if [[ "${OC_MODE}" == denied ]]; then
       echo "Forbidden" >&2
@@ -202,13 +206,34 @@ case "$*" in
 esac
 ''')
     base = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
-    missing = run_make("prereqs-check", env=dict(base, OC_MODE="missing"))
+    missing = run_make("quickstart-prereqs-check", env=dict(base, OC_MODE="missing"))
     assert missing.returncode != 0
     assert "not installed" in missing.stderr
-    denied = run_make("prereqs-check", env=dict(base, OC_MODE="denied"))
+    denied = run_make("quickstart-prereqs-check", env=dict(base, OC_MODE="denied"))
     assert denied.returncode != 0
     assert "Forbidden" in denied.stderr
     assert "not installed" not in denied.stderr
+
+
+def test_pattern_prereqs_do_not_require_operators(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable(bindir / "openshell", 'printf "openshell 0.1.2\\n"\n')
+    executable(bindir / "oc", '''
+case "$*" in
+  whoami) exit 0 ;;
+  "get storageclass -o json")
+    echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
+  "get nodes -o json")
+    echo '{"items":[{"spec":{},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}' ;;
+  "get routes -n openshift-image-registry -o json") echo '{"items":[]}' ;;
+  *) echo "unexpected oc call: $*" >&2; exit 4 ;;
+esac
+''')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("prereqs-check", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "Default StorageClass: available" in result.stdout
 
 
 def test_prereqs_reject_incompatible_openshell_cli(tmp_path):

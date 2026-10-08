@@ -77,7 +77,7 @@ export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
 .check-prereqs: ## Internal: check cluster prerequisites
 	@$(SCRIPTS_DIR)/prereqs-check.sh
 
-.PHONY: prereqs-check ssh-key-generate sandbox-build cli-build \
+.PHONY: prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
@@ -94,7 +94,10 @@ export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
 
 ##@ Setup and Images
 
-prereqs-check: .check-prereqs ## Check tools, operators, and registry access without changes
+prereqs-check: .check-prereqs ## Check tools and cluster capacity before Pattern install
+
+quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickstart
+	@PREREQS_MODE=quickstart $(SCRIPTS_DIR)/prereqs-check.sh
 
 ssh-key-generate: ## Generate or recover the SSH public key without replacing the private key
 	@$(SCRIPTS_DIR)/generate-keys.sh

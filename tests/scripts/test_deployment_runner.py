@@ -45,7 +45,7 @@ esac
 ''')
     executable(bindir / "make", '''
 printf '%s %s %s\\n' "$1" "$SAW_NS" "$OPENSHELL_SAW_NAME" >> "$MAKE_LOG"
-if [[ "$1" == prereqs-check && "${RUNNER_STOP_AT}" == prereqs ]]; then exit 17; fi
+if [[ "$1" == quickstart-prereqs-check && "${RUNNER_STOP_AT}" == prereqs ]]; then exit 17; fi
 if [[ "$1" == saw-status ]]; then
   if [[ -n "${RUNNER_STATUS_ERROR:-}" ]]; then
     printf '%s\\n' "$RUNNER_STATUS_ERROR" >&2
@@ -84,7 +84,7 @@ def test_make_exported_empty_name_does_not_set_wrong_namespace(runner_env):
     assert result.returncode == 17
     assert evidence.exists()
     assert Path(env["MAKE_LOG"]).read_text().splitlines()[0] == \
-        "prereqs-check saw-review-01 review-01"
+        "quickstart-prereqs-check saw-review-01 review-01"
 
 
 def test_status_progress_output_cannot_pass_as_json(runner_env):

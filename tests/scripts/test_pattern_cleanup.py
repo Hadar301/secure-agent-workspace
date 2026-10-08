@@ -80,3 +80,45 @@ def test_operator_cleanup_keeps_unowned_resources(tmp_path):
     assert len(calls) == len(kinds)
     assert all(" owned -n openshift-cnv " in call for call in calls)
     assert all("--all" not in call and " other " not in call for call in calls)
+
+
+def test_operator_cleanup_removes_orphaned_hco_crd(tmp_path):
+    namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
+        "argocd.argoproj.io/tracking-id":
+            "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
+    crd = {"metadata": {"labels": {
+        "olm.managed": "true",
+        "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
+    env, log = fake_oc(tmp_path, [namespace], [], {
+        "crd": [crd],
+        "hyperconvergeds.hco.kubevirt.io": [],
+        "subscriptions.operators.coreos.com": [],
+    })
+    # The CRD lookup returns one object, unlike list lookups.
+    (tmp_path / "fixtures" / "crd.json").write_text(json.dumps(crd))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert "wait --for=delete namespace/openshift-cnv --timeout=180s" in calls
+    assert "delete crd hyperconvergeds.hco.kubevirt.io --wait=true" in calls
+
+
+def test_operator_cleanup_preserves_crd_with_hco(tmp_path):
+    namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
+        "argocd.argoproj.io/tracking-id":
+            "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
+    crd = {"metadata": {"labels": {
+        "olm.managed": "true",
+        "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
+    env, log = fake_oc(tmp_path, [namespace], [], {
+        "crd": [],
+        "hyperconvergeds.hco.kubevirt.io": [
+            {"metadata": {"name": "other-hco"}}],
+        "subscriptions.operators.coreos.com": [],
+    })
+    (tmp_path / "fixtures" / "crd.json").write_text(json.dumps(crd))
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "delete crd" not in log.read_text()

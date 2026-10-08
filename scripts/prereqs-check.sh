@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only checks for a manual quickstart.
+# Read-only checks. Quickstart mode also requires installed operators.
 set -euo pipefail
 
 for tool in oc helm jq openssl openshell; do
@@ -43,20 +43,6 @@ oc whoami >/dev/null
 echo "OpenShift login: active"
 echo "Helm: $(helm version --short)"
 
-cnv="$(oc get csv -n openshift-cnv -o json)"
-if ! jq -e '.items | any(.metadata.name | contains("kubevirt"))' <<<"${cnv}" >/dev/null; then
-  echo "Error: OpenShift Virtualization is not installed in openshift-cnv." >&2
-  exit 1
-fi
-echo "OpenShift Virtualization: installed"
-
-hyperconverged="$(oc get hyperconverged -n openshift-cnv -o json)"
-if ! jq -e '.items | length > 0' <<<"${hyperconverged}" >/dev/null; then
-  echo "Error: no HyperConverged resource exists in openshift-cnv." >&2
-  exit 1
-fi
-echo "HyperConverged resource: present"
-
 storage="$(oc get storageclass -o json)"
 if ! jq -e '.items | any(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true")' \
     <<<"${storage}" >/dev/null; then
@@ -74,12 +60,28 @@ if ! jq -e '.items | any((.spec.unschedulable != true) and
 fi
 echo "Ready schedulable node: available"
 
-rhbk="$(oc get csv -n "${KEYCLOAK_NS:-saw-keycloak}" -o json)"
-if ! jq -e '.items | any(.metadata.name | contains("rhbk"))' <<<"${rhbk}" >/dev/null; then
-  echo "Error: RHBK is not installed in ${KEYCLOAK_NS:-saw-keycloak}." >&2
-  exit 1
+if [[ "${PREREQS_MODE:-pattern}" == quickstart ]]; then
+  cnv="$(oc get csv -n openshift-cnv -o json)"
+  if ! jq -e '.items | any(.metadata.name | contains("kubevirt"))' <<<"${cnv}" >/dev/null; then
+    echo "Error: OpenShift Virtualization is not installed in openshift-cnv." >&2
+    exit 1
+  fi
+  echo "OpenShift Virtualization: installed"
+
+  hyperconverged="$(oc get hyperconverged -n openshift-cnv -o json)"
+  if ! jq -e '.items | length > 0' <<<"${hyperconverged}" >/dev/null; then
+    echo "Error: no HyperConverged resource exists in openshift-cnv." >&2
+    exit 1
+  fi
+  echo "HyperConverged resource: present"
+
+  rhbk="$(oc get csv -n "${KEYCLOAK_NS:-saw-keycloak}" -o json)"
+  if ! jq -e '.items | any(.metadata.name | contains("rhbk"))' <<<"${rhbk}" >/dev/null; then
+    echo "Error: RHBK is not installed in ${KEYCLOAK_NS:-saw-keycloak}." >&2
+    exit 1
+  fi
+  echo "RHBK: installed in ${KEYCLOAK_NS:-saw-keycloak}"
 fi
-echo "RHBK: installed in ${KEYCLOAK_NS:-saw-keycloak}"
 
 routes="$(oc get routes -n openshift-image-registry -o json)"
 if jq -e '.items | any(.metadata.name == "default-route")' <<<"${routes}" >/dev/null; then

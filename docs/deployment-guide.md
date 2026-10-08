@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD.
+The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. For Alice and Bob test account passwords and separate browser sign-in steps, see [Keycloak test users](../README.md#keycloak-test-users).
 
 Each sandbox provides an OpenShell gateway with OIDC authentication, governance policy enforcement, and a web-based agent interface — all managed declaratively from Git.
 
@@ -196,7 +196,7 @@ sandboxes.
 ### Prerequisites
 
 ```bash
-make prereqs-check          # Verify operators and the CLI version against the gateway BOM
+make quickstart-prereqs-check # Verify operators and the CLI version against the gateway BOM
 ```
 
 ### Initial Setup
