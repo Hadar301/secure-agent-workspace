@@ -153,3 +153,7 @@ first install:
   and provider profiles, which is what the interceptor enforced.
 - Per-user or per-profile policy: APF injects one `default` policy, like the interceptor.
 - A durable audit volume (`audit.persistence` in the APF chart).
+- Harness bundles ([harness-bundles.md](harness-bundles.md)). Their mount relies on the patched
+  interceptor admitting only the installer's read-only harness volume from an mTLS admin; APF has
+  no such guard. With `engine: apf` the chart refuses `allowDriverConfig` (a user with
+  `harnessEnabled`) and says so, rather than letting any caller attach the volume.

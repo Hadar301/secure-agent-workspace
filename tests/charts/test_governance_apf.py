@@ -246,6 +246,23 @@ def test_apf_bindings_can_still_be_narrowed(tmp_path):
     assert set(bindings(gov)) <= INTERCEPTABLE
 
 
+@pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
+def test_apf_engine_refuses_harness_driver_config(flag):
+    """Harness bundles (#78) rely on the patched interceptor to admit only the
+    installer's read-only harness mount from an mTLS admin. APF has no such
+    guard, so the chart refuses the combination instead of dropping it."""
+    result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
+                             "--set", flag, "--set", "allowDriverConfig=true"],
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "allowDriverConfig" in result.stderr and "interceptor" in result.stderr
+
+
+def test_interceptor_engine_keeps_harness_driver_config():
+    gateway = gateway_toml("--set", "allowDriverConfig=true")["openshell"]["drivers"]["podman"]
+    assert gateway["allow_driver_config"] is True
+
+
 def test_unknown_engine_fails_in_openshell_saw():
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
                              "--set", "governance.engine=opa"], capture_output=True, text=True)
