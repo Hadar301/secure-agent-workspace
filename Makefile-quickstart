@@ -52,9 +52,9 @@ export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
 export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
-export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD
+export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
-.PHONY: prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build \
+.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
@@ -75,6 +75,9 @@ prereqs-check: .check-prereqs ## Check tools and cluster capacity before Pattern
 
 quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickstart
 	@PREREQS_MODE=quickstart $(SCRIPTS_DIR)/prereqs-check.sh
+
+check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
+	@$(SCRIPTS_DIR)/check-oidc-ca.sh
 
 ssh-key-generate: ## Generate or recover the SSH public key without replacing the private key
 	@$(SCRIPTS_DIR)/generate-keys.sh
@@ -207,16 +210,8 @@ uninstall: pre-uninstall ## Uninstall the pattern, then clean operator state
 
 pattern-uninstall: uninstall ## Uninstall the Validated Pattern
 
-# Clean up a single sandbox's heavy resources before uninstall to prevent
-# finalizer hangs. VMs and DataVolumes take time to terminate and block
-# ArgoCD app deletion. Scoped to OPENSHELL_SAW_NAME only — NOT named
-# "uninstall"/"pre-uninstall", since those names collide with the
-# pre-existing `uninstall` target in Makefile-common (the one
-# `./pattern.sh make uninstall` calls). Make merges prerequisite lists
-# across repeated target definitions, so reusing that name here would
-# silently attach this namespace-wide cleanup to every future call of the
-# framework's own uninstall target, deleting every sandbox VM/DataVolume in
-# a shared namespace instead of just this one.
+# Clean up one sandbox's VM and DataVolume before saw-delete. This target
+# handles only OPENSHELL_SAW_NAME; pattern uninstall has its own cleanup.
 sandbox-pre-delete: .check-saw-name ## Schedule deletion of a sandbox's VM and disk
 	@$(SCRIPTS_DIR)/sandbox-pre-delete.sh
 
@@ -284,8 +279,12 @@ whoami: ## Show current OIDC identity and token status
 	@$(SCRIPTS_DIR)/oidc-login.sh whoami
 
 logout: ## Revoke OIDC token and clear sandbox credentials
-	@$(SCRIPTS_DIR)/oidc-login.sh logout
-	@$(SCRIPTS_DIR)/openshell-saw-logout.sh
+	@rc=0; $(SCRIPTS_DIR)/oidc-login.sh logout || rc=$$?; \
+		$(SCRIPTS_DIR)/openshell-saw-logout.sh || { gateway_rc=$$?; \
+			if [ $$rc -eq 0 ]; then rc=$$gateway_rc; fi; }; \
+		if [ $$rc -ne 0 ]; then \
+			echo "Error: logout could not confirm all remote revocations or local cleanup." >&2; \
+		fi; exit $$rc
 
 keycloak-delete: ## Uninstall Keycloak and its database
 	@$(SCRIPTS_DIR)/keycloak-delete.sh
@@ -457,10 +456,10 @@ test-installer: ## Run the complete local Python test suite with uv
 
 ##@ Internal Checks
 
-.check-saw-name: ## Internal: validate the selected SAW name
+.check-saw-name:
 	@$(SCRIPTS_DIR)/check-saw-name.sh
 
-.check-ssh-key: ## Internal: require an SSH public key
+.check-ssh-key:
 	@test -f "$(SSH_KEY_PATH).pub" || { \
 		echo "Error: SSH key not found at $(SSH_KEY_PATH).pub"; \
 		echo "Generate one with: make ssh-key-generate"; \
@@ -468,15 +467,17 @@ test-installer: ## Run the complete local Python test suite with uv
 		exit 1; \
 	}
 
-.check-gateway-ca: ## Internal: require the gateway CA certificate
+.check-gateway-ca:
 	@test -f "$(HOME)/.config/openshell/gateways/$(OPENSHELL_SAW_NAME)/mtls/ca.crt" || { \
 		echo "Error: Gateway CA certificate not found for '$(OPENSHELL_SAW_NAME)'."; \
 		echo "Run 'make saw-configure OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)' first."; \
 		exit 1; \
 	}
 
-.check-prereqs: ## Internal: check cluster prerequisites
+.check-prereqs:
 	@$(SCRIPTS_DIR)/prereqs-check.sh
+	@$(SCRIPTS_DIR)/check-oidc-ca.sh; rc=$$?; [ $$rc -lt 2 ] || \
+		echo "Warning: set oidc.caBundle (above) before make saw-create."
 
 # Deprecated aliases are listed by the help recipe after canonical targets.
 ALIAS_HELP := check-prereqs:prereqs-check generate-keys:ssh-key-generate \

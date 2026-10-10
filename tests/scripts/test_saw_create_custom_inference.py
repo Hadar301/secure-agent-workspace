@@ -15,7 +15,13 @@ echo "oc $*" >> "$FAKE_LOG"
 case "$1" in
   whoami) echo admin ;;
   # Secrets in the namespace: EXISTING_SECRETS, plus those this run creates.
-  get) if [[ "$2" == secrets ]]; then
+  get) if [[ "$2" == namespace ]]; then
+         [[ -n "${EXISTING_SECRETS:-}" ]] && echo "namespace/$3"
+       elif [[ "$2" == secret ]]; then
+         [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]] && echo "secret/$3"
+       elif [[ "$2" == keycloak ]]; then
+         echo '{"items":[{"metadata":{"name":"openshell-keycloak"}}]}'
+       elif [[ "$2" == secrets ]]; then
          if [[ -f "$FAKE_DIR/secrets" ]]; then
            sed 's#^#secret/#' "$FAKE_DIR/secrets"
          fi
@@ -42,12 +48,14 @@ exit 0
 def run(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("oc", FAKE_OC), ("helm", FAKE_HELM)):
+    for name, body in (("oc", FAKE_OC), ("helm", FAKE_HELM),
+                       ("uv", "#!/bin/sh\necho '[]'\n")):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "keycloak-host.sh").write_text("#!/bin/sh\nexit 1\n")
+    (scripts / "keycloak-host.sh").write_text(
+        '#!/bin/sh\nif [ -n "${LOCAL_KC_HOST:-}" ]; then echo "$LOCAL_KC_HOST"; else exit 1; fi\n')
     (scripts / "keycloak-host.sh").chmod(0o755)
     log = tmp_path / "log"
 
@@ -100,6 +108,35 @@ def test_external_issuer_does_not_require_local_keycloak(run):
     assert "oc get route cinf-dashboard" not in log
 
 
+def test_keyless_provider_creates_inference_secret(run):
+    log, _ = run(PROVIDER="openai", MODEL="local-model", API_KEY="")
+    assert "oc create secret generic inference" in log
+    assert "--from-literal=provider=openai" in log
+    assert "inference.secretName=" not in _saw_helm(log)
+
+
+def test_profile_rerun_keeps_existing_inference_secret(run):
+    log, _ = run(EXISTING_SECRETS="inference", PROFILES="custom-inference",
+                 PROVIDER="", MODEL="", API_KEY="")
+    assert "oc create secret generic inference" not in log
+    assert "inference.secretName=" not in _saw_helm(log)
+
+
+def test_external_dashboard_opt_in(run):
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
+                 OIDC_ISSUER="https://external.example.test/realms/test", DASHBOARD="true")
+    assert "dashboard.enabled=false" not in _saw_helm(log)
+    assert "route.webui=false" not in _saw_helm(log)
+
+
+def test_explicit_local_issuer_keeps_dashboard(run):
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
+                 LOCAL_KC_HOST="keycloak.apps.test",
+                 OIDC_ISSUER="https://keycloak.apps.test/realms/openshell")
+    assert "dashboard.enabled=false" not in _saw_helm(log)
+    assert "oidc.keycloakName=openshell-keycloak" in _saw_helm(log)
+
+
 def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -113,8 +150,27 @@ def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
     result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
                             capture_output=True, text=True)
     assert result.returncode != 0
-    assert "PROVIDER, MODEL, and API_KEY" in result.stderr
-    assert not marker.exists()
+    assert "PROVIDER and MODEL" in result.stderr
+
+
+def test_missing_login_token_fails_before_cluster_write(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "oc.log"
+    oc = bindir / "oc"
+    oc.write_text('#!/bin/sh\necho "$*" >> "$OC_LOG"\n'
+                  'if [ "$1" = whoami ]; then exit 0; fi\n')
+    oc.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", OC_LOG=str(log),
+               OPENSHELL_SAW_NAME="cinf", SAW_CHART="charts/openshell-saw",
+               OWNER="", PROVIDER="build", MODEL="m", API_KEY="k",
+               OIDC_TOKEN_DIR=str(tmp_path / "no-token"))
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Run 'make login'" in result.stderr
+    assert all(not line.startswith(("create", "apply", "label"))
+               for line in log.read_text().splitlines())
 
 
 def test_unsupported_web_search_setting_fails_before_cluster_work(tmp_path):

@@ -25,10 +25,23 @@ case "$1" in
   get)
     if [[ "$2" == namespaces ]]; then
       cat "${OC_FIXTURES}/namespaces.json"
+    elif [[ "$2" == namespace ]]; then
+      if [[ -f "${OC_FIXTURES}/namespace.json" ]]; then
+        cat "${OC_FIXTURES}/namespace.json"
+      elif [[ -f "${OC_FIXTURES}/wait-done" ]]; then
+        :
+      elif jq -e --arg ns "$3" '.items | any(.metadata.name == $ns)' \
+          "${OC_FIXTURES}/namespaces.json" >/dev/null; then
+        echo "namespace/$3"
+      fi
     else
       cat "${OC_FIXTURES}/$2.json"
     fi ;;
-  annotate|delete|wait) printf '%s\\n' "$*" >> "${OC_LOG}" ;;
+  wait)
+    printf '%s\\n' "$*" >> "${OC_LOG}"
+    if [[ "${OC_WAIT_FAIL:-no}" == yes ]]; then exit 1; fi
+    touch "${OC_FIXTURES}/wait-done" ;;
+  annotate|delete) printf '%s\\n' "$*" >> "${OC_LOG}" ;;
   *) printf 'unexpected oc call: %s\\n' "$*" >&2; exit 9 ;;
 esac
 ''')
@@ -104,6 +117,19 @@ def test_operator_cleanup_removes_orphaned_hco_crd(tmp_path):
     calls = log.read_text().splitlines()
     assert "wait --for=delete namespace/openshift-cnv --timeout=180s" in calls
     assert "delete crd hyperconvergeds.hco.kubevirt.io --wait=true" in calls
+
+
+def test_operator_cleanup_warns_when_cnv_namespace_remains(tmp_path):
+    namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
+        "argocd.argoproj.io/tracking-id":
+            "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
+    env, log = fake_oc(tmp_path, [namespace], [], {})
+    env["OC_WAIT_FAIL"] = "yes"
+    result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "still exists after 180 s" in result.stderr
+    assert "delete crd" not in log.read_text()
 
 
 def test_operator_cleanup_preserves_crd_with_hco(tmp_path):

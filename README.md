@@ -140,8 +140,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | oc CLI | matching cluster version |
 | openshell CLI | [a release from the gateway's release series](https://github.com/NVIDIA/OpenShell/releases) (0.1.x for this BOM) |
 | jq, curl, openssl | required by `make login` |
-| Python 3 and PyYAML | required by local Keycloak user management scripts |
-| uv | required for local Python tests (`make test`); uses the root `pyproject.toml` and `uv.lock` |
+| uv | required for local deployment commands and Python tests; uses the root `pyproject.toml` and `uv.lock` |
 
 ### Required user permissions
 
@@ -197,6 +196,13 @@ make ssh-key-generate
 # No build needed — images are pre-built by maintainers.
 make images-mirror
 
+# 5b. Optional: check whether workspace VMs will trust Keycloak's
+# certificate. On a cluster with OpenShift's self-signed *.apps certificate the
+# pattern trusts the cluster's ingress CA by itself (saw-ingress-ca imperative
+# job); for an external issuer with a private CA (ISSUER=<url>) it prints the
+# oidc.caBundle snippet to add to overrides/saw-users.yaml.
+make check-oidc-ca
+
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on the remote (origin).
 # pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
@@ -241,7 +247,8 @@ export OPENSHELL_SAW_NAME=alice     # the user VM, deployed into namespace saw-a
 
 # 4. Verify prerequisites after CNV and RHBK are installed
 make quickstart-prereqs-check
-# This check is read only. make images-mirror enables the registry route.
+# This check does not change the cluster. It can save ingress-ca.pem here.
+# make images-mirror enables the registry route.
 
 # 5. Generate SSH keys
 make ssh-key-generate
@@ -281,7 +288,7 @@ make saw-create \
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
-> **OIDC issuer:** `make saw-create` stops if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. External and no-OIDC modes disable the dashboard and web UI routes because this repository cannot register their redirect URIs.
+> **OIDC issuer:** `make saw-create` stops if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. External and no-OIDC modes disable the dashboard and web UI routes by default. Set `DASHBOARD=true` with an external issuer only after you register its dashboard and web UI redirect URIs yourself.
 
 ```bash
 # 12. Follow the in-VM installer (in another terminal)
@@ -386,7 +393,7 @@ user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
 `SAW_NS=saw-$OPENSHELL_SAW_NAME`. For a manual build, set `QUAY_REPO` and
 `OPENSHELL_VERSION` as needed. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment; `OWNER` and `OWNER_SUBJECT` select another owner.
+`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
 `OPENSHELL_VERSION=0.0.116` names the prebuilt gateway image tag used by
 `images-mirror`. The chart's in-VM BOM pins OpenShell `0.1.2-rhaiv.0` by
@@ -404,8 +411,9 @@ The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
 `TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
-`WEB_SEARCH_API_KEY`, `TARGET_BRANCH`, `TARGET_ORIGIN`, and the three
-executable request checks described in the deployment guide. Then run
+`WEB_SEARCH_API_KEY`, `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
+and owner access checks described in the deployment guide. The repo supplies
+the second-user denial check by default. Then run
 `make test-deployment`. It tests manual setup and
 the pattern install, uninstall, and reinstall cycle. It records timestamps,
 the commit, the cluster context, and exit codes in a local evidence file.
@@ -447,7 +455,7 @@ profiles:
 make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
   PROVIDER=openai MODEL=<served model> \
   ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
-  API_KEY=<key>          # any non-empty value if the server needs no key
+  API_KEY=<key>          # use API_KEY='' if the server needs no key
 ```
 
 Notes:
@@ -614,6 +622,9 @@ set -o pipefail
 oc get secret openshell-keycloak-user-passwords -n saw-keycloak \
   -o jsonpath='{.data.alice}' | base64 -D | pbcopy
 ```
+
+On Linux, use `base64 -d | xclip -selection clipboard` in place of
+`base64 -D | pbcopy` (or use `wl-copy` on Wayland).
 
 Paste the clipboard value into Alice's Keycloak password field. For Bob:
 

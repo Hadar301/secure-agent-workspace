@@ -54,7 +54,12 @@ if [[ "${namespace_present}" == true && \
 fi
 
 if [[ "${namespace_present}" == true ]]; then
-  oc wait --for=delete namespace/openshift-cnv --timeout=180s
+  if ! oc wait --for=delete namespace/openshift-cnv --timeout=180s; then
+    if [[ -n "$(oc get namespace openshift-cnv -o name --ignore-not-found)" ]]; then
+      echo "Warning: openshift-cnv still exists after 180 s; keeping its HyperConverged CRD." >&2
+      exit 0
+    fi
+  fi
 fi
 crd="$(oc get crd hyperconvergeds.hco.kubevirt.io -o json --ignore-not-found)"
 if [[ -z "${crd}" ]]; then

@@ -33,6 +33,12 @@ defaults:
   secrets:
     - inference
     - web-search
+  # The cluster's ingress CA, synced into every user namespace under this
+  # name (pattern-secrets, from Vault, written by the saw-ingress-ca
+  # imperative job) and trusted by the VM for the in-cluster Keycloak, for
+  # clusters whose *.apps certificate is OpenShift's self-signed default.
+  # Empty turns it off.
+  clusterCaSecret: saw-ingress-ca
   # Merged under each user's `values`. owner is the user name.
   openshellSaw:
     signing:
@@ -40,8 +46,6 @@ defaults:
     prune:
       mode: report
       sandboxes: false
-    dashboard:
-      insecureSkipIssuerTlsVerify: true
 
 # Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
 # route and an owner-only oauth2-proxy in the VM that listens on

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Read-only checks. Quickstart mode also requires installed operators.
+# Checks tools and cluster capacity. Quickstart mode also requires operators.
 set -euo pipefail
 
-for tool in oc helm jq openssl openshell; do
+for tool in oc helm jq openssl openshell uv; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     echo "Error: ${tool} is required." >&2
     exit 1

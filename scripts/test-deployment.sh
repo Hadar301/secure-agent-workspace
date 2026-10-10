@@ -19,7 +19,7 @@ cd "${repo}"
 : "${TARGET_ORIGIN:?Set TARGET_ORIGIN to its remote name}"
 : "${TEST_INFERENCE_CHECK:?Set TEST_INFERENCE_CHECK to an executable request check}"
 : "${TEST_OWNER_ACCESS_CHECK:?Set TEST_OWNER_ACCESS_CHECK to an executable owner access check}"
-: "${TEST_SECOND_USER_DENIED_CHECK:?Set TEST_SECOND_USER_DENIED_CHECK to an executable second-user denial check}"
+TEST_SECOND_USER_DENIED_CHECK="${TEST_SECOND_USER_DENIED_CHECK:-${repo}/scripts/check-second-user-denied.sh}"
 
 for check in "${TEST_INFERENCE_CHECK}" "${TEST_OWNER_ACCESS_CHECK}" \
     "${TEST_SECOND_USER_DENIED_CHECK}"; do

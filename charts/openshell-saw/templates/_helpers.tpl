@@ -182,7 +182,23 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- range .Values.additionalProviderSecrets -}}
   {{- if and . (not (has . $names)) -}}{{- $names = append $names . -}}{{- end -}}
 {{- end -}}
+{{- with include "openshell-sandbox.caBundleSecret" . -}}
+  {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
+{{- end -}}
 {{- toJson $names -}}
+{{- end }}
+
+{{/*
+The Secret holding the cluster's ingress CA (key ca-bundle.crt) the VM trusts
+for the issuer, or "". Only for the in-cluster Keycloak (oidc.issuerUrl
+empty) and only when no explicit oidc.caBundle is set: an external issuer has
+nothing to do with the cluster's ingress CA. Attached like the provider
+Secrets (secret disk, mounted under /run/saw/secrets/<name>).
+*/}}
+{{- define "openshell-sandbox.caBundleSecret" -}}
+{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- .Values.oidc.clusterCaSecret -}}
+{{- end -}}
 {{- end }}
 
 {{/*

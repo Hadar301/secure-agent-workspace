@@ -33,7 +33,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
-        "status .check-saw-name .check-ssh-key .check-gateway-ca .check-prereqs"
+        "status check-oidc-ca"
     ).split()
     for target in targets:
         assert len(re.findall(rf"^  {target}\s", plain, re.MULTILINE)) == 1
@@ -230,7 +230,8 @@ case "$*" in
   *) echo "unexpected oc call: $*" >&2; exit 4 ;;
 esac
 ''')
-    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+               CA_OUT=str(tmp_path / "ingress-ca.pem"))
     result = run_make("prereqs-check", env=env)
     assert result.returncode == 0, result.stderr
     assert "Default StorageClass: available" in result.stdout
@@ -246,3 +247,30 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     assert result.returncode != 0
     assert "does not match gateway BOM 0.1.2-rhaiv.0" in result.stderr
     assert "oc must not run" not in result.stderr
+
+
+def test_both_prereq_modes_require_uv_before_cluster_calls(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for tool in ("oc", "helm", "jq", "openssl", "openshell"):
+        executable(bindir / tool, 'echo "cluster tool must not run" >&2\nexit 9\n')
+    env = dict(os.environ, PATH=f"{bindir}:/usr/bin:/bin")
+    for target in ("prereqs-check", "quickstart-prereqs-check"):
+        result = run_make(target, env=env)
+        assert result.returncode != 0
+        assert "uv is required" in result.stderr
+        assert "cluster tool must not run" not in result.stderr
+
+
+def test_logout_clears_gateway_when_oidc_revocation_fails(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    log = tmp_path / "logout.log"
+    executable(scripts / "oidc-login.sh", 'echo oidc >> "$LOGOUT_LOG"\nexit 7\n')
+    executable(scripts / "openshell-saw-logout.sh",
+               'echo gateway >> "$LOGOUT_LOG"\n')
+    env = dict(os.environ, LOGOUT_LOG=str(log))
+    result = run_make("logout", f"SCRIPTS_DIR={scripts}", env=env)
+    assert result.returncode != 0
+    assert log.read_text().splitlines() == ["oidc", "gateway"]
+    assert "revocations or local cleanup" in result.stderr

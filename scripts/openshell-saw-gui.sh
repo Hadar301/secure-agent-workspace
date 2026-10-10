@@ -55,8 +55,7 @@ if command -v open >/dev/null; then
 elif command -v xdg-open >/dev/null; then
   xdg-open "${url}"
 else
-  echo "Error: no browser opener is available." >&2
-  exit 1
+  echo "No browser opener is available. Open http://localhost:${port}/ on this host."
 fi
 unset token url config
 echo "OpenClaw UI is available on local port ${port}. Press Ctrl-C to stop."

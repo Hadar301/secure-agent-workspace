@@ -2,7 +2,7 @@
 # Provision a sandbox — detects owner from OIDC token, deploys via helm.
 #
 # Required env vars: OPENSHELL_SAW_NAME, SAW_CHART
-# Required env vars (provider): PROVIDER + MODEL + API_KEY
+# New inference Secrets need PROVIDER and MODEL; API_KEY may be empty.
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
 #           PROFILES (comma-separated SAW-BOM profiles, default: the chart's)
@@ -47,6 +47,7 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+DASHBOARD="${DASHBOARD:-false}"
 
 # Validate all provider settings before changing the cluster.
 if [[ -n "${GCP_SA_JSON}" || -n "${SANDBOX_IMAGE:-}" ]]; then
@@ -57,12 +58,31 @@ if [[ -n "${WEB_SEARCH}" ]]; then
   echo "Error: WEB_SEARCH is unsupported. Use WEB_SEARCH_API_KEY and a SAW-BOM profile." >&2
   exit 1
 fi
-if [[ -z "${PROVIDER}" || -z "${MODEL}" || -z "${API_KEY}" ]]; then
-  echo "Error: PROVIDER, MODEL, and API_KEY are required." >&2
+if ! command -v uv >/dev/null 2>&1; then
+  echo "Error: uv is required. Install uv before running make saw-create." >&2
+  exit 1
+fi
+if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
+  echo "Error: DASHBOARD must be true or false." >&2
   exit 1
 fi
 
 oc whoami >/dev/null || { echo "Error: Not logged in to OpenShift. Run 'oc login' first." >&2; exit 1; }
+
+inference_exists=false
+if [[ -n "$(oc get namespace "${SAW_NS}" -o name --ignore-not-found)" ]]; then
+  if [[ -n "$(oc get secret inference -n "${SAW_NS}" -o name --ignore-not-found)" ]]; then
+    inference_exists=true
+  fi
+fi
+if [[ "${inference_exists}" == false && ( -z "${PROVIDER}" || -z "${MODEL}" ) ]]; then
+  echo "Error: PROVIDER and MODEL are required when the inference Secret is absent." >&2
+  exit 1
+fi
+if [[ -z "${OWNER}" && ! -f "${OIDC_TOKEN_DIR}/token.json" ]]; then
+  echo "Error: no OIDC token found. Run 'make login' first." >&2
+  exit 1
+fi
 
 token_claim() {
   local claim="$1" token payload
@@ -106,6 +126,17 @@ elif [[ -z "${OIDC_ISSUER}" ]]; then
   KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"
   OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
   local_keycloak=true
+elif KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"; then
+  if [[ "${OIDC_ISSUER%/}" == "https://${KC_HOST}/realms/${KEYCLOAK_REALM}" ]]; then
+    local_keycloak=true
+  fi
+fi
+dashboard_enabled=false
+if [[ -n "${OIDC_ISSUER}" && ( "${local_keycloak}" == true || "${DASHBOARD}" == true ) ]]; then
+  dashboard_enabled=true
+elif [[ "${DASHBOARD}" == true ]]; then
+  echo "Error: DASHBOARD=true requires an OIDC issuer." >&2
+  exit 1
 fi
 
 # --- Build OIDC helm options ---
@@ -150,10 +181,12 @@ fi
 # --- Provider credential Secret ---
 # The VM's installer reads provider keys only from mounted Secrets, so the
 # key goes into the "inference" Secret instead of the Helm release values.
-if [[ -n "${API_KEY}" ]]; then
+if [[ -n "${API_KEY}" || "${inference_exists}" == false ]]; then
   umask 077
   inference_key_file="$(mktemp)"
-  printf '%s' "${API_KEY}" > "${inference_key_file}"
+  # OpenShell requires a nonempty credential even for a keyless endpoint.
+  # A keyless server ignores this local placeholder.
+  printf '%s' "${API_KEY:-unused-key-for-keyless-provider}" > "${inference_key_file}"
   inference_fields=("--from-file=api_key=${inference_key_file}")
   [[ -z "${PROVIDER}" ]] || inference_fields+=("--from-literal=provider=${PROVIDER}")
   [[ -z "${MODEL}" ]] || inference_fields+=("--from-literal=model=${MODEL}")
@@ -215,7 +248,7 @@ helm_opts=(
   --set "governance.enabled=${GOVERNANCE_ENABLED}"
   --set route.enabled=true --set route.dashboard=true
 )
-if [[ "${local_keycloak}" != true ]]; then
+if [[ "${dashboard_enabled}" != true ]]; then
   # External OIDC providers cannot be updated through the Keycloak Admin API.
   helm_opts+=(--set dashboard.enabled=false --set route.dashboard=false
     --set route.webui=false)
@@ -227,11 +260,11 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
   if [[ "${APPS_DOMAIN}" == apps.* ]]; then
     helm_opts+=(--set-string "global.clusterDomain=${APPS_DOMAIN#apps.}")
   fi
-  if [[ "${local_keycloak}" == true ]]; then
+  if [[ "${dashboard_enabled}" == true ]]; then
     helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
   fi
 fi
-if [[ "${local_keycloak}" == true ]]; then
+if [[ "${dashboard_enabled}" == true ]]; then
   ui_routes="$(uv run --locked python "${SCRIPTS_DIR}/sandbox-ui-values.py" "${PROFILES:-data-science}")"
   if [[ "${ui_routes}" != '[]' && "${APPS_DOMAIN}" != apps.* ]]; then
     echo "Error: sandbox UI routes need an apps.<cluster-domain> ingress domain." >&2
@@ -255,7 +288,7 @@ if [[ -n "${GW_URL}" ]]; then
   echo "  Gateway:   ${GW_URL}"
 fi
 
-if [[ "${local_keycloak}" == true ]]; then
+if [[ "${dashboard_enabled}" == true ]]; then
   DASH_URL=$(oc get route "${OPENSHELL_SAW_NAME}-dashboard" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
   if [[ -n "${DASH_URL}" ]]; then
     echo "  Dashboard: ${DASH_URL}"
