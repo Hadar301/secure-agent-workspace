@@ -268,12 +268,55 @@ def test_both_prereq_modes_require_uv_before_cluster_calls(tmp_path):
 def test_logout_clears_gateway_when_oidc_revocation_fails(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    creds = tmp_path / "credentials"
+    creds.mkdir()
+    for name in ("alice", "bob"):
+        (creds / name).write_text("stored credential")
     log = tmp_path / "logout.log"
     executable(scripts / "oidc-login.sh", 'echo oidc >> "$LOGOUT_LOG"\nexit 7\n')
-    executable(scripts / "openshell-saw-logout.sh",
-               'echo gateway >> "$LOGOUT_LOG"\n')
-    env = dict(os.environ, LOGOUT_LOG=str(log))
+    (scripts / "openshell-saw-logout.sh").symlink_to(
+        ROOT / "scripts/openshell-saw-logout.sh")
+    executable(bindir / "openshell", '''
+if [[ "$*" == 'gateway list -o json' ]]; then
+  printf '%s\\n' '[{"name":"alice"},{"name":"bob"}]'
+elif [[ "$1 $2" == 'gateway logout' ]]; then
+  echo "gateway:$3" >> "$LOGOUT_LOG"
+  rm "$CREDENTIALS_DIR/$3"
+else
+  echo "unexpected openshell command" >&2
+  exit 2
+fi
+''')
+    env = dict(os.environ, LOGOUT_LOG=str(log), CREDENTIALS_DIR=str(creds),
+               OPENSHELL_SAW_NAME="", PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("logout", f"SCRIPTS_DIR={scripts}", env=env)
     assert result.returncode != 0
-    assert log.read_text().splitlines() == ["oidc", "gateway"]
+    assert log.read_text().splitlines() == ["oidc", "gateway:alice", "gateway:bob"]
+    assert list(creds.iterdir()) == []
     assert "revocations or local cleanup" in result.stderr
+
+
+def test_local_logout_can_select_one_gateway(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    creds = tmp_path / "credentials"
+    creds.mkdir()
+    for name in ("alice", "bob"):
+        (creds / name).write_text("stored credential")
+    executable(bindir / "openshell", '''
+if [[ "$*" == 'gateway list -o json' ]]; then
+  printf '%s\\n' '[{"name":"alice"},{"name":"bob"}]'
+elif [[ "$1 $2" == 'gateway logout' ]]; then
+  rm "$CREDENTIALS_DIR/$3"
+else
+  exit 2
+fi
+''')
+    env = dict(os.environ, CREDENTIALS_DIR=str(creds), OPENSHELL_SAW_NAME="alice",
+               PATH=f"{bindir}:{os.environ['PATH']}")
+    result = subprocess.run(["bash", str(ROOT / "scripts/openshell-saw-logout.sh")],
+                            cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in creds.iterdir()) == ["bob"]

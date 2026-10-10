@@ -221,6 +221,11 @@ openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 ```
 
+`make logout` clears the local OIDC token and stored credentials for all
+registered OpenShell gateways. Set `OPENSHELL_SAW_NAME` to clear one gateway.
+Local cleanup still runs if the issuer cannot confirm token revocation;
+the command then reports a failure.
+
 Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD creates or removes `saw-<name>`.
 Each user's virtual machine is named after them, in namespace `saw-<name>` (Alice's machine is `alice` in `saw-alice`, not `openshell-saw`), the same layout as `make saw-create OPENSHELL_SAW_NAME=alice`.
 Set `OPENSHELL_SAW_NAME` to the user name; `SAW_NS` defaults to `saw-<name>`.
@@ -563,7 +568,7 @@ make quickstart-delete
 │   ├── test-deployment.sh            # Live OpenShift deployment test
 │   ├── openshell-saw-create.sh             # Sandbox provisioning logic
 │   ├── openshell-saw-gui.sh                # Web UI port-forward
-│   ├── openshell-saw-logout.sh             # Clear OIDC tokens from VMs
+│   ├── openshell-saw-logout.sh             # Clear local gateway credentials
 │   ├── generate-keys.sh              # SSH keypair generation
 │   └── oidc-login.sh                 # Browser-based OIDC login
 ├── tests/                            # Test scripts
