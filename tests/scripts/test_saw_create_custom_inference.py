@@ -140,6 +140,9 @@ def test_explicit_local_issuer_keeps_dashboard(run):
 def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    uv = bindir / "uv"
+    uv.write_text('#!/bin/sh\nexit 0\n')
+    uv.chmod(0o755)
     marker = tmp_path / "oc-called"
     oc = bindir / "oc"
     oc.write_text('#!/bin/sh\nprintf called > "$MARKER"\n')
@@ -156,6 +159,9 @@ def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
 def test_missing_login_token_fails_before_cluster_write(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    uv = bindir / "uv"
+    uv.write_text('#!/bin/sh\nexit 0\n')
+    uv.chmod(0o755)
     log = tmp_path / "oc.log"
     oc = bindir / "oc"
     oc.write_text('#!/bin/sh\necho "$*" >> "$OC_LOG"\n'
