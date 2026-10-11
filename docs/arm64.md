@@ -36,18 +36,18 @@ Check any image with `oc image info --show-multiarch <image>`.
    workspace VMs import their root disk from by default:
 
    ```bash
-   make -f Makefile-quickstart build-gateway-podman PUSH=false
+   make gateway-build-podman PUSH=false
    oc image info --show-multiarch image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest
    ```
 
-   Do not run `make copy-images` on an arm64 cluster: it would replace that
+   Do not run `make images-mirror` on an arm64 cluster: it would replace that
    image with the x86_64 one from quay.
 
 3. **The governance interceptor, built on the cluster**, and the pattern
    pointed at it (`charts/governance-interceptor` `image`):
 
    ```bash
-   make -f Makefile-quickstart build-governance-interceptor-local
+   make governance-interceptor-build-local
    ```
 
    Then set the interceptor's `image` to
@@ -69,11 +69,11 @@ Check any image with `oc image info --show-multiarch <image>`.
    machine logged in to quay:
 
    ```bash
-   make -f Makefile-quickstart publish-nemoclaw-multiarch
+   make nemoclaw-publish
    oc image info --show-multiarch quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
    ```
 
-   Do not push to quay with `make build-nemoclaw` (or `build-nemoclaw-cli`)
+   Do not push to quay with `make sandbox-build` (or `cli-build`)
    with `PUSH=true` afterwards: an in-cluster build is single-architecture and
    would replace the multi-arch tag. On a single arm64 cluster,
    `PUSH=false` builds an arm64 image into the internal registry instead
