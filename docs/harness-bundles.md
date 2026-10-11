@@ -53,6 +53,12 @@ bundle never holds a key. The agent sees a server's tools as
 A remote server must be declared in `harness.yaml` with a governance profile,
 and its host must be one of that profile's endpoints:
 
+When the remote server is inside the cluster, also add a narrow
+`networkPolicy.extraEgress` rule to the SAW values for its namespace, pods, and
+port. The profile controls the sandbox proxy; NetworkPolicy controls whether
+the VM can reach the Service at all. An outside server additionally needs its
+exact hostname in `egress.extraAllow`.
+
 ```yaml
 spec:
   mcpServers:

@@ -524,6 +524,11 @@ make test
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
+
+# NetworkPolicy chart checks run offline; name two test SAWs for live checks
+SKIP_LIVE=1 ./tests/test-network-policy.sh
+SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
+  PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
 For local Python tests, `uv` creates the ignored `.venv` from the locked
@@ -577,7 +582,8 @@ make quickstart-delete
 │   └── oidc-login.sh                 # Browser-based OIDC login
 ├── tests/                            # Test scripts
 │   ├── test-bootc-e2e.sh             # Bootc pipeline E2E (28 checks)
-│   └── test-oidc-templates.sh        # Helm template validation (43 checks)
+│   ├── test-oidc-templates.sh        # Helm template validation (43 checks)
+│   └── test-network-policy.sh        # Offline and live network isolation checks
 ├── cli/                              # Admin provisioning CLI (openshell-saw)
 ├── pattern.sh                        # VP utility container wrapper
 └── ansible.cfg                       # VP ansible config
@@ -586,6 +592,7 @@ make quickstart-delete
 ## References
 
 - [NVIDIA Secure Agent Workspace Reference Design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/)
+- [Network troubleshooting](docs/troubleshooting.md)
 - [OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html)
 - [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
 - [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw)
@@ -603,6 +610,7 @@ The system implements layered isolation:
 3. **Per-user access control** — Auth proxy validates the OIDC token's `preferred_username` matches the sandbox owner
 4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
 5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
 
 ### Keycloak test users
 
