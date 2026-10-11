@@ -640,7 +640,7 @@ def test_owner_subject_is_passed_to_installer():
 def test_pattern_override_renders_with_nemoclaw(ab):
     docs = render(*PATTERN_SAW_SETTINGS)
     bom = yaml.safe_load(installer_data(docs)["installer-bom.yaml"])
-    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("quay.io/rh-ai-quickstart/nemoclaw-cli")
+    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("ghcr.io/validatedpatterns-sandbox/nemoclaw-cli")
     assert ab.validate_bom(bom)["spec"]["openshell"]["gateway"]
 
 

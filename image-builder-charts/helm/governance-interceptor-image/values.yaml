@@ -12,8 +12,8 @@ output:
   # One tag per OpenShell release. The interceptor must match the gateway
   # (0.1.x negotiates PeerMetadata), and pushing :latest would change the
   # interceptor under SAWs still on another release.
-  externalImage: "quay.io/rh-ai-quickstart/governance-interceptor:v0.1.2"
-  pushSecretName: "quay-push-secret"
+  externalImage: "ghcr.io/validatedpatterns-sandbox/governance-interceptor:v0.1.2"
+  pushSecretName: "ghcr-push-secret"
   # Set (e.g. "governance-interceptor:v0.1.2") to build into this cluster's
   # internal registry instead of pushing externalImage.
   imageStreamTag: ""

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 build_ns="${BUILD_NS:-openshell-agents}"
-repo="${QUAY_REPO:-quay.io/rh-ai-quickstart}"
-version="${OPENSHELL_VERSION:-0.0.116}"
+repo="${IMAGE_REPO:-ghcr.io/validatedpatterns-sandbox}"
+version="${IMAGE_TAG:-latest}"
 images="${MIRROR_IMAGES:-openshell-gateway}"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
@@ -37,24 +37,14 @@ for image in ${images}; do
     echo "Error: invalid image name: ${image}." >&2
     exit 1
   fi
-  chosen=""
-  for tag in "${version}" "v${version#v}" latest; do
-    [[ "${tag}" == "${chosen}" ]] && continue
-    if oc image mirror "${repo}/${image}:${tag}" \
-      "${registry}/${build_ns}/${image}:${version}" --insecure=true >"${log}" 2>&1; then
-      chosen="${tag}"
-      break
-    fi
-    if ! grep -Eiq 'manifest unknown|not found|name unknown|does not exist' "${log}"; then
-      echo "Error: image mirror failed for ${image}:${tag}. Check registry access and permissions." >&2
-      exit 1
-    fi
-    echo "Tag ${image}:${tag} is absent. Trying the next tag."
-  done
-  if [[ -z "${chosen}" ]]; then
-    echo "Error: no published tag was found for ${image}." >&2
+  if ! oc image mirror "${repo}/${image}:${version}" \
+    "${registry}/${build_ns}/${image}:${version}" --insecure=true >"${log}" 2>&1; then
+    cat "${log}" >&2
+    echo "Error: image mirror failed for ${repo}/${image}:${version}. Check the tag and registry access." >&2
     exit 1
   fi
-  oc tag "${build_ns}/${image}:${version}" "${build_ns}/${image}:latest"
-  echo "Mirrored ${image}:${chosen} as ${image}:${version} and ${image}:latest."
+  if [[ "${version}" != latest ]]; then
+    oc tag "${build_ns}/${image}:${version}" "${build_ns}/${image}:latest"
+  fi
+  echo "Mirrored ${image}:${version} as ${image}:${version} and ${image}:latest."
 done

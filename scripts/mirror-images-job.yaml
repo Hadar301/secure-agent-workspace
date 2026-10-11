@@ -23,26 +23,11 @@ spec:
           set -euo pipefail
           mkdir -p "${HOME}" "${XDG_RUNTIME_DIR}"
           TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-          # quay tags have been published as X.Y.Z, vX.Y.Z or only latest:
-          # use the first that exists and store it as the requested version.
+          # Use the exact CI tag; a missing version must fail rather than use latest.
           WANTED="${VERSION}"
-          SRC=""
-          INSPECT_LOG="$(mktemp)"
-          trap 'rm -f "${INSPECT_LOG}"' EXIT
-          for TAG in "${WANTED}" "v${WANTED#v}" latest; do
-            if skopeo inspect --raw "docker://${QUAY_REPO}/${IMAGE}:${TAG}" > /dev/null 2>"${INSPECT_LOG}"; then
-              SRC="${TAG}"; break
-            fi
-            if ! grep -Eiq 'manifest unknown|not found|name unknown' "${INSPECT_LOG}"; then
-              echo "ERROR: cannot inspect ${QUAY_REPO}/${IMAGE}:${TAG}; check registry access" >&2
-              exit 1
-            fi
-            echo "no tag ${TAG} on ${QUAY_REPO}/${IMAGE}"
-          done
-          if [ -z "${SRC}" ]; then echo "ERROR: none of the tags exist"; exit 1; fi
-          echo "Copying ${QUAY_REPO}/${IMAGE}:${SRC}"
+          echo "Copying ${IMAGE_REPO}/${IMAGE}:${WANTED}"
           skopeo copy --src-tls-verify=true --dest-tls-verify=false \
             --dest-creds="unused:${TOKEN}" \
-            "docker://${QUAY_REPO}/${IMAGE}:${SRC}" \
+            "docker://${IMAGE_REPO}/${IMAGE}:${WANTED}" \
             "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${WANTED}"
-          echo "Mirror complete: ${IMAGE}:${SRC} -> ${IMAGE}:${WANTED}"
+          echo "Mirror complete: ${IMAGE}:${WANTED} -> ${IMAGE}:${WANTED}"

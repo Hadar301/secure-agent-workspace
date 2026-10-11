@@ -481,12 +481,15 @@ External Secrets is only required for Option A, which syncs the pattern's secret
 
 ### Golden image tag
 
-`make images-mirror` mirrors the prebuilt images into the cluster. For each image it tries the `OPENSHELL_VERSION` tag first, then `v<version>`, and finally falls back to the `latest` tag, using the first that exists and storing it under the requested version (it also tags the result `latest`). If the golden image predates bundle signing, as the prebuilt images do, it ships no `verify-bundle`, so `saw-stage-installer` stages the installer tree without verification; the default signing mode `warn` still boots the VM, while `enforce` would refuse.
-
-`OPENSHELL_VERSION` defaults to `0.0.116` and selects a prebuilt gateway
-disk image tag. The `openshell-saw` chart has a separate in-VM BOM that
-pins OpenShell `0.1.2-rhaiv.0` images by digest. Changing a mirror tag does
-not upgrade the in-VM runtime. See [Versioned BOM installer](versioned-bom-installer.md).
+`make images-mirror` mirrors the CI-built GHCR golden image into the cluster.
+`IMAGE_REPO` defaults to `ghcr.io/validatedpatterns-sandbox`; `IMAGE_TAG` defaults
+to `latest`. Set `IMAGE_TAG=sha-<commit>` for a particular CI build. Both local
+and in-cluster mirroring use that exact tag and fail if it is absent; neither
+falls back to another build. The internal image also gets a `latest` alias,
+which the default VM disk source uses. For a pinned disk import, set
+`source.registryURL` to the GHCR image digest. Changing the source does not
+replace an existing VM disk. See [Container images](container-images.md) for
+CI image names, public package setup, and intentionally retained Quay dependencies.
 
 The default VM disk source is the `openshell-gateway:latest` image in the
 internal registry. To use another registry image, a DataSource, or an HTTP
@@ -494,7 +497,7 @@ source, set one of these values in an override file for `charts/openshell-saw`:
 
 ```yaml
 source:
-  registryURL: docker://quay.io/example/openshell-gateway:tag
+  registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest
 ```
 
 ```yaml

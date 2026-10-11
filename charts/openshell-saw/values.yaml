@@ -22,7 +22,7 @@ sshPublicKey: ""
 #    <dataSourceNamespace>/openshell-gateway:latest (make images-mirror, or the
 #    openshell-gateway-image build); the namespace may pull it from there.
 #      source:
-#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway@sha256:<digest>"
+#        registryURL: "docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway@sha256:<digest>"
 #
 # 2. DataSource: clone a golden image DataSource that already exists (the
 #    openshell-gateway-image chart's goldenImage, or a CDI DataImportCron).
@@ -102,7 +102,7 @@ bom:
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.
     nemoclaw:
-      cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli:latest
+      cliImage: ghcr.io/validatedpatterns-sandbox/nemoclaw-cli:latest
 
 # OpenShell gateway runtime configuration inside the VM.
 openshell:

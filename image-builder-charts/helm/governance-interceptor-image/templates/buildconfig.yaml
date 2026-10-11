@@ -191,7 +191,7 @@ spec:
       forcePull: true
   output:
     {{- if .Values.output.imageStreamTag }}
-    # Into this cluster's internal registry (no quay push access needed).
+    # Into this cluster's internal registry (no external push access needed).
     to:
       kind: ImageStreamTag
       name: {{ .Values.output.imageStreamTag }}

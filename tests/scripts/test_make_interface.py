@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -257,7 +258,10 @@ def test_both_prereq_modes_require_uv_before_cluster_calls(tmp_path):
     bindir.mkdir()
     for tool in ("oc", "helm", "jq", "openssl", "openshell"):
         executable(bindir / tool, 'echo "cluster tool must not run" >&2\nexit 9\n')
-    env = dict(os.environ, PATH=f"{bindir}:/usr/bin:/bin")
+    # Isolate PATH: uv can be installed in /usr/bin on the developer's host.
+    for tool in ("make", "bash"):
+        (bindir / tool).symlink_to(shutil.which(tool))
+    env = dict(os.environ, PATH=str(bindir))
     for target in ("prereqs-check", "quickstart-prereqs-check"):
         result = run_make(target, env=env)
         assert result.returncode != 0
@@ -320,3 +324,54 @@ fi
                             cwd=ROOT, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert sorted(path.name for path in creds.iterdir()) == ["bob"]
+
+
+def test_image_mirror_uses_selected_ghcr_tag_without_fallback(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "mirror.log"
+    executable(bindir / "oc", r'''case "$*" in
+  "get routes -n openshift-image-registry -o json")
+    echo '{"items":[{"metadata":{"name":"default-route"},"spec":{"host":"registry.example"}}]}' ;;
+  "image mirror "*)
+    echo "$*" >> "$MIRROR_LOG"
+    if [[ "${FAIL_MIRROR:-0}" == 1 ]]; then echo "manifest unknown" >&2; exit 2; fi ;;
+  *) : ;;
+esac
+''')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MIRROR_LOG=str(log))
+    result = run_make("images-mirror", "IMAGE_TAG=sha-review", env=env)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:sha-review "
+        "registry.example/openshell-agents/openshell-gateway:sha-review --insecure=true"]
+    log.unlink()
+    result = run_make("images-mirror", "IMAGE_TAG=sha-missing", env=dict(env, FAIL_MIRROR="1"))
+    assert result.returncode != 0
+    assert len(log.read_text().splitlines()) == 1
+    assert ":latest" not in log.read_text()
+
+
+def test_public_image_check_ignores_login_and_reports_private_packages(tmp_path):
+    import yaml
+
+    action = yaml.safe_load((ROOT / ".github/actions/verify-public-image/action.yml").read_text())
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable(bindir / "docker", r'''[[ "$1" == --config ]]
+[[ -d "$2" && ! -e "$2/config.json" ]]
+[[ "$3 $4" == "manifest inspect" ]]
+[[ "$5" == "$IMAGE" ]]
+printf '%s' "$2" > "$AUTH_LOG"
+exit "${DOCKER_STATUS:-0}"
+''')
+    log = tmp_path / "auth.log"
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", AUTH_LOG=str(log),
+               IMAGE="ghcr.io/example/image@sha256:" + "a" * 64)
+    for status in ("0", "1"):
+        result = subprocess.run(["bash", "-c", action["runs"]["steps"][0]["run"]],
+                                env=dict(env, DOCKER_STATUS=status), capture_output=True, text=True)
+        assert result.returncode == int(status), result.stderr
+        assert not Path(log.read_text()).exists()
+        if status == "1":
+            assert "visibility to Public" in result.stdout

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/verify-public-image/**
       - .github/workflows/build-governance-interceptor.yml
       - .github/actions/build-push-image/**
       - tests/charts/test_governance_interceptor_image.py
@@ -11,6 +12,7 @@ on:
       - image-builder-charts/helm/governance-interceptor-image/**
   pull_request:
     paths:
+      - .github/actions/verify-public-image/**
       - .github/workflows/build-governance-interceptor.yml
       - .github/actions/build-push-image/**
       - tests/charts/test_governance_interceptor_image.py
