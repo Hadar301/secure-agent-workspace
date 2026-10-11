@@ -134,6 +134,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Software | Version |
 |---|---|
 | Red Hat OpenShift | 4.22+ |
+| Network plugin | OVN-Kubernetes (the OpenShift default), for each workspace's egress firewall; set `egress.enabled: false` otherwise |
 | OpenShift Virtualization operator | stable channel |
 | Red Hat Build of Keycloak operator | stable-v26 channel |
 | Helm CLI | 3.x |
