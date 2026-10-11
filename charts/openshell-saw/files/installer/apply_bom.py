@@ -353,6 +353,7 @@ CONFIG_DEFAULTS = {
     "runtimeUser": "cloud-user",
     "mtlsGateway": "saw-installer",
     "ownerSubject": "",
+    "ownerSubjectSource": "",
     "sandboxDashboardRoute": "",
     "sandboxUi": [],
     "sandboxUiProxy": {},
@@ -394,6 +395,11 @@ def load_config(path):
     if not isinstance(cfg, dict):
         raise InstallerError("installer config must be a JSON object")
     merged = {**CONFIG_DEFAULTS, **cfg}
+    source = merged["ownerSubjectSource"]
+    if source not in ("", "resolved"):
+        raise InstallerError("installer config: ownerSubjectSource must be empty or resolved")
+    if source == "resolved" and merged["ownerSubject"]:
+        raise InstallerError("installer config: resolved owner cannot also have ownerSubject")
     if not merged.get("vmName"):
         raise InstallerError("installer config: vmName is required")
     if not NAME_RE.match(merged["runtimeUser"].replace("_", "-")):
@@ -420,6 +426,13 @@ def load_config(path):
         for key in ("image", "proxyImage", "clientId"):
             if not dash.get(key):
                 raise InstallerError(f"installer config: dashboard.{key} is required when the dashboard is enabled")
+        owner = dash.get("owner")
+        users = dash.get("allowedUsers")
+        if not isinstance(owner, str) or not USER_RE.match(owner):
+            raise InstallerError("installer config: dashboard owner must be a valid user name")
+        if not isinstance(users, list) or owner not in users or not all(
+                isinstance(user, str) and USER_RE.match(user) for user in users):
+            raise InstallerError("installer config: dashboard allowedUsers must include the owner")
     merged["sandboxUi"], merged["sandboxUiProxy"] = check_sandbox_ui(
         merged.get("sandboxUi"), merged.get("sandboxUiProxy"))
     harness_signature_cache_ttl(merged)
@@ -2454,6 +2467,12 @@ class ProfileApplier:
         self.prune_mode = prune.get("mode", "off")
         self.prune_sandboxes = bool(prune.get("sandboxes", False))
         self.ledger = Ledger(prune["ledgerPath"], shell.dry_run) if prune.get("ledgerPath") else None
+        self.owner_state_path = (Path(prune["ledgerPath"]).with_name("owner-memberships.json")
+                                 if prune.get("ledgerPath") else None)
+        self.owner_memberships = (read_json(self.owner_state_path, {})
+                                  if self.owner_state_path and not shell.dry_run else {})
+        if not isinstance(self.owner_memberships, dict):
+            raise InstallerError("owner membership state is not an object")
         self.harness = harness or {"bundles": {}}
         self.volumes = HarnessVolume(shell)
         self.catalogs = {}            # workspace -> {profile id: endpoint hosts}
@@ -2561,9 +2580,21 @@ class ProfileApplier:
                     f"could not create workspace '{ws.name}'. Creating workspaces needs "
                     "platform admin; check the mTLS identity has the openshell-admin role")
         owner = self.cfg.get("ownerSubject")
+        previous = self.owner_memberships.get(ws.name)
+        if previous and previous != owner:
+            removed = self.cli("workspace", "member", "remove", "--workspace", ws.name,
+                               "--subject", previous, check=False)
+            if not removed.ok and "not found" not in (removed.out + removed.err).lower():
+                raise InstallerError(f"could not remove previous owner from workspace '{ws.name}'")
+            self.owner_memberships.pop(ws.name, None)
+            if self.owner_state_path and not self.sh.dry_run:
+                write_json_atomic(self.owner_state_path, self.owner_memberships, mode=0o600)
         if owner:
             self.cli("workspace", "member", "add", "--workspace", ws.name,
                      "--subject", owner, "--role", "admin", ok_if_exists=True)
+            self.owner_memberships[ws.name] = owner
+            if self.owner_state_path and not self.sh.dry_run:
+                write_json_atomic(self.owner_state_path, self.owner_memberships, mode=0o600)
 
     def apply_provider(self, ws, provider):
         """Create the provider; if it exists, push the current key to it.
@@ -4365,13 +4396,18 @@ def setup_dashboard(shell, cfg, script, home):
     cookie_file = Path(home) / ".config" / "openshell" / "dashboard-cookie-secret"
     if shell.dry_run:
         cookie = "dry-run"
-    elif cookie_file.exists():
+    elif cookie_file.exists() and (cookie_file.with_suffix(".users-hash").exists()
+                                  and cookie_file.with_suffix(".users-hash").read_text() ==
+                                  hashlib.sha256("\n".join(sorted(dash["allowedUsers"])).encode()).hexdigest()):
         cookie = cookie_file.read_text(encoding="utf-8").strip()
     else:
         cookie_file.parent.mkdir(parents=True, exist_ok=True)
         cookie = secrets.token_hex(16)
         cookie_file.write_text(cookie, encoding="utf-8")
         os.chmod(cookie_file, 0o600)
+        hash_file = cookie_file.with_suffix(".users-hash")
+        hash_file.write_text(hashlib.sha256("\n".join(sorted(dash["allowedUsers"])).encode()).hexdigest())
+        os.chmod(hash_file, 0o600)
     shell.add_secret(cookie)
     issuer_ca = issuer_trust_paths(home)[0]
     result = shell.run(["bash", str(script)], check=False, timeout=600, env={
@@ -4382,6 +4418,7 @@ def setup_dashboard(shell, cfg, script, home):
         "DASHBOARD_CLIENT_ID": dash["clientId"],
         "DASHBOARD_COOKIE_SECRET": cookie,
         "DASHBOARD_REDIRECT_URL": dash["redirectUrl"],
+        "DASHBOARD_ALLOWED_USERS": ",".join(dash["allowedUsers"]),
         "DASHBOARD_INSECURE_SKIP_TLS": str(bool(dash.get("insecureSkipTlsVerify"))).lower(),
         "OIDC_ISSUER": cfg["oidcIssuer"],
         "DASHBOARD_ISSUER_CA": str(issuer_ca) if issuer_ca.is_file() else "",
@@ -4411,11 +4448,18 @@ class Inputs:
         self.dashboard_script = self.installer / "setup-dashboard.sh"
         self.profiles = self.root / "profiles"
         self.secrets = self.root / "secrets"
+        self.owner = self.root / "owner"
 
     def load(self):
         """Load and validate everything. Nothing is changed."""
         bom = load_bom(self.bom)
         cfg = load_config(self.config)
+        if cfg["ownerSubjectSource"] == "resolved":
+            subject_file = self.owner / "subject"
+            subject = subject_file.read_text(encoding="utf-8").strip() if subject_file.is_file() else ""
+            if subject and not re.fullmatch(r"[A-Za-z0-9._:@/-]{1,255}", subject):
+                raise InstallerError("resolved owner subject has invalid characters")
+            cfg["ownerSubject"] = subject
         profile_files, harness_files, index = read_profile_files(self.profiles)
         profiles = parse_profiles(profile_files)
         validate_profiles(profiles)
@@ -4768,11 +4812,14 @@ def tree_hash(path):
 
 
 def input_hashes(inputs):
-    return {
+    result = {
         "installer": tree_hash(inputs.installer),
         "profiles": tree_hash(inputs.profiles),
         "secrets": tree_hash(inputs.secrets),
     }
+    if inputs.owner.is_dir():
+        result["owner"] = tree_hash(inputs.owner)
+    return result
 
 
 def reconcile_actions(current, applied, install_done, apply_done):
@@ -4789,7 +4836,8 @@ def reconcile_actions(current, applied, install_done, apply_done):
     actions = []
     installer_changed = current.get("installer") != applied.get("installer")
     rest_changed = (current.get("profiles") != applied.get("profiles")
-                    or current.get("secrets") != applied.get("secrets"))
+                    or current.get("secrets") != applied.get("secrets")
+                    or current.get("owner") != applied.get("owner"))
     if installer_changed:
         actions.append("install")
     # A BOM or installer-file change is followed by apply, so the new

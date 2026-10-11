@@ -141,6 +141,16 @@ def test_no_owner_subject_adds_no_members(ab, fake_env, config, profiles, creds)
     assert fake_env.openshell_state()["members"] == []
 
 
+def test_owner_recreation_removes_stale_membership(ab, fake_env, config, profiles, creds, tmp_path):
+    config = {**config, "prune": {"ledgerPath": str(tmp_path / "managed.json")}}
+    make_applier(ab, config, creds, ownerSubject="old-subject").apply(profiles)
+    make_applier(ab, config, creds, ownerSubject="new-subject").apply(profiles)
+    assert fake_env.openshell_state()["members"] == [
+        ["cuda-dev", "new-subject", "admin"], ["default", "new-subject", "admin"]]
+    make_applier(ab, config, creds, ownerSubject="").apply(profiles)
+    assert fake_env.openshell_state()["members"] == []
+
+
 def test_mtls_client_without_admin_fails_clearly(ab, fake_env, config, profiles, creds):
     fake_env.deny("workspace create")
     with pytest.raises(ab.InstallerError, match="platform admin; check the mTLS identity has the openshell-admin role"):

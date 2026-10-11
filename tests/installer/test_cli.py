@@ -216,7 +216,8 @@ def test_dashboard_cookie_secret_is_kept_across_runs(ab, tmp_path, fake_env):
     script.write_text('echo "$DASHBOARD_COOKIE_SECRET" >> "$HOME_OUT"\n')
     cfg = {"oidcIssuer": "https://kc/realms/openshell",
            "dashboard": {"enabled": True, "image": "i", "proxyImage": "p", "clientId": "c",
-                         "redirectUrl": "https://webui/oauth2/callback"}}
+                         "redirectUrl": "https://webui/oauth2/callback", "owner": "alice",
+                         "allowedUsers": ["alice"]}}
     shell = ab.Shell(env={"PATH": "/usr/bin:/bin", "HOME_OUT": str(tmp_path / "out")})
     ab.setup_dashboard(shell, cfg, script, tmp_path)
     ab.setup_dashboard(shell, cfg, script, tmp_path)
@@ -224,6 +225,21 @@ def test_dashboard_cookie_secret_is_kept_across_runs(ab, tmp_path, fake_env):
     assert first == second and len(first) == 32
     secret = tmp_path / ".config" / "openshell" / "dashboard-cookie-secret"
     assert oct(secret.stat().st_mode & 0o777) == "0o600"
+
+
+def test_dashboard_access_change_rotates_cookie_secret(ab, tmp_path, fake_env):
+    script = tmp_path / "setup-dashboard.sh"
+    script.write_text('echo "$DASHBOARD_COOKIE_SECRET" >> "$HOME_OUT"\n')
+    cfg = {"oidcIssuer": "https://kc/realms/openshell",
+           "dashboard": {"enabled": True, "image": "i", "proxyImage": "p", "clientId": "c",
+                         "redirectUrl": "https://webui/oauth2/callback", "owner": "alice",
+                         "allowedUsers": ["alice", "support"]}}
+    shell = ab.Shell(env={"PATH": "/usr/bin:/bin", "HOME_OUT": str(tmp_path / "out")})
+    ab.setup_dashboard(shell, cfg, script, tmp_path)
+    cfg["dashboard"]["allowedUsers"] = ["alice"]
+    ab.setup_dashboard(shell, cfg, script, tmp_path)
+    first, second = (tmp_path / "out").read_text().split()
+    assert first != second
 
 
 def test_failed_install_blocks_apply_even_if_components_exist(world):

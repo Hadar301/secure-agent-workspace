@@ -834,7 +834,7 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     assert users_app["extraValueFiles"] == ["/overrides/saw-users.yaml"]
     assert users_app["syncPolicy"]["automated"]["prune"] is True
     listed = yaml.safe_load((ROOT / "overrides/saw-users.yaml").read_text())["users"]
-    assert [user["name"] for user in listed] == ["alice"]
+    assert listed == []
     for app in ("governance-interceptor", "governance-policy"):
         assert apps[app]["namespace"] == "openshell-agents", app
 

@@ -146,7 +146,8 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
 
-def test_rbac_shows_admin_templates_to_admins_only(docs):
+def test_rbac_shows_admin_templates_to_admins_only():
+    docs = render("--set", "portal.admins[0]=admin")
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     assert config["permission"]["enabled"] is True
     kc = config["catalog"]["providers"]["keycloakOrg"]["default"]
@@ -395,7 +396,8 @@ def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off
 
 
-def test_admins_get_templates_for_another_user(docs):
+def test_admins_get_templates_for_another_user():
+    docs = render("--set", "portal.admins[0]=admin")
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
     create = yaml.safe_load(cm["data"]["create-workspace-for-user.yaml"])
     delete = yaml.safe_load(cm["data"]["delete-workspace-for-user.yaml"])
