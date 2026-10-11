@@ -1,0 +1,214 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $except := include "openshell-sandbox.networkPolicyExcept" . | fromJsonArray -}}
+{{- $externalPorts := include "openshell-sandbox.networkPolicyExternalPorts" . | fromJsonArray -}}
+{{- if not (kindIs "slice" $np.extraEgress) -}}
+  {{- fail "networkPolicy.extraEgress must be a list of NetworkPolicy rules" -}}
+{{- end -}}
+{{- if not (kindIs "slice" $np.extraIngress) -}}
+  {{- fail "networkPolicy.extraIngress must be a list of NetworkPolicy rules" -}}
+{{- end -}}
+{{- range $np.extraEgress -}}{{- include "openshell-sandbox.validateNetworkPolicyRule" (list "egress" .) -}}{{- end -}}
+{{- range $np.extraIngress -}}{{- include "openshell-sandbox.validateNetworkPolicyRule" (list "ingress" .) -}}{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-default-deny
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-vm
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      openshell.pattern/role: gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # virtctl ssh/port-forward is dialed by virt-api, not by the CLI host.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-cnv
+          podSelector:
+            matchLabels:
+              kubevirt.io: virt-api
+      ports:
+        - {protocol: TCP, port: 22}
+    {{- if $np.allow.ingressController }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+          podSelector: {}
+      ports:
+        - {protocol: TCP, port: 17670}
+        - {protocol: TCP, port: 18789}
+        - {protocol: TCP, port: 8080}
+        {{- range $e := include "openshell-sandbox.sandboxUi" . | fromJsonArray }}
+        - {protocol: TCP, port: {{ $e.proxyPort }}}
+        {{- end }}
+    {{- end }}
+    {{- range $np.extraIngress }}
+    - {{ toYaml . | nindent 6 | trim }}
+    {{- end }}
+  egress:
+    {{- if $np.allow.dns }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+    {{- end }}
+    {{- if and .Values.governance.enabled $np.allow.governanceInterceptor }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.governance.namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: governance-interceptor
+      ports:
+        - {protocol: TCP, port: {{ .Values.governance.port }}}
+    {{- end }}
+    {{- if $np.allow.internalRegistry }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-image-registry
+          podSelector:
+            matchLabels:
+              docker-registry: default
+      ports:
+        - {protocol: TCP, port: 5000}
+    {{- end }}
+    {{- if and (not .Values.oidc.issuerUrl) $np.allow.keycloakService }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.oidc.keycloakNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app: keycloak
+              app.kubernetes.io/instance: {{ .Values.oidc.keycloakName | quote }}
+      ports:
+        - {protocol: TCP, port: 8443}
+        - {protocol: TCP, port: 8080}
+    {{- end }}
+    {{- if $np.allow.ingressController }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+          podSelector: {}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 80}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $except }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        {{- range $externalPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- range $np.extraEgress }}
+    - {{ toYaml . | nindent 6 | trim }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-cdi-import
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      app: containerized-data-importer
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-cnv
+  egress:
+    {{- if $np.allow.dns }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+    {{- end }}
+    {{- if $np.allow.internalRegistry }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-image-registry
+          podSelector:
+            matchLabels:
+              docker-registry: default
+      ports:
+        - {protocol: TCP, port: 5000}
+    {{- end }}
+    {{- if $np.allow.ingressController }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+          podSelector: {}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 80}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $except }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        {{- range $externalPorts }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+{{- if .Values.cleanupOnDelete }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-cleanup-hook
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      openshell.pattern/role: cleanup
+  policyTypes: [Egress]
+  egress:
+    - {}
+{{- end }}
+{{- end }}

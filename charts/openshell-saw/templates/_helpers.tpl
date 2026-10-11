@@ -401,3 +401,122 @@ in its first label with 19-character names), or entry.host when set.
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
+
+{{/* NetworkPolicy's outside rule is IPv4. Validate each excluded IPv4 CIDR at
+render time so a typo cannot open part of the pod or service network. */}}
+{{- define "openshell-sandbox.validateNetworkPolicyCIDR" -}}
+{{- $value := . -}}
+{{- if not (kindIs "string" $value) -}}
+  {{- fail (printf "networkPolicy CIDR %v must be an IPv4 CIDR string" $value) -}}
+{{- end -}}
+{{- $parts := splitList "/" $value -}}
+{{- if ne (len $parts) 2 -}}
+  {{- fail (printf "networkPolicy CIDR %q must be an IPv4 CIDR" $value) -}}
+{{- end -}}
+{{- $address := index $parts 0 -}}
+{{- $prefix := index $parts 1 -}}
+{{- if not (regexMatch "^(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}$" $address) -}}
+  {{- fail (printf "networkPolicy CIDR %q must be an IPv4 CIDR" $value) -}}
+{{- end -}}
+{{- range splitList "." $address -}}
+  {{- if gt (int .) 255 -}}
+    {{- fail (printf "networkPolicy CIDR %q has an octet above 255" $value) -}}
+  {{- end -}}
+{{- end -}}
+{{- if or (not (regexMatch "^(0|[1-9][0-9]?)$" $prefix)) (gt (int $prefix) 32) -}}
+  {{- fail (printf "networkPolicy CIDR %q has an invalid prefix" $value) -}}
+{{- end -}}
+{{- end }}
+
+{{/* Return all outside-rule exclusions as JSON, including link-local. */}}
+{{- define "openshell-sandbox.networkPolicyExcept" -}}
+{{- $np := .Values.networkPolicy -}}
+{{- if or (not (kindIs "slice" $np.clusterNetworkCIDRs)) (eq (len $np.clusterNetworkCIDRs) 0) -}}
+  {{- fail "networkPolicy.clusterNetworkCIDRs must be a non-empty list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- if or (not (kindIs "slice" $np.serviceNetworkCIDRs)) (eq (len $np.serviceNetworkCIDRs) 0) -}}
+  {{- fail "networkPolicy.serviceNetworkCIDRs must be a non-empty list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- if not (kindIs "slice" $np.extraBlockedCIDRs) -}}
+  {{- fail "networkPolicy.extraBlockedCIDRs must be a list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- $cidrs := list "169.254.0.0/16" -}}
+{{- range concat $np.clusterNetworkCIDRs $np.serviceNetworkCIDRs $np.extraBlockedCIDRs -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" . -}}
+  {{- if not (has . $cidrs) -}}{{- $cidrs = append $cidrs . -}}{{- end -}}
+{{- end -}}
+{{- toJson $cidrs -}}
+{{- end }}
+
+{{/* Ports the EgressFirewall may allow outside the cluster, plus operator
+extensions. Keep the firewall's unconditional 443/80 node rule in parity. */}}
+{{- define "openshell-sandbox.networkPolicyExternalPorts" -}}
+{{- $np := .Values.networkPolicy -}}
+{{- if not (kindIs "slice" $np.externalPorts) -}}
+  {{- fail "networkPolicy.externalPorts must be a list of TCP ports" -}}
+{{- end -}}
+{{- $ports := list 443 80 -}}
+{{- range $np.externalPorts -}}
+  {{- $raw := toString . -}}
+  {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $raw)) (gt (int $raw) 65535) -}}
+    {{- fail (printf "networkPolicy.externalPorts contains invalid TCP port %q" $raw) -}}
+  {{- end -}}
+  {{- if not (has (int $raw) $ports) -}}{{- $ports = append $ports (int $raw) -}}{{- end -}}
+{{- end -}}
+{{- if (include "openshell-sandbox.keycloakRouteHost" . | trim) -}}
+  {{- $port := int (include "openshell-sandbox.keycloakRoutePort" . | trim) -}}
+  {{- if not (has $port $ports) -}}{{- $ports = append $ports $port -}}{{- end -}}
+{{- end -}}
+{{- range $url := list (.Values.source.httpURL | default "") (.Values.source.goldenImageURL | default "") (.Values.source.registryURL | default "") -}}
+  {{- $nodePull := and (hasPrefix "docker://" ($url | trim)) (ne ($.Values.source.pullMethod | default "node") "pod") -}}
+  {{- $pair := "" -}}
+  {{- if not $nodePull -}}{{- $pair = include "openshell-sandbox.httpHostPort" $url | trim -}}{{- end -}}
+  {{- if $pair -}}
+    {{- $port := int (index (splitList " " $pair) 1) -}}
+    {{- if not (has $port $ports) -}}{{- $ports = append $ports $port -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- toJson $ports -}}
+{{- end }}
+
+{{/* Reject extra rules that silently allow everything. A specific same-
+namespace podSelector is permitted; an empty namespaceSelector is not. */}}
+{{- define "openshell-sandbox.validateNetworkPolicyRule" -}}
+{{- $direction := index . 0 -}}
+{{- $rule := index . 1 -}}
+{{- if not (kindIs "map" $rule) -}}
+  {{- fail (printf "networkPolicy.extra%s entries must be rules" (title $direction)) -}}
+{{- end -}}
+{{- $key := "to" -}}
+{{- if eq $direction "ingress" -}}{{- $key = "from" -}}{{- end -}}
+{{- $peers := get $rule $key -}}
+{{- if not (kindIs "slice" $peers) -}}
+  {{- fail (printf "networkPolicy.extra%s rule must have a non-empty %s list" (title $direction) $key) -}}
+{{- end -}}
+{{- if eq (len $peers) 0 -}}
+  {{- fail (printf "networkPolicy.extra%s rule must have a non-empty %s list" (title $direction) $key) -}}
+{{- end -}}
+{{- range $peer := $peers -}}
+  {{- if not (kindIs "map" $peer) -}}
+    {{- fail (printf "networkPolicy.extra%s peers must be objects" (title $direction)) -}}
+  {{- end -}}
+  {{- if eq (len $peer) 0 -}}
+    {{- fail (printf "networkPolicy.extra%s has an empty allow-all peer" (title $direction)) -}}
+  {{- end -}}
+  {{- if hasKey $peer "namespaceSelector" -}}
+    {{- $selector := get $peer "namespaceSelector" -}}
+    {{- if or (not (kindIs "map" $selector)) (and (empty (get $selector "matchLabels")) (empty (get $selector "matchExpressions"))) -}}
+      {{- fail (printf "networkPolicy.extra%s has an empty namespaceSelector" (title $direction)) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if hasKey $peer "ipBlock" -}}
+    {{- $block := get $peer "ipBlock" -}}
+    {{- if not (kindIs "map" $block) -}}
+      {{- fail (printf "networkPolicy.extra%s ipBlock must be an object" (title $direction)) -}}
+    {{- end -}}
+    {{- if and (has (get $block "cidr") (list "0.0.0.0/0" "::/0")) (empty (get $block "except")) -}}
+      {{- fail (printf "networkPolicy.extra%s has an allow-all ipBlock without except" (title $direction)) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}

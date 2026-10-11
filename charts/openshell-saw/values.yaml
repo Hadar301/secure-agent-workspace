@@ -349,3 +349,27 @@ egress:
     - rekor.sigstore.dev
     - tuf-repo-cdn.sigstore.dev
   extraAllow: []
+
+# Namespaced default-deny for the VM, CDI importer, and cleanup hook. Compare
+# the CIDRs with `oc get network.config cluster -o yaml` before deployment:
+# an incomplete exclusion can let the outside rule reach cluster addresses.
+# NetworkPolicy filters pod traffic, while EgressFirewall filters DNS names.
+networkPolicy:
+  enabled: true
+  clusterNetworkCIDRs: ["10.128.0.0/14"]
+  serviceNetworkCIDRs: ["172.30.0.0/16"]
+  extraBlockedCIDRs: []
+  allow:
+    dns: true
+    governanceInterceptor: true
+    keycloakService: true
+    internalRegistry: true
+    ingressController: true
+  # TCP 443/80 are always included for EgressFirewall parity. Add another
+  # outside port here only when its EgressFirewall host rule also allows it.
+  # The issuer and external disk URL ports are included automatically.
+  externalPorts: [443, 80]
+  # Raw Kubernetes NetworkPolicy rules for site-specific endpoints, such as
+  # an in-cluster inference Service or npm mirror.
+  extraEgress: []
+  extraIngress: []

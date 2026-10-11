@@ -36,10 +36,9 @@ metadata:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 spec:
   egress:
-    # The ingress router (443, 80) on node addresses. The VM does not call
-    # the Kubernetes API, so 6443 is not open. Kubelet, SSH, and NodePorts
-    # are not either. A load-balancer IP is not a node address, so this
-    # rule does not cover that path; the Keycloak host does.
+    # The ingress router (443, 80) on node addresses. Kubelet, SSH, and
+    # NodePorts are not open. A load-balancer IP is not a node address, so
+    # this rule does not cover that path; the Keycloak host does.
     - type: Allow
       to:
         nodeSelector:
@@ -50,6 +49,19 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+    {{- /* The pre-delete hook must call the API. EgressFirewall applies to the
+           whole namespace, including that Pod. The VM and CDI NetworkPolicies
+           still deny 6443; omit this exception when NetworkPolicy is off. */}}
+    {{- if and .Values.networkPolicy.enabled .Values.cleanupOnDelete }}
+    - type: Allow
+      to:
+        nodeSelector:
+          matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+      ports:
+        - protocol: TCP
+          port: 6443
+    {{- end }}
     {{- range $hosts }}
     - type: Allow
       to:
