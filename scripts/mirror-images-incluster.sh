@@ -44,8 +44,10 @@ for IMAGE in ${IMAGES}; do
   oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=2
   if [[ "${VERSION}" != latest ]]; then
     oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest"
+    echo "Mirrored ${IMAGE}:${VERSION} as ${IMAGE}:${VERSION} and ${IMAGE}:latest."
+  else
+    echo "Mirrored ${IMAGE}:${VERSION} as ${IMAGE}:${VERSION}."
   fi
-  echo "  ${IMAGE} done."
 done
 
-echo "All images mirrored (tag: ${VERSION}, also tagged as :latest)."
+echo "All images mirrored (tag: ${VERSION})."
