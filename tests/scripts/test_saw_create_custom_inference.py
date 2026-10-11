@@ -93,6 +93,15 @@ def test_defaults_are_unchanged(run):
     assert "oc get route cinf-dashboard" not in log
 
 
+def test_cluster_values_overlay_is_passed_to_saw_chart_before_first_boot(run, tmp_path):
+    values = tmp_path / "cluster-cidrs.yaml"
+    values.write_text(yaml.safe_dump({"networkPolicy": {
+        "clusterNetworkCIDRs": ["10.232.0.0/14"],
+        "serviceNetworkCIDRs": ["172.231.0.0/16"]}}))
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k", SAW_VALUES_FILE=str(values))
+    assert f"-f {values}" in _saw_helm(log)
+
+
 def test_external_issuer_does_not_require_local_keycloak(run):
     issuer = "https://external.example.test/realms/test"
     log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k", OIDC_ISSUER=issuer)

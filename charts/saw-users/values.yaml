@@ -50,6 +50,19 @@ defaults:
     # egress:
     #   extraAllow:
     #     - vllm.example.net
+    # For an in-cluster Service, also allow its namespace/pods and port:
+    # networkPolicy:
+    #   extraEgress:
+    #     - to:
+    #         - namespaceSelector:
+    #             matchLabels:
+    #               kubernetes.io/metadata.name: models
+    #           podSelector:
+    #             matchLabels:
+    #               app: vllm
+    #       ports:
+    #         - protocol: TCP
+    #           port: 8000
 
 # Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
 # route and an owner-only oauth2-proxy in the VM that listens on

@@ -5,7 +5,8 @@
 # New inference Secrets need PROVIDER and MODEL; API_KEY may be empty.
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
-#           PROFILES (comma-separated SAW-BOM profiles, default: the chart's)
+#           PROFILES (comma-separated SAW-BOM profiles, default: the chart's),
+#           SAW_VALUES_FILE (Helm values overlay, e.g. cluster network CIDRs)
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
 #   PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
@@ -32,6 +33,11 @@ SAW_BOM_CHART="${SAW_BOM_CHART:-charts/saw-bom}"
 WEB_SEARCH_API_KEY="${WEB_SEARCH_API_KEY:-}"
 "$(dirname "$0")/check-saw-name.sh"
 SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
+SAW_VALUES_FILE="${SAW_VALUES_FILE:-}"
+if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
+  echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
+  exit 1
+fi
 PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
@@ -248,6 +254,9 @@ helm_opts=(
   --set "governance.enabled=${GOVERNANCE_ENABLED}"
   --set route.enabled=true --set route.dashboard=true
 )
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  helm_opts=(-f "${SAW_VALUES_FILE}" "${helm_opts[@]}")
+fi
 if [[ "${dashboard_enabled}" != true ]]; then
   # External OIDC providers cannot be updated through the Keycloak Admin API.
   helm_opts+=(--set dashboard.enabled=false --set route.dashboard=false
