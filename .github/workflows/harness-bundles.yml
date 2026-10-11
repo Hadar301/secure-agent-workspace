@@ -100,17 +100,17 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           provenance: false
 
-      - uses: ./.github/actions/verify-public-image
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        with:
-          image: ${{ steps.meta.outputs.repo }}@${{ steps.build.outputs.digest }}
-
       - uses: sigstore/cosign-installer@v3
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
 
       - name: Sign the image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: cosign sign --yes "${{ steps.meta.outputs.repo }}@${{ steps.build.outputs.digest }}"
+
+      - uses: ./.github/actions/verify-public-image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          image: ${{ steps.meta.outputs.repo }}@${{ steps.build.outputs.digest }}
 
       - name: Summary
         run: |

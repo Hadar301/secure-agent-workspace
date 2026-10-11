@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -326,7 +328,8 @@ fi
     assert sorted(path.name for path in creds.iterdir()) == ["bob"]
 
 
-def test_image_mirror_uses_selected_ghcr_tag_without_fallback(tmp_path):
+@pytest.mark.parametrize("tag", ["latest", "sha-review"])
+def test_image_mirror_uses_selected_ghcr_tag_without_fallback(tmp_path, tag):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "mirror.log"
@@ -336,15 +339,22 @@ def test_image_mirror_uses_selected_ghcr_tag_without_fallback(tmp_path):
   "image mirror "*)
     echo "$*" >> "$MIRROR_LOG"
     if [[ "${FAIL_MIRROR:-0}" == 1 ]]; then echo "manifest unknown" >&2; exit 2; fi ;;
+  "tag "*) echo "$*" >> "$MIRROR_LOG" ;;
   *) : ;;
 esac
 ''')
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MIRROR_LOG=str(log))
-    result = run_make("images-mirror", "IMAGE_TAG=sha-review", env=env)
+    result = run_make("images-mirror", f"IMAGE_TAG={tag}", env=env)
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == [
-        "image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:sha-review "
-        "registry.example/openshell-agents/openshell-gateway:sha-review --insecure=true"]
+    expected = [
+        f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
+        f"registry.example/openshell-agents/openshell-gateway:{tag} --insecure=true"]
+    destinations = f"openshell-gateway:{tag}"
+    if tag != "latest":
+        expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")
+        destinations += " and openshell-gateway:latest"
+    assert log.read_text().splitlines() == expected
+    assert f"Mirrored openshell-gateway:{tag} as {destinations}." in result.stdout
     log.unlink()
     result = run_make("images-mirror", "IMAGE_TAG=sha-missing", env=dict(env, FAIL_MIRROR="1"))
     assert result.returncode != 0

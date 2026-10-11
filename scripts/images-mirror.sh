@@ -45,6 +45,8 @@ for image in ${images}; do
   fi
   if [[ "${version}" != latest ]]; then
     oc tag "${build_ns}/${image}:${version}" "${build_ns}/${image}:latest"
+    echo "Mirrored ${image}:${version} as ${image}:${version} and ${image}:latest."
+  else
+    echo "Mirrored ${image}:${version} as ${image}:${version}."
   fi
-  echo "Mirrored ${image}:${version} as ${image}:${version} and ${image}:latest."
 done

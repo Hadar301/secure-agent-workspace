@@ -4,6 +4,13 @@ Project CI publishes public images to `ghcr.io/<lowercase repository owner>/`.
 The shipped defaults use the upstream project's public namespace,
 `ghcr.io/validatedpatterns-sandbox`. Fork CI publishes under the fork owner;
 consuming a fork requires overriding the Make and Helm image references.
+These upstream deployment defaults are intentional: running CI in a fork does
+not change the source of shipped images. Fork CI never publishes into the
+upstream namespace. To test a fork's publications, set
+`IMAGE_REPO=ghcr.io/<lowercase fork owner>` for mirror and build commands, and
+override the gateway disk source, installer `bom.spec.nemoclaw.cliImage`,
+interceptor `image`, and SAW-BOM profile image references listed below. Keep
+those deployment overrides local when preparing changes for upstream.
 
 | Image | CI tags | Consumers |
 | --- | --- | --- |
@@ -22,6 +29,13 @@ repository. GHCR can create packages as private initially: a package administrat
 must set each package's visibility to **Public** in its GitHub package settings,
 including newly added harness bundles. Public pulls need no registry Secret.
 Publishing uses `GITHUB_TOKEN` with `packages: write`.
+The first publication of a new package can therefore fail its public-pull
+check after the image is pushed. Set it to Public, then rerun the workflow.
+GitHub's documented [package REST API](https://docs.github.com/en/rest/packages/packages)
+does not expose a visibility-update endpoint; visibility is an administrator
+setup step in [package settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+Harness images are signed before the public-pull check, so a visibility failure
+does not skip signing an otherwise successfully published image.
 
 ```sh
 # Exact selected tag; missing tags fail without falling back to latest.

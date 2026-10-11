@@ -1,7 +1,7 @@
 # Shared namespace: golden image, image builds, governance interceptor.
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
-IMAGE_REPO      ?= ghcr.io/validatedpatterns-sandbox
+IMAGE_REPO     ?= ghcr.io/validatedpatterns-sandbox
 # Images `make images-mirror` mirrors into the internal registry. Only the
 # gateway VM disk (golden image) is needed; the VM pulls sandbox and
 # NemoClaw CLI images from GHCR itself.
