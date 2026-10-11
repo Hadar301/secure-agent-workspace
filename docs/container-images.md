@@ -37,6 +37,21 @@ setup step in [package settings](https://docs.github.com/en/packages/learn-githu
 Harness images are signed before the public-pull check, so a visibility failure
 does not skip signing an otherwise successfully published image.
 
+NemoClaw and governance builds share recipes between GitHub Actions and
+OpenShift. The canonical CLI and governance Dockerfiles live under their
+image-builder chart's `files/` directory; GitHub builds these directly and
+Helm embeds the same files in the BuildConfigs. Build parameters come from
+each chart's `values.yaml`. Governance uses `build.runtimeImage` for OpenShift
+(UBI9 Micro) and `build.ghcrRuntimeImage` for GHCR (the Debian runtime stage).
+
+The sandbox uses the upstream Dockerfile at the chart's pinned source ref.
+Its discovery-runtime install script and patched MCPorter manifests live in
+`nemoclaw-imagestream/files/`; GitHub copies them into the upstream context
+and OpenShift supplies the same files through ConfigMaps.
+
+Gateway GitHub CI also installs the bundle verifier, checksum-verified Cosign,
+and optional signing floor already supplied by the OpenShift recipe.
+
 ```sh
 # Exact selected tag; missing tags fail without falling back to latest.
 make images-mirror IMAGE_TAG=sha-<commit>

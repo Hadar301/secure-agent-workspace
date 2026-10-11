@@ -7,6 +7,9 @@ build:
   contextDir: "examples/governance-interceptor"
   # OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
   builderImage: "rust:1.94-bookworm"
+  runtimeImage: "registry.access.redhat.com/ubi9-micro:latest"
+  # Shared Dockerfile stage with Debian and its CA certificates installed.
+  ghcrRuntimeImage: "debian-runtime"
 
 output:
   # One tag per OpenShell release. The interceptor must match the gateway

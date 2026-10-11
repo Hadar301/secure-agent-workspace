@@ -182,7 +182,7 @@ rpc = "openshell.v1.OpenShell/CreateProvider"
 phases = ["validate"]
 ```
 
-The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/governance-interceptor/Dockerfile`.
+The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/helm/governance-interceptor-image/files/Dockerfile`.
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 

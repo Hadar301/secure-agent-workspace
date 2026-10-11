@@ -1,9 +1,4 @@
-"""The governance-interceptor image is built twice -- once by the GitHub
-workflow from image-builder-charts/governance-interceptor/Dockerfile, once by
-the OpenShift BuildConfig from its own inline copy. Both patch upstream
-OpenShell's example interceptor before building it, so both must carry the
-same patches or a cluster-built image silently loses them.
-"""
+"""GitHub and OpenShift share the interceptor recipe and admission patches."""
 
 import re
 import shutil
@@ -15,13 +10,11 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCKERFILE = ROOT / "image-builder-charts" / "governance-interceptor" / "Dockerfile"
 CHART = ROOT / "image-builder-charts" / "helm" / "governance-interceptor-image"
+DOCKERFILE = CHART / "files/Dockerfile"
 HELM = shutil.which("helm")
 
-# Every line the build edits into upstream's src/main.rs. The two builders
-# differ in their base images and in how they fetch OpenShell, so the files
-# cannot be compared whole; these are the parts that must not drift.
+# Source patches must remain in both build paths.
 PATCH_LINES = [
     # Existing workaround for NVIDIA/OpenShell#3929.
     "! grep -q 'insert(PROFILE_HASH_ANNOTATION' src/main.rs",
@@ -230,3 +223,30 @@ def test_pr_builds_are_unauthenticated_and_check_pin():
     assert "file: ${{ runner.temp }}/governance-build.Dockerfile" in workflow
     assert "target: builder" in workflow
     assert "push: false" in workflow
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_both_builds_share_recipe_with_configurable_inputs():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-governance-interceptor.yml").read_text())
+    action = next(s for s in workflow["jobs"]["build"]["steps"]
+                  if s.get("uses") == "./.github/actions/build-push-image")
+    assert ROOT / action["with"]["dockerfile"] == DOCKERFILE
+    rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
+        "--set", "source.git.uri=https://example.test/OpenShell.git", "--set", "source.git.ref=abc123",
+        "--set", "build.builderImage=rust:test", "--set", "build.runtimeImage=ubi:test",
+        "--set", "build.contextDir=examples/test"], text=True)
+    build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
+    assert build["spec"]["source"]["dockerfile"].rstrip() == DOCKERFILE.read_text().rstrip()
+    args = {a["name"]: a["value"] for a in build["spec"]["strategy"]["dockerStrategy"]["buildArgs"]}
+    assert args == {"OPENSHELL_URI": "https://example.test/OpenShell.git", "OPENSHELL_REF": "abc123",
+        "BUILDER_IMAGE": "rust:test", "RUNTIME_IMAGE": "ubi:test", "CONTEXT_DIR": "examples/test"}
+
+
+def test_shared_recipe_preserves_both_runtime_variants():
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert values["build"]["runtimeImage"] == "registry.access.redhat.com/ubi9-micro:latest"
+    assert values["build"]["ghcrRuntimeImage"] == "debian-runtime"
+    text = DOCKERFILE.read_text()
+    assert "debian:bookworm-slim AS debian-runtime" in text
+    assert "apt-get install -y ca-certificates" in text
+    assert "FROM --platform=linux/amd64 ${RUNTIME_IMAGE}\nCOPY --from=builder" in text

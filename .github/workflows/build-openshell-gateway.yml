@@ -8,12 +8,14 @@ on:
       - .github/actions/verify-public-image/**
       - .github/workflows/build-openshell-gateway.yml
       - image-builder-charts/helm/openshell-gateway-image/**
+      - scripts/install-gateway-verification.sh
   pull_request:
     paths:
       - .github/actions/build-push-image/**
       - .github/actions/verify-public-image/**
       - .github/workflows/build-openshell-gateway.yml
       - image-builder-charts/helm/openshell-gateway-image/**
+      - scripts/install-gateway-verification.sh
   workflow_dispatch:
 
 permissions:
@@ -51,6 +53,9 @@ jobs:
         run: |
           VALUES="image-builder-charts/helm/openshell-gateway-image/values.yaml"
           FEDORA_CLOUD="$(yq -r '.build.fedoraCloud' "$VALUES")"
+          echo "cosign_url=$(yq -r '.cosign.url' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "cosign_sha256=$(yq -r '.cosign.sha256' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "signing_floor=$(yq -r '.signing.floor // ""' "$VALUES")" >> "$GITHUB_OUTPUT"
           echo "fedora_cloud=${FEDORA_CLOUD}" \
             >> "$GITHUB_OUTPUT"
           echo "fedora_cache_key=$(printf '%s' "${FEDORA_CLOUD}" | sha256sum | cut -c1-16)" \
@@ -274,6 +279,9 @@ jobs:
         env:
           LIBGUESTFS_BACKEND: direct
           GUEST: /tmp/guest
+          COSIGN_URL: ${{ steps.params.outputs.cosign_url }}
+          COSIGN_SHA256: ${{ steps.params.outputs.cosign_sha256 }}
+          SIGNING_FLOOR: ${{ steps.params.outputs.signing_floor }}
         run: |
           cp fedora-base.qcow2 base.qcow2
 
@@ -341,6 +349,9 @@ jobs:
           # Clean cloud-init state
           sudo rm -rf "${GUEST}/var/lib/cloud" || true
 
+          sudo --preserve-env=COSIGN_URL,COSIGN_SHA256,SIGNING_FLOOR \
+            bash scripts/install-gateway-verification.sh "${GUEST}"
+
           # Tear down chroot mounts and unmount image
           sudo umount "${GUEST}/dev/pts" "${GUEST}/dev" \
                       "${GUEST}/sys"     "${GUEST}/proc" || true
@@ -351,6 +362,9 @@ jobs:
         env:
           LIBGUESTFS_BACKEND: direct
           GUEST: /tmp/guest
+          COSIGN_URL: ${{ steps.params.outputs.cosign_url }}
+          COSIGN_SHA256: ${{ steps.params.outputs.cosign_sha256 }}
+          SIGNING_FLOOR: ${{ steps.params.outputs.signing_floor }}
         run: |
           cp fedora-base.qcow2 base.qcow2
 
@@ -399,6 +413,9 @@ jobs:
           sudo chmod 750 "${GUEST}/etc/openshell"
           sudo touch "${GUEST}/.autorelabel"
           sudo rm -rf "${GUEST}/var/lib/cloud" || true
+
+          sudo --preserve-env=COSIGN_URL,COSIGN_SHA256,SIGNING_FLOOR \
+            bash scripts/install-gateway-verification.sh "${GUEST}"
 
           sudo umount "${GUEST}/dev/pts" "${GUEST}/dev" \
                       "${GUEST}/sys"     "${GUEST}/proc" || true
