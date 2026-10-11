@@ -343,4 +343,9 @@ egress:
     - pkg-containers.githubusercontent.com
     - rekor.sigstore.dev
     - tuf-repo-cdn.sigstore.dev
+  # Added when signing.mode is enforce. warn only logs, so it needs nothing.
+  # The OpenShell images are already on Quay; a keyless check talks to Sigstore.
+  signingAllow:
+    - rekor.sigstore.dev
+    - tuf-repo-cdn.sigstore.dev
   extraAllow: []

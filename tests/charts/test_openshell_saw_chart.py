@@ -434,7 +434,6 @@ DEFAULT_EGRESS_HOSTS = [
 # must be added here on purpose, not silently skipped.
 KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
 NODE_ALLOW_PORTS = [
-    {"protocol": "TCP", "port": 6443},
     {"protocol": "TCP", "port": 443},
     {"protocol": "TCP", "port": 80},
 ]
@@ -1203,6 +1202,25 @@ def test_egress_allows_sigstore_and_ghcr_only_when_harness_bundles_are_on(defaul
     _, allowed = _egress_names(render("--set", "allowDriverConfig=true",
                                       "--set-string", "egress.extraAllow[0]=ghcr.io"))
     assert allowed.count("ghcr.io") == 1
+
+
+SIGSTORE_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+
+
+def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
+    """warn only logs. enforce checks signatures, including keyless ones,
+    so Rekor and the TUF root have to be reachable or the install stops."""
+    _, allowed = _egress_names(default_docs)
+    assert not set(SIGSTORE_EGRESS_HOSTS) & set(allowed)
+    docs = render("--set", "signing.mode=enforce", "--set", "signing.trustKeys[0]=openshell")
+    _, allowed = _egress_names(docs)
+    assert set(SIGSTORE_EGRESS_HOSTS) <= set(allowed)
+    assert "ghcr.io" not in allowed
+    # Harness already lists them: still one rule each.
+    _, allowed = _egress_names(render("--set", "signing.mode=enforce",
+                                      "--set", "signing.trustKeys[0]=openshell",
+                                      "--set", "allowDriverConfig=true"))
+    assert allowed.count("rekor.sigstore.dev") == 1
 
 
 def test_egress_allows_the_gmail_api():

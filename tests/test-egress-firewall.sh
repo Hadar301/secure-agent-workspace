@@ -62,11 +62,10 @@ if rules[-2]["to"] != {"cidrSelector": "0.0.0.0/0"} or rules[-1]["to"] != {"cidr
 if rules[0]["to"].get("nodeSelector", {}).get("matchLabels", {}).get("kubernetes.io/os") != "linux":
     sys.exit("first rule must allow node addresses only")
 if rules[0].get("ports") != [
-    {"protocol": "TCP", "port": 6443},
     {"protocol": "TCP", "port": 443},
     {"protocol": "TCP", "port": 80},
 ]:
-    sys.exit("node allow must be TCP 6443, 443, and 80 only")
+    sys.exit("node allow must be TCP 443 and 80 only")
 if "ports" in rules[-1] or "ports" in rules[-2]:
     sys.exit("the denies must not be limited to one port")
 names = []
@@ -175,6 +174,9 @@ if rules[-2]["to"].get("cidrSelector") != "0.0.0.0/0":
     sys.exit("missing ipv4 deny")
 if rules[-1]["to"].get("cidrSelector") != "::/0":
     sys.exit("missing ipv6 deny")
+ports = rules[0].get("ports") or []
+if ports != [{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": 80}]:
+    sys.exit("node allow must be TCP 443 and 80 only, got %s" % ports)
 for rule in rules:
     name = (rule.get("to") or {}).get("dnsName") or ""
     if "*" in name:
