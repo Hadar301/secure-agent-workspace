@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from conftest import harness_files
+
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "charts" / "openshell-saw" / "files" / "installer"
 
@@ -33,7 +35,8 @@ def test_agent_sandboxes_get_the_gate_with_the_signed_in_user(
     profiles = ab.parse_profiles(shipped_profile_files)
     creds = ab.resolve_credentials(profiles, secrets_dir)
     config = {**config, "ownerSubject": "subject-alice"}
-    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    harness = {"bundles": ab.parse_harness_files(harness_files())}
+    ab.ProfileApplier(ab.Shell(), config, creds, harness=harness).apply(profiles)
     installs = tool_gate_installs(fake_env)
     assert sorted(name for name, _payload in installs) == ["cuda-sandbox", "notebook"]
     notebook = next(payload for name, payload in installs if name == "notebook")
