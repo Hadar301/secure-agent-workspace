@@ -66,6 +66,10 @@ if rules[0].get("ports") != [
     {"protocol": "TCP", "port": 80},
 ]:
     sys.exit("node allow must be TCP 443 and 80 only")
+if rules[1] != {"type": "Allow", "to": {"nodeSelector": {"matchLabels": {
+    "node-role.kubernetes.io/control-plane": ""}}},
+    "ports": [{"protocol": "TCP", "port": 6443}]}:
+    sys.exit("cleanup API allow must target control-plane TCP 6443 only")
 if "ports" in rules[-1] or "ports" in rules[-2]:
     sys.exit("the denies must not be limited to one port")
 names = []
@@ -116,6 +120,18 @@ if render --set egress.enabled=false 2>/dev/null | grep -q "kind: EgressFirewall
   fail "egress.enabled=false still renders a firewall"
 else
   pass "egress.enabled=false renders no firewall"
+fi
+
+if render --set networkPolicy.enabled=false | python3 -c '
+import sys, yaml
+firewall = next(d for d in yaml.safe_load_all(sys.stdin.read()) if d and d.get("kind") == "EgressFirewall")
+if any(rule.get("ports") == [{"protocol": "TCP", "port": 6443}]
+       for rule in firewall["spec"]["egress"]):
+    sys.exit("cleanup API allow remains when NetworkPolicy is disabled")
+'; then
+  pass "API firewall exception requires NetworkPolicy"
+else
+  fail "API firewall exception requires NetworkPolicy"
 fi
 
 echo
@@ -177,6 +193,10 @@ if rules[-1]["to"].get("cidrSelector") != "::/0":
 ports = rules[0].get("ports") or []
 if ports != [{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": 80}]:
     sys.exit("node allow must be TCP 443 and 80 only, got %s" % ports)
+if rules[1] != {"type": "Allow", "to": {"nodeSelector": {"matchLabels": {
+    "node-role.kubernetes.io/control-plane": ""}}},
+    "ports": [{"protocol": "TCP", "port": 6443}]}:
+    sys.exit("cleanup API allow must target control-plane TCP 6443 only")
 for rule in rules:
     name = (rule.get("to") or {}).get("dnsName") or ""
     if "*" in name:

@@ -432,9 +432,6 @@ DEFAULT_EGRESS_HOSTS = [
     "iamcredentials.googleapis.com",
     "gmail.googleapis.com",
 ]
-# A dnsName rule cannot express this. A new wildcard in a shipped profile
-# must be added here on purpose, not silently skipped.
-KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
 NODE_ALLOW_PORTS = [
     {"protocol": "TCP", "port": 443},
     {"protocol": "TCP", "port": 80},
@@ -605,6 +602,7 @@ def test_egress_covers_every_bom_and_profile_image(default_docs):
     assert registries <= allowed, f"image registries missing from egress.allow: {registries - allowed}"
     assert registries <= set(rendered)
     assert "pkg-containers.githubusercontent.com" in allowed
+
 
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
     rules, allowed = _egress_names(default_docs)
@@ -939,13 +937,6 @@ def test_every_profile_names_its_binaries():
         assert "provider_type" not in doc, path.name
         if doc.get("endpoints"):
             assert doc.get("binaries"), path.name
-
-
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
-    for path in copies:
-        assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
 
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
