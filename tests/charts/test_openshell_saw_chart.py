@@ -539,6 +539,21 @@ def test_egress_does_not_repeat_a_disk_host_already_allowed():
     assert not any("image-registry" in host for host in allowed)
 
 
+def test_egress_keeps_a_custom_keycloak_port_when_the_host_is_already_listed():
+    """allow and extraAllow are TCP 443. Skipping on hostname alone would drop 8443."""
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell",
+                  "--set-string", "egress.extraAllow[0]=id.example.net")
+    rules, _ = _egress_names(docs)
+    ports = _host_ports(rules)
+    assert ("id.example.net", 443) in ports
+    assert ("id.example.net", 8443) in ports
+
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell",
+                  "--set-string", "egress.extraAllow[0]=id.example.net")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("id.example.net", 443)) == 1
+
+
 def test_egress_keycloak_port_comes_from_the_issuer():
     docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
     rules, allowed = _egress_names(docs)

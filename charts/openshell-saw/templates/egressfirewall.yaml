@@ -58,17 +58,19 @@ spec:
         - protocol: TCP
           port: 443
     {{- end }}
-    {{- if and $keycloak (not (has $keycloak $hosts)) }}
+    {{- /* egress.allow and extraAllow are TCP 443. A custom issuer port still needs its own rule. */}}
+    {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
+    {{- $keycloakOn443 := and (eq $kcPort "443") (has $keycloak $hosts) }}
+    {{- if and $keycloak (not $keycloakOn443) }}
     - type: Allow
       to:
         dnsName: {{ $keycloak | quote }}
       ports:
         - protocol: TCP
-          port: {{ include "openshell-sandbox.keycloakRoutePort" . | trim }}
+          port: {{ $kcPort }}
     {{- end }}
     {{- /* CDI imports the disk in this namespace: an http(s) URL, or a docker:// image on a
          registry outside the cluster. Skip a host and port already allowed. */}}
-    {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
     {{- $seen := list }}
     {{- range $url := list ($.Values.source.httpURL | default "") ($.Values.source.goldenImageURL | default "") ($.Values.source.registryURL | default "") }}
     {{- /* pullMethod node (the default): the node's container runtime pulls a docker:// image, outside this namespace's firewall. */}}
