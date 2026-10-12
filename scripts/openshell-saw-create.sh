@@ -54,6 +54,7 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+GOVERNANCE_ENGINE="${GOVERNANCE_ENGINE:-interceptor}"
 DASHBOARD="${DASHBOARD:-false}"
 
 # Validate all provider settings before changing the cluster.
@@ -265,6 +266,7 @@ helm_opts=(
   --set-string "source.dataSourceNamespace=${NS}"
   --set-string "containerRuntime=${CONTAINER_RUNTIME}"
   --set "governance.enabled=${GOVERNANCE_ENABLED}"
+  --set-string "governance.engine=${GOVERNANCE_ENGINE}"
   --set route.enabled=true --set route.dashboard=true
 )
 if [[ -n "${SAW_VALUES_FILE}" ]]; then

@@ -32,7 +32,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build gateway-build "
         "gateway-build-podman gateway-build-docker images-mirror keycloak-deploy "
         "keycloak-delete keycloak-check keycloak-password login logout whoami "
-        "saw-create saw-configure saw-list saw-logs saw-status saw-restart "
+        "saw-create saw-configure saw-list saw-logs saw-status saw-restart saw-restart-pending "
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
@@ -525,3 +525,46 @@ esac
         assert terminal in result.stderr
         assert not any("start-build nemoclaw-sandbox " in line for line in calls)
         assert not any("imageDigest" in line for line in calls)
+
+
+def fake_cluster(tmp_path, vms):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (tmp_path / "vms.json").write_text(vms)
+    executable(bin_dir / "oc", f'cat "{tmp_path}/vms.json"\n')
+    executable(bin_dir / "virtctl", f'echo "$*" >> "{tmp_path}/restarted"\n')
+    return dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+
+
+PENDING_VMS = """{"items": [
+  {"metadata": {"name": "alice", "namespace": "saw-alice"},
+   "status": {"conditions": [{"type": "Ready", "status": "True"},
+                             {"type": "RestartRequired", "status": "True"}]}},
+  {"metadata": {"name": "bob", "namespace": "saw-bob"},
+   "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+]}"""
+
+
+def test_saw_restart_pending_lists_without_confirm(tmp_path):
+    """Switching the governance engine changes each VM's gateway.toml, but
+    KubeVirt only marks running VMs RestartRequired (PR #52 review)."""
+    env = fake_cluster(tmp_path, PENDING_VMS)
+    result = run_make("saw-restart-pending", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "alice" in result.stdout and "bob" not in result.stdout
+    assert "CONFIRM=yes" in result.stdout
+    assert not (tmp_path / "restarted").exists()
+
+
+def test_saw_restart_pending_restarts_only_pending_vms(tmp_path):
+    env = fake_cluster(tmp_path, PENDING_VMS)
+    result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "restarted").read_text() == "-n saw-alice restart alice\n"
+
+
+def test_saw_restart_pending_with_nothing_pending(tmp_path):
+    env = fake_cluster(tmp_path, '{"items": []}')
+    result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "No SAW VM" in result.stdout
