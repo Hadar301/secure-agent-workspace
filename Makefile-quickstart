@@ -436,7 +436,11 @@ test-deployment: ## Run the live OpenShift deployment test (read docs first)
 lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
-		helm lint "$$chart" --set sandboxName=lint || exit; \
+		if [ "$$chart" = charts/openshell-saw ]; then \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
+		else \
+			helm lint "$$chart" --set sandboxName=lint || exit; \
+		fi; \
 		done
 	@for script in scripts/*.sh tests/*.sh charts/openshell-saw/files/*.sh \
 		charts/openshell-saw/files/installer/*.sh charts/openshell-saw/files/guest/*.sh; do \

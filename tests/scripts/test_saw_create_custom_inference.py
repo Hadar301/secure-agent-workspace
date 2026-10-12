@@ -17,6 +17,12 @@ case "$1" in
   # Secrets in the namespace: EXISTING_SECRETS, plus those this run creates.
   get) if [[ "$2" == namespace ]]; then
          [[ -n "${EXISTING_SECRETS:-}" ]] && echo "namespace/$3"
+       elif [[ "$2" == network.config ]]; then
+         echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}'
+       elif [[ "$2" == service && "$3" == kubernetes ]]; then
+         echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}'
+       elif [[ "$2" == endpointslice ]]; then
+         echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"],"conditions":{"ready":true}}]}]}'
        elif [[ "$2" == secret ]]; then
          [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]] && echo "secret/$3"
        elif [[ "$2" == keycloak ]]; then
@@ -37,7 +43,8 @@ FAKE_HELM = r'''#!/usr/bin/env bash
 echo "helm $*" >> "$FAKE_LOG"
 prev=""
 for a in "$@"; do
-  if [[ "$prev" == "-f" ]]; then cp "$a" "$FAKE_DIR/bom-values.yaml"; fi
+  if [[ "$prev" == "-f" && "$3" == "saw-bom" ]]; then cp "$a" "$FAKE_DIR/bom-values.yaml"; fi
+  if [[ "$prev" == "-f" && "$3" == "cinf" ]]; then cp "$a" "$FAKE_DIR/saw-values.yaml"; fi
   prev="$a"
 done
 exit 0
@@ -93,13 +100,40 @@ def test_defaults_are_unchanged(run):
     assert "oc get route cinf-dashboard" not in log
 
 
-def test_cluster_values_overlay_is_passed_to_saw_chart_before_first_boot(run, tmp_path):
-    values = tmp_path / "cluster-cidrs.yaml"
-    values.write_text(yaml.safe_dump({"networkPolicy": {
-        "clusterNetworkCIDRs": ["10.232.0.0/14"],
-        "serviceNetworkCIDRs": ["172.231.0.0/16"]}}))
+def test_values_overlay_and_discovered_topology_are_passed_to_saw_chart(run, tmp_path):
+    values = tmp_path / "custom.yaml"
+    values.write_text(yaml.safe_dump({"route": {"webui": False}}))
     log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k", SAW_VALUES_FILE=str(values))
     assert f"-f {values}" in _saw_helm(log)
+    assert yaml.safe_load((tmp_path / "saw-values.yaml").read_text()) == {
+        "networkPolicy": {"clusterNetworkCIDRs": ["10.232.0.0/14"],
+                          "serviceNetworkCIDRs": ["172.231.0.0/16"]},
+        "cleanupApi": {"serviceIP": "172.231.0.1",
+                       "endpoints": [{"ip": "10.10.10.10", "port": 6443}]}}
+    assert log.index("oc get endpointslice") < log.index("oc create")
+
+
+def test_conflicting_topology_fails_before_cluster_write(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("oc", FAKE_OC), ("helm", FAKE_HELM),
+                       ("uv", "#!/bin/sh\necho '[]'\n")):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    values = tmp_path / "conflict.yaml"
+    values.write_text(yaml.safe_dump({"networkPolicy": {
+        "clusterNetworkCIDRs": ["10.128.0.0/14"]}}))
+    log = tmp_path / "log"
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+               FAKE_LOG=str(log), FAKE_DIR=str(tmp_path), OPENSHELL_SAW_NAME="cinf",
+               SAW_CHART="charts/openshell-saw", OWNER="alice", OIDC_ISSUER="none",
+               PROVIDER="build", MODEL="m", API_KEY="k", SAW_VALUES_FILE=str(values))
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "remove or correct that override" in result.stderr
+    assert not any(line.startswith(("oc create", "oc apply", "helm upgrade"))
+                   for line in log.read_text().splitlines())
 
 
 def test_external_issuer_does_not_require_local_keycloak(run):
