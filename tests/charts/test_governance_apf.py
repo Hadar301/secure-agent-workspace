@@ -16,6 +16,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 GOV_CHART = ROOT / "charts" / "governance-interceptor"
 SAW_CHART = ROOT / "charts" / "openshell-saw"
+# Cluster CIDRs that make saw-create and the pattern discover on a cluster (#88).
+TOPOLOGY = ROOT / "tests" / "fixtures" / "saw-network-topology.yaml"
 HELM = shutil.which("helm")
 
 pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
@@ -186,7 +188,8 @@ def test_networkpolicy_selects_the_apf_pod(apf_chart):
 
 def gateway_toml_text(*args):
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--namespace", "saw-alice",
-                             "--set", "sandboxName=saw-test", *args], capture_output=True, text=True)
+                             "--set", "sandboxName=saw-test", "-f", str(TOPOLOGY), *args],
+                            capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     for doc in yaml.safe_load_all(result.stdout):
         if doc and doc["kind"] == "ConfigMap" and "gateway.toml" in doc.get("data", {}):
@@ -258,6 +261,7 @@ def test_apf_engine_refuses_harness_driver_config(flag):
     installer's read-only harness mount from an mTLS admin. APF has no such
     guard, so the chart refuses the combination instead of dropping it."""
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
+                             "-f", str(TOPOLOGY),
                              "--set", flag, "--set", "allowDriverConfig=true"],
                             capture_output=True, text=True)
     assert result.returncode != 0
