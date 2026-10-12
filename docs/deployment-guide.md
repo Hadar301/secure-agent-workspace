@@ -242,10 +242,17 @@ chart render as proof that existing accounts or registration changed.
    console, also verify **Realm settings > Login > User registration** is
    off. Check password policy and brute-force settings. Do this explicitly:
    reapplying a `KeycloakRealmImport` does not change an existing realm.
-4. For each confirmed demo-only account, disable the account and revoke its
-   sessions in the realm admin console. Verify that its old browser session
-   cannot reach the proxy or gateway. Review and rotate credentials that the
-   account could access. Keep the real operator and owners active.
+4. For each confirmed demo-only account, remove it from
+   `accessControl.dashboardSupportUsers` and
+   `sandboxUiProxy.allowedUsers` in every SAW where it has support access.
+   Apply the updated installer configuration and restart those proxies.
+   Then disable the account and revoke its sessions in the realm admin
+   console. A valid oauth2-proxy cookie can outlive Keycloak logout: in a
+   live migration check, logout alone left an existing cookie at HTTP 200;
+   removing the proxy allowance changed it to HTTP 403. Verify that the
+   account's old browser session cannot reach the proxy or gateway. Review
+   and rotate credentials that the account could access. Keep the real
+   operator and owners active.
 5. During rollback, preserve the verified real accounts, their memberships,
    and operator recovery access. Do not restore demo accounts as a shortcut.
 
