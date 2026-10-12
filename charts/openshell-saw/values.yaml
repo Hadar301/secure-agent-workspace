@@ -350,19 +350,27 @@ egress:
     - tuf-repo-cdn.sigstore.dev
   extraAllow: []
 
-# Namespaced default-deny for the VM, CDI importer, and cleanup hook. Compare
-# the CIDRs with `oc get network.config cluster -o yaml` before deployment:
-# an incomplete exclusion can let the outside rule reach cluster addresses.
-# NetworkPolicy filters pod traffic, while EgressFirewall filters DNS names.
+# Backend addresses of the `default/kubernetes` Service. Quickstart discovers
+# these before creating a SAW. For direct Helm and GitOps installs, read the
+# Service and its EndpointSlices from the target cluster; API endpoint changes
+# require a values update before cleanup can reach the new address. Exact IPs
+# also keep an API on TCP 443 out of the VM/CDI outside rule.
+cleanupApi:
+  serviceIP: ""
+  endpoints: []  # [{ip: 192.0.2.10, port: 6443}]
+
+# Namespaced default-deny for the VM, CDI importer, and cleanup hook. These
+# CIDRs have no portable default. Quickstart discovers them. A direct Helm
+# render with NetworkPolicy enabled fails until the target cluster's values
+# are supplied; an incomplete exclusion could allow in-cluster traffic.
 networkPolicy:
   enabled: true
-  clusterNetworkCIDRs: ["10.128.0.0/14"]
-  serviceNetworkCIDRs: ["172.30.0.0/16"]
+  clusterNetworkCIDRs: []
+  serviceNetworkCIDRs: []
   extraBlockedCIDRs: []
   allow:
     dns: true
     governanceInterceptor: true
-    keycloakService: true
     internalRegistry: true
     ingressController: true
   # TCP 443/80 are always included for EgressFirewall parity. Add another

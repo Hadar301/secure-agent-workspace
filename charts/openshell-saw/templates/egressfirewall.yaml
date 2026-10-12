@@ -25,6 +25,8 @@
 {{- include "openshell-sandbox.validateEgressHost" . }}
 {{- end }}
 {{- $keycloak := include "openshell-sandbox.keycloakRouteHost" . | trim }}
+{{- $apiTargets := include "openshell-sandbox.cleanupApiTargets" . | fromJsonArray }}
+{{- $importTargets := include "openshell-sandbox.diskImportTargets" . | fromJsonArray }}
 {{- if $keycloak }}
 {{- include "openshell-sandbox.validateEgressHost" $keycloak }}
 {{- end }}
@@ -49,10 +51,21 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
-    {{- /* The pre-delete hook must call the API. EgressFirewall applies to the
-           whole namespace, including that Pod. The VM and CDI NetworkPolicies
-           still deny 6443; omit this exception when NetworkPolicy is off. */}}
-    {{- if and .Values.networkPolicy.enabled .Values.cleanupOnDelete }}
+    {{- /* The pre-delete hook must call the API. Keep this exception through
+           a temporary NetworkPolicy rollback so uninstall remains possible. */}}
+    {{- if .Values.cleanupOnDelete }}
+    {{- if $apiTargets }}
+    {{- range $apiTargets }}
+    - type: Allow
+      to:
+        cidrSelector: {{ .cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .port }}
+    {{- end }}
+    {{- else }}
+    {{- /* Legacy self-managed fallback while NetworkPolicy is disabled. An
+           enabled NetworkPolicy requires exact API endpoints at render time. */}}
     - type: Allow
       to:
         nodeSelector:
@@ -61,6 +74,7 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
+    {{- end }}
     {{- end }}
     {{- range $hosts }}
     - type: Allow
@@ -81,19 +95,11 @@ spec:
         - protocol: TCP
           port: {{ $kcPort }}
     {{- end }}
-    {{- /* CDI imports the disk in this namespace: an http(s) URL, or a docker:// image on a
-         registry outside the cluster. Skip a host and port already allowed. */}}
-    {{- $seen := list }}
-    {{- range $url := list ($.Values.source.httpURL | default "") ($.Values.source.goldenImageURL | default "") ($.Values.source.registryURL | default "") }}
-    {{- /* pullMethod node (the default): the node's container runtime pulls a docker:// image, outside this namespace's firewall. */}}
-    {{- $nodePull := and (hasPrefix "docker://" ($url | trim)) (ne ($.Values.source.pullMethod | default "node") "pod") }}
-    {{- $pair := "" }}
-    {{- if not $nodePull }}{{- $pair = include "openshell-sandbox.httpHostPort" $url | trim }}{{- end }}
-    {{- if and $pair (not (has $pair $seen)) }}
-    {{- $seen = append $seen $pair }}
-    {{- $parts := splitList " " $pair }}
-    {{- $diskHost := index $parts 0 }}
-    {{- $diskPort := index $parts 1 }}
+    {{- /* The selected CDI import source is shared with NetworkPolicy's
+           outside ports. A node pull or clone has no external importer flow. */}}
+    {{- range $importTargets }}
+    {{- $diskHost := .host }}
+    {{- $diskPort := .port | toString }}
     {{- $listed := and (eq $diskPort "443") (has $diskHost $hosts) }}
     {{- $sameKeycloak := and (eq $diskHost $keycloak) (eq $diskPort $kcPort) }}
     {{- if and (not $listed) (not $sameKeycloak) }}
@@ -104,7 +110,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $diskPort }}
-    {{- end }}
     {{- end }}
     {{- end }}
     - type: Deny

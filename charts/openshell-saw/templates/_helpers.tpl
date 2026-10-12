@@ -428,6 +428,40 @@ render time so a typo cannot open part of the pod or service network. */}}
 {{- end -}}
 {{- end }}
 
+{{/* The API Service and its exact IPv4 backends. No hostname or subnet is
+accepted: these addresses are also excluded from the VM's TCP 443 outside
+rule. The list can be empty only while NetworkPolicy is disabled. */}}
+{{- define "openshell-sandbox.cleanupApiTargets" -}}
+{{- $api := .Values.cleanupApi | default dict -}}
+{{- $serviceIP := $api.serviceIP | default "" -}}
+{{- if $serviceIP -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $serviceIP) -}}
+{{- end -}}
+{{- $endpoints := $api.endpoints | default list -}}
+{{- if not (kindIs "slice" $endpoints) -}}
+  {{- fail "cleanupApi.endpoints must be a list of {ip, port} objects" -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- $seen := dict -}}
+{{- range $entry := $endpoints -}}
+  {{- if not (kindIs "map" $entry) -}}
+    {{- fail "cleanupApi.endpoints must contain {ip, port} objects" -}}
+  {{- end -}}
+  {{- $ip := get $entry "ip" | toString -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $ip) -}}
+  {{- $rawPort := get $entry "port" | toString -}}
+  {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $rawPort)) (gt (int $rawPort) 65535) -}}
+    {{- fail (printf "cleanupApi endpoint %q has invalid TCP port %q" $ip $rawPort) -}}
+  {{- end -}}
+  {{- $key := printf "%s:%s" $ip $rawPort -}}
+  {{- if not (hasKey $seen $key) -}}
+    {{- $_ := set $seen $key true -}}
+    {{- $targets = append $targets (dict "ip" $ip "cidr" (printf "%s/32" $ip) "port" (int $rawPort)) -}}
+  {{- end -}}
+{{- end -}}
+{{- toJson $targets -}}
+{{- end }}
+
 {{/* Return all outside-rule exclusions as JSON, including link-local. */}}
 {{- define "openshell-sandbox.networkPolicyExcept" -}}
 {{- $np := .Values.networkPolicy -}}
@@ -440,12 +474,44 @@ render time so a typo cannot open part of the pod or service network. */}}
 {{- if not (kindIs "slice" $np.extraBlockedCIDRs) -}}
   {{- fail "networkPolicy.extraBlockedCIDRs must be a list of IPv4 CIDRs" -}}
 {{- end -}}
+{{- $api := .Values.cleanupApi | default dict -}}
+{{- $targets := include "openshell-sandbox.cleanupApiTargets" . | fromJsonArray -}}
+{{- if not ($api.serviceIP | default "") -}}
+  {{- fail "cleanupApi.serviceIP is required when networkPolicy.enabled=true" -}}
+{{- end -}}
+{{- if eq (len $targets) 0 -}}
+  {{- fail "cleanupApi.endpoints is required when networkPolicy.enabled=true" -}}
+{{- end -}}
 {{- $cidrs := list "169.254.0.0/16" -}}
-{{- range concat $np.clusterNetworkCIDRs $np.serviceNetworkCIDRs $np.extraBlockedCIDRs -}}
+{{- $apiCIDRs := list -}}
+{{- range $targets -}}{{- $apiCIDRs = append $apiCIDRs .cidr -}}{{- end -}}
+{{- range concat $np.clusterNetworkCIDRs $np.serviceNetworkCIDRs $np.extraBlockedCIDRs $apiCIDRs -}}
   {{- include "openshell-sandbox.validateNetworkPolicyCIDR" . -}}
   {{- if not (has . $cidrs) -}}{{- $cidrs = append $cidrs . -}}{{- end -}}
 {{- end -}}
 {{- toJson $cidrs -}}
+{{- end }}
+
+{{/* External host/port actually contacted by CDI for the selected disk
+source. A node pull and a DataSource clone have no importer outside flow. */}}
+{{- define "openshell-sandbox.diskImportTargets" -}}
+{{- $source := include "openshell-sandbox.diskSource" . -}}
+{{- $url := "" -}}
+{{- if eq $source "http" -}}
+  {{- $url = .Values.source.httpURL | default "" -}}
+{{- else if eq $source "registry" -}}
+  {{- $candidate := include "openshell-sandbox.diskImageURL" . -}}
+  {{- if or (not (hasPrefix "docker://" $candidate)) (eq (.Values.source.pullMethod | default "node") "pod") -}}
+    {{- $url = $candidate -}}
+  {{- end -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- $pair := include "openshell-sandbox.httpHostPort" $url | trim -}}
+{{- if $pair -}}
+  {{- $parts := splitList " " $pair -}}
+  {{- $targets = append $targets (dict "host" (index $parts 0) "port" (int (index $parts 1))) -}}
+{{- end -}}
+{{- toJson $targets -}}
 {{- end }}
 
 {{/* Ports the EgressFirewall may allow outside the cluster, plus operator
@@ -467,16 +533,39 @@ extensions. Keep the firewall's unconditional 443/80 node rule in parity. */}}
   {{- $port := int (include "openshell-sandbox.keycloakRoutePort" . | trim) -}}
   {{- if not (has $port $ports) -}}{{- $ports = append $ports $port -}}{{- end -}}
 {{- end -}}
-{{- range $url := list (.Values.source.httpURL | default "") (.Values.source.goldenImageURL | default "") (.Values.source.registryURL | default "") -}}
-  {{- $nodePull := and (hasPrefix "docker://" ($url | trim)) (ne ($.Values.source.pullMethod | default "node") "pod") -}}
-  {{- $pair := "" -}}
-  {{- if not $nodePull -}}{{- $pair = include "openshell-sandbox.httpHostPort" $url | trim -}}{{- end -}}
-  {{- if $pair -}}
-    {{- $port := int (index (splitList " " $pair) 1) -}}
-    {{- if not (has $port $ports) -}}{{- $ports = append $ports $port -}}{{- end -}}
-  {{- end -}}
+{{- range include "openshell-sandbox.diskImportTargets" . | fromJsonArray -}}
+  {{- if not (has .port $ports) -}}{{- $ports = append $ports .port -}}{{- end -}}
 {{- end -}}
 {{- toJson $ports -}}
+{{- end }}
+
+{{/* DNS, registry, ingress-controller, and outside egress shared by the VM
+and CDI. The caller controls the outside ports: CDI only gets import ports. */}}
+{{- define "openshell-sandbox.commonEgressRules" -}}
+{{- $root := index . 0 -}}
+{{- $outsidePorts := index . 1 -}}
+{{- $np := $root.Values.networkPolicy -}}
+{{- $rules := list -}}
+{{- if $np.allow.dns -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "openshift-dns")) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "UDP" "port" 5353) (dict "protocol" "TCP" "port" 5353))) -}}
+{{- end -}}
+{{- if $np.allow.internalRegistry -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "openshift-image-registry")) "podSelector" (dict "matchLabels" (dict "docker-registry" "default")) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 5000))) -}}
+{{- end -}}
+{{- if $np.allow.ingressController -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "policy-group.network.openshift.io/ingress" "")) "podSelector" (dict) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 443) (dict "protocol" "TCP" "port" 80))) -}}
+{{- end -}}
+{{- if gt (len $outsidePorts) 0 -}}
+  {{- $except := include "openshell-sandbox.networkPolicyExcept" $root | fromJsonArray -}}
+  {{- $peer := dict "ipBlock" (dict "cidr" "0.0.0.0/0" "except" $except) -}}
+  {{- $ports := list -}}
+  {{- range $outsidePorts -}}{{- $ports = append $ports (dict "protocol" "TCP" "port" .) -}}{{- end -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" $ports) -}}
+{{- end -}}
+{{- toYaml $rules -}}
 {{- end }}
 
 {{/* Reject extra rules that silently allow everything. A specific same-

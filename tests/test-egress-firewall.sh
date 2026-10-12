@@ -35,7 +35,8 @@ finish() {
 }
 
 render() {
-  helm template saw-test "${CHART}" --namespace "${SAW_NS}" "$@"
+  helm template saw-test "${CHART}" --namespace "${SAW_NS}" \
+    -f "${REPO_ROOT}/tests/fixtures/saw-network-topology.yaml" "$@"
 }
 
 echo "== offline chart checks =="
@@ -66,10 +67,9 @@ if rules[0].get("ports") != [
     {"protocol": "TCP", "port": 80},
 ]:
     sys.exit("node allow must be TCP 443 and 80 only")
-if rules[1] != {"type": "Allow", "to": {"nodeSelector": {"matchLabels": {
-    "node-role.kubernetes.io/control-plane": ""}}},
+if rules[1] != {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
     "ports": [{"protocol": "TCP", "port": 6443}]}:
-    sys.exit("cleanup API allow must target control-plane TCP 6443 only")
+    sys.exit("cleanup API allow must target the exact endpoint and port")
 if "ports" in rules[-1] or "ports" in rules[-2]:
     sys.exit("the denies must not be limited to one port")
 names = []
@@ -125,13 +125,13 @@ fi
 if render --set networkPolicy.enabled=false | python3 -c '
 import sys, yaml
 firewall = next(d for d in yaml.safe_load_all(sys.stdin.read()) if d and d.get("kind") == "EgressFirewall")
-if any(rule.get("ports") == [{"protocol": "TCP", "port": 6443}]
-       for rule in firewall["spec"]["egress"]):
-    sys.exit("cleanup API allow remains when NetworkPolicy is disabled")
+if {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
+    "ports": [{"protocol": "TCP", "port": 6443}]} not in firewall["spec"]["egress"]:
+    sys.exit("cleanup API allow disappeared during NetworkPolicy rollback")
 '; then
-  pass "API firewall exception requires NetworkPolicy"
+  pass "API firewall exception survives NetworkPolicy rollback"
 else
-  fail "API firewall exception requires NetworkPolicy"
+  fail "API firewall exception survives NetworkPolicy rollback"
 fi
 
 echo
@@ -193,10 +193,10 @@ if rules[-1]["to"].get("cidrSelector") != "::/0":
 ports = rules[0].get("ports") or []
 if ports != [{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": 80}]:
     sys.exit("node allow must be TCP 443 and 80 only, got %s" % ports)
-if rules[1] != {"type": "Allow", "to": {"nodeSelector": {"matchLabels": {
-    "node-role.kubernetes.io/control-plane": ""}}},
-    "ports": [{"protocol": "TCP", "port": 6443}]}:
-    sys.exit("cleanup API allow must target control-plane TCP 6443 only")
+api_rules = [rule for rule in rules if rule["type"] == "Allow"
+             and rule.get("to", {}).get("cidrSelector") not in (None, "0.0.0.0/0", "::/0")]
+if not api_rules or any(len(rule.get("ports") or []) != 1 for rule in api_rules):
+    sys.exit("cleanup API allow must target exact endpoint IPs and ports")
 for rule in rules:
     name = (rule.get("to") or {}).get("dnsName") or ""
     if "*" in name:

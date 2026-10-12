@@ -34,6 +34,7 @@ for tool in helm "${PYTHON}"; do
 done
 
 if helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
+    -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
     --set sandboxName=saw-test >"${tmpdir}/rendered.yaml"; then
   pass "chart renders with NetworkPolicies enabled"
 else
@@ -55,7 +56,10 @@ vm = policies['saw-vm']['spec']
 assert vm['podSelector']['matchLabels'] == {'openshell.pattern/role': 'gateway'}
 assert policies['saw-cdi-import']['spec']['podSelector']['matchLabels'] == {'app': 'containerized-data-importer'}
 assert policies['saw-cleanup-hook']['spec']['podSelector']['matchLabels'] == {'openshell.pattern/role': 'cleanup'}
-assert policies['saw-cleanup-hook']['spec']['egress'] == [{}]
+assert policies['saw-cleanup-hook']['spec']['egress'] == [
+    {'to': [{'ipBlock': {'cidr': '172.30.0.1/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]},
+    {'to': [{'ipBlock': {'cidr': '192.0.2.10/32'}}], 'ports': [{'protocol': 'TCP', 'port': 6443}]},
+]
 assert next(d for d in docs if d['kind'] == 'Pod' and d['metadata']['name'] == 'saw-test-cleanup')['metadata']['labels']['openshell.pattern/role'] == 'cleanup'
 for name in ('saw-vm', 'saw-cdi-import'):
     spec = policies[name]['spec']
@@ -69,7 +73,7 @@ for name in ('saw-vm', 'saw-cdi-import'):
                 if 'ipBlock' in peer:
                     block = peer['ipBlock']
                     assert block['cidr'] == '0.0.0.0/0' and block['except']
-                    assert {'10.128.0.0/14', '172.30.0.0/16', '169.254.0.0/16'} <= set(block['except'])
+                    assert {'10.128.0.0/14', '172.30.0.0/16', '169.254.0.0/16', '192.0.2.10/32'} <= set(block['except'])
 dns = next(r for r in vm['egress'] if {'protocol': 'UDP', 'port': 5353} in r.get('ports', []))
 assert {'protocol': 'TCP', 'port': 5353} in dns['ports']
 assert dns['to'][0]['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'] == 'openshift-dns'
@@ -80,8 +84,8 @@ ssh = next(r for r in vm['ingress'] if {'protocol': 'TCP', 'port': 22} in r.get(
 assert ssh['from'] == [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'openshift-cnv'}}, 'podSelector': {'matchLabels': {'kubevirt.io': 'virt-api'}}}]
 assert ssh['ports'] == [{'protocol': 'TCP', 'port': 22}]
 firewall = next(d for d in docs if d['kind'] == 'EgressFirewall')['spec']['egress']
-api_rules = [r for r in firewall if r.get('to', {}).get('nodeSelector', {}).get('matchLabels') == {'node-role.kubernetes.io/control-plane': ''}]
-assert api_rules == [{'type': 'Allow', 'to': {'nodeSelector': {'matchLabels': {'node-role.kubernetes.io/control-plane': ''}}}, 'ports': [{'protocol': 'TCP', 'port': 6443}]}]
+api_rules = [r for r in firewall if r.get('to', {}).get('cidrSelector') == '192.0.2.10/32']
+assert api_rules == [{'type': 'Allow', 'to': {'cidrSelector': '192.0.2.10/32'}, 'ports': [{'protocol': 'TCP', 'port': 6443}]}]
 firewall_ports = {p['port'] for r in firewall if r['type'] == 'Allow' and r not in api_rules for p in r['ports']}
 outside = next(r for r in vm['egress'] if 'ipBlock' in r['to'][0])
 assert firewall_ports <= {p['port'] for p in outside['ports']}
@@ -94,6 +98,7 @@ else
 fi
 
 if helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
+    -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
     --set sandboxName=saw-test --set networkPolicy.enabled=false 2>/dev/null \
     | grep -q 'kind: NetworkPolicy'; then
   fail "networkPolicy.enabled=false removes the policies"
@@ -118,7 +123,7 @@ if [[ -n "${EXPECTED_CONTEXT:-}" && "$(oc config current-context)" != "${EXPECTE
   finish
   exit $?
 fi
-if ! oc get namespace "${SAW_NS}" -n "${SAW_NS}" >/dev/null 2>&1; then
+if ! oc get namespace "${SAW_NS}" >/dev/null 2>&1; then
   fail "${SAW_NS} exists"
   finish
   exit $?
@@ -139,8 +144,6 @@ items = json.load(open(sys.argv[1]))['items']
 names = {i['metadata']['name'] for i in items}
 assert {'saw-default-deny', 'saw-vm', 'saw-cdi-import', 'saw-cleanup-hook'} <= names, names
 for item in items:
-    if item['metadata']['name'] == 'saw-cleanup-hook':
-        continue
     spec = item['spec']
     if item['metadata']['name'] == 'saw-default-deny':
         assert not spec.get('ingress') and not spec.get('egress')
@@ -149,8 +152,11 @@ for item in items:
             assert rule.get(key) and all(rule[key]), (item['metadata']['name'], rule)
             for peer in rule[key]:
                 assert peer.get('namespaceSelector') != {}
-                if 'ipBlock' in peer:
+                if 'ipBlock' in peer and item['metadata']['name'] != 'saw-cleanup-hook':
                     assert peer['ipBlock'].get('except')
+                if item['metadata']['name'] == 'saw-cleanup-hook':
+                    assert peer.get('ipBlock', {}).get('cidr', '').endswith('/32')
+                    assert rule.get('ports')
 PY
 then
   pass "live policies exist and have no allow-all rule"
@@ -158,14 +164,19 @@ else
   fail "live policies exist and have no allow-all rule"
 fi
 
-if oc get network.config cluster -n "${SAW_NS}" -o json >"${tmpdir}/network.json" && \
+if oc get network.config cluster -o json >"${tmpdir}/network.json" && \
     "${PYTHON}" - "${tmpdir}/network.json" "${tmpdir}/policies.json" <<'PY'
 import ipaddress, json, sys
 network = json.load(open(sys.argv[1]))['status']
 policies = {i['metadata']['name']: i for i in json.load(open(sys.argv[2]))['items']}
 for name in ('saw-vm', 'saw-cdi-import'):
     rules = policies[name]['spec']['egress']
-    block = next(peer['ipBlock'] for r in rules for peer in r['to'] if 'ipBlock' in peer)
+    blocks = [peer['ipBlock'] for r in rules for peer in r['to'] if 'ipBlock' in peer]
+    if not blocks:
+        if name == 'saw-cdi-import':
+            continue
+        raise AssertionError(f'{name}: missing outside rule')
+    block = blocks[0]
     excluded = [ipaddress.ip_network(c) for c in block['except']]
     for field in ('clusterNetwork', 'serviceNetwork'):
         for entry in network[field]:
@@ -255,17 +266,25 @@ else
 fi
 expect_blocked_http "metadata endpoint is blocked" "${SAW_NS}" "${VM_NAME}" \
   "http://169.254.169.254/"
-if oc get endpoints kubernetes -n default -o json >"${tmpdir}/api-endpoints.json"; then
-  while read -r endpoint; do
-    [[ -z "${endpoint}" ]] && continue
-    expect_blocked_http "Kubernetes API endpoint ${endpoint} is blocked" "${SAW_NS}" "${VM_NAME}" \
-      "https://${endpoint}/"
+if oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o json >"${tmpdir}/api-endpoints.json"; then
+  while read -r ip port; do
+    [[ -z "${ip}" ]] && continue
+    expect_tcp "Kubernetes API endpoint ${ip}:${port} TCP is blocked" blocked \
+      "${SAW_NS}" "${VM_NAME}" "${ip}" "${port}"
+    expect_blocked_http "Kubernetes API endpoint ${ip}:${port} HTTPS is blocked" "${SAW_NS}" "${VM_NAME}" \
+      "https://${ip}:${port}/"
   done < <("${PYTHON}" - "${tmpdir}/api-endpoints.json" <<'PY'
 import json, sys
-for subset in json.load(open(sys.argv[1])).get('subsets') or []:
-    for address in subset.get('addresses') or []:
-        for port in subset.get('ports') or []:
-            print(f"{address['ip']}:{port['port']}")
+for item in json.load(open(sys.argv[1])).get('items') or []:
+    if item.get('addressType') != 'IPv4':
+        continue
+    for endpoint in item.get('endpoints') or []:
+        if (endpoint.get('conditions') or {}).get('ready') is False:
+            continue
+        for ip in endpoint.get('addresses') or []:
+            for port in item.get('ports') or []:
+                if port.get('protocol', 'TCP') == 'TCP':
+                    print(ip, port['port'])
 PY
 )
 else

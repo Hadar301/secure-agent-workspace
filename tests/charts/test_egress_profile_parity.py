@@ -12,6 +12,8 @@ PROFILES = ROOT / "charts/governance-policy/profiles"
 SAW_COPIES = ROOT / "charts/openshell-saw/files/provider-profiles"
 SAW_VALUES = ROOT / "charts/openshell-saw/values.yaml"
 POLICY_CHART = ROOT / "charts/governance-policy"
+SAW_CHART = ROOT / "charts/openshell-saw"
+TOPOLOGY_FIXTURE = ROOT / "tests/fixtures/saw-network-topology.yaml"
 HELM = shutil.which("helm")
 
 REGISTRY_HOSTS = {
@@ -32,6 +34,10 @@ def allowlist():
     return yaml.safe_load(SAW_VALUES.read_text())["egress"]["allow"]
 
 
+def test_profile_directory_is_not_empty():
+    assert list(PROFILES.glob("*.yaml")), "governance profiles disappeared"
+
+
 def test_every_exact_profile_host_is_allowed():
     hosts = {endpoint["host"] for endpoints in profile_endpoints().values()
              for endpoint in endpoints if "*" not in endpoint["host"]}
@@ -39,12 +45,30 @@ def test_every_exact_profile_host_is_allowed():
     assert not missing, "add these profile hosts to charts/openshell-saw/values.yaml egress.allow: " + ", ".join(sorted(missing))
 
 
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_profile_ports_match_firewall_and_network_policy():
+    result = subprocess.run(
+        [HELM, "template", "saw-test", str(SAW_CHART), "-n", "saw-test",
+         "-f", str(TOPOLOGY_FIXTURE)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    rendered = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    firewall = next(doc for doc in rendered if doc["kind"] == "EgressFirewall")
+    vm_policy = next(doc for doc in rendered if doc["kind"] == "NetworkPolicy"
+                     and doc["metadata"]["name"] == "saw-vm")
+    host_ports = {(rule["to"]["dnsName"], port["port"])
+                  for rule in firewall["spec"]["egress"]
+                  if rule["type"] == "Allow" and "dnsName" in rule["to"]
+                  for port in rule["ports"]}
+    outside = next(rule for rule in vm_policy["spec"]["egress"]
+                   if rule["to"][0].get("ipBlock", {}).get("cidr") == "0.0.0.0/0")
+    outside_ports = {port["port"] for port in outside["ports"]}
     bad = [(name, endpoint["host"], endpoint.get("port"))
            for name, endpoints in profile_endpoints().items() for endpoint in endpoints
-           if endpoint.get("port") != 443]
-    assert not bad, ("profile endpoints must use TCP 443; update the EgressFirewall and "
-                     "NetworkPolicy port rules before adding another port: " + repr(bad))
+           if "*" not in endpoint["host"] and
+           ((endpoint["host"], endpoint.get("port")) not in host_ports or
+            endpoint.get("port") not in outside_ports)]
+    assert not bad, ("profile endpoints must match rendered EgressFirewall hostname ports "
+                     "and the VM outside NetworkPolicy ports: " + repr(bad))
 
 
 def test_wildcards_are_reviewed_explicitly():

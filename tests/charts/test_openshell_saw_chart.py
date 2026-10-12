@@ -26,7 +26,10 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice"):
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace, *args],
+    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")]
+                if Path(chart) == CHART else [])
+    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
+                           *topology, *args],
                           capture_output=True, text=True)
 
 
@@ -40,6 +43,11 @@ def _pattern_saw_settings():
         if isinstance(value, dict):
             for k, v in value.items():
                 yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        elif isinstance(value, list):
+            # Empty topology lists match openshell-saw defaults. Keep them as
+            # lists rather than converting `[]` into a string via --set.
+            if value:
+                yield "--set-json", f"{prefix}={json.dumps(value)}"
         else:
             yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
 
