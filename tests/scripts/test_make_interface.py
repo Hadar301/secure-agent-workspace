@@ -385,3 +385,48 @@ exit "${DOCKER_STATUS:-0}"
         assert not Path(log.read_text()).exists()
         if status == "1":
             assert "visibility to Public" in result.stdout
+
+
+@pytest.mark.parametrize("target", ["sandbox-build", "cli-build", "gateway-build-podman",
+                                    "gateway-build-docker", "gateway-build", "build-nemoclaw",
+                                    "governance-interceptor-build"])
+@pytest.mark.parametrize("repo", [None, "ghcr.io/validatedpatterns-sandbox", "ghcr.io/VALIDATEDPATTERNS-SANDBOX/", "ghcr.io/example"])
+def test_manual_builds_keep_images_local_unless_safe_destination_is_explicit(tmp_path, target, repo):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", 'echo "oc $*" >> "$CALLS"\n')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(ROOT / "scripts/check-build-repo.sh", scripts / "check-build-repo.sh")
+    executable(scripts / "push-image.sh", 'echo "push $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log))
+    env.pop("IMAGE_REPO", None)
+    env.pop("PUSH_IMAGE_REPO", None)
+    args = [target, f"SCRIPTS_DIR={scripts}"]
+    if repo is not None:
+        args.append(f"IMAGE_REPO={repo}")
+    result = run_make(*args, env=env)
+    if repo and repo.lower().rstrip("/") == "ghcr.io/validatedpatterns-sandbox":
+        assert result.returncode != 0
+        assert "CI" in result.stderr
+        assert not log.exists(), "reject before any cluster mutations"
+    else:
+        assert result.returncode == 0, result.stderr
+        calls = log.read_text()
+        if repo is None:
+            assert "push " not in calls
+            assert "output.externalImage=ghcr.io" not in calls
+        elif target == "governance-interceptor-build":
+            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2" in calls
+        else:
+            assert "push " in calls and "ghcr.io/example" in calls
+
+
+def test_public_image_check_targets_the_published_tag():
+    import yaml
+    action = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    verify = next(s for s in action["runs"]["steps"]
+                  if s.get("uses") == "./.github/actions/verify-public-image")
+    assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"

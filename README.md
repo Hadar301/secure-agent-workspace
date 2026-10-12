@@ -397,8 +397,9 @@ SAW, and `saw-vm-ssh` updates it when needed.
 user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `governance-profile-list` work without it. The defaults are `NS=openshell-agents`,
 `BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
-`SAW_NS=saw-$OPENSHELL_SAW_NAME`. For a manual build, set `IMAGE_REPO` and
-`IMAGE_TAG` as needed. For `saw-create`, set `PROVIDER`, `MODEL`, and
+`SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
+`IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
+CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 `API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;

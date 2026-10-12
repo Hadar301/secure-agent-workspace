@@ -249,4 +249,17 @@ def test_shared_recipe_preserves_both_runtime_variants():
     text = DOCKERFILE.read_text()
     assert "debian:bookworm-slim AS debian-runtime" in text
     assert "apt-get install -y ca-certificates" in text
-    assert "FROM --platform=linux/amd64 ${RUNTIME_IMAGE}\nCOPY --from=builder" in text
+    assert "FROM ${RUNTIME_IMAGE}\nCOPY --from=builder" in text
+    assert "--platform=linux/amd64" not in text
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_default_build_output_is_internal_and_push_requires_explicit_destination():
+    rendered = subprocess.check_output([HELM, "template", "image", str(CHART)], text=True)
+    build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
+    assert build["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "governance-interceptor:v0.1.2"}
+    assert "pushSecret" not in build["spec"]["output"]
+    rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
+        "--set", "output.imageStreamTag=", "--set", "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2"], text=True)
+    build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
+    assert build["spec"]["output"]["to"]["name"] == "ghcr.io/example/governance-interceptor:v0.1.2"

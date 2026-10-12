@@ -252,7 +252,7 @@ sandboxes.
 
 Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`) rendered by the `openshell-saw` chart. It needs OVN-Kubernetes. On another network plugin the kind is unknown and the Argo CD sync fails. It is independent of OpenShell's sandbox allowlist: a process on the VM that skips the sandbox proxy still cannot open a connection to a host that is not listed.
 
-The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes the registries the VM pulls from and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). A chart test fails if a shipped profile adds a host that is not on the firewall. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
+The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes Quay and its CDN hosts, GHCR (`ghcr.io` and its blob host `pkg-containers.githubusercontent.com`), Fedora's registry, and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). Chart tests fail if a shipped governance profile adds an undeclared host or a BOM/profile image uses a registry missing from `egress.allow`. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
 
 Node addresses are allowed only on TCP 443 and 80, for the ingress router. The VM does not call the Kubernetes API, so 6443 is not open. Kubelet, SSH, and NodePorts are not either. If the ingress is a load balancer address rather than a node IP, this rule does not cover it. The Keycloak host is what the VM uses for login.
 
@@ -264,7 +264,7 @@ Quay serves image layers from `cdn01.quay.io` through `cdn06.quay.io`. Those nam
 
 Anything that installs npm packages in a sandbox (OpenClaw plugins, NemoClaw onboarding) can fail intermittently for that reason: the timeout is OVN's DNS view disagreeing with the guest's, not a missing entry. If a sandbox flow needs npm reliably, set `egress.enabled: false` for that workspace, or point it at an npm mirror inside the cluster (`*.svc` needs no entry).
 
-With harness bundles on (`allowDriverConfig: true`, which saw-users sets with `harnessEnabled`), `egress.harnessAllow` is added as well: `ghcr.io` and `pkg-containers.githubusercontent.com` for the image, `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev` for the keyless cosign verification the installer repeats on every apply. Without them the first apply fails verification and removes the harness from the sandbox. A harness image on another registry needs that registry, and its blob host, under `egress.extraAllow`. `signing.mode: enforce` adds the same two Sigstore hosts even when no harness is on. `warn` only logs, so it does not.
+With harness bundles on (`allowDriverConfig: true`, which saw-users sets with `harnessEnabled`), `egress.harnessAllow` adds `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev` for the keyless cosign verification the installer repeats on every apply. Without them the first apply fails verification and removes the harness from the sandbox. A harness image on another registry needs that registry, and its blob host, under `egress.extraAllow`. `signing.mode: enforce` adds the same two Sigstore hosts even when no harness is on. `warn` only logs, so it does not.
 
 An external disk download (`source.httpURL`, or `source.goldenImageURL` / `source.registryURL` when it is `http://` or `https://`) is allowed automatically. So is a `docker://` image on a registry outside the cluster when `source.pullMethod` is `pod` (its registry host and port). With `pullMethod: node`, the default, the node's container runtime pulls the image, outside this firewall, so nothing is added. A registry that serves blobs from a CDN host needs that host under `egress.extraAllow`. The internal registry is never added. Any other host outside the cluster, including a custom inference endpoint, still has to be listed.
 
@@ -483,7 +483,7 @@ External Secrets is only required for Option A, which syncs the pattern's secret
 
 `make images-mirror` mirrors the CI-built GHCR golden image into the cluster.
 `IMAGE_REPO` defaults to `ghcr.io/validatedpatterns-sandbox`; `IMAGE_TAG` defaults
-to `latest`. Set `IMAGE_TAG=sha-<commit>` for a particular CI build. Both local
+to `latest`. For reproducible installs, run `make images-mirror IMAGE_TAG=sha-<full-commit>` using a commit published by CI on `main`. Both local
 and in-cluster mirroring use that exact tag and fail if it is absent; neither
 falls back to another build. The internal image also gets a `latest` alias,
 which the default VM disk source uses. For a pinned disk import, set

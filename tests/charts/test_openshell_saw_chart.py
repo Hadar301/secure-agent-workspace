@@ -412,6 +412,8 @@ DEFAULT_EGRESS_HOSTS = [
     "cdn04.quay.io",
     "cdn05.quay.io",
     "cdn06.quay.io",
+    "ghcr.io",
+    "pkg-containers.githubusercontent.com",
     "registry.fedoraproject.org",
     "integrate.api.nvidia.com",
     "api.search.brave.com",
@@ -575,6 +577,34 @@ def test_egress_covers_every_shipped_profile_host(default_docs):
     assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
     assert not any("*" in host for host in allowed)
 
+
+
+def test_egress_covers_every_bom_and_profile_image(default_docs):
+    """Guest pulls must work with harness bundles disabled."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    allowed = set(values["egress"]["allow"])
+    _, rendered = _egress_names(default_docs)
+    images = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"image", "cliImage"} and isinstance(value, str):
+                    images.append(value)
+                else:
+                    collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(values["bom"])
+    for path in (ROOT / "charts/saw-bom/profiles").rglob("*.yaml"):
+        collect(yaml.safe_load(path.read_text()))
+    # `base` is an installer alias for the BOM sandbox image, not a registry.
+    registries = {image.split("/", 1)[0] for image in images if image != "base"}
+    assert registries <= allowed, f"image registries missing from egress.allow: {registries - allowed}"
+    assert registries <= set(rendered)
+    assert "pkg-containers.githubusercontent.com" in allowed
 
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
     rules, allowed = _egress_names(default_docs)
@@ -1199,11 +1229,10 @@ def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
 
 # -- review follow-ups (harness hosts, gmail, docker:// with pullMethod pod) --
 
-HARNESS_EGRESS_HOSTS = ["ghcr.io", "pkg-containers.githubusercontent.com",
-                        "rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+HARNESS_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
 
 
-def test_egress_allows_sigstore_and_ghcr_only_when_harness_bundles_are_on(default_docs):
+def test_egress_allows_sigstore_only_when_harness_bundles_are_on(default_docs):
     """The installer re-verifies a harness image's cosign signature on every
     apply and removes the harness when that fails; without these hosts every
     image harness would be dropped on its first apply."""
@@ -1230,7 +1259,7 @@ def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
     docs = render("--set", "signing.mode=enforce", "--set", "signing.trustKeys[0]=openshell")
     _, allowed = _egress_names(docs)
     assert set(SIGSTORE_EGRESS_HOSTS) <= set(allowed)
-    assert "ghcr.io" not in allowed
+    assert "ghcr.io" in allowed
     # Harness already lists them: still one rule each.
     _, allowed = _egress_names(render("--set", "signing.mode=enforce",
                                       "--set", "signing.trustKeys[0]=openshell",

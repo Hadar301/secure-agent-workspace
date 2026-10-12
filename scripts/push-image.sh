@@ -4,6 +4,7 @@ set -euo pipefail
 NAMESPACE="${1:?Usage: push-image.sh <namespace> <image-name> <image-repo>}"
 IMAGE="${2:?}"
 IMAGE_REPO="${3:?}"
+"$(dirname "$0")/check-build-repo.sh" "$IMAGE_REPO"
 
 # Ensure the default image-registry route exists
 oc patch configs.imageregistry.operator.openshift.io/cluster \

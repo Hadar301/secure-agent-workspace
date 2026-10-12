@@ -15,8 +15,8 @@ output:
   # One tag per OpenShell release. The interceptor must match the gateway
   # (0.1.x negotiates PeerMetadata), and pushing :latest would change the
   # interceptor under SAWs still on another release.
-  externalImage: "ghcr.io/validatedpatterns-sandbox/governance-interceptor:v0.1.2"
+  externalImage: ""
   pushSecretName: "ghcr-push-secret"
-  # Set (e.g. "governance-interceptor:v0.1.2") to build into this cluster's
-  # internal registry instead of pushing externalImage.
-  imageStreamTag: ""
+  # Build into the internal registry by default. To publish elsewhere, clear
+  # this and explicitly set externalImage plus pushSecretName.
+  imageStreamTag: "governance-interceptor:v0.1.2"

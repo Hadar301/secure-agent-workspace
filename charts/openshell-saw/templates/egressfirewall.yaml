@@ -10,7 +10,7 @@
 {{- end }}
 {{- end }}
 {{- if .Values.egress.enabled }}
-{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) }}
+{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) | uniq }}
 {{- if .Values.allowDriverConfig }}
 {{- range (.Values.egress.harnessAllow | default list) }}
 {{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}

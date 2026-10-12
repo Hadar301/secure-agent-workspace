@@ -2,7 +2,7 @@
 ARG BUILDER_IMAGE=rust:1.94-bookworm
 ARG RUNTIME_IMAGE=debian-runtime
 
-FROM --platform=linux/amd64 ${BUILDER_IMAGE} AS builder
+FROM ${BUILDER_IMAGE} AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
 
@@ -184,9 +184,9 @@ RUN printf '%s\n' \
 RUN cargo test --locked --release --target-dir /out harness_driver_tests \
     && cargo build --locked --release --target-dir /out
 
-FROM --platform=linux/amd64 debian:bookworm-slim AS debian-runtime
+FROM debian:bookworm-slim AS debian-runtime
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-FROM --platform=linux/amd64 ${RUNTIME_IMAGE}
+FROM ${RUNTIME_IMAGE}
 COPY --from=builder /out/release/governance-interceptor /usr/local/bin/governance-interceptor
 ENTRYPOINT ["governance-interceptor"]

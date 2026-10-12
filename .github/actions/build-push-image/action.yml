@@ -80,4 +80,5 @@ runs:
     - uses: ./.github/actions/verify-public-image
       if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
       with:
-        image: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}@${{ steps.build.outputs.digest }}
+        # Verify the published tag so this also checks a merged multi-platform manifest.
+        image: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}
