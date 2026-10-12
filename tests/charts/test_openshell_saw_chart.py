@@ -570,20 +570,6 @@ def test_egress_keycloak_port_comes_from_the_issuer():
     assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
 
 
-def test_egress_covers_every_shipped_profile_host(default_docs):
-    _, allowed = _egress_names(default_docs)
-    exact, wild = set(), set()
-    for path in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"):
-        for endpoint in (yaml.safe_load(path.read_text()) or {}).get("endpoints") or []:
-            host = endpoint["host"]
-            (wild if "*" in host else exact).add(host)
-    missing = exact - set(allowed)
-    assert not missing, "shipped profile hosts missing from the firewall: " + ", ".join(sorted(missing))
-    assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
-    assert not any("*" in host for host in allowed)
-
-
-
 def test_egress_covers_every_bom_and_profile_image(default_docs):
     """Guest pulls must work with harness bundles disabled."""
     values = yaml.safe_load((CHART / "values.yaml").read_text())

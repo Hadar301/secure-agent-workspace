@@ -17,7 +17,8 @@ TOPOLOGY_FIXTURE = ROOT / "tests/fixtures/saw-network-topology.yaml"
 HELM = shutil.which("helm")
 
 REGISTRY_HOSTS = {
-    "quay.io", "cdn.quay.io", "registry.fedoraproject.org",
+    "quay.io", "cdn.quay.io", "ghcr.io", "pkg-containers.githubusercontent.com",
+    "registry.fedoraproject.org",
     *(f"cdn{i:02d}.quay.io" for i in range(1, 7)),
 }
 # The personal-assistant demo uses Gmail; its profile is not shipped here.
