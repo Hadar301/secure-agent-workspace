@@ -194,6 +194,12 @@ def run():
             reconcile(kube, lookup)
         except (ApiError, OSError, KeyError, ValueError) as exc:
             print(f"[owner-resolver] sync pending ({type(exc).__name__})", flush=True)
+            def unavailable(_path):
+                raise exc
+            try:
+                reconcile(kube, unavailable)
+            except (ApiError, OSError, KeyError, ValueError) as kube_exc:
+                print(f"[owner-resolver] status pending ({type(kube_exc).__name__})", flush=True)
         time.sleep(interval)
 
 

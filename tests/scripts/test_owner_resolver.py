@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "charts/openshell-keycloak/files/owner-resolver.py"
 SPEC = importlib.util.spec_from_file_location("owner_resolver", SCRIPT)
@@ -63,4 +65,24 @@ def test_lookup_outage_grants_no_new_subject():
     resolver.reconcile(kube, unavailable)
     assert len(kube.patches) == 1
     assert "data" not in kube.patches[0][1]
+    assert kube.patches[0][1]["metadata"]["annotations"]["saw.redhat.com/owner-resolution"] == "lookup-error"
+
+
+def test_token_outage_sets_lookup_error(monkeypatch, tmp_path):
+    secret = tmp_path / "client-secret"
+    secret.write_text("test-value")
+    kube = FakeKube()
+    def token_unavailable(*_args):
+        raise resolver.ApiError(503, "/token")
+    def stop_after_one_cycle(_seconds):
+        raise StopIteration
+    monkeypatch.setattr(resolver, "Kubernetes", lambda: kube)
+    monkeypatch.setattr(resolver, "keycloak_token", token_unavailable)
+    monkeypatch.setattr(resolver.time, "sleep", stop_after_one_cycle)
+    for key, value in {"KC_URL": "https://keycloak.test", "REALM": "test",
+                       "CLIENT_ID": "resolver", "SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(StopIteration):
+        resolver.run()
+    assert kube.subject == ""
     assert kube.patches[0][1]["metadata"]["annotations"]["saw.redhat.com/owner-resolution"] == "lookup-error"

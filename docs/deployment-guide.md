@@ -262,6 +262,13 @@ attaches the new virtiofs ConfigMap. The root disk is retained. Run
 `saw-mount-inputs.sh` and `systemctl start saw-reconcile.service` after the
 restart, then verify membership. A new VM gets these files from cloud-init.
 
+Restart an existing VM after an installer ConfigMap update, including a
+dashboard proxy fix. Argo CD can report Synced while the running VM still
+mounts the old installer script. The restart retains the root disk. After it
+finishes, verify that `/var/lib/saw/verified/installer/setup-dashboard.sh`
+has the new content and that `saw-apply.service` completed. Check the web UI
+route with an owner and a different user before you consider the update done.
+
 A workspace that stays Starting is usually waiting on a provider Secret. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount, so the VM boots within about 2 minutes of the Secret appearing.
 
 ```bash
