@@ -2,9 +2,28 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
+## Upgrade: stage network isolation per user
+
+This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`
+chart enables it by default and requires the target cluster's pod and Service
+CIDRs plus the Kubernetes API Service IP and exact EndpointSlice backend IPs
+and ports. A direct Helm render fails until these values are supplied.
+`make saw-create` discovers them before changing the cluster.
+
+The GitOps `saw-users` chart stages NetworkPolicy **off** for existing and new
+users. Before enabling one user, audit its in-cluster inference, MCP, and
+package-mirror destinations; add narrow `networkPolicy.extraEgress` rules; run
+`make prereqs-check` and paste its live topology snippet under
+`defaults.openshellSaw` in `overrides/saw-users.yaml`; then set that user's
+`values.networkPolicy.enabled: true` and sync it. Test that user before
+continuing to the next. Re-run the check after API endpoint rotation. Argo CD
+cannot discover cluster topology while rendering. See the
+[rollout procedure](docs/deployment-guide.md#networkpolicy-upgrade-procedure).
+
 ## Table of Contents
 
 - [Secure Agent Workspace](#secure-agent-workspace)
+  - [Upgrade: stage network isolation per user](#upgrade-stage-network-isolation-per-user)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Detailed description](#detailed-description)

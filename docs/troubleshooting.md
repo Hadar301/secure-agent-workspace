@@ -55,18 +55,20 @@ The `saw-cdi-import` policy selects `app=containerized-data-importer`. It permit
 
 ## Uninstall cleanup stalls while deleting the VM
 
-Check the `saw-cleanup-hook` policy, the cleanup Pod's `openshell.pattern/role=cleanup` label, and the EgressFirewall rules. On the 2026-10-11 test cluster, the Pod had egress allowed by NetworkPolicy but timed out reaching the Kubernetes API (`curl` exit 28). Adding the EgressFirewall rule for TCP 6443 to control-plane nodes let that Pod reach the API (HTTP 200), and the Helm uninstall completed. The chart renders that rule only when NetworkPolicy and `cleanupOnDelete` are enabled; the VM and CDI policies continue to deny TCP 6443. If NetworkPolicy was disabled temporarily, re-enable it before deleting this SAW.
+Check the `saw-cleanup-hook` policy, the cleanup Pod's `openshell.pattern/role=cleanup` label, and the exact API endpoint IP and port rules in EgressFirewall. On the 2026-10-11 test cluster, EgressFirewall blocked the cleanup Pod's API call even while NetworkPolicy allowed egress. An API exception was required for uninstall. The chart now discovers or requires the API Service IP and EndpointSlice backends. The cleanup NetworkPolicy admits only those addresses; the VM and CDI outside rules exclude backend IPs, even when an API uses TCP 443. The EgressFirewall exception stays while `cleanupOnDelete: true`, including during a NetworkPolicy rollback. On hosted control planes, update `cleanupApi.endpoints` and sync when API backends rotate. The legacy control-plane node fallback applies only to policy-disabled installs without configured endpoints and does not work on hosted clusters. Curl requests time out and the cleanup Pod has a deadline; inspect its failure reason before retrying deletion.
 
-## Cluster CIDRs differ from the chart values
+## Cluster topology differs from the SAW values
 
-Before installing or upgrading, compare the cluster's pod and Service networks with the values used by this SAW:
+Before enabling NetworkPolicy or after an API endpoint change, compare the cluster's pod and Service networks and API backends with the values used by this SAW:
 
 ```bash
-oc get network.config cluster -n saw-<name> -o jsonpath='{.status.clusterNetwork[*].cidr} {.status.serviceNetwork[*]}'
-helm get values <name> -n saw-<name> -o json | jq '.networkPolicy'
+oc get network.config cluster -o jsonpath='{.status.clusterNetwork[*].cidr} {.status.serviceNetwork[*]}'
+oc get service kubernetes -n default -o jsonpath='{.spec.clusterIP}{"\n"}'
+oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o yaml
+helm get values <name> -n saw-<name> -o json | jq '{networkPolicy, cleanupApi}'
 ```
 
-Set `networkPolicy.clusterNetworkCIDRs` and `serviceNetworkCIDRs` to cover all reported ranges. The outside `ipBlock` excludes those ranges and `169.254.0.0/16`; a wrong range can allow unintended traffic on an otherwise allowed port. The chart defaults are not discovered from the cluster. The live test script checks actual CIDR coverage.
+Set `networkPolicy.clusterNetworkCIDRs` and `serviceNetworkCIDRs` to the reported IPv4 ranges, `cleanupApi.serviceIP` to the API Service ClusterIP, and `cleanupApi.endpoints` to the ready IPv4 EndpointSlice backend IP and TCP port pairs. The outside `ipBlock` excludes those CIDRs, exact API backend IPs, and `169.254.0.0/16`; wrong values can allow unintended traffic on an otherwise allowed port. Quickstart discovers them before writing to the cluster; `make prereqs-check` verifies enabled GitOps users and prints a pasteable override. Argo CD cannot discover them during rendering, so repeat the preflight after endpoint rotation. The live test script checks the exclusions and API block.
 
 ## Roll back one SAW
 
@@ -77,4 +79,4 @@ helm upgrade <name> charts/openshell-saw -n saw-<name> \
   --reset-then-reuse-values --set networkPolicy.enabled=false
 ```
 
-Restore the corrected CIDR values and scoped rules in the chart or SAW values, then re-enable the policy and repeat `tests/test-network-policy.sh` with a dedicated peer. Disabling the NetworkPolicy removes in-cluster isolation; the EgressFirewall alone still governs its configured outside destinations.
+Restore the corrected topology values and scoped rules in the chart or SAW values, then re-enable the policy and repeat `tests/test-network-policy.sh` with a dedicated peer. Disabling NetworkPolicy removes in-cluster isolation; while `cleanupOnDelete: true`, the scoped API EgressFirewall exception remains so a later delete can complete. During that rollback the VM can use that exception until NetworkPolicy is restored.

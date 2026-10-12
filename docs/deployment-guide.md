@@ -1,5 +1,41 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Overview
 
 The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. For Alice and Bob test account passwords and separate browser sign-in steps, see [Keycloak test users](../README.md#keycloak-test-users).
@@ -254,7 +290,7 @@ Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`
 
 The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes Quay and its CDN hosts, GHCR (`ghcr.io` and its blob host `pkg-containers.githubusercontent.com`), Fedora's registry, and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). Chart tests check that each shipped profile host and BOM/profile image registry is allowed, that each default allowlist host is a profile host, registry, or documented exception, and that profile ports match the rendered EgressFirewall and NetworkPolicy rules. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
 
-Node addresses are allowed on TCP 443 and 80 for the ingress router. When NetworkPolicy and uninstall cleanup are enabled, a separate rule allows TCP 6443 only to control-plane nodes so the short-lived cleanup Pod can reach the Kubernetes API. The VM and CDI importer NetworkPolicies do not allow TCP 6443. Kubelet, SSH, and NodePorts are not open in the EgressFirewall. If the ingress is a load balancer address rather than a node IP, the router rule does not cover it. The Keycloak host is what the VM uses for login.
+Node addresses are allowed on TCP 443 and 80 for the ingress router. When uninstall cleanup is enabled, exact API endpoint IP and port rules let the short-lived cleanup Pod reach the Kubernetes API. The VM and CDI importer NetworkPolicies exclude those endpoint IPs from their outside rules, including an API on TCP 443. Kubelet, SSH, and NodePorts are not open in the EgressFirewall. If the ingress is a load balancer address rather than a node IP, the router rule does not cover it. The Keycloak Route host is what the VM uses for login.
 
 Everything else on the public internet is denied, for IPv4 and IPv6. The EgressFirewall can also block traffic to the cluster API: on the 2026-10-11 test cluster, its default deny stopped the cleanup Pod even though that Pod's NetworkPolicy allowed egress. The scoped API rule above is therefore required for deletion on that cluster. The NetworkPolicies below control pod and Service flows.
 
@@ -282,21 +318,23 @@ egress:
 
 ### In-cluster NetworkPolicy
 
-The `openshell-saw` chart also renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook`. They are namespaced Kubernetes NetworkPolicies. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, outside TCP, and ingress from the CDI namespace for disk import and clone. The cleanup hook's short-lived pod can reach the Kubernetes API while deleting the VM and PVCs.
+The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
 
-The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance interceptor on TCP 18081, the internal registry on TCP 5000, Keycloak's Service on TCP 8443/8080 when the chart uses the in-cluster issuer, and the ingress controller on TCP 443/80. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
+The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
 
-The outside rule excludes every pod and Service CIDR plus `169.254.0.0/16`, so the Kubernetes API Service, other tenants, and the metadata endpoint do not inherit outside access. **Before installing or upgrading**, compare the cluster's live CIDRs with `networkPolicy.clusterNetworkCIDRs` and `serviceNetworkCIDRs` in the chart or user values:
+The outside rule excludes every pod and Service CIDR, exact API endpoint IPs, and `169.254.0.0/16`, so the Kubernetes API Service, other tenants, and the metadata endpoint do not inherit outside access. **Before installing or upgrading**, compare live topology with this SAW's values:
 
 ```bash
 oc get network.config cluster -o jsonpath='{.status.clusterNetwork[*].cidr} {.status.serviceNetwork[*]}'
+oc get service kubernetes -n default -o jsonpath='{.spec.clusterIP}{"\n"}'
+oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o yaml
 ```
 
-The chart defaults (`10.128.0.0/14`, `172.30.0.0/16`) are OpenShift defaults, not a discovery mechanism. Set both lists to cover the cluster's actual networks. `extraBlockedCIDRs` excludes another IPv4 range. The template rejects empty or malformed CIDR lists and broad custom rules. The outside rule is IPv4 only; IPv6 has no allow rule and remains denied. A hosted-control-plane API exposed on TCP 443 needs the EgressFirewall layer as well. NetworkPolicy and EgressFirewall cannot distinguish one Route host from another on TCP 443, so cluster Routes still rely on their own authentication.
+The chart has no assumed CIDR or API endpoint values. `make saw-create` discovers them; direct Helm and GitOps users must supply them. `make prereqs-check` compares each enabled pattern user's effective values with the live topology. `extraBlockedCIDRs` excludes another IPv4 range. The template rejects empty or malformed CIDR lists and broad custom rules. The outside rule is IPv4 only; IPv6 has no allow rule and remains denied. NetworkPolicy and EgressFirewall cannot distinguish one Route host from another on TCP 443, so cluster Routes still rely on their own authentication.
 
-The cleanup API firewall exception is omitted when `networkPolicy.enabled: false` or `cleanupOnDelete: false`. If NetworkPolicy was disabled as a temporary rollback, re-enable it before `make saw-delete`; otherwise the cleanup hook can stall on the API while the EgressFirewall is active. See [network troubleshooting](troubleshooting.md).
+The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
 
-**Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. For quickstart on a cluster with nondefault CIDRs, put the CIDRs in a values file and use `make saw-create SAW_VALUES_FILE=/path/to/cluster-values.yaml`; the overlay is passed to Helm before the VM starts. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
+**Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
 
 ### Internal Connectivity
 
