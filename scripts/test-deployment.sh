@@ -322,7 +322,7 @@ check_repeat_state() {
 echo "Testing commit ${commit} on context ${context}. Evidence: ${evidence}"
 record version.oc-client 0 "$(oc version --client | sed -n '1p')"
 record version.helm 0 "$(helm version --short)"
-record version.gateway-image 0 "${OPENSHELL_VERSION:-0.0.116}"
+record version.gateway-image 0 "${IMAGE_REPO:-ghcr.io/validatedpatterns-sandbox}/openshell-gateway:${IMAGE_TAG:-latest}"
 record version.interceptor 0 "${OPENSHELL_INTERCEPTOR_REF:-v0.1.2}"
 record version.bom-gateway 0 "$(awk '/^      gateway:/{getline; print $2; exit}' charts/openshell-saw/values.yaml)"
 record initial.saw-namespaces 0 "$(jq -r '[.items[].metadata.name |

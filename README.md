@@ -193,7 +193,7 @@ make ssh-key-generate
 #   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
-# Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
+# Mirrors images from ghcr.io/validatedpatterns-sandbox to the internal registry.
 # No build needed — images are pre-built by maintainers.
 make images-mirror
 
@@ -236,7 +236,7 @@ Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from 
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). The images-mirror step mirrors prebuilt images and may fall back to the `latest` tag; see [Golden image tag](docs/deployment-guide.md#golden-image-tag). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
+Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). The images-mirror step mirrors CI-built GHCR images using the exact `IMAGE_TAG` (`latest` by default); see [Golden image tag](docs/deployment-guide.md#golden-image-tag). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
 
 ```bash
 # 1. Clone the repository
@@ -397,18 +397,21 @@ SAW, and `saw-vm-ssh` updates it when needed.
 user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `governance-profile-list` work without it. The defaults are `NS=openshell-agents`,
 `BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
-`SAW_NS=saw-$OPENSHELL_SAW_NAME`. For a manual build, set `QUAY_REPO` and
-`OPENSHELL_VERSION` as needed. For `saw-create`, set `PROVIDER`, `MODEL`, and
+`SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
+`IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
+CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 `API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
-`OPENSHELL_VERSION=0.0.116` names the prebuilt gateway image tag used by
-`images-mirror`. The chart's in-VM BOM pins OpenShell `0.1.2-rhaiv.0` by
-digest. These are different components. This cleanup does not change either
-runtime version. See [the deployment guide](docs/deployment-guide.md#golden-image-tag).
+`IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
+`IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
+separately pins OpenShell `0.1.2-rhaiv.0` by digest. See
+[the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run
 `make prereqs-check` again. That check does not change the cluster.
 `make images-mirror` enables the registry route and stops on access errors.
+CI image names, tags, public pull checks, and retained upstream Quay dependencies
+are documented in [Container images](docs/container-images.md).
 `make ssh-key-generate` and `make keycloak-deploy` keep existing keys and
 passwords. If a GUI port is in use, choose another `GUI_PORT`; the command
 will not stop the other process.

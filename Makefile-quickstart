@@ -1,12 +1,18 @@
 # Shared namespace: golden image, image builds, governance interceptor.
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
-QUAY_REPO      ?= quay.io/rh-ai-quickstart
+# Only an explicit destination opts manual builds into publishing.
+ifeq ($(origin PUSH_IMAGE_REPO),undefined)
+PUSH_IMAGE_REPO := $(IMAGE_REPO)
+endif
+export PUSH_IMAGE_REPO
+IMAGE_REPO     ?= ghcr.io/validatedpatterns-sandbox
 # Images `make images-mirror` mirrors into the internal registry. Only the
 # gateway VM disk (golden image) is needed; the VM pulls sandbox and
-# NemoClaw CLI images from quay itself.
+# NemoClaw CLI images from GHCR itself.
 MIRROR_IMAGES  ?= openshell-gateway
-OPENSHELL_VERSION ?= 0.0.116
+# CI publishes latest and sha-<commit>; this is an image tag, not an OpenShell release.
+IMAGE_TAG      ?= latest
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
 OPENSHELL_INTERCEPTOR_REF ?= v0.1.2
@@ -47,7 +53,7 @@ WORKSPACE      ?= default
 
 # Pass values through the environment so spaces and special shell characters
 # in credentials do not become parts of a shell command.
-export NS BUILD_NS QUAY_REPO MIRROR_IMAGES OPENSHELL_VERSION OPENSHELL_INTERCEPTOR_REF
+export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
 export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
@@ -84,46 +90,69 @@ ssh-key-generate: ## Generate or recover the SSH public key without replacing th
 
 # --- NemoClaw images ---
 
-sandbox-build: ## Build the sandbox image and push to Quay (OTEL=1 enables diagnostics)
+sandbox-build: .check-image-repo ## Build audited discovery artifacts, then the sandbox (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is nemoclaw-sandbox -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
-		--namespace $(BUILD_NS) --create-namespace \
+		--namespace $(BUILD_NS) --create-namespace --set-string source.discoveryImage=
+	@set -eu; \
+	discovery_build=$$(oc start-build nemoclaw-discovery-runtime -n "$(BUILD_NS)" -o name); \
+	oc logs "$$discovery_build" -n "$(BUILD_NS)" --follow || true; \
+	attempts=0; \
+	while :; do \
+		phase=$$(oc get "$$discovery_build" -n "$(BUILD_NS)" -o jsonpath='{.status.phase}'); \
+		case "$$phase" in Complete|Failed|Cancelled|Error) break ;; esac; \
+		if [ "$$attempts" -ge 360 ]; then echo "Error: timed out waiting for discovery build $$discovery_build ($$phase)." >&2; exit 1; fi; \
+		attempts=$$((attempts + 1)); sleep 5; \
+	done; \
+	if [ "$$phase" != Complete ]; then echo "Error: discovery build $$discovery_build is $$phase, not Complete." >&2; exit 1; fi; \
+	digest=$$(oc get "$$discovery_build" -n "$(BUILD_NS)" -o jsonpath='{.status.output.to.imageDigest}'); \
+	if ! printf '%s\n' "$$digest" | grep -Eq '^sha256:[0-9a-f]{64}$$'; then \
+		echo "Error: discovery build $$discovery_build has no valid output digest." >&2; exit 1; fi; \
+	discovery_image="image-registry.openshift-image-registry.svc:5000/$(BUILD_NS)/nemoclaw-discovery-runtime@$$digest"; \
+	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
+		--namespace "$(BUILD_NS)" --set-string "source.discoveryImage=$$discovery_image" \
 		$(if $(filter 1,$(OTEL)),--set build.otelEnabled=1)
-	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
-	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO) $(OPENSHELL_VERSION)
+	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow --wait
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
-cli-build: ## Build the NemoClaw CLI image and push to Quay
+cli-build: .check-image-repo ## Build the NemoClaw CLI image in-cluster (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is nemoclaw-cli -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
-	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
 # --- Governance interceptor image ---
 
-governance-interceptor-build: ## Build the governance interceptor image and push to Quay
+governance-interceptor-build: .check-image-repo ## Build the governance interceptor in-cluster (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is governance-interceptor -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install governance-interceptor-image $(HELM_DIR)governance-interceptor-image \
-		--namespace $(BUILD_NS) --create-namespace
+		--namespace $(BUILD_NS) --create-namespace \
+		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
+		--set-string output.externalImage=$(if $(PUSH_IMAGE_REPO),$(PUSH_IMAGE_REPO)/governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF)) \
+		--set-string output.imageStreamTag=$(if $(PUSH_IMAGE_REPO),,governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF))
 	oc start-build governance-interceptor -n $(BUILD_NS) --follow
-	@echo "The build pushed $$(helm get values governance-interceptor-image -n $(BUILD_NS) -a -o json | jq -r .output.externalImage)"
+	@echo "Image built in $(BUILD_NS)$(if $(PUSH_IMAGE_REPO), and pushed to $(PUSH_IMAGE_REPO))."
 
 governance-interceptor-build-local: ## Build the governance interceptor image in the cluster
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	helm upgrade --install governance-interceptor-image $(HELM_DIR)governance-interceptor-image \
 		--namespace $(BUILD_NS) --create-namespace \
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
+		--set output.externalImage= \
 		--set output.imageStreamTag=governance-interceptor:v$(patsubst v%,%,$(OPENSHELL_INTERCEPTOR_REF))
 	oc start-build governance-interceptor -n $(BUILD_NS) --follow
 
 # --- Gateway VM image ---
 
-gateway-build-docker: ## Build the Docker gateway image and push to Quay
+gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Docker gateway image (openshell-gateway-docker)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
@@ -140,10 +169,11 @@ gateway-build-docker: ## Build the Docker gateway image and push to Quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=docker
 	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
-	@echo "Pushing openshell-gateway-docker to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker $(QUAY_REPO) $(OPENSHELL_VERSION)
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
-gateway-build-podman: ## Build the Podman gateway image and push to Quay
+gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Podman gateway image (openshell-gateway)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
@@ -160,15 +190,16 @@ gateway-build-podman: ## Build the Podman gateway image and push to Quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=podman
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
-	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
 
 gateway-build: ## Build the gateway with CONTAINER_RUNTIME=podman or docker
 	@case "$$CONTAINER_RUNTIME" in podman|docker) ;; *) echo "Error: CONTAINER_RUNTIME must be podman or docker." >&2; exit 1;; esac
 	@$(MAKE) "gateway-build-$$CONTAINER_RUNTIME"
 
-images-mirror: ## Mirror prebuilt images from Quay to the internal registry
+images-mirror: ## Mirror prebuilt images from GHCR to the internal registry
 	@$(SCRIPTS_DIR)/images-mirror.sh
 
 ##@ Pattern Lifecycle
@@ -539,3 +570,7 @@ $(eval $(call deprecated_alias,governance-list-profiles,governance-profile-list)
 $(eval $(call deprecated_alias,governance-add-profile,governance-profile-add))
 $(eval $(call deprecated_alias,governance-remove-profile,governance-profile-remove))
 $(eval $(call deprecated_alias,governance-create-profile,governance-profile-create))
+
+.PHONY: .check-image-repo
+.check-image-repo:
+	@$(SCRIPTS_DIR)/check-build-repo.sh "$$PUSH_IMAGE_REPO"
