@@ -72,7 +72,7 @@ export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
         keycloak-register keycloak-redirects keycloak-redirects-sync \
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
-        saw-restart saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
+        saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
@@ -369,6 +369,9 @@ harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO
 
 saw-restart: .check-saw-name ## Restart the VM to apply a changed BOM or profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
+
+saw-restart-pending: ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
+	@CONFIRM=$(CONFIRM) $(SCRIPTS_DIR)/saw-restart-pending.sh
 
 saw-ssh: .check-saw-name .check-gateway-ca ## Open a shell in a sandbox
 	@$(SCRIPTS_DIR)/saw-ssh.sh

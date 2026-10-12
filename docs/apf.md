@@ -4,7 +4,7 @@ SAW gateways call one governance service, `governance-interceptor.openshell-agen
 By default that is the OpenShell governance interceptor ([governance-interceptor.md](governance-interceptor.md)).
 One switch replaces it with NVIDIA's **Agent Policy Fabric (APF)**, which serves the same
 policy from a **signed bundle**: each file is hashed, the manifest is signed with Ed25519 and
-carries a `policy_revision` that cannot go backwards. APF also stamps provenance on every
+carries a `policy_revision` that must go up with every change (see [Rollback](#rollback)). APF also stamps provenance on every
 sandbox (`apf.nvidia.com/*` annotations), refuses policy changes that do not come through a
 bundle, and writes a JSONL audit trail.
 
@@ -67,15 +67,27 @@ all of them), and `governance.bindingPolicy` sets the mode per engine.
    (`~/.ghcr-token` holds the token) and load them (`./pattern.sh make load-secrets`, or install).
 5. **Switch.** Set `global.governance.engine: apf`, push.
 
-Argo CD then replaces the interceptor with APF, and every SAW app re-renders its gateway
-config, so each user VM restarts once with the new bindings.
+Argo CD then replaces the interceptor with APF, and every SAW app (pattern and portal
+workspaces) re-renders its gateway config. **Running VMs do not pick it up on their own:**
+KubeVirt marks them `RestartRequired` and the gateway keeps its old bindings until the VM
+reboots. Restart them once `governance-interceptor` is Healthy:
+
+```bash
+make saw-restart-pending               # lists the VMs waiting for a restart
+make saw-restart-pending CONFIRM=yes   # restarts them; their sandboxes stop meanwhile
+```
+
+`make saw-restart OPENSHELL_SAW_NAME=<user>` restarts one VM. Until a VM restarts, its gateway
+calls APF with the interceptor's four `allowlist` bindings, or, after switching back, the
+interceptor with APF's `dynamic` bindings.
 
 Switching an existing install: the `governance-interceptor` app prunes (values-prod.yaml), so it
 drops its Deployment and Service when the engine changes and the `governance-apf` app takes over
 the Service name. Argo CD waits for the ExternalSecrets before it creates `governance-apf`, so
 load the `ghcr` and `apf-signing` entries first; if a sync gave up meanwhile, sync the app again
 (`oc -n vp-gitops patch application governance-interceptor --type merge -p '{"operation":{"sync":{}}}'`).
-Switching back is the reverse, plus deleting the `governance-apf` Application.
+Switching back is the reverse, plus deleting the `governance-apf` Application, and again
+`make saw-restart-pending CONFIRM=yes`: the restart is needed in both directions.
 
 ## Set up (quickstart)
 
@@ -85,6 +97,9 @@ helm uninstall governance-interceptor -n openshell-agents    # if the intercepto
 GHCR_USER=<github-user> GHCR_TOKEN=<token> make governance-apf
 make saw-create OPENSHELL_SAW_NAME=alice GOVERNANCE_ENGINE=apf ...
 ```
+
+An existing quickstart SAW keeps its engine until you run `make saw-create` for it again with
+the new `GOVERNANCE_ENGINE` and restart its VM (`make saw-restart`).
 
 `make governance-apf` creates the two Secrets, installs `charts/governance-interceptor` as
 release `governance-apf-inputs` (bundle, trust root, NetworkPolicy), and the APF chart as release
@@ -97,6 +112,22 @@ member changed) and commit the bundle with the change on your deployment branch.
 the signature and that the bundle matches `charts/governance-policy`; with the pattern on `apf`
 the test suite runs the same check, so a policy change without a re-signed bundle fails CI.
 Only holders of the seed can change policy: that is the point of signing.
+
+After `make apf-keys --force` (a new key), run `make apf-bundle` even when the policy did not
+change: it notices that the bundle's signature no longer matches `apf.pub` and re-signs it with a
+new revision.
+
+### Rollback
+
+APF refuses a bundle whose `policy_revision` is not above the last one it loaded, but it keeps
+that counter in the pod (`/var/lib/apf`, an `emptyDir` in the APF chart, which has no setting to
+persist it). Every new bundle rolls the pod, so a new pod would accept any validly signed
+revision, including an older one. The check therefore also runs where the bundle comes from:
+`make apf-bundle-check` and the test suite fail when the committed bundle's `policy_revision` is
+not above every earlier commit of it, so reverting the bundle in git is caught before Argo CD
+deploys it. To undo a policy change, revert `charts/governance-policy` and run `make apf-bundle`,
+which signs the old policy with a revision above all of git history. A durable counter in the APF
+pod needs an APF chart change (a `state` volume like `audit.persistence`).
 
 APF reads the bundle at start: the chart restarts the APF pod when the ConfigMap changes
 (its log says `bundle verified and loaded … counter=<policy_revision>`). Gateways pick up the
@@ -182,6 +213,7 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
   and provider profiles, which is what the interceptor enforced.
 - Per-user or per-profile policy: APF injects one `default` policy, like the interceptor.
 - A durable audit volume (`audit.persistence` in the APF chart).
+- A durable anti-rollback counter in the APF pod: see [Rollback](#rollback).
 - Harness bundles ([harness-bundles.md](harness-bundles.md)). Their mount relies on the patched
   interceptor admitting only the installer's read-only harness volume from an mTLS admin; APF has
   no such guard. With `engine: apf` the chart refuses `allowDriverConfig` (a user with
