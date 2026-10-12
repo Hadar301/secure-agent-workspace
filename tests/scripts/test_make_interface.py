@@ -395,7 +395,16 @@ def test_manual_builds_keep_images_local_unless_safe_destination_is_explicit(tmp
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "calls"
-    executable(bindir / "oc", 'echo "oc $*" >> "$CALLS"\n')
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-1 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-1 "*)
+    case "$*" in
+      *status.phase*) printf Complete ;;
+      *imageDigest*) printf 'sha256:%064d' 0 ;;
+    esac ;;
+esac
+''')
     executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
     scripts = tmp_path / "scripts"
     scripts.mkdir()
@@ -430,3 +439,76 @@ def test_public_image_check_targets_the_published_tag():
     verify = next(s for s in action["runs"]["steps"]
                   if s.get("uses") == "./.github/actions/verify-public-image")
     assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"
+
+
+@pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
+def test_sandbox_build_consumes_only_its_completed_discovery_build(tmp_path, phase, digest):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-7 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-7 "*)
+    case "$*" in
+      *status.phase*) printf '%s' "$DISCOVERY_PHASE" ;;
+      *imageDigest*) printf '%s' "$DISCOVERY_DIGEST" ;;
+    esac ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
+               DISCOVERY_PHASE=phase, DISCOVERY_DIGEST=digest)
+    env.pop("PUSH_IMAGE_REPO", None)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", env=env)
+    calls = log.read_text().splitlines()
+    if phase != "Complete" or len(digest) != 71:
+        assert result.returncode != 0
+        assert not any("start-build nemoclaw-sandbox " in line for line in calls)
+        assert not any("source.discoveryImage=image-registry." in line for line in calls)
+    else:
+        assert result.returncode == 0, result.stderr
+        pinned = next(i for i, line in enumerate(calls) if "source.discoveryImage=image-registry." in line)
+        start = next(i for i, line in enumerate(calls) if "start-build nemoclaw-sandbox " in line)
+        assert pinned < start
+        assert f"source.discoveryImage=image-registry.openshift-image-registry.svc:5000/test-build/nemoclaw-discovery-runtime@{digest}" in calls[pinned]
+        assert any("get build.build.openshift.io/nemoclaw-discovery-runtime-7 " in line and "imageDigest" in line for line in calls)
+        assert not any("get bc/" in line for line in calls)
+
+
+@pytest.mark.parametrize("terminal", ["Complete", "Failed", "Cancelled", "Error"])
+def test_discovery_log_error_does_not_hide_build_phase(tmp_path, terminal):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-8 ;;
+  "logs "*) echo 'build is pending' >&2; exit 1 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-8 "*)
+    case "$*" in
+      *status.phase*)
+        if [ -e "$PHASE_COUNT" ]; then printf '%s' "$TERMINAL_PHASE";
+        else touch "$PHASE_COUNT"; printf Pending; fi ;;
+      *imageDigest*) printf 'sha256:%064d' 0 ;;
+    esac ;;
+  "wait "*) echo 'terminal-phase polling required' >&2; exit 99 ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    executable(bindir / "sleep", 'echo "sleep $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
+               TERMINAL_PHASE=terminal, PHASE_COUNT=str(tmp_path / "phase-count"))
+    env.pop("PUSH_IMAGE_REPO", None)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", env=env)
+    calls = log.read_text().splitlines()
+    assert sum("status.phase" in line for line in calls) >= 2
+    assert not any("oc wait " in line for line in calls)
+    if terminal == "Complete":
+        assert result.returncode == 0, result.stderr
+        assert any("start-build nemoclaw-sandbox " in line for line in calls)
+    else:
+        assert result.returncode != 0
+        assert terminal in result.stderr
+        assert not any("start-build nemoclaw-sandbox " in line for line in calls)
+        assert not any("imageDigest" in line for line in calls)

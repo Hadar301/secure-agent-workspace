@@ -23,7 +23,8 @@ those deployment overrides local when preparing changes for upstream.
 
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies
-the resulting digest with an empty Docker auth configuration: a private package
+the published commit tag with an empty Docker auth configuration (harness builds
+check their signed digest): a private package
 fails CI. CI adds the repository source label to associate its packages with the
 repository. GHCR can create packages as private initially: a package administrator
 must set each package's visibility to **Public** in its GitHub package settings,
@@ -45,9 +46,32 @@ each chart's `values.yaml`. Governance uses `build.runtimeImage` for OpenShift
 (UBI9 Micro) and `build.ghcrRuntimeImage` for GHCR (the Debian runtime stage).
 
 The sandbox uses the upstream Dockerfile at the chart's pinned source ref.
-Its discovery-runtime install script and patched MCPorter manifests live in
-`nemoclaw-imagestream/files/`; GitHub copies them into the upstream context
-and OpenShift supplies the same files through ConfigMaps.
+The discovery manifests, lockfile, Dockerfile, and audited install script live in
+`nemoclaw-imagestream/files/`; generated bundles are never committed or put in a
+ConfigMap. CI runs the script before building the sandbox, writing the three
+artifacts directly into the directory copied by the upstream Dockerfile.
+
+`make sandbox-build` first builds `nemoclaw-discovery-runtime`. It captures that
+specific Build's name, follows its logs, tolerates log-streaming errors, and polls
+until a terminal phase (with a 30-minute limit). It requires `Complete` and a valid
+output digest. It then supplies the artifact image as `source.discoveryImage`
+(`image-registry.../nemoclaw-discovery-runtime@sha256:...`). The sandbox BuildConfig
+copies `/reviewed-runtime-bundle/mcp-tool-discovery/.` from that digest into its
+Git context through `source.images`. Without a digest, the chart creates only the
+discovery BuildConfig; tags, image-change triggers, and failed builds cannot
+silently select artifacts from an earlier build. Every invocation builds discovery
+again before building the sandbox.
+
+CI and the cluster discovery builder use the same Node version from
+`build.discoveryNodeVersion`, the same discovery lockfile, and the same install
+recipe. The cluster builder uses the official Docker Hub Node image for that
+version. This guarantees shared inputs and checks, not byte-identical output
+across platforms. Discovery runs `npm ci`, registry-signature verification,
+`npm audit --audit-level=high`, tests, and typechecks. The pinned upstream sandbox
+Dockerfile installs the MCPorter lockfile with `npm ci` and invokes
+`verify-mcporter-audit.sh`, whose reviewed audit policy uses the high threshold
+and supports verified audit receipts. That MCPorter audit is upstream-owned;
+its small lockfile ConfigMap is unchanged.
 
 Gateway GitHub CI also installs the bundle verifier, checksum-verified Cosign,
 and optional signing floor already supplied by the OpenShift recipe.
@@ -69,12 +93,15 @@ stores the exact selected tag and adds this alias. Changing the disk source
 only affects new VM disks. To roll back, select a previous `sha-<commit>` tag or
 GHCR digest and recreate the VM disk using the documented workspace lifecycle.
 
-Manual cluster builds push to `IMAGE_REPO`. Authenticate to GHCR with a token
+Manual cluster builds keep images in the internal registry by default. To publish,
+explicitly set `IMAGE_REPO=ghcr.io/<your-owner>`; the upstream namespace
+`ghcr.io/validatedpatterns-sandbox` is refused because CI owns its tags.
+The mirror command still defaults to that upstream namespace. Authenticate to GHCR with a token
 that can write packages using `oc registry login --registry=ghcr.io`; the push
 script uses the current containers auth file. For the interceptor BuildConfig,
 create a Docker registry Secret named `ghcr-push-secret` in `BUILD_NS`, or override
-`output.pushSecretName`. `governance-interceptor-build-local` uses the internal
-registry and needs no GHCR push credentials. A fork interceptor build also needs
+`output.pushSecretName`. `governance-interceptor-build-local` remains available as a local-only build
+and needs no GHCR push credentials. A fork interceptor build also needs
 `charts/governance-interceptor`'s `image` override.
 
 ## Intentionally retained Quay dependencies

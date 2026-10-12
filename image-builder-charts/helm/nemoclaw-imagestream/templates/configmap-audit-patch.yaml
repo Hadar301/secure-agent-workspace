@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: nemoclaw-audit-patch
-  labels:
-    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
-data:
-  install-reviewed-runtime.sh: |
-{{ .Files.Get "files/install-reviewed-runtime.sh" | indent 4 }}

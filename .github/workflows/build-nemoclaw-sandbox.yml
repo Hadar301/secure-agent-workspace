@@ -41,6 +41,8 @@ jobs:
             >> "$GITHUB_OUTPUT"
           echo "target_arch=$(yq '.build.targetArch' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
+          echo "discovery_node_version=$(yq '.build.discoveryNodeVersion' "$VALUES")" \
+            >> "$GITHUB_OUTPUT"
           echo "base_image=$(yq '.build.baseImage' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
           echo "model=$(yq '.build.model' "$VALUES")" \
@@ -83,12 +85,26 @@ jobs:
 
       - name: Inject reviewed runtimes into build context
         run: |
-          mkdir -p "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime"
+          mkdir -p "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/mcp-tool-discovery"
           cp image-builder-charts/helm/nemoclaw-imagestream/files/install-reviewed-runtime.sh \
+            "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/"
+          cp image-builder-charts/helm/nemoclaw-imagestream/files/discovery-runtime/package*.json \
             "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/"
           mkdir -p "${UPSTREAM_DIR}/agents/openclaw/mcporter-runtime"
           cp image-builder-charts/helm/nemoclaw-imagestream/files/mcporter-runtime/package*.json \
             "${UPSTREAM_DIR}/agents/openclaw/mcporter-runtime/"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.params.outputs.discovery_node_version }}
+
+      - name: Build and audit the shared discovery runtime
+        run: |
+          cd "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime"
+          export NEMOCLAW_MCP_REVIEWED_ARTIFACT=1
+          export NEMOCLAW_MCP_BUNDLE_FILENAME=mcp-tool-discovery.bundle
+          export NEMOCLAW_MCP_BUNDLE_OUTPUT_DIR=reviewed-runtime-bundle/mcp-tool-discovery
+          sh install-reviewed-runtime.sh
 
       # dockerfile omitted -> use the upstream checkout's own Dockerfile.
       - uses: ./.github/actions/build-push-image
