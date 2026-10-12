@@ -150,6 +150,40 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
 
 
+def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"governance": {"engine": "apf"}}}))
+    values = helm_values(app(docs, "saw-alice"))
+    assert values["global"]["governance"]["engine"] == "apf"
+    path = tmp_path / "saw-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    policies = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                and doc.get("kind") == "NetworkPolicy"
+                and doc["metadata"]["name"] == "saw-vm"]
+    # The pattern stages this off by default; select the first user here.
+    assert not policies
+    topology = yaml.safe_load((ROOT / "tests/fixtures/saw-network-topology.yaml").read_text())
+    values["networkPolicy"]["enabled"] = True
+    values["networkPolicy"].update(topology["networkPolicy"])
+    values["cleanupApi"].update(topology["cleanupApi"])
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    vm_policy = next(doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                     and doc.get("kind") == "NetworkPolicy"
+                     and doc["metadata"]["name"] == "saw-vm")
+    assert any(peer.get("podSelector", {}).get("matchLabels") == {
+        "app.kubernetes.io/name": "apf",
+        "app.kubernetes.io/instance": "governance-interceptor"}
+        for rule in vm_policy["spec"]["egress"] for peer in rule["to"])
+
+
 def test_empty_global_values_are_left_out(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"originURL": "", "repoURL": "https://example.com/repo.git",

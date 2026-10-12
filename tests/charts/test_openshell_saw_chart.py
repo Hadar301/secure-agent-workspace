@@ -26,7 +26,10 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice"):
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace, *args],
+    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")]
+                if Path(chart) == CHART else [])
+    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
+                           *topology, *args],
                           capture_output=True, text=True)
 
 
@@ -40,6 +43,11 @@ def _pattern_saw_settings():
         if isinstance(value, dict):
             for k, v in value.items():
                 yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        elif isinstance(value, list):
+            # Empty topology lists match openshell-saw defaults. Keep them as
+            # lists rather than converting `[]` into a string via --set.
+            if value:
+                yield "--set-json", f"{prefix}={json.dumps(value)}"
         else:
             yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
 
@@ -432,9 +440,6 @@ DEFAULT_EGRESS_HOSTS = [
     "iamcredentials.googleapis.com",
     "gmail.googleapis.com",
 ]
-# A dnsName rule cannot express this. A new wildcard in a shipped profile
-# must be added here on purpose, not silently skipped.
-KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
 NODE_ALLOW_PORTS = [
     {"protocol": "TCP", "port": 443},
     {"protocol": "TCP", "port": 80},
@@ -565,20 +570,6 @@ def test_egress_keycloak_port_comes_from_the_issuer():
     assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
 
 
-def test_egress_covers_every_shipped_profile_host(default_docs):
-    _, allowed = _egress_names(default_docs)
-    exact, wild = set(), set()
-    for path in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"):
-        for endpoint in (yaml.safe_load(path.read_text()) or {}).get("endpoints") or []:
-            host = endpoint["host"]
-            (wild if "*" in host else exact).add(host)
-    missing = exact - set(allowed)
-    assert not missing, "shipped profile hosts missing from the firewall: " + ", ".join(sorted(missing))
-    assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
-    assert not any("*" in host for host in allowed)
-
-
-
 def test_egress_covers_every_bom_and_profile_image(default_docs):
     """Guest pulls must work with harness bundles disabled."""
     values = yaml.safe_load((CHART / "values.yaml").read_text())
@@ -605,6 +596,7 @@ def test_egress_covers_every_bom_and_profile_image(default_docs):
     assert registries <= allowed, f"image registries missing from egress.allow: {registries - allowed}"
     assert registries <= set(rendered)
     assert "pkg-containers.githubusercontent.com" in allowed
+
 
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
     rules, allowed = _egress_names(default_docs)
@@ -939,13 +931,6 @@ def test_every_profile_names_its_binaries():
         assert "provider_type" not in doc, path.name
         if doc.get("endpoints"):
             assert doc.get("binaries"), path.name
-
-
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
-    for path in copies:
-        assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
 
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):

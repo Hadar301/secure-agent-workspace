@@ -1,5 +1,41 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Overview
 
 The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. For Alice and Bob test account passwords and separate browser sign-in steps, see [Keycloak test users](../README.md#keycloak-test-users).
@@ -252,23 +288,23 @@ sandboxes.
 
 Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`) rendered by the `openshell-saw` chart. It needs OVN-Kubernetes. On another network plugin the kind is unknown and the Argo CD sync fails. It is independent of OpenShell's sandbox allowlist: a process on the VM that skips the sandbox proxy still cannot open a connection to a host that is not listed.
 
-The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes Quay and its CDN hosts, GHCR (`ghcr.io` and its blob host `pkg-containers.githubusercontent.com`), Fedora's registry, and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). Chart tests fail if a shipped governance profile adds an undeclared host or a BOM/profile image uses a registry missing from `egress.allow`. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
+The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes Quay and its CDN hosts, GHCR (`ghcr.io` and its blob host `pkg-containers.githubusercontent.com`), Fedora's registry, and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). Chart tests check that each shipped profile host and BOM/profile image registry is allowed, that each default allowlist host is a profile host, registry, or documented exception, and that profile ports match the rendered EgressFirewall and NetworkPolicy rules. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
 
-Node addresses are allowed only on TCP 443 and 80, for the ingress router. The VM does not call the Kubernetes API, so 6443 is not open. Kubelet, SSH, and NodePorts are not either. If the ingress is a load balancer address rather than a node IP, this rule does not cover it. The Keycloak host is what the VM uses for login.
+Node addresses are allowed on TCP 443 and 80 for the ingress router. When uninstall cleanup is enabled, exact API endpoint IP and port rules let the short-lived cleanup Pod reach the Kubernetes API. The VM and CDI importer NetworkPolicies exclude those endpoint IPs from their outside rules, including an API on TCP 443. Kubelet, SSH, and NodePorts are not open in the EgressFirewall. If the ingress is a load balancer address rather than a node IP, the router rule does not cover it. The Keycloak Route host is what the VM uses for login.
 
-Everything else on the public internet is denied, for IPv4 and IPv6. Pods and services inside the cluster, including DNS, the governance interceptor, and the internal registry, are not filtered by this object.
+Everything else on the public internet is denied, for IPv4 and IPv6. The EgressFirewall can also block traffic to the cluster API: on the 2026-10-11 test cluster, its default deny stopped the cleanup Pod even though that Pod's NetworkPolicy allowed egress. The scoped API rule above is therefore required for deletion on that cluster. The NetworkPolicies below control pod and Service flows.
 
 Hostnames are exact. A name such as `*.quay.io` is rejected at render time, because matching a wildcard needs the `DNSNameResolver` feature gate. Gemini's `*-aiplatform.googleapis.com` cannot be written as a `dnsName` rule. Add the regional host you use under `extraAllow` (for example `us-central1-aiplatform.googleapis.com`).
 
 Quay serves image layers from `cdn01.quay.io` through `cdn06.quay.io`. Those names are on the list. Their addresses change often, and OVN resolves them itself, which can disagree with the VM's own resolver. On cluster-mx8z2, `podman pull quay.io/quay/busybox` succeeded three times in a row and `https://cdn01.quay.io/` returned HTTP 403 (the name is reachable; Quay refuses a bare GET). `registry.npmjs.org` is on the list too, and from that same VM it still timed out: the guest resolved Cloudflare addresses that OVN had not installed for the name. Public NTP (UDP 123) is denied. The guest clock stays on kvm-clock; chrony will not see public pool servers.
 
-Anything that installs npm packages in a sandbox (OpenClaw plugins, NemoClaw onboarding) can fail intermittently for that reason: the timeout is OVN's DNS view disagreeing with the guest's, not a missing entry. If a sandbox flow needs npm reliably, set `egress.enabled: false` for that workspace, or point it at an npm mirror inside the cluster (`*.svc` needs no entry).
+Anything that installs npm packages in a sandbox (OpenClaw plugins, NemoClaw onboarding) can fail intermittently for that reason: the timeout is OVN's DNS view disagreeing with the guest's, not a missing entry. If a sandbox flow needs npm reliably, set `egress.enabled: false` for that workspace, or point it at an npm mirror inside the cluster and add a narrow `networkPolicy.extraEgress` rule for its pods and port.
 
 With harness bundles on (`allowDriverConfig: true`, which saw-users sets with `harnessEnabled`), `egress.harnessAllow` adds `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev` for the keyless cosign verification the installer repeats on every apply. Without them the first apply fails verification and removes the harness from the sandbox. A harness image on another registry needs that registry, and its blob host, under `egress.extraAllow`. `signing.mode: enforce` adds the same two Sigstore hosts even when no harness is on. `warn` only logs, so it does not.
 
 An external disk download (`source.httpURL`, or `source.goldenImageURL` / `source.registryURL` when it is `http://` or `https://`) is allowed automatically. So is a `docker://` image on a registry outside the cluster when `source.pullMethod` is `pod` (its registry host and port). With `pullMethod: node`, the default, the node's container runtime pulls the image, outside this firewall, so nothing is added. A registry that serves blobs from a CDN host needs that host under `egress.extraAllow`. The internal registry is never added. Any other host outside the cluster, including a custom inference endpoint, still has to be listed.
 
-To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs no entry.
+To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs `networkPolicy.extraEgress` for its namespace, pods, and port; it needs no EgressFirewall DNS entry.
 
 ```yaml
 egress:
@@ -280,12 +316,35 @@ egress:
 
 **Upgrading an existing sandbox.** The next sync turns this firewall on. A custom-inference URL that is outside the cluster lives only in Vault, so the chart cannot see it. Before upgrading, put that host in `egress.extraAllow`, or set `egress.enabled: false` on that user until you do. Calls to that URL time out. OpenShell does not report a policy denial.
 
+### In-cluster NetworkPolicy
+
+The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
+
+The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
+
+The outside rule excludes every pod and Service CIDR, exact API endpoint IPs, and `169.254.0.0/16`, so the Kubernetes API Service, other tenants, and the metadata endpoint do not inherit outside access. **Before installing or upgrading**, compare live topology with this SAW's values:
+
+```bash
+oc get network.config cluster -o jsonpath='{.status.clusterNetwork[*].cidr} {.status.serviceNetwork[*]}'
+oc get service kubernetes -n default -o jsonpath='{.spec.clusterIP}{"\n"}'
+oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o yaml
+```
+
+The chart has no assumed CIDR or API endpoint values. `make saw-create` discovers them; direct Helm and GitOps users must supply them. `make prereqs-check` compares each enabled pattern user's effective values with the live topology. `extraBlockedCIDRs` excludes another IPv4 range. The template rejects empty or malformed CIDR lists and broad custom rules. The outside rule is IPv4 only; IPv6 has no allow rule and remains denied. NetworkPolicy and EgressFirewall cannot distinguish one Route host from another on TCP 443, so cluster Routes still rely on their own authentication.
+
+The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
+
+**Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
+
 ### Internal Connectivity
 
 | From | To | Protocol | Purpose |
 | --- | --- | --- | --- |
 | Gateway (VM) | Governance interceptor (pod) | gRPC over HTTP | Policy enforcement |
 | Gateway (VM) | Keycloak (pod) | HTTPS | OIDC token validation |
+| Gateway (VM) | DNS, registry, ingress controller | TCP/UDP 5353, TCP 5000, TCP 443/80 | Resolution, image pull, Routes |
+| CDI importer pod | Registry or configured disk URL | TCP 5000 or allowed outside port | Root disk import |
+| Cleanup hook pod | Kubernetes API | HTTPS | Delete VM and PVCs |
 | In-guest installer | mounted ConfigMaps and Secrets | virtiofs or iso9660 | Install binaries and apply profiles |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
 
@@ -363,6 +422,10 @@ The `add`, `remove`, and `create` targets edit `charts/governance-policy/profile
 make lint                   # Lint all 13 charts
 make test                   # Run local Python tests through uv
 make test-deployment        # Run the dedicated live-cluster test
+SKIP_LIVE=1 ./tests/test-network-policy.sh  # Offline policy structure checks
+# On two dedicated test SAWs:
+SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
+  PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
 ### Live deployment test

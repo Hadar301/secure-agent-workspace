@@ -349,3 +349,35 @@ egress:
     - rekor.sigstore.dev
     - tuf-repo-cdn.sigstore.dev
   extraAllow: []
+
+# Backend addresses of the `default/kubernetes` Service. Quickstart discovers
+# these before creating a SAW. For direct Helm and GitOps installs, read the
+# Service and its EndpointSlices from the target cluster; API endpoint changes
+# require a values update before cleanup can reach the new address. Exact IPs
+# also keep an API on TCP 443 out of the VM/CDI outside rule.
+cleanupApi:
+  serviceIP: ""
+  endpoints: []  # [{ip: 192.0.2.10, port: 6443}]
+
+# Namespaced default-deny for the VM, CDI importer, and cleanup hook. These
+# CIDRs have no portable default. Quickstart discovers them. A direct Helm
+# render with NetworkPolicy enabled fails until the target cluster's values
+# are supplied; an incomplete exclusion could allow in-cluster traffic.
+networkPolicy:
+  enabled: true
+  clusterNetworkCIDRs: []
+  serviceNetworkCIDRs: []
+  extraBlockedCIDRs: []
+  allow:
+    dns: true
+    governanceInterceptor: true
+    internalRegistry: true
+    ingressController: true
+  # TCP 443/80 are always included for EgressFirewall parity. Add another
+  # outside port here only when its EgressFirewall host rule also allows it.
+  # The issuer and external disk URL ports are included automatically.
+  externalPorts: [443, 80]
+  # Raw Kubernetes NetworkPolicy rules for site-specific endpoints, such as
+  # an in-cluster inference Service or npm mirror.
+  extraEgress: []
+  extraIngress: []

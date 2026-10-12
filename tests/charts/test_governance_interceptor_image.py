@@ -66,6 +66,7 @@ def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
 def test_gateway_allows_driver_guard_without_noninterceptable_template_rpc():
     out = subprocess.run(
         [HELM, "template", "guard-test", str(ROOT / "charts/openshell-saw"),
+         "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
          "--set", "global.clusterDomain=example.test"],
         capture_output=True, text=True, check=True).stdout
     config = next(d["data"]["gateway.toml"] for d in yaml.safe_load_all(out)

@@ -196,6 +196,12 @@ def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
+  "get network.config cluster -o json")
+    echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}' ;;
+  "get service kubernetes -n default -o json")
+    echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}' ;;
+  "get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o json")
+    echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"]}]}]}' ;;
   "get storageclass -o json")
     echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
   "get nodes -o json")
@@ -227,6 +233,12 @@ def test_pattern_prereqs_do_not_require_operators(tmp_path):
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
+  "get network.config cluster -o json")
+    echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}' ;;
+  "get service kubernetes -n default -o json")
+    echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}' ;;
+  "get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o json")
+    echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"]}]}]}' ;;
   "get storageclass -o json")
     echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
   "get nodes -o json")
