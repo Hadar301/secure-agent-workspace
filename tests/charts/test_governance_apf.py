@@ -287,3 +287,4 @@ def test_committed_bundle_is_signed_and_current():
     engine = yaml.safe_load((ROOT / "values-global.yaml").read_text())["global"]["governance"]["engine"]
     mod = load_script()
     assert mod.verify(check_current=engine == "apf") == []
+    assert mod.history_problems() == []      # no revert to an older signed revision

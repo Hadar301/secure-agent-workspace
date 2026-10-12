@@ -21,6 +21,7 @@ import base64
 import hashlib
 import io
 import os
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -248,6 +249,7 @@ def cmd_keygen(args):
     fd = os.open(SEED, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(f"# APF signing key for Secure Agent Workspace. Keep it out of git.\ned25519:{seed}\n")
+    os.chmod(SEED, 0o600)   # --force over a file created with looser permissions
     APF_DIR.mkdir(parents=True, exist_ok=True)
     PUBKEY.write_text(f"# APF trust root: verifies the policy bundle (scripts/apf-bundle.py).\ned25519:{pub}\n")
     print(f"seed:       {SEED} (load it into Vault as apf-signing, see values-secret.yaml.template)")
@@ -264,9 +266,18 @@ def cmd_build(args):
         revision = int(yaml.safe_load(old_body)["policy_revision"])
         old_members = {k: v for k, v in old.items() if k != MANIFEST}
         if old_members == files and not args.bump:
-            print(f"{BUNDLE.relative_to(ROOT)} is up to date (policy_revision {revision})")
-            return
+            # Same policy, but the signature must still match apf.pub (after
+            # `make apf-keys --force` the bundle needs re-signing with the new key),
+            # and the revision must be above every committed one (not a revert).
+            if not verify(check_current=False) and not history_problems():
+                print(f"{BUNDLE.relative_to(ROOT)} is up to date (policy_revision {revision})")
+                return
+            print(f"{BUNDLE.relative_to(ROOT)}: same policy, but its signature does not match "
+                  f"{PUBKEY.relative_to(ROOT)} (new key?) or its revision is not above git history; re-signing")
         revision += 1
+    # Never re-use a revision from git history, e.g. after reverting the bundle.
+    seen = [r for _, r in committed_revisions() if r is not None]
+    revision = max([revision] + [r + 1 for r in seen])
     files[MANIFEST] = sign(manifest_body(files, revision), key).encode()
     APF_DIR.mkdir(parents=True, exist_ok=True)
     BUNDLE.write_bytes(pack(files))
@@ -310,10 +321,75 @@ def verify(bundle=None, pubkey=None, policy_dir=None, check_current=True):
     return problems
 
 
+def revision_of(data):
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        body, _ = split_signed(tar.extractfile(MANIFEST).read().decode())
+    return int(yaml.safe_load(body)["policy_revision"])
+
+
+def committed_revisions(bundle=None):
+    """(commit, policy_revision) for each committed version of the bundle, oldest first."""
+    bundle = Path(bundle or BUNDLE)
+    git = ["git", "-C", str(bundle.parent)]
+    try:
+        top = subprocess.run(git + ["rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True)
+        rel = bundle.resolve().relative_to(Path(top.stdout.strip()).resolve()).as_posix()
+        log = subprocess.run(git + ["log", "--format=%H", "--", f":(top){rel}"],
+                             capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return []                                    # not in git: nothing to compare
+    out = []
+    for sha in reversed(log.stdout.split()):
+        shown = subprocess.run(git + ["show", f"{sha}:{rel}"], capture_output=True)
+        if shown.returncode != 0:                    # the commit that deleted it
+            continue
+        try:
+            out.append((sha[:12], revision_of(shown.stdout)))
+        except Exception:
+            out.append((sha[:12], None))
+    return out
+
+
+def history_problems(bundle=None):
+    """policy_revision must go up with every commit that changes the bundle.
+
+    APF's anti-rollback counter lives in the pod (an emptyDir in the APF chart),
+    so a new pod accepts any validly signed revision. Git is where the bundle
+    comes from: refusing a lower or repeated revision here (and in CI) stops a
+    revert from rolling policy back to an older signed bundle."""
+    bundle = Path(bundle or BUNDLE)
+    versions = committed_revisions(bundle)
+    try:
+        current = revision_of(bundle.read_bytes())
+    except Exception:
+        current = None
+    # The working tree counts when it differs from the last commit.
+    if not versions or not _same_as_head(bundle):
+        versions.append(("working tree", current))
+    problems, prev = [], None
+    for label, rev in versions:
+        if rev is None:
+            problems.append(f"{label}: cannot read policy_revision")
+            continue
+        if prev and rev <= prev[1]:
+            problems.append(f"{label}: policy_revision {rev} does not go above {prev[1]} ({prev[0]}); "
+                            "a new APF pod would accept the rollback. Run `make apf-bundle` "
+                            "instead of reverting the bundle")
+        if not prev or rev > prev[1]:
+            prev = (label, rev)
+    return problems
+
+
+def _same_as_head(bundle):
+    git = ["git", "-C", str(bundle.parent)]
+    r = subprocess.run(git + ["diff", "--quiet", "HEAD", "--", bundle.name], capture_output=True)
+    return r.returncode == 0
+
+
 def cmd_verify(args):
     if not BUNDLE.exists():
         fail(f"no bundle at {BUNDLE.relative_to(ROOT)}; run `make apf-keys apf-bundle`")
-    problems = verify(check_current=not args.integrity_only)
+    problems = verify(check_current=not args.integrity_only) + history_problems()
     for p in problems:
         print(f"FAIL: {p}")
     if problems:

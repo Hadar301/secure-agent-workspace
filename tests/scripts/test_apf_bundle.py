@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import shutil
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -191,6 +192,79 @@ def test_build_refuses_a_seed_for_another_public_key(work, tmp_path):
     work.SEED = other.SEED
     with pytest.raises(SystemExit, match="does not match"):
         work.cmd_build(Args())
+
+
+def test_build_re_signs_after_a_new_key(work):
+    """keygen --force with an unchanged policy: the bundle must be re-signed,
+    not reported up to date with the old key's signature."""
+    work.cmd_build(Args())
+    assert manifest(work)[0]["policy_revision"] == 1
+    work.cmd_keygen(Args(force=True))
+    assert work.verify(check_current=False) == [
+        "signature does not verify against the committed public key"]
+    work.cmd_build(Args())
+    assert work.verify(policy_dir=work.POLICY_DIR) == []
+    assert manifest(work)[0]["policy_revision"] == 2
+
+
+def test_build_skips_an_unchanged_bundle(work, capsys):
+    work.cmd_build(Args())
+    before = work.BUNDLE.read_bytes()
+    work.cmd_build(Args())
+    assert work.BUNDLE.read_bytes() == before
+    assert "up to date" in capsys.readouterr().out
+
+
+def git(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                   check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(work):
+    git(work.ROOT, "init", "-q")
+    return work
+
+
+def commit(mod, msg):
+    git(mod.ROOT, "add", "-A", str(mod.APF_DIR))
+    git(mod.ROOT, "commit", "-q", "-m", msg)
+
+
+def test_reverting_the_bundle_fails_the_check(repo):
+    """APF's counter is per pod (emptyDir): after a rollout it accepts any signed
+    revision. A revert to an older signed bundle must fail in git instead."""
+    repo.cmd_build(Args())
+    commit(repo, "r1")
+    old = repo.BUNDLE.read_bytes()
+    repo.cmd_build(Args(bump=True))
+    commit(repo, "r2")
+    assert repo.history_problems() == []
+    repo.BUNDLE.write_bytes(old)                         # git revert of the bundle
+    [problem] = repo.history_problems()
+    assert "working tree: policy_revision 1 does not go above 2" in problem
+    commit(repo, "revert")
+    assert repo.history_problems()                       # still flagged once committed
+
+
+def test_build_after_a_revert_goes_above_history(repo):
+    repo.cmd_build(Args())
+    commit(repo, "r1")
+    old = repo.BUNDLE.read_bytes()
+    repo.cmd_build(Args(bump=True))
+    commit(repo, "r2")
+    repo.BUNDLE.write_bytes(old)
+    repo.cmd_build(Args())                               # same policy, but must not stay at 1
+    assert manifest(repo)[0]["policy_revision"] == 3
+    commit(repo, "r3")
+    # 1, 2, 3: the revert never reached a commit, so history is clean.
+    assert repo.history_problems() == []
+
+
+def test_keygen_force_tightens_the_seed_permissions(work):
+    work.SEED.chmod(0o644)
+    work.cmd_keygen(Args(force=True))
+    assert work.SEED.stat().st_mode & 0o777 == 0o600
 
 
 def test_profile_ids_must_match_file_names(work):
