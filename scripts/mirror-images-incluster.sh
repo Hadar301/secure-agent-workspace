@@ -11,6 +11,16 @@ VERSION="${IMAGE_TAG:-latest}"
 IMAGES="${IMAGES:-openshell-gateway}"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+source "${SCRIPTS_DIR}/lib/image-repo.sh"
+validate_image_repo "$IMAGE_REPO"
+[[ "$BUILD_NS" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#BUILD_NS} -le 63 ]] || { echo 'Error: invalid BUILD_NS.' >&2; exit 1; }
+[[ "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && ${#VERSION} -le 128 ]] || { echo 'Error: invalid IMAGE_TAG.' >&2; exit 1; }
+read -r -a images <<< "${IMAGES//$'\n'/ }"
+[[ ${#images[@]} -gt 0 ]] || { echo 'Error: IMAGES must name at least one image.' >&2; exit 1; }
+for IMAGE in "${images[@]}"; do
+  [[ "$IMAGE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#IMAGE} -le 56 ]] || { echo 'Error: invalid IMAGES entry (mirror Job names must fit 63 characters).' >&2; exit 1; }
+done
+
 echo "Setting up image-mirror ServiceAccount..."
 oc apply -n "${BUILD_NS}" -f "${SCRIPTS_DIR}/mirror-images-rbac.yaml"
 # nonroot SCC (not anyuid) is sufficient: HOME and XDG_RUNTIME_DIR are redirected
@@ -19,7 +29,7 @@ oc apply -n "${BUILD_NS}" -f "${SCRIPTS_DIR}/mirror-images-rbac.yaml"
 # blocks root; nonroot overrides it for this SA without granting broader privileges.
 oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}"
 
-for IMAGE in ${IMAGES}; do
+for IMAGE in "${images[@]}"; do
   export IMAGE BUILD_NS IMAGE_REPO VERSION
   echo "Mirroring ${IMAGE}:${VERSION}..."
   oc delete job "mirror-${IMAGE}" -n "${BUILD_NS}" --ignore-not-found=true

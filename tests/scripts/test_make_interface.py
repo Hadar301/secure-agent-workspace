@@ -409,6 +409,7 @@ esac
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy2(ROOT / "scripts/check-build-repo.sh", scripts / "check-build-repo.sh")
+    shutil.copytree(ROOT / "scripts/lib", scripts / "lib")
     executable(scripts / "push-image.sh", 'echo "push $*" >> "$CALLS"\n')
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log))
     env.pop("IMAGE_REPO", None)
