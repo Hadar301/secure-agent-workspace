@@ -9,8 +9,9 @@ build:
   discoveryNodeVersion: "24.19.0"
   # Update with discoveryNodeVersion; multi-platform Node image index.
   discoveryNodeDigest: "sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df"
-  # Empty: the build node's architecture (buildah sets TARGETARCH), so an
-  # arm64 cluster builds an arm64 image. Set amd64/arm64 to force one.
+  # Required for the sandbox BuildConfig: upstream Dockerfile interpolates
+  # TARGETARCH in a FROM stage name, which OpenShift Buildah does not fill in.
+  # make sandbox-build detects homogeneous clusters or accepts BUILD_ARCH.
   targetArch: ""
   # NemoClaw v0.0.133 base image (multi-arch: amd64 and arm64).
   baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.133"
