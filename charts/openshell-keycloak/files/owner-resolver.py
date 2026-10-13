@@ -116,12 +116,12 @@ class Kubernetes:
         host = os.environ["KUBERNETES_SERVICE_HOST"]
         port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
         self.url = f"https://{host}:{port}"
-        with open(f"{SA}/token", encoding="utf-8") as stream:
-            self.token = stream.read().strip()
         self.ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 
     def call(self, path, method="GET", body=None):
-        return request(self.url + path, method, body, self.token, ctx=self.ctx)
+        with open(f"{SA}/token", encoding="utf-8") as stream:
+            token = stream.read().strip()
+        return request(self.url + path, method, body, token, ctx=self.ctx)
 
 
 def subject_for(kc, owner):

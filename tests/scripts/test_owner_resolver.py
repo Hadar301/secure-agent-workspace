@@ -86,3 +86,24 @@ def test_token_outage_sets_lookup_error(monkeypatch, tmp_path):
         resolver.run()
     assert kube.subject == ""
     assert kube.patches[0][1]["metadata"]["annotations"]["saw.redhat.com/owner-resolution"] == "lookup-error"
+
+
+def test_kubernetes_requests_use_rotated_service_account_token(monkeypatch, tmp_path):
+    token_file = tmp_path / "token"
+    token_file.write_text("first-token")
+    monkeypatch.setattr(resolver, "SA", str(tmp_path))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setattr(resolver.ssl, "create_default_context", lambda **_kwargs: object())
+    used_tokens = []
+
+    def record_request(_url, _method, _body, token, **_kwargs):
+        used_tokens.append(token)
+        return {}
+
+    monkeypatch.setattr(resolver, "request", record_request)
+    kube = resolver.Kubernetes()
+    kube.call("/api/v1/namespaces")
+    token_file.write_text("second-token")
+    kube.call("/api/v1/namespaces")
+
+    assert used_tokens == ["first-token", "second-token"]
