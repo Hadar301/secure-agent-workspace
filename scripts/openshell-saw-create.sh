@@ -5,7 +5,8 @@
 # New inference Secrets need PROVIDER and MODEL; API_KEY may be empty.
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
-#           PROFILES (comma-separated SAW-BOM profiles, default: the chart's)
+#           PROFILES (comma-separated SAW-BOM profiles, default: the chart's),
+#           SAW_VALUES_FILE (other Helm settings; topology is discovered)
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
 #   PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
@@ -20,6 +21,7 @@ cleanup_tmp() {
   if [[ -n "${inference_key_file:-}" ]]; then rm -f "${inference_key_file}"; fi
   if [[ -n "${web_search_key_file:-}" ]]; then rm -f "${web_search_key_file}"; fi
   if [[ -n "${BOM_VALUES:-}" ]]; then rm -f "${BOM_VALUES}"; fi
+  if [[ -n "${NETWORK_TOPOLOGY_VALUES:-}" ]]; then rm -f "${NETWORK_TOPOLOGY_VALUES}"; fi
 }
 trap cleanup_tmp EXIT
 
@@ -32,6 +34,11 @@ SAW_BOM_CHART="${SAW_BOM_CHART:-charts/saw-bom}"
 WEB_SEARCH_API_KEY="${WEB_SEARCH_API_KEY:-}"
 "$(dirname "$0")/check-saw-name.sh"
 SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
+SAW_VALUES_FILE="${SAW_VALUES_FILE:-}"
+if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
+  echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
+  exit 1
+fi
 PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
@@ -47,6 +54,7 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+GOVERNANCE_ENGINE="${GOVERNANCE_ENGINE:-interceptor}"
 DASHBOARD="${DASHBOARD:-false}"
 
 # Validate all provider settings before changing the cluster.
@@ -60,6 +68,10 @@ if [[ -n "${WEB_SEARCH}" ]]; then
 fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "Error: uv is required. Install uv before running make saw-create." >&2
+  exit 1
+fi
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "Error: python3 with PyYAML is required for network topology discovery." >&2
   exit 1
 fi
 if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
@@ -168,6 +180,14 @@ elif [[ "${DASHBOARD}" == true ]]; then
   exit 1
 fi
 
+# Discover the target cluster's networks and exact API backend before any
+# namespace, Secret, or Helm release is changed. The generated values overlay
+# follows SAW_VALUES_FILE so manually supplied stale topology cannot win.
+NETWORK_TOPOLOGY_VALUES="$(mktemp)"
+topology_opts=(--output "${NETWORK_TOPOLOGY_VALUES}")
+[[ -z "${SAW_VALUES_FILE}" ]] || topology_opts+=(--values-file "${SAW_VALUES_FILE}")
+python3 "$(dirname "$0")/network-topology.py" discover "${topology_opts[@]}"
+
 # --- Build OIDC helm options ---
 OIDC_OPTS=()
 if [[ -n "${OIDC_ISSUER}" ]]; then
@@ -275,8 +295,14 @@ helm_opts=(
   --set-string "source.dataSourceNamespace=${NS}"
   --set-string "containerRuntime=${CONTAINER_RUNTIME}"
   --set "governance.enabled=${GOVERNANCE_ENABLED}"
+  --set-string "governance.engine=${GOVERNANCE_ENGINE}"
   --set route.enabled=true --set route.dashboard=true
 )
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  helm_opts=(-f "${SAW_VALUES_FILE}" -f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
+else
+  helm_opts=(-f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
+fi
 if [[ "${dashboard_enabled}" != true ]]; then
   # External OIDC providers cannot be updated through the Keycloak Admin API.
   helm_opts+=(--set dashboard.enabled=false --set route.dashboard=false

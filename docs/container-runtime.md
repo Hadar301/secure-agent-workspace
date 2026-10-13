@@ -164,7 +164,7 @@ back silently.
 agent calls its provider endpoint through the sandbox proxy. See
 [deployment details](deployment-guide.md) for the current installer flow.
 
-**The `nemoclaw-sandbox` image** must be available in the cluster before the in-guest installer creates that sandbox. Either build it with `make sandbox-build` or mirror it from `quay.io/rh-ai-quickstart/nemoclaw-sandbox:<version>` using an in-cluster skopeo job (see Bug #1 in `local-docs/deployment-summary.md`).
+**The `nemoclaw-sandbox` image** must be reachable from the VM before the in-guest installer creates that sandbox. Either build it with `make sandbox-build` or mirror it from `ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest` using `make images-mirror MIRROR_IMAGES=nemoclaw-sandbox`. The default BOM pulls this public GHCR image directly from the VM. See [Container images](container-images.md).
 
 ## Risks
 

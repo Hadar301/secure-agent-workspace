@@ -53,10 +53,33 @@ defaults:
     prune:
       mode: report
       sandboxes: false
+    # Existing pattern sandboxes opt in one at a time after `make prereqs-check`
+    # verifies the target cluster's CIDRs and Kubernetes API backends. Put the
+    # discovered values here, then set enabled: true under one user's values.
+    networkPolicy:
+      enabled: false
+      clusterNetworkCIDRs: []
+      serviceNetworkCIDRs: []
+    cleanupApi:
+      serviceIP: ""
+      endpoints: []
     # Hosts the VM may reach beyond charts/openshell-saw `egress.allow`.
     # egress:
     #   extraAllow:
     #     - vllm.example.net
+    # For an in-cluster Service, also allow its namespace/pods and port:
+    # networkPolicy:
+    #   extraEgress:
+    #     - to:
+    #         - namespaceSelector:
+    #             matchLabels:
+    #               kubernetes.io/metadata.name: models
+    #           podSelector:
+    #             matchLabels:
+    #               app: vllm
+    #       ports:
+    #         - protocol: TCP
+    #           port: 8000
 
 # Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
 # route and an owner-only oauth2-proxy in the VM that listens on
@@ -86,6 +109,8 @@ argo:
 machineGlobals:
   - clusterDomain
   - sshPublicKey
+  # Keep per-user SAW pod selectors aligned with the selected governance engine.
+  - governance
 
 syncWave:
   namespace: "-1"

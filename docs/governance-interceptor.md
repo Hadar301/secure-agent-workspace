@@ -139,6 +139,10 @@ Called by the gateway to fetch the current set of provider profiles from the int
 ### Adding a new provider profile
 
 1. Admin creates `charts/governance-policy/profiles/jira.yaml`
+   and adds each exact external endpoint host to `charts/openshell-saw/values.yaml`
+   `egress.allow` (or `egress.extraAllow` for a site-specific host). An in-cluster
+   endpoint also needs `networkPolicy.extraEgress` for its namespace, pods, and
+   port. CI checks shipped profile hosts and ports against the chart allowlist.
 2. Admin commits and pushes to Git
 3. ArgoCD detects the change and syncs the `governance-policy` application
 4. The `governance-interceptor-profiles` ConfigMap is updated with the new key
@@ -182,7 +186,7 @@ rpc = "openshell.v1.OpenShell/CreateProvider"
 phases = ["validate"]
 ```
 
-The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/governance-interceptor/Dockerfile`.
+The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/helm/governance-interceptor-image/files/Dockerfile`.
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 

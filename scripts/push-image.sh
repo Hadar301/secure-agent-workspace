@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NAMESPACE="${1:?Usage: push-image.sh <namespace> <image-name> <quay-repo>}"
+NAMESPACE="${1:?Usage: push-image.sh <namespace> <image-name> <image-repo>}"
 IMAGE="${2:?}"
-QUAY_REPO="${3:?}"
+IMAGE_REPO="${3:?}"
+"$(dirname "$0")/check-build-repo.sh" "$IMAGE_REPO"
 
 # Ensure the default image-registry route exists
 oc patch configs.imageregistry.operator.openshift.io/cluster \
@@ -27,15 +28,15 @@ fi
 oc registry login --registry="${REGISTRY}" --insecure=true
 
 # oc image mirror uses the current containers auth file. It reports any
-# missing Quay credentials with a nonzero exit status below.
+# missing GHCR credentials with a nonzero exit status below.
 
 VERSION_TAG="${4:-}"
 
 oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
-  "${QUAY_REPO}/${IMAGE}:latest" --insecure=true
+  "${IMAGE_REPO}/${IMAGE}:latest" --insecure=true
 
-if [ -n "$VERSION_TAG" ]; then
-  echo "  Tagging ${QUAY_REPO}/${IMAGE}:${VERSION_TAG}..."
+if [[ -n "$VERSION_TAG" && "$VERSION_TAG" != latest ]]; then
+  echo "  Tagging ${IMAGE_REPO}/${IMAGE}:${VERSION_TAG}..."
   oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
-    "${QUAY_REPO}/${IMAGE}:${VERSION_TAG}" --insecure=true
+    "${IMAGE_REPO}/${IMAGE}:${VERSION_TAG}" --insecure=true
 fi

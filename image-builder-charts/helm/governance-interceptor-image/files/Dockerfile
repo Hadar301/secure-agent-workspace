@@ -1,16 +1,21 @@
 # OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
-FROM --platform=linux/amd64 rust:1.94-bookworm AS builder
+ARG BUILDER_IMAGE=rust:1.94-bookworm
+ARG RUNTIME_IMAGE=debian-runtime
+
+FROM ${BUILDER_IMAGE} AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 ARG OPENSHELL_REF=v0.1.2
+ARG OPENSHELL_URI=https://github.com/NVIDIA/OpenShell.git
+ARG CONTEXT_DIR=examples/governance-interceptor
 RUN git init . \
-    && git remote add origin https://github.com/NVIDIA/OpenShell.git \
+    && git remote add origin "${OPENSHELL_URI}" \
     && git fetch --depth 1 origin "${OPENSHELL_REF}" \
     && git checkout --detach FETCH_HEAD
 
-WORKDIR /build/examples/governance-interceptor
+WORKDIR /build/${CONTEXT_DIR}
 # Workaround for NVIDIA/OpenShell#3929 (v0.1.2): the gateway hashes provider
 # profile annotations in map order, so a profile with more than one annotation
 # gives a different provider_env_revision on every call and no sandbox with a
@@ -179,7 +184,9 @@ RUN printf '%s\n' \
 RUN cargo test --locked --release --target-dir /out harness_driver_tests \
     && cargo build --locked --release --target-dir /out
 
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim AS debian-runtime
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+FROM ${RUNTIME_IMAGE}
 COPY --from=builder /out/release/governance-interceptor /usr/local/bin/governance-interceptor
 ENTRYPOINT ["governance-interceptor"]
