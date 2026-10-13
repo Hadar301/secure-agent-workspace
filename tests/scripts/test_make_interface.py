@@ -263,7 +263,7 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("prereqs-check", env=env)
     assert result.returncode != 0
-    assert "does not match gateway BOM 0.1.2-rhaiv.0" in result.stderr
+    assert "does not match gateway BOM 0.1.2-rhaiv.6" in result.stderr
     assert "oc must not run" not in result.stderr
 
 
