@@ -151,6 +151,23 @@ def test_owner_recreation_removes_stale_membership(ab, fake_env, config, profile
     assert fake_env.openshell_state()["members"] == []
 
 
+def test_owner_revocation_clears_retained_disabled_workspace(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    config = {**config, "prune": {"mode": "report", "ledgerPath": str(tmp_path / "managed.json")}}
+    make_applier(ab, config, creds, ownerSubject="old-subject").apply(profiles)
+    for profile in profiles:
+        for workspace in profile.workspaces:
+            if workspace.name == "cuda-dev":
+                workspace.enabled = False
+
+    make_applier(ab, config, creds, ownerSubject="").apply(profiles)
+
+    state = fake_env.openshell_state()
+    assert "cuda-dev" in state["workspaces"]
+    assert state["members"] == []
+    assert json.loads((tmp_path / "owner-memberships.json").read_text()) == {}
+
+
 def test_mtls_client_without_admin_fails_clearly(ab, fake_env, config, profiles, creds):
     fake_env.deny("workspace create")
     with pytest.raises(ab.InstallerError, match="platform admin; check the mTLS identity has the openshell-admin role"):

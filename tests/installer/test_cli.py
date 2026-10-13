@@ -177,6 +177,27 @@ def test_no_profiles_disk_still_configures_gateway(world):
     assert world.fake.openshell_state()["selected"] == "saw-installer"
 
 
+def test_no_enabled_profiles_still_revokes_old_owner(world):
+    cfg_path = world.inputs / "installer" / "config.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg["ownerSubject"] = "old-subject"
+    cfg_path.write_text(json.dumps(cfg))
+    assert world.run("install").returncode == 0
+    assert world.run("apply").returncode == 0
+    assert len(world.fake.openshell_state()["members"]) == 2
+
+    for profile_file in (world.inputs / "profiles").iterdir():
+        profile_file.unlink()
+    cfg["ownerSubject"] = ""
+    cfg_path.write_text(json.dumps(cfg))
+    result = world.run("apply")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert world.fake.openshell_state()["members"] == []
+    assert "cuda-dev" in world.fake.openshell_state()["workspaces"]
+    assert json.loads((world.state / "user" / "owner-memberships.json").read_text()) == {}
+
+
 def test_dry_run_changes_nothing(world):
     home_before = sorted(p.relative_to(world.home) for p in world.home.rglob("*"))
     result = world.run("install", "--dry-run")

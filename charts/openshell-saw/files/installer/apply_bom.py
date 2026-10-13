@@ -2580,19 +2580,25 @@ class ProfileApplier:
                     f"could not create workspace '{ws.name}'. Creating workspaces needs "
                     "platform admin; check the mTLS identity has the openshell-admin role")
         owner = self.cfg.get("ownerSubject")
-        previous = self.owner_memberships.get(ws.name)
-        if previous and previous != owner:
-            removed = self.cli("workspace", "member", "remove", "--workspace", ws.name,
-                               "--subject", previous, check=False)
-            if not removed.ok and "not found" not in (removed.out + removed.err).lower():
-                raise InstallerError(f"could not remove previous owner from workspace '{ws.name}'")
-            self.owner_memberships.pop(ws.name, None)
-            if self.owner_state_path and not self.sh.dry_run:
-                write_json_atomic(self.owner_state_path, self.owner_memberships, mode=0o600)
         if owner:
             self.cli("workspace", "member", "add", "--workspace", ws.name,
                      "--subject", owner, "--role", "admin", ok_if_exists=True)
             self.owner_memberships[ws.name] = owner
+            if self.owner_state_path and not self.sh.dry_run:
+                write_json_atomic(self.owner_state_path, self.owner_memberships, mode=0o600)
+
+    def reconcile_owner_memberships(self):
+        """Revoke an old subject in every recorded workspace, even if its
+        profile is now disabled or removed and pruning retains the workspace."""
+        owner = self.cfg.get("ownerSubject")
+        for workspace, previous in list(self.owner_memberships.items()):
+            if not previous or previous == owner:
+                continue
+            removed = self.cli("workspace", "member", "remove", "--workspace", workspace,
+                               "--subject", previous, check=False)
+            if not removed.ok and "not found" not in (removed.out + removed.err).lower():
+                raise InstallerError(f"could not remove previous owner from workspace '{workspace}'")
+            self.owner_memberships.pop(workspace, None)
             if self.owner_state_path and not self.sh.dry_run:
                 write_json_atomic(self.owner_state_path, self.owner_memberships, mode=0o600)
 
@@ -3416,6 +3422,7 @@ class ProfileApplier:
             raise InstallerError(
                 "profile ConfigMap is missing or empty; refusing to change the gateway")
         self.register_gateway()
+        self.reconcile_owner_memberships()
         for profile, ws in enabled_workspaces(profiles):
             self.profile_name = profile.name
             banner(f"Profile {profile.name} / workspace {ws.name}")
@@ -4758,8 +4765,9 @@ def apply_plan(data, dry_run):
                              harness_from_plan(data))
     apply_error = None
     if not list(enabled_workspaces(profiles)):
-        log("No enabled workspaces in the SAW-BOM profiles; only the gateway entry is configured")
+        log("No enabled workspaces in the SAW-BOM profiles; reconciling owner access")
         applier.register_gateway()
+        applier.reconcile_owner_memberships()
     else:
         try:
             applier.apply(profiles)
