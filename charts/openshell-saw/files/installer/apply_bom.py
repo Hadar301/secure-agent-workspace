@@ -1004,16 +1004,22 @@ def openclaw_harness_config(info):
 # mcp.servers replaces the bundle's server of the same name (found live: the
 # daily-briefing Slack reader works only this way).
 BUNDLE_ROOT_PLACEHOLDERS = ("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}")
-MCP_TRUST_ENV = ("NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+# The CA settings OpenShell gives a sandbox's processes when it has the proxy
+# CA (openshell-sandbox child_env::tls_env_vars). Only the ones the sandbox
+# really has are passed on: OpenClaw leaves an unset ${VAR} as literal text,
+# and REQUESTS_CA_BUNDLE='${REQUESTS_CA_BUNDLE}' breaks every HTTPS call.
+MCP_TRUST_ENV = ("NODE_EXTRA_CA_CERTS", "DENO_CERT", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+                 "CURL_CA_BUNDLE", "GIT_SSL_CAINFO")
 MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAW_MCP_STATE = "/sandbox/.openclaw/saw-mcp-servers.json"
 
 
-def harness_mcp_servers(info):
+def harness_mcp_servers(info, trust_env=()):
     """{name: mcp.servers entry} re-declaring the bundle's MCP servers in
     openclaw.json, where OpenClaw expands ${VAR}. Stdio servers also get the
-    sandbox's CA settings, so they trust the egress proxy. Paths resolve as
-    OpenClaw resolves them for a bundle (root: the harness mount)."""
+    CA settings named in trust_env (the ones the sandbox has), so they trust
+    the egress proxy. Paths resolve as OpenClaw resolves them for a bundle
+    (root: the harness mount)."""
     if info is None or not info.get("agentPluginsBundle"):
         return {}
     root = HARNESS_MOUNT
@@ -1040,7 +1046,7 @@ def harness_mcp_servers(info):
             entry = {"command": expand(command),
                      "args": [expand(a) for a in conf.get("args") or []],
                      "env": {"PLUGIN_ROOT": root, "PLUGIN_DATA": data,
-                             **{var: f"${{{var}}}" for var in MCP_TRUST_ENV},
+                             **{var: f"${{{var}}}" for var in trust_env},
                              **{k: expand(v) for k, v in (conf.get("env") or {}).items()}}}
             if conf.get("cwd"):
                 entry["cwd"] = expand(conf["cwd"])
@@ -1053,6 +1059,13 @@ def harness_mcp_servers(info):
             continue
         out[name] = entry
     return out
+
+
+def mcp_trust_env_probe():
+    """Shell that prints the names (never the values) of the MCP_TRUST_ENV
+    settings the sandbox has."""
+    names = " ".join(MCP_TRUST_ENV)
+    return f'for v in {names}; do [ -n "$(printenv "$v")" ] && echo "$v"; done; true'
 
 
 def harness_plugin_ids(info):
@@ -3329,7 +3342,16 @@ class ProfileApplier:
         (harness_mcp_servers), and remove the ones an earlier apply added
         that the bundle no longer has. A change restarts the gateway, which
         starts MCP servers."""
-        desired = harness_mcp_servers(info)
+        trust_env = ()
+        if info is not None and info.get("mcpConfigs"):
+            probe = self.cli(*exec_cmd, "sh", "-c", mcp_trust_env_probe(), check=False, quiet=True)
+            if not probe.ok:
+                log(f"WARN: sandbox '{sb.name}': could not read its CA settings; "
+                    "MCP server declarations left unchanged until the next apply")
+                return
+            have = set(probe.out.split())
+            trust_env = tuple(var for var in MCP_TRUST_ENV if var in have)
+        desired = harness_mcp_servers(info, trust_env)
         state = json.dumps(desired, sort_keys=True)
         seen = self.cli(*exec_cmd, "cat", SAW_MCP_STATE, check=False, quiet=True)
         try:
@@ -3340,7 +3362,11 @@ class ProfileApplier:
             previous = {}
         if json.dumps(previous, sort_keys=True) == state:
             return
-        lines = [f"{oc_env} openclaw config unset mcp.servers.{shlex.quote(name)} >/dev/null 2>&1 || true"
+        # set -e: the record is written only when every declaration took,
+        # so a failed one is retried by the next apply instead of being
+        # recorded as done (verify would then fail on every apply).
+        lines = ["set -e"]
+        lines += [f"{oc_env} openclaw config unset mcp.servers.{shlex.quote(name)} >/dev/null 2>&1 || true"
                  for name in sorted(set(previous) - set(desired)) if MCP_SERVER_NAME_RE.match(name)]
         for name, entry in desired.items():
             data = (entry.get("env") or {}).get("PLUGIN_DATA")
@@ -3349,8 +3375,14 @@ class ProfileApplier:
             lines.append(f"{oc_env} openclaw config set mcp.servers.{name} "
                          f"{shlex.quote(json.dumps(entry))}")
         lines.append(f"printf '%s\\n' {shlex.quote(state)} > {SAW_MCP_STATE}")
-        self.cli(*exec_cmd, "sh", "-c", "\n".join(lines), check=False)
+        done = self.cli(*exec_cmd, "sh", "-c", "\n".join(lines), check=False)
+        # Restart even after a partial failure: some declarations may have
+        # changed, and the gateway reads them only when it starts.
         self.harness_refilled[(ws.name, sb.name)] = True
+        if not done.ok:
+            log(f"WARN: sandbox '{sb.name}': declaring the harness MCP servers in "
+                "openclaw.json failed; the next apply retries")
+            return
         if desired:
             log(f"Sandbox '{sb.name}': MCP server(s) {', '.join(desired)} declared in "
                 "openclaw.json (provider placeholders and the proxy CA reach them)")
@@ -3450,7 +3482,7 @@ class ProfileApplier:
                 failures = mcp_registration_failures(listed.out, info["mcpServers"])
                 if failures:
                     return [f"{failure} from {source}" for failure in failures]
-        for name, entry in harness_mcp_servers(info).items():
+        for name, entry in harness_mcp_servers(info, MCP_TRUST_ENV).items():
             got = self.cli(*exec_cmd, "sh", "-c",
                            f"{OPENCLAW_EXEC_ENV} openclaw config get mcp.servers.{name}",
                            check=False, quiet=True)
@@ -3459,7 +3491,12 @@ class ProfileApplier:
             except ValueError:
                 seen_entry = None
             key = "command" if "command" in entry else "url"
-            if not isinstance(seen_entry, dict) or seen_entry.get(key) != entry[key]:
+            # The bundle's own env keys must all be there (OpenClaw redacts
+            # the values); the CA settings are only the ones the sandbox has.
+            want_env = set(entry.get("env") or {}) - set(MCP_TRUST_ENV)
+            seen_env = (seen_entry.get("env") or {}) if isinstance(seen_entry, dict) else {}
+            if (not isinstance(seen_entry, dict) or seen_entry.get(key) != entry[key]
+                    or not isinstance(seen_env, dict) or not want_env <= set(seen_env)):
                 return [f"OpenClaw does not declare MCP server '{name}' in openclaw.json; "
                         "the bundle's own entry cannot pass it its provider placeholder "
                         f"or the proxy CA ({source})"]

@@ -1128,6 +1128,73 @@ def test_mcp_servers_are_declared_once_and_follow_the_bundle(ab, fake_env, confi
     assert sb["mcpWrites"] == 2 and "mcp.servers.echo" not in sb["openclawConfig"]
 
 
+def test_mcp_servers_get_only_the_ca_settings_the_sandbox_has(ab, fake_env, config, profiles, creds):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, config, creds).apply(profiles)
+    env = notebook(fake_env)["openclawConfig"]["mcp.servers.echo"]["env"]
+    assert set(ab.MCP_TRUST_ENV) <= set(env)
+    # A sandbox without the proxy CA: the settings go, and so does the
+    # literal ${VAR} OpenClaw would otherwise have passed on.
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["trustEnv"] = ["NODE_EXTRA_CA_CERTS"]
+    fake_env.set_openshell_state(state)
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    sb = notebook(fake_env)
+    env = sb["openclawConfig"]["mcp.servers.echo"]["env"]
+    assert set(env) & set(ab.MCP_TRUST_ENV) == {"NODE_EXTRA_CA_CERTS"}
+    assert sb["mcpWrites"] == 2
+    assert applier.verify(profiles) == []
+
+
+def test_a_failed_mcp_declaration_is_retried_by_the_next_apply(ab, fake_env, config, profiles, creds, capsys):
+    """set -e: the record is written only when every declaration took. A
+    record written after a failure would make later applies skip the fix."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    fails = fake_env.state / "mcp-set-fails.json"
+    fails.write_text(json.dumps(["echo"]))
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    sb = notebook(fake_env)
+    assert "sawMcpState" not in sb and "mcp.servers.echo" not in sb["openclawConfig"]
+    assert "declaring the harness MCP servers in openclaw.json failed" in capsys.readouterr().out
+    assert any("does not declare MCP server 'echo'" in f for f in applier.verify(profiles))
+    fails.unlink()
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    sb = notebook(fake_env)
+    assert "mcp.servers.echo" in sb["openclawConfig"] and "sawMcpState" in sb
+    assert applier.verify(profiles) == []
+
+
+def test_an_unreadable_sandbox_env_changes_no_declaration(ab, fake_env, config, profiles, creds, capsys):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, config, creds).apply(profiles)
+    before = notebook(fake_env)["openclawConfig"]["mcp.servers.echo"]
+    state = fake_env.openshell_state()
+    state["trustProbeFails"] = True
+    fake_env.set_openshell_state(state)
+    make_applier(ab, config, creds).apply(profiles)
+    sb = notebook(fake_env)
+    assert sb["mcpWrites"] == 1 and sb["openclawConfig"]["mcp.servers.echo"] == before
+    assert "could not read its CA settings" in capsys.readouterr().out
+
+
+def test_a_declaration_missing_a_bundle_env_key_fails_verify(ab, fake_env, config, profiles, creds):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    entry = state["sandboxes"]["default/notebook"]["openclawConfig"]["mcp.servers.echo"]
+    entry["env"].pop("PLUGIN_ROOT")
+    fake_env.set_openshell_state(state)
+    assert any("does not declare MCP server 'echo'" in f for f in applier.verify(profiles))
+
+
 def test_a_missing_mcp_declaration_fails_verify(ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     use_ref(profiles, {"image": IMAGE_V1})

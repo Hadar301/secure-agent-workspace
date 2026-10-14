@@ -507,7 +507,7 @@ def test_a_stdio_server_gets_its_placeholders_through_openclaw_json(ab):
     info = _mcp_info(ab, {"search": {"type": "stdio", "command": "node",
                                      "args": ["${PLUGIN_ROOT}/mcp/search.mjs", "--data=${PLUGIN_DATA}"],
                                      "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}}})
-    entry = ab.harness_mcp_servers(info)["search"]
+    entry = ab.harness_mcp_servers(info, ab.MCP_TRUST_ENV)["search"]
     assert entry["command"] == "node"
     assert entry["args"] == ["/sandbox/harness/mcp/search.mjs",
                              "--data=/sandbox/.openclaw/saw-plugin-data/demo"]
@@ -516,6 +516,30 @@ def test_a_stdio_server_gets_its_placeholders_through_openclaw_json(ab):
     for var in ab.MCP_TRUST_ENV:
         assert entry["env"][var] == "${%s}" % var
     assert entry["env"]["PLUGIN_ROOT"] == "/sandbox/harness"
+
+
+def test_only_the_ca_settings_the_sandbox_has_are_passed_on(ab):
+    """OpenClaw leaves an unset ${VAR} as literal text, and a Python server
+    given REQUESTS_CA_BUNDLE='${REQUESTS_CA_BUNDLE}' fails every HTTPS call."""
+    info = _mcp_info(ab, {"search": {"type": "stdio", "command": "python3",
+                                     "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}}})
+    env = ab.harness_mcp_servers(info)["search"]["env"]
+    assert not set(env) & set(ab.MCP_TRUST_ENV)
+    env = ab.harness_mcp_servers(info, ("NODE_EXTRA_CA_CERTS",))["search"]["env"]
+    assert set(env) & set(ab.MCP_TRUST_ENV) == {"NODE_EXTRA_CA_CERTS"}
+    assert env["BRAVE_API_KEY"] == "${BRAVE_API_KEY}"
+
+
+def test_the_trust_settings_match_what_openshell_sets(ab):
+    """openshell-sandbox child_env::tls_env_vars: Deno and git included."""
+    assert set(ab.MCP_TRUST_ENV) == {"NODE_EXTRA_CA_CERTS", "DENO_CERT", "SSL_CERT_FILE",
+                                     "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"}
+
+
+def test_the_ca_probe_prints_names_only(ab):
+    probe = ab.mcp_trust_env_probe()
+    assert "printenv" in probe and all(var in probe for var in ab.MCP_TRUST_ENV)
+    assert 'echo "$v"' in probe and "$(printenv" in probe  # the name, never the value
 
 
 def test_a_relative_command_resolves_inside_the_bundle(ab):

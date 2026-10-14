@@ -114,10 +114,15 @@ cannot read it.
    with the same command, arguments and `env`; OpenClaw expands `${VAR}`
    there from the gateway's environment, and a server declared there
    replaces the bundle's server of the same name. Stdio servers also get
-   the sandbox's CA settings (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
-   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`), so a server in any language
-   trusts the proxy. Remote servers are re-declared only when they have
-   `headers`. Verification fails if a declaration is missing. Nothing
+   the CA settings OpenShell gives the sandbox (`NODE_EXTRA_CA_CERTS`,
+   `DENO_CERT`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
+   `GIT_SSL_CAINFO`), so a server in any language trusts the proxy. Only
+   the ones the sandbox has are passed on: OpenClaw leaves an unset
+   `${VAR}` as literal text, which would break TLS for a Python or curl
+   server. Remote servers are re-declared only when they have `headers`.
+   The installer records what it declared only after every declaration
+   succeeded, so the next apply retries a failed one. Verification fails if
+   a declaration, or one of the bundle's `env` keys, is missing. Nothing
    changes for the bundle author: write `mcp.json` as above.
 
 The installer refuses a bundle whose governed server or plugin names a profile
