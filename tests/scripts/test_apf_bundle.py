@@ -134,6 +134,23 @@ def test_translation_keeps_what_openshell_needs(work):
     assert brave["spec"]["binaries"][0] == "/usr/bin/curl"
 
 
+def test_the_policy_carries_the_harness_driver_config_rule(work):
+    """APF denies all driver config unless the signed SandboxPolicy allows it:
+    only the installer's harness volume, read-only, from an admin, podman."""
+    policy = yaml.safe_load(work.members()["sandbox/default-policy.yaml"])
+    rule = policy["spec"]["driver_config"]
+    assert rule == {
+        "deny_templates": True,
+        "allowed": [{
+            "require_role": "openshell-admin",
+            "drivers": ["podman"],
+            "max_mounts": 1,
+            "mounts": [{"type": "volume", "source_prefix": "saw-harness-",
+                        "target": "/sandbox/harness", "read_only": True}],
+        }],
+    }
+
+
 def test_profiles_apf_cannot_express_stay_out(work, capsys):
     """Query-auth credentials have no place for the parameter name in APF, and
     OpenShell rejects the whole catalog without it (seen live with gemini)."""

@@ -106,7 +106,7 @@ def test_apf_replaces_the_interceptor(apf_chart):
     assert app["metadata"]["finalizers"] == ["resources-finalizer.argocd.argoproj.io"]
     source = app["spec"]["source"]
     assert (source["repoURL"], source["chart"], source["targetRevision"]) == \
-        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.0")
+        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.1-driverconfig")
     helm = source["helm"]
     # The Service keeps the name every SAW gateway calls.
     assert helm["releaseName"] == "governance-interceptor"
@@ -120,12 +120,14 @@ def test_apf_replaces_the_interceptor(apf_chart):
     assert values["trustRoot"] == {"existingConfigMap": "governance-apf-trust"}
     # Never the dev key baked into the APF chart.
     assert values["signing"] == {"existingSecret": "governance-apf-signing"}
-    # The 0.1.0 images: the first APF build that speaks OpenShell 0.1.x's
-    # extension protocol (the chart's own 0.2.0 images are refused by a 0.1.x
-    # gateway at startup, seen live). Same pull secret.
-    assert values["gateway"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0"
-    assert values["policyService"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-service:0.1.0"
-    assert values["compile"]["image"] == "ghcr.io/mkhaas/apf/apf-compile:0.1.0"
+    # Images that speak OpenShell 0.1.x's extension protocol (a 0.1.x gateway
+    # refuses older ones at startup, seen live) and enforce the driver_config
+    # allowlist. Same pull secret. SAW signs its own bundle, so no apf-compile.
+    assert values["gateway"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0-driverconfig.3"
+    assert values["policyService"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-service:0.1.0-driverconfig.3"
+    assert "compile" not in values
+    # APF admits driver config only for the gateway's own compute driver.
+    assert values["interceptor"]["computeDriver"] == "podman"
     # A new bundle restarts the APF pod (its chart only watches inputs it renders).
     import hashlib
     files = apf_chart / "files" / "apf"
@@ -256,16 +258,44 @@ def test_apf_bindings_can_still_be_narrowed(tmp_path):
 
 
 @pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
-def test_apf_engine_refuses_harness_driver_config(flag):
-    """Harness bundles (#78) rely on the patched interceptor to admit only the
-    installer's read-only harness mount from an mTLS admin. APF has no such
-    guard, so the chart refuses the combination instead of dropping it."""
-    result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
-                             "-f", str(TOPOLOGY),
-                             "--set", flag, "--set", "allowDriverConfig=true"],
-                            capture_output=True, text=True)
-    assert result.returncode != 0
-    assert "allowDriverConfig" in result.stderr and "interceptor" in result.stderr
+def test_apf_engine_allows_harness_driver_config(flag):
+    """Harness bundles (#78) under APF: the gateway accepts driver config, and
+    APF admits only the installer's read-only harness mount from an admin
+    (the driver_config allowlist in the signed bundle; deny by default)."""
+    gateway = gateway_toml("--set", flag, "--set", "allowDriverConfig=true")
+    assert gateway["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
+
+
+def test_the_apf_bundle_admits_the_mount_the_installer_makes():
+    """The rule must match apply_bom.harness_mounts_json() exactly, or APF
+    denies every harness sandbox."""
+    import importlib.util
+    import json
+    spec = importlib.util.spec_from_file_location(
+        "apply_bom_for_apf", ROOT / "charts" / "openshell-saw" / "files" / "installer" / "apply_bom.py")
+    ab = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ab)
+    request = json.loads(ab.harness_mounts_json(ab.HARNESS_VOLUME_PREFIX + "abc123"))
+    rule = load_script_rule()
+    assert list(request) == rule["allowed"][0]["drivers"] == ["podman"]
+    mount, = request["podman"]["mounts"]
+    allowed, = rule["allowed"][0]["mounts"]
+    assert set(mount) == {"type", "source", "target", "read_only"}
+    assert mount["type"] == allowed["type"] == "volume"
+    assert mount["source"].startswith(allowed["source_prefix"])
+    assert mount["target"] == allowed["target"] == ab.HARNESS_MOUNT
+    assert mount["read_only"] is allowed["read_only"] is True
+    assert rule["allowed"][0]["max_mounts"] == 1
+    assert rule["allowed"][0]["require_role"] == "openshell-admin"
+    assert rule["deny_templates"] is True
+
+
+def load_script_rule():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("apf_bundle_rule", ROOT / "scripts" / "apf-bundle.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.HARNESS_DRIVER_CONFIG
 
 
 def test_interceptor_engine_keeps_harness_driver_config():

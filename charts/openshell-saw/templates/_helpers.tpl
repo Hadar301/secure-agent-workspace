@@ -336,10 +336,10 @@ allow_unauthenticated_users = false
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 {{- if .Values.allowDriverConfig }}
-{{- if and .Values.governance.enabled (eq (include "openshell-sandbox.governanceEngine" .) "apf") }}
-{{- fail "allowDriverConfig (harness bundles) needs governance.engine interceptor: the interceptor's guard admits only the installer's read-only harness mount, and APF has no such guard. Turn harness bundles off for this workspace, or use the interceptor engine." }}
-{{- end }}
-# Sandboxes mount their harness volume through caller driver config.
+# Sandboxes mount their harness volume through caller driver config. The
+# governance engine admits only the installer's read-only harness mount from
+# an admin: the interceptor's guard, or APF's signed driver_config allowlist
+# (scripts/apf-bundle.py; APF denies all driver config without it).
 # Resource admission and enable_bind_mounts keep their defaults (on / off),
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
