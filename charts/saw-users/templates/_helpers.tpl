@@ -254,7 +254,13 @@ metadata:
     # annotation to diff against, so fields the cluster defaults (KubeVirt
     # adds the VM's firmware serial/uuid and machine type) would show the
     # VM OutOfSync forever. Let the API server compute the diff instead.
-    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    # IncludeMutationWebhook=true: without it Argo strips webhook changes
+    # with its built-in schemas, which do not know OpenShift's Route, and
+    # every comparison fails ("unable to resolve parseableType for
+    # route.openshift.io/v1, Kind=Route"): a user with a dashboard or UI
+    # route never gets a later commit. With it, the dry run's webhook
+    # defaults (KubeVirt's included) are on both sides of the diff.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true,IncludeMutationWebhook=true
   {{- if include "saw-users.prune" (dict "root" $root "user" $user) }}
   finalizers:
     - {{ $root.Values.argo.finalizer }}

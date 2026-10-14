@@ -95,9 +95,11 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
                                                       "retry": {"limit": 20},
                                                       "syncOptions": ["ServerSideApply=true"]}
         # Found on the GB200: without server-side diff the VM stayed
-        # OutOfSync on the fields KubeVirt defaults.
+        # OutOfSync on the fields KubeVirt defaults. Found on OpenShift:
+        # without IncludeMutationWebhook every comparison failed on the
+        # user's Routes, so the app never synced a later commit.
         assert (application["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
-                == "ServerSideDiff=true")
+                == "ServerSideDiff=true,IncludeMutationWebhook=true")
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 
