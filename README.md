@@ -2,9 +2,28 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
+## Upgrade: stage network isolation per user
+
+This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`
+chart enables it by default and requires the target cluster's pod and Service
+CIDRs plus the Kubernetes API Service IP and exact EndpointSlice backend IPs
+and ports. A direct Helm render fails until these values are supplied.
+`make saw-create` discovers them before changing the cluster.
+
+The GitOps `saw-users` chart stages NetworkPolicy **off** for existing and new
+users. Before enabling one user, audit its in-cluster inference, MCP, and
+package-mirror destinations; add narrow `networkPolicy.extraEgress` rules; run
+`make prereqs-check` and paste its live topology snippet under
+`defaults.openshellSaw` in `overrides/saw-users.yaml`; then set that user's
+`values.networkPolicy.enabled: true` and sync it. Test that user before
+continuing to the next. Re-run the check after API endpoint rotation. Argo CD
+cannot discover cluster topology while rendering. See the
+[rollout procedure](docs/deployment-guide.md#networkpolicy-upgrade-procedure).
+
 ## Table of Contents
 
 - [Secure Agent Workspace](#secure-agent-workspace)
+  - [Upgrade: stage network isolation per user](#upgrade-stage-network-isolation-per-user)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Detailed description](#detailed-description)
@@ -24,13 +43,14 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
       - [Option B: Quickstart (manual, step-by-step)](#option-b-quickstart-manual-step-by-step)
       - [Supported inference providers](#supported-inference-providers)
       - [Custom inference provider](#custom-inference-provider)
+      - [Governance with APF (optional)](#governance-with-apf-optional)
     - [Validating the deployment](#validating-the-deployment)
     - [Delete](#delete)
   - [Repository structure](#repository-structure)
   - [References](#references)
   - [Technical details](#technical-details)
     - [Security model](#security-model)
-    - [Keycloak test users](#keycloak-test-users)
+    - [Keycloak production and demo users](#keycloak-production-and-demo-users)
     - [Web UI sign-in (redirect URIs)](#web-ui-sign-in-redirect-uris)
     - [Namespace modes](#namespace-modes)
     - [OIDC issuer resolution](#oidc-issuer-resolution)
@@ -193,7 +213,7 @@ make ssh-key-generate
 #   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
-# Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
+# Mirrors images from ghcr.io/validatedpatterns-sandbox to the internal registry.
 # No build needed — images are pre-built by maintainers.
 make images-mirror
 
@@ -236,7 +256,7 @@ Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from 
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). The images-mirror step mirrors prebuilt images and may fall back to the `latest` tag; see [Golden image tag](docs/deployment-guide.md#golden-image-tag). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
+Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). The images-mirror step mirrors CI-built GHCR images using the exact `IMAGE_TAG` (`latest` by default); see [Golden image tag](docs/deployment-guide.md#golden-image-tag). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
 
 ```bash
 # 1. Clone the repository
@@ -397,18 +417,21 @@ SAW, and `saw-vm-ssh` updates it when needed.
 user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `governance-profile-list` work without it. The defaults are `NS=openshell-agents`,
 `BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
-`SAW_NS=saw-$OPENSHELL_SAW_NAME`. For a manual build, set `QUAY_REPO` and
-`OPENSHELL_VERSION` as needed. For `saw-create`, set `PROVIDER`, `MODEL`, and
+`SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
+`IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
+CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 `API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
-`OPENSHELL_VERSION=0.0.116` names the prebuilt gateway image tag used by
-`images-mirror`. The chart's in-VM BOM pins OpenShell `0.1.2-rhaiv.6` by
-digest. These are different components. This cleanup does not change either
-runtime version. See [the deployment guide](docs/deployment-guide.md#golden-image-tag).
+`IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
+`IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
+separately pins OpenShell `0.1.2-rhaiv.6` by digest. See
+[the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run
 `make prereqs-check` again. That check does not change the cluster.
 `make images-mirror` enables the registry route and stops on access errors.
+CI image names, tags, public pull checks, and retained upstream Quay dependencies
+are documented in [Container images](docs/container-images.md).
 `make ssh-key-generate` and `make keycloak-deploy` keep existing keys and
 passwords. If a GUI port is in use, choose another `GUI_PORT`; the command
 will not stop the other process.
@@ -472,6 +495,95 @@ Notes:
 
 Details: [docs/custom-inference.md](docs/custom-inference.md).
 
+#### Governance with APF (optional)
+
+Every SAW gateway calls a fail-closed governance service. By default that is the OpenShell governance interceptor. It can instead be NVIDIA **Agent Policy Fabric (APF)**, which serves the same policy (`charts/governance-policy`) as an Ed25519-signed bundle, stamps provenance on every sandbox, refuses runtime policy changes and writes an audit trail. Details: [docs/apf.md](docs/apf.md).
+
+**1. Get access to APF (once).** APF's Helm chart and images are private on `ghcr.io/mkhaas/apf`.
+
+- Ask the owner (@mkhaas) for read access to the chart **and to each image package**: `apf-policy-service`, `apf-policy-gateway` and `apf-compile`. On GHCR each image has its own access list, so access to one does not give the others.
+- Create a GitHub token (classic) with the `read:packages` scope and save it:
+  ```bash
+  printf '%s' '<token>' > ~/.ghcr-token && chmod 600 ~/.ghcr-token
+  ```
+- Check that you can pull:
+  ```bash
+  docker login ghcr.io -u <github-user> --password-stdin < ~/.ghcr-token
+  docker pull ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0
+  ```
+
+**2. Create your signing key and bundle.** This repository ships no key and no bundle. Each deployment makes its own, so no deployment trusts someone else's key.
+
+```bash
+python3 -m pip install cryptography        # if missing
+make apf-keys      # seed -> ~/.apf-keys/apf.seed (never in git); public key -> charts/governance-interceptor/files/apf/apf.pub
+make apf-bundle    # signs charts/governance-policy -> charts/governance-interceptor/files/apf/bundle.tar.gz
+git add charts/governance-interceptor/files/apf
+git commit -m "chore(governance): sign the APF policy bundle"
+git push origin <branch the pattern deploys from>
+```
+
+Keep `~/.apf-keys/apf.seed` safe: only its holder can sign policy changes. `make apf-bundle-check` verifies the committed bundle.
+
+**3. Add the secrets.** Add these two entries under `secrets:` in your values-secret file (`~/values-secret-secure-agent-workspace.yaml`, or `~/values-secret.yaml`):
+
+```yaml
+  # Pull the private APF chart (Argo CD) and images (cluster)
+  - name: ghcr
+    fields:
+    - name: username
+      value: <github-user>
+    - name: token
+      path: ~/.ghcr-token
+  # The private half of the key from step 2
+  - name: apf-signing
+    fields:
+    - name: seed
+      path: ~/.apf-keys/apf.seed
+```
+
+Load them and check that the three ExternalSecrets become ready:
+
+```bash
+./pattern.sh make load-secrets          # reports one more secret per entry
+oc get externalsecret ghcr-pull governance-apf-signing -n openshell-agents
+oc get externalsecret governance-apf-chart-repo -n vp-gitops
+```
+
+They read `secret/hub/ghcr` and `secret/hub/apf-signing` in Vault and create the image pull secret, the signing key Secret, and the Argo CD repository Secret for the private chart, all outside the user namespaces.
+
+**4. Switch the engine.** Either set it in git:
+
+```yaml
+# values-global.yaml
+global:
+  governance:
+    engine: apf
+```
+
+or set it on the installed pattern without a commit:
+
+```bash
+oc patch pattern secure-agent-workspace -n patterns-operator --type merge \
+  -p '{"spec":{"extraParameters":[{"name":"global.governance.engine","value":"apf"}]}}'
+```
+
+For a new install, pass the same override: `./pattern.sh make install EXTRA_HELM_OPTS="--set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=apf"`.
+
+Argo CD then removes the interceptor, creates the `governance-apf` app (the APF chart, still serving `governance-interceptor.openshell-agents.svc:18081`), and re-renders each user's gateway config with APF's bindings. Restart each user VM once so it boots with them:
+
+```bash
+oc get application governance-apf -n vp-gitops              # Synced / Healthy
+oc get pod -n openshell-agents -l app.kubernetes.io/name=apf  # 2/2 Running
+virtctl -n saw-<user> restart <user>
+```
+
+While APF is not running the gateways refuse write operations (fail closed). If the APF pod shows `ErrImagePull` with `denied`, your account lacks access to that image package (step 1).
+
+**Quickstart (no Argo CD):** after steps 1 and 2, `GHCR_USER=<github-user> GHCR_TOKEN="$(cat ~/.ghcr-token)" make governance-apf`, then create SAWs with `make saw-create ... GOVERNANCE_ENGINE=apf`.
+
+**Changing policy:** edit `charts/governance-policy`, run `make apf-bundle` (it bumps `policy_revision`), commit and push the new bundle. **Switching back:** set `engine: interceptor` (or remove the override), delete the `governance-apf` Application and restart the user VMs.
+
 ### Self-service workspaces and sandbox web UIs
 
 Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
@@ -521,6 +633,11 @@ make test
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
+
+# NetworkPolicy chart checks run offline; name two test SAWs for live checks
+SKIP_LIVE=1 ./tests/test-network-policy.sh
+SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
+  PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
 For local Python tests, `uv` creates the ignored `.venv` from the locked
@@ -574,7 +691,8 @@ make quickstart-delete
 │   └── oidc-login.sh                 # Browser-based OIDC login
 ├── tests/                            # Test scripts
 │   ├── test-bootc-e2e.sh             # Bootc pipeline E2E (28 checks)
-│   └── test-oidc-templates.sh        # Helm template validation (43 checks)
+│   ├── test-oidc-templates.sh        # Helm template validation (43 checks)
+│   └── test-network-policy.sh        # Offline and live network isolation checks
 ├── cli/                              # Admin provisioning CLI (openshell-saw)
 ├── pattern.sh                        # VP utility container wrapper
 └── ansible.cfg                       # VP ansible config
@@ -583,6 +701,7 @@ make quickstart-delete
 ## References
 
 - [NVIDIA Secure Agent Workspace Reference Design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/)
+- [Network troubleshooting](docs/troubleshooting.md)
 - [OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html)
 - [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
 - [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw)
@@ -597,29 +716,51 @@ The system implements layered isolation:
 
 1. **VM-level isolation** — Each user gets a dedicated KubeVirt VM (one VM per user, no shared agent process space)
 2. **OIDC authentication** — Keycloak provides SSO with PKCE and device code flow support
-3. **Per-user access control** — Auth proxy validates the OIDC token's `preferred_username` matches the sandbox owner
+3. **Per-user access control** — Dashboard and sandbox UI proxies allow the owner and explicit support users by `preferred_username`. Each gateway also checks workspace membership for list and create operations.
 4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
 5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
+7. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
 
-### Keycloak test users
+### Keycloak production and demo users
+
+Production deploys no demo identities, and self-registration is off. Create
+real accounts with `make keycloak-add-users` after adding names to
+`overrides/saw-users.yaml`. The Pattern resolves each existing Keycloak account
+to its subject and enrolls it without a first-login edit. A regular owner
+needs only `openshell-user`. `openshell-admin` is a platform operator role:
+it grants administrative access at every gateway. Give it only to an
+explicit operator account.
+
+Quickstart demo identities require an explicit command:
+
+```bash
+make -f Makefile-quickstart keycloak-deploy DEMO_ENABLED=true
+```
+
+For a Pattern demo, set the Keycloak application override
+`demo.enabled=true`, use `overrides/saw-users-demo.yaml` as the saw-users
+extra values file, and add generated `keycloak-users` fields for `developer`,
+`admin`, `alice`, and `bob` to your private `values-secret.yaml`. The normal
+`values-secret.yaml.template` has no demo password keys.
 
 | Username | Roles |
 |---|---|
 | `developer` | `openshell-user` |
 | `admin` | `openshell-user`, `openshell-admin` |
-| `alice` | `openshell-user`, `openshell-admin` |
-| `bob` | `openshell-user`, `openshell-admin` |
+| `alice` | `openshell-user` |
+| `bob` | `openshell-user` |
 
 There are no default passwords. Each user gets a random one (20+
 characters with upper and lower case, digits and symbols), kept in Secret
 `openshell-keycloak-user-passwords` in the Keycloak namespace: from Vault in
-the Validated Pattern (`keycloak-users` in `values-secret.yaml.template`,
-generated by `load-secrets`), or generated by `make keycloak-deploy`.
+an explicitly configured demo Vault entry in the Validated Pattern, or
+generated by the demo quickstart command.
 `make keycloak-passwords` lists the users with stored passwords. It does not
 print the values.
 
 To sign in as Alice or Bob on macOS, first find the Secret for that user.
-For the Validated Pattern test users, the command names
+For an explicit Pattern demo, the command names
 `openshell-keycloak-user-passwords` in `saw-keycloak`.
 
 ```bash
@@ -652,8 +793,9 @@ For a separate Bob sign-in, open a private browser window and start the
 Keycloak login flow there. A normal window can reuse Alice's session and
 open her chat without a login page. Bob must receive HTTP 403 when he opens
 Alice's sandbox UI. Use Bob's own workspace URL to test his access.
-The default `overrides/saw-users.yaml` creates only Alice's workspace, so
-Bob has no workspace URL unless you add one.
+The default `overrides/saw-users.yaml` creates no workspace. The demo file
+creates Alice's workspace. Add Bob to the selected list for a second
+workspace.
 
 Self-registration is off: an admin adds users from `overrides/saw-users.yaml`
 (the same list that creates their workspaces). Each name not in the realm
@@ -676,8 +818,9 @@ The realm requires strong passwords for anything users set themselves
 not the user name or email, not one of the last 5), and locks an account out
 for a growing time after 5 failed sign-ins (`keycloak.bruteForce`). A realm
 imported before this kept its old settings and passwords (an import never
-changes an existing realm): run `make keycloak-harden`
-once to apply them, turn registration off, and set the generated passwords.
+changes an existing realm): run `make keycloak-harden` to apply the policy
+and turn registration off. Follow the existing-install migration in the
+deployment guide before disabling any account.
 
 ### Web UI sign-in (redirect URIs)
 

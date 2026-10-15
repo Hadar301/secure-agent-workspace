@@ -53,6 +53,12 @@ bundle never holds a key. The agent sees a server's tools as
 A remote server must be declared in `harness.yaml` with a governance profile,
 and its host must be one of that profile's endpoints:
 
+When the remote server is inside the cluster, also add a narrow
+`networkPolicy.extraEgress` rule to the SAW values for its namespace, pods, and
+port. The profile controls the sandbox proxy; NetworkPolicy controls whether
+the VM can reach the Service at all. An outside server additionally needs its
+exact hostname in `egress.extraAllow`.
+
 ```yaml
 spec:
   mcpServers:
@@ -93,11 +99,31 @@ cannot read it.
    the profile's endpoints. OpenShell gives every process started in the
    sandbox the placeholder; name the variable in its `mcp.json` entry as
    exactly `${VAR}` (or `Bearer ${VAR}` for Authorization headers):
-   `"env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}`. Checked end to end: with
-   that declaration the server sees the placeholder (`SET`); without it,
-   `NOT SET`. Any other value is refused so a literal secret cannot ship in
-   the bundle, ConfigMap or image. A provider attached to a running sandbox
-   reaches OpenClaw after its gateway restarts.
+   `"env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}`. Any other value is
+   refused so a literal secret cannot ship in the bundle, ConfigMap or
+   image. A provider attached to a running sandbox reaches OpenClaw after
+   its gateway restarts.
+
+   OpenClaw itself expands only `${PLUGIN_ROOT}`, `${PLUGIN_DATA}` and
+   `${CLAUDE_PLUGIN_ROOT}` in a bundle's `mcp.json`, and starts a stdio
+   server with only `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`.
+   Left alone, the server would get the literal text `${BRAVE_API_KEY}`
+   (the service answers "invalid auth") and would not trust the egress
+   proxy's CA (TLS fails with `SELF_SIGNED_CERT_IN_CHAIN`). So the installer
+   re-declares each bundle server under `mcp.servers` in `openclaw.json`,
+   with the same command, arguments and `env`; OpenClaw expands `${VAR}`
+   there from the gateway's environment, and a server declared there
+   replaces the bundle's server of the same name. Stdio servers also get
+   the CA settings OpenShell gives the sandbox (`NODE_EXTRA_CA_CERTS`,
+   `DENO_CERT`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
+   `GIT_SSL_CAINFO`), so a server in any language trusts the proxy. Only
+   the ones the sandbox has are passed on: OpenClaw leaves an unset
+   `${VAR}` as literal text, which would break TLS for a Python or curl
+   server. Remote servers are re-declared only when they have `headers`.
+   The installer records what it declared only after every declaration
+   succeeded, so the next apply retries a failed one. Verification fails if
+   a declaration, or one of the bundle's `env` keys, is missing. Nothing
+   changes for the bundle author: write `mcp.json` as above.
 
 The installer refuses a bundle whose governed server or plugin names a profile
 the gateway does not serve in that workspace, or one the sandbox has no

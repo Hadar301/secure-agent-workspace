@@ -2,9 +2,11 @@
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +33,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build gateway-build "
         "gateway-build-podman gateway-build-docker images-mirror keycloak-deploy "
         "keycloak-delete keycloak-check keycloak-password login logout whoami "
-        "saw-create saw-configure saw-list saw-logs saw-status saw-restart "
+        "saw-create saw-configure saw-list saw-logs saw-status saw-restart saw-restart-pending "
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
@@ -195,6 +197,12 @@ def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
+  "get network.config cluster -o json")
+    echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}' ;;
+  "get service kubernetes -n default -o json")
+    echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}' ;;
+  "get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o json")
+    echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"]}]}]}' ;;
   "get storageclass -o json")
     echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
   "get nodes -o json")
@@ -226,6 +234,12 @@ def test_pattern_prereqs_do_not_require_operators(tmp_path):
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
+  "get network.config cluster -o json")
+    echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}' ;;
+  "get service kubernetes -n default -o json")
+    echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}' ;;
+  "get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o json")
+    echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"]}]}]}' ;;
   "get storageclass -o json")
     echo '{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}' ;;
   "get nodes -o json")
@@ -250,8 +264,8 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("prereqs-check", env=env)
     assert result.returncode != 0
-    bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
-    expected = bom["bom"]["spec"]["openshell"]["cli"]["version"]
+    values = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+    expected = values["bom"]["spec"]["openshell"]["cli"]["version"]
     assert f"does not match gateway BOM {expected}" in result.stderr
     assert "oc must not run" not in result.stderr
 
@@ -261,7 +275,10 @@ def test_both_prereq_modes_require_uv_before_cluster_calls(tmp_path):
     bindir.mkdir()
     for tool in ("oc", "helm", "jq", "openssl", "openshell"):
         executable(bindir / tool, 'echo "cluster tool must not run" >&2\nexit 9\n')
-    env = dict(os.environ, PATH=f"{bindir}:/usr/bin:/bin")
+    # Isolate PATH: uv can be installed in /usr/bin on the developer's host.
+    for tool in ("make", "bash"):
+        (bindir / tool).symlink_to(shutil.which(tool))
+    env = dict(os.environ, PATH=str(bindir))
     for target in ("prereqs-check", "quickstart-prereqs-check"):
         result = run_make(target, env=env)
         assert result.returncode != 0
@@ -324,3 +341,238 @@ fi
                             cwd=ROOT, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert sorted(path.name for path in creds.iterdir()) == ["bob"]
+
+
+@pytest.mark.parametrize("tag", ["latest", "sha-review"])
+def test_image_mirror_uses_selected_ghcr_tag_without_fallback(tmp_path, tag):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "mirror.log"
+    executable(bindir / "uname", 'printf "Linux\\n"\n')
+    executable(bindir / "oc", r'''case "$*" in
+  "get routes -n openshift-image-registry -o json")
+    echo '{"items":[{"metadata":{"name":"default-route"},"spec":{"host":"registry.example"}}]}' ;;
+  "image mirror "*)
+    echo "$*" >> "$MIRROR_LOG"
+    if [[ "${FAIL_MIRROR:-0}" == 1 ]]; then echo "manifest unknown" >&2; exit 2; fi ;;
+  "tag "*) echo "$*" >> "$MIRROR_LOG" ;;
+  *) : ;;
+esac
+''')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MIRROR_LOG=str(log))
+    result = run_make("images-mirror", f"IMAGE_TAG={tag}", env=env)
+    assert result.returncode == 0, result.stderr
+    expected = [
+        f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
+        f"registry.example/openshell-agents/openshell-gateway:{tag} --insecure=true"]
+    destinations = f"openshell-gateway:{tag}"
+    if tag != "latest":
+        expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")
+        destinations += " and openshell-gateway:latest"
+    assert log.read_text().splitlines() == expected
+    assert f"Mirrored openshell-gateway:{tag} as {destinations}." in result.stdout
+    log.unlink()
+    result = run_make("images-mirror", "IMAGE_TAG=sha-missing", env=dict(env, FAIL_MIRROR="1"))
+    assert result.returncode != 0
+    assert len(log.read_text().splitlines()) == 1
+    assert ":latest" not in log.read_text()
+
+
+def test_public_image_check_ignores_login_and_reports_private_packages(tmp_path):
+    import yaml
+
+    action = yaml.safe_load((ROOT / ".github/actions/verify-public-image/action.yml").read_text())
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable(bindir / "docker", r'''[[ "$1" == --config ]]
+[[ -d "$2" && ! -e "$2/config.json" ]]
+[[ "$3 $4" == "manifest inspect" ]]
+[[ "$5" == "$IMAGE" ]]
+printf '%s' "$2" > "$AUTH_LOG"
+exit "${DOCKER_STATUS:-0}"
+''')
+    log = tmp_path / "auth.log"
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", AUTH_LOG=str(log),
+               IMAGE="ghcr.io/example/image@sha256:" + "a" * 64)
+    for status in ("0", "1"):
+        result = subprocess.run(["bash", "-c", action["runs"]["steps"][0]["run"]],
+                                env=dict(env, DOCKER_STATUS=status), capture_output=True, text=True)
+        assert result.returncode == int(status), result.stderr
+        assert not Path(log.read_text()).exists()
+        if status == "1":
+            assert "visibility to Public" in result.stdout
+
+
+@pytest.mark.parametrize("target", ["sandbox-build", "cli-build", "gateway-build-podman",
+                                    "gateway-build-docker", "gateway-build", "build-nemoclaw",
+                                    "governance-interceptor-build"])
+@pytest.mark.parametrize("repo", [None, "ghcr.io/validatedpatterns-sandbox", "ghcr.io/VALIDATEDPATTERNS-SANDBOX/", "ghcr.io/example"])
+def test_manual_builds_keep_images_local_unless_safe_destination_is_explicit(tmp_path, target, repo):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-1 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-1 "*)
+    case "$*" in
+      *status.phase*) printf Complete ;;
+      *imageDigest*) printf 'sha256:%064d' 0 ;;
+    esac ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(ROOT / "scripts/check-build-repo.sh", scripts / "check-build-repo.sh")
+    shutil.copytree(ROOT / "scripts/lib", scripts / "lib")
+    executable(scripts / "push-image.sh", 'echo "push $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log))
+    env.pop("IMAGE_REPO", None)
+    env.pop("PUSH_IMAGE_REPO", None)
+    args = [target, f"SCRIPTS_DIR={scripts}"]
+    if target in ("sandbox-build", "build-nemoclaw"):
+        args.append("BUILD_ARCH=amd64")
+    if repo is not None:
+        args.append(f"IMAGE_REPO={repo}")
+    result = run_make(*args, env=env)
+    if repo and repo.lower().rstrip("/") == "ghcr.io/validatedpatterns-sandbox":
+        assert result.returncode != 0
+        assert "CI" in result.stderr
+        assert not log.exists(), "reject before any cluster mutations"
+    else:
+        assert result.returncode == 0, result.stderr
+        calls = log.read_text()
+        if repo is None:
+            assert "push " not in calls
+            assert "output.externalImage=ghcr.io" not in calls
+        elif target == "governance-interceptor-build":
+            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2" in calls
+        else:
+            assert "push " in calls and "ghcr.io/example" in calls
+
+
+def test_public_image_check_targets_the_published_tag():
+    import yaml
+    action = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    verify = next(s for s in action["runs"]["steps"]
+                  if s.get("uses") == "./.github/actions/verify-public-image")
+    assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"
+
+
+@pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
+def test_sandbox_build_consumes_only_its_completed_discovery_build(tmp_path, phase, digest):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-7 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-7 "*)
+    case "$*" in
+      *status.phase*) printf '%s' "$DISCOVERY_PHASE" ;;
+      *imageDigest*) printf '%s' "$DISCOVERY_DIGEST" ;;
+    esac ;;
+  "get nodes -o json") echo '{"items":[{"spec":{},"status":{"nodeInfo":{"architecture":"arm64"}}}]}' ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
+               DISCOVERY_PHASE=phase, DISCOVERY_DIGEST=digest)
+    env.pop("PUSH_IMAGE_REPO", None)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", env=env)
+    calls = log.read_text().splitlines()
+    if phase != "Complete" or len(digest) != 71:
+        assert result.returncode != 0
+        assert not any("start-build nemoclaw-sandbox " in line for line in calls)
+        assert not any("source.discoveryImage=image-registry." in line for line in calls)
+    else:
+        assert result.returncode == 0, result.stderr
+        pinned = next(i for i, line in enumerate(calls) if "source.discoveryImage=image-registry." in line)
+        start = next(i for i, line in enumerate(calls) if "start-build nemoclaw-sandbox " in line)
+        assert pinned < start
+        assert f"source.discoveryImage=image-registry.openshift-image-registry.svc:5000/test-build/nemoclaw-discovery-runtime@{digest}" in calls[pinned]
+        assert "build.targetArch=arm64" in calls[pinned]
+        assert any("get build.build.openshift.io/nemoclaw-discovery-runtime-7 " in line and "imageDigest" in line for line in calls)
+        assert not any("get bc/" in line for line in calls)
+
+
+@pytest.mark.parametrize("terminal", ["Complete", "Failed", "Cancelled", "Error"])
+def test_discovery_log_error_does_not_hide_build_phase(tmp_path, terminal):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "start-build nemoclaw-discovery-runtime "*) echo build.build.openshift.io/nemoclaw-discovery-runtime-8 ;;
+  "logs "*) echo 'build is pending' >&2; exit 1 ;;
+  "get build.build.openshift.io/nemoclaw-discovery-runtime-8 "*)
+    case "$*" in
+      *status.phase*)
+        if [ -e "$PHASE_COUNT" ]; then printf '%s' "$TERMINAL_PHASE";
+        else touch "$PHASE_COUNT"; printf Pending; fi ;;
+      *imageDigest*) printf 'sha256:%064d' 0 ;;
+    esac ;;
+  "wait "*) echo 'terminal-phase polling required' >&2; exit 99 ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    executable(bindir / "sleep", 'echo "sleep $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
+               TERMINAL_PHASE=terminal, PHASE_COUNT=str(tmp_path / "phase-count"))
+    env.pop("PUSH_IMAGE_REPO", None)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", "BUILD_ARCH=amd64", env=env)
+    calls = log.read_text().splitlines()
+    assert sum("status.phase" in line for line in calls) >= 2
+    assert not any("oc wait " in line for line in calls)
+    if terminal == "Complete":
+        assert result.returncode == 0, result.stderr
+        assert any("start-build nemoclaw-sandbox " in line for line in calls)
+    else:
+        assert result.returncode != 0
+        assert terminal in result.stderr
+        assert not any("start-build nemoclaw-sandbox " in line for line in calls)
+        assert not any("imageDigest" in line for line in calls)
+
+
+def fake_cluster(tmp_path, vms):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (tmp_path / "vms.json").write_text(vms)
+    executable(bin_dir / "oc", f'cat "{tmp_path}/vms.json"\n')
+    executable(bin_dir / "virtctl", f'echo "$*" >> "{tmp_path}/restarted"\n')
+    return dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+
+
+PENDING_VMS = """{"items": [
+  {"metadata": {"name": "alice", "namespace": "saw-alice"},
+   "status": {"conditions": [{"type": "Ready", "status": "True"},
+                             {"type": "RestartRequired", "status": "True"}]}},
+  {"metadata": {"name": "bob", "namespace": "saw-bob"},
+   "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+]}"""
+
+
+def test_saw_restart_pending_lists_without_confirm(tmp_path):
+    """Switching the governance engine changes each VM's gateway.toml, but
+    KubeVirt only marks running VMs RestartRequired (PR #52 review)."""
+    env = fake_cluster(tmp_path, PENDING_VMS)
+    result = run_make("saw-restart-pending", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "alice" in result.stdout and "bob" not in result.stdout
+    assert "CONFIRM=yes" in result.stdout
+    assert not (tmp_path / "restarted").exists()
+
+
+def test_saw_restart_pending_restarts_only_pending_vms(tmp_path):
+    env = fake_cluster(tmp_path, PENDING_VMS)
+    result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "restarted").read_text() == "-n saw-alice restart alice\n"
+
+
+def test_saw_restart_pending_with_nothing_pending(tmp_path):
+    env = fake_cluster(tmp_path, '{"items": []}')
+    result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "No SAW VM" in result.stdout

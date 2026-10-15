@@ -1,8 +1,44 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Overview
 
-The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. For Alice and Bob test account passwords and separate browser sign-in steps, see [Keycloak test users](../README.md#keycloak-test-users).
+The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. Production has no demo users. For an explicit demo and separate browser sign-in steps, see [Keycloak production and demo users](../README.md#keycloak-production-and-demo-users).
 
 Each sandbox provides an OpenShell gateway with OIDC authentication, governance policy enforcement, and a web-based agent interface — all managed declaratively from Git.
 
@@ -50,7 +86,7 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `saw-users` | `openshell-agents` | One namespace and three apps per user, from `overrides/saw-users.yaml` |
 | `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
-| `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
+| `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment; with `global.governance.engine: apf`, the APF inputs and an Argo CD app for the APF chart ([apf.md](apf.md)) |
 
 **Operator Subscriptions:** OpenShift Virtualization, RHBK (Keycloak), External Secrets Operator, RHDH, OpenShift AI.
 
@@ -77,7 +113,7 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
     (effective lifetime capped to 10h by the realm's SSO Session Max)
   - `openshell-dashboard` — public client, PKCE, redirect URIs registered by the redirect registrar or an administrator (below)
-- **Users:** developer, admin, alice, bob (test accounts)
+- **Users:** none by default; create real accounts before adding their workspace entries
 - **Roles:** `openshell-user`, `openshell-admin`
 - **Token mappers:** realm roles in access tokens, audience mapper so dashboard tokens are accepted by the gateway
 
@@ -86,6 +122,15 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 Every web UI has its own route host (each VM's dashboard, and each sandbox UI route), and Keycloak matches redirect URIs exactly apart from a trailing wildcard, so each host has to be registered on `openshell-dashboard`. The routes to register are labelled `saw.redhat.com/oidc-redirect=true` in namespaces labelled `openshell.pattern/saw=true`; their redirect URI is `https://<host>/oauth2/callback` and their web origin `https://<host>`. No pod in a SAW namespace holds Keycloak credentials for it.
 
 By default the redirect registrar registers them (`redirectRegistrar` in `openshell-keycloak`): one Deployment, `saw-redirect-registrar` in Keycloak's namespace, every 15 seconds adds the entries of routes it finds and removes those it added for routes that are gone from every SAW namespace. It keeps an entry while its route still exists (labelled or not), keeps entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`), and on its first run adopts the per-VM entries the prepare Jobs used to add. A failed route list removes nothing. It signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm; its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and hands the client secret over in memory, so the registrar container never sees the master admin. It reads routes, namespaces and the ingress domain only, and reaches Keycloak in-cluster (`http://<keycloak>-service.<namespace>.svc:8080`; set `redirectRegistrar.keycloakUrl` for an existing Keycloak without HTTP, and `redirectRegistrar.adminSecret` for another admin Secret name). `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
+
+The Pattern also enables `saw-owner-resolver` in the Keycloak namespace. Its
+separate client has only `realm-management/view-users` in the OpenShell realm.
+It finds each existing account by the exact `users[].name` and writes its
+subject to a dedicated ConfigMap in that user's namespace. A namespaced Role
+permits only `get` and `patch` on that ConfigMap. No Keycloak admin Secret
+reaches a tenant namespace or VM. A missing, disabled, ambiguous, or
+mismatched account gets no membership. The resolver records its state in the
+ConfigMap annotation `saw.redhat.com/owner-resolution`.
 
 With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak admin access for this: an administrator runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the workspace exists (it also creates the Keycloak account if it is new) and `keycloak-redirects-sync` after deleting workspaces (`scripts/keycloak-redirects.py`, with the administrator's `oc` session and Keycloak's admin Secret, like `scripts/keycloak-users.sh`). The script applies the registrar's rules. See the README's [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
@@ -199,6 +244,74 @@ There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM'
 
 `saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, and sandboxes, and attaches each sandbox's providers (OpenShell 0.1.x has no inference routes: agents call their provider's own endpoint). The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
 
+Pattern owner subjects use a separate `saw-owner-subject` ConfigMap mount over
+virtiofs, even when other inputs use ISO media. The input watcher and timer
+reapply memberships when that subject changes. Account recreation removes
+the old subject before adding the new one. Direct quickstart and portal
+provisioning keep their explicit verified subject input. An external OIDC
+issuer needs `ownerSubject` because the Keycloak resolver cannot query it.
+
+### Existing-install identity migration
+
+A new `KeycloakRealmImport` does not update an existing realm. Use the realm's
+admin console and `make keycloak-harden` for existing settings. Do not use a
+chart render as proof that existing accounts or registration changed.
+
+1. Record the current realm and accounts. Confirm which accounts are real
+   users; do not disable an account only because its name matches a demo
+   name. Establish one real operator with `openshell-admin`. Verify its role
+   claim and recovery access.
+2. Create each real owner account with `make keycloak-add-users` or the realm
+   admin console. Give each ordinary owner `openshell-user` only. Add the
+   account name to `overrides/saw-users.yaml`. Sync the Pattern and check
+   `saw.redhat.com/owner-resolution=resolved` on that owner's
+   `saw-owner-subject` ConfigMap. Verify the owner's workspace list and one
+   bounded create/delete action through the gateway before removing access.
+   For a workspace enrolled before this release, record its previous owner
+   subject before the sync. After the new owner passes these checks, remove
+   the old grant in the VM with
+   `openshell workspace member remove --workspace <workspace> --subject <old-subject>`.
+   Repeat for each workspace. The new membership ledger cannot infer grants
+   that an older installer created. Do not remove the grant if it is still
+   the verified owner's subject.
+3. Run `make keycloak-harden` for the configured realm. In the realm admin
+   console, also verify **Realm settings > Login > User registration** is
+   off. Check password policy and brute-force settings. Do this explicitly:
+   reapplying a `KeycloakRealmImport` does not change an existing realm.
+4. For each confirmed demo-only account, remove it from
+   `accessControl.dashboardSupportUsers` and
+   `sandboxUiProxy.allowedUsers` in every SAW where it has support access.
+   Apply the updated installer configuration and restart those proxies.
+   Then disable the account and revoke its sessions in the realm admin
+   console. A valid oauth2-proxy cookie can outlive Keycloak logout: in a
+   live migration check, logout alone left an existing cookie at HTTP 200;
+   removing the proxy allowance changed it to HTTP 403. Verify that the
+   account's old browser session cannot reach the proxy or gateway. Review
+   and rotate credentials that the account could access. Keep the real
+   operator and owners active.
+5. During rollback, preserve the verified real accounts, their memberships,
+   and operator recovery access. Do not restore demo accounts as a shortcut.
+
+An existing VM installed before the owner resolver needs the new guest input
+watcher. Sync its updated VM specification, then copy the new
+`saw-mount-inputs.sh`, `saw-reconcile`, `saw-reconcile.service`,
+`saw-inputs.path`, and `saw-inputs.timer` from
+`charts/openshell-saw/files/guest/` into that VM with `virtctl scp`.
+Install scripts in `/usr/local/sbin` with mode `0755` and units in
+`/etc/systemd/system` with mode `0644`. Run `systemctl daemon-reload` and
+`systemctl enable --now saw-inputs.path saw-inputs.timer` in the VM. Restart
+the VM once with `make saw-restart OPENSHELL_SAW_NAME=<name>` so KubeVirt
+attaches the new virtiofs ConfigMap. The root disk is retained. Run
+`saw-mount-inputs.sh` and `systemctl start saw-reconcile.service` after the
+restart, then verify membership. A new VM gets these files from cloud-init.
+
+Restart an existing VM after an installer ConfigMap update, including a
+dashboard proxy fix. Argo CD can report Synced while the running VM still
+mounts the old installer script. The restart retains the root disk. After it
+finishes, verify that `/var/lib/saw/verified/installer/setup-dashboard.sh`
+has the new content and that `saw-apply.service` completed. Check the web UI
+route with an owner and a different user before you consider the update done.
+
 A workspace that stays Starting is usually waiting on a provider Secret. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount, so the VM boots within about 2 minutes of the Secret appearing.
 
 ```bash
@@ -252,23 +365,23 @@ sandboxes.
 
 Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`) rendered by the `openshell-saw` chart. It needs OVN-Kubernetes. On another network plugin the kind is unknown and the Argo CD sync fails. It is independent of OpenShell's sandbox allowlist: a process on the VM that skips the sandbox proxy still cannot open a connection to a host that is not listed.
 
-The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes the registries the VM pulls from and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). A chart test fails if a shipped profile adds a host that is not on the firewall. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
+The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes Quay and its CDN hosts, GHCR (`ghcr.io` and its blob host `pkg-containers.githubusercontent.com`), Fedora's registry, and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). Chart tests check that each shipped profile host and BOM/profile image registry is allowed, that each default allowlist host is a profile host, registry, or documented exception, and that profile ports match the rendered EgressFirewall and NetworkPolicy rules. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
 
-Node addresses are allowed only on TCP 443 and 80, for the ingress router. The VM does not call the Kubernetes API, so 6443 is not open. Kubelet, SSH, and NodePorts are not either. If the ingress is a load balancer address rather than a node IP, this rule does not cover it. The Keycloak host is what the VM uses for login.
+Node addresses are allowed on TCP 443 and 80 for the ingress router. When uninstall cleanup is enabled, exact API endpoint IP and port rules let the short-lived cleanup Pod reach the Kubernetes API. The VM and CDI importer NetworkPolicies exclude those endpoint IPs from their outside rules, including an API on TCP 443. Kubelet, SSH, and NodePorts are not open in the EgressFirewall. If the ingress is a load balancer address rather than a node IP, the router rule does not cover it. The Keycloak Route host is what the VM uses for login.
 
-Everything else on the public internet is denied, for IPv4 and IPv6. Pods and services inside the cluster, including DNS, the governance interceptor, and the internal registry, are not filtered by this object.
+Everything else on the public internet is denied, for IPv4 and IPv6. The EgressFirewall can also block traffic to the cluster API: on the 2026-10-11 test cluster, its default deny stopped the cleanup Pod even though that Pod's NetworkPolicy allowed egress. The scoped API rule above is therefore required for deletion on that cluster. The NetworkPolicies below control pod and Service flows.
 
 Hostnames are exact. A name such as `*.quay.io` is rejected at render time, because matching a wildcard needs the `DNSNameResolver` feature gate. Gemini's `*-aiplatform.googleapis.com` cannot be written as a `dnsName` rule. Add the regional host you use under `extraAllow` (for example `us-central1-aiplatform.googleapis.com`).
 
 Quay serves image layers from `cdn01.quay.io` through `cdn06.quay.io`. Those names are on the list. Their addresses change often, and OVN resolves them itself, which can disagree with the VM's own resolver. On cluster-mx8z2, `podman pull quay.io/quay/busybox` succeeded three times in a row and `https://cdn01.quay.io/` returned HTTP 403 (the name is reachable; Quay refuses a bare GET). `registry.npmjs.org` is on the list too, and from that same VM it still timed out: the guest resolved Cloudflare addresses that OVN had not installed for the name. Public NTP (UDP 123) is denied. The guest clock stays on kvm-clock; chrony will not see public pool servers.
 
-Anything that installs npm packages in a sandbox (OpenClaw plugins, NemoClaw onboarding) can fail intermittently for that reason: the timeout is OVN's DNS view disagreeing with the guest's, not a missing entry. If a sandbox flow needs npm reliably, set `egress.enabled: false` for that workspace, or point it at an npm mirror inside the cluster (`*.svc` needs no entry).
+Anything that installs npm packages in a sandbox (OpenClaw plugins, NemoClaw onboarding) can fail intermittently for that reason: the timeout is OVN's DNS view disagreeing with the guest's, not a missing entry. If a sandbox flow needs npm reliably, set `egress.enabled: false` for that workspace, or point it at an npm mirror inside the cluster and add a narrow `networkPolicy.extraEgress` rule for its pods and port.
 
-With harness bundles on (`allowDriverConfig: true`, which saw-users sets with `harnessEnabled`), `egress.harnessAllow` is added as well: `ghcr.io` and `pkg-containers.githubusercontent.com` for the image, `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev` for the keyless cosign verification the installer repeats on every apply. Without them the first apply fails verification and removes the harness from the sandbox. A harness image on another registry needs that registry, and its blob host, under `egress.extraAllow`. `signing.mode: enforce` adds the same two Sigstore hosts even when no harness is on. `warn` only logs, so it does not.
+With harness bundles on (`allowDriverConfig: true`, which saw-users sets with `harnessEnabled`), `egress.harnessAllow` adds `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev` for the keyless cosign verification the installer repeats on every apply. Without them the first apply fails verification and removes the harness from the sandbox. A harness image on another registry needs that registry, and its blob host, under `egress.extraAllow`. `signing.mode: enforce` adds the same two Sigstore hosts even when no harness is on. `warn` only logs, so it does not.
 
 An external disk download (`source.httpURL`, or `source.goldenImageURL` / `source.registryURL` when it is `http://` or `https://`) is allowed automatically. So is a `docker://` image on a registry outside the cluster when `source.pullMethod` is `pod` (its registry host and port). With `pullMethod: node`, the default, the node's container runtime pulls the image, outside this firewall, so nothing is added. A registry that serves blobs from a CDN host needs that host under `egress.extraAllow`. The internal registry is never added. Any other host outside the cluster, including a custom inference endpoint, still has to be listed.
 
-To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs no entry.
+To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs `networkPolicy.extraEgress` for its namespace, pods, and port; it needs no EgressFirewall DNS entry.
 
 ```yaml
 egress:
@@ -280,12 +393,35 @@ egress:
 
 **Upgrading an existing sandbox.** The next sync turns this firewall on. A custom-inference URL that is outside the cluster lives only in Vault, so the chart cannot see it. Before upgrading, put that host in `egress.extraAllow`, or set `egress.enabled: false` on that user until you do. Calls to that URL time out. OpenShell does not report a policy denial.
 
+### In-cluster NetworkPolicy
+
+The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
+
+The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
+
+The outside rule excludes every pod and Service CIDR, exact API endpoint IPs, and `169.254.0.0/16`, so the Kubernetes API Service, other tenants, and the metadata endpoint do not inherit outside access. **Before installing or upgrading**, compare live topology with this SAW's values:
+
+```bash
+oc get network.config cluster -o jsonpath='{.status.clusterNetwork[*].cidr} {.status.serviceNetwork[*]}'
+oc get service kubernetes -n default -o jsonpath='{.spec.clusterIP}{"\n"}'
+oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o yaml
+```
+
+The chart has no assumed CIDR or API endpoint values. `make saw-create` discovers them; direct Helm and GitOps users must supply them. `make prereqs-check` compares each enabled pattern user's effective values with the live topology. `extraBlockedCIDRs` excludes another IPv4 range. The template rejects empty or malformed CIDR lists and broad custom rules. The outside rule is IPv4 only; IPv6 has no allow rule and remains denied. NetworkPolicy and EgressFirewall cannot distinguish one Route host from another on TCP 443, so cluster Routes still rely on their own authentication.
+
+The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
+
+**Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
+
 ### Internal Connectivity
 
 | From | To | Protocol | Purpose |
 | --- | --- | --- | --- |
 | Gateway (VM) | Governance interceptor (pod) | gRPC over HTTP | Policy enforcement |
 | Gateway (VM) | Keycloak (pod) | HTTPS | OIDC token validation |
+| Gateway (VM) | DNS, registry, ingress controller | TCP/UDP 5353, TCP 5000, TCP 443/80 | Resolution, image pull, Routes |
+| CDI importer pod | Registry or configured disk URL | TCP 5000 or allowed outside port | Root disk import |
+| Cleanup hook pod | Kubernetes API | HTTPS | Delete VM and PVCs |
 | In-guest installer | mounted ConfigMaps and Secrets | virtiofs or iso9660 | Install binaries and apply profiles |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
 
@@ -363,6 +499,10 @@ The `add`, `remove`, and `create` targets edit `charts/governance-policy/profile
 make lint                   # Lint all 13 charts
 make test                   # Run local Python tests through uv
 make test-deployment        # Run the dedicated live-cluster test
+SKIP_LIVE=1 ./tests/test-network-policy.sh  # Offline policy structure checks
+# On two dedicated test SAWs:
+SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
+  PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
 ### Live deployment test
@@ -481,12 +621,15 @@ External Secrets is only required for Option A, which syncs the pattern's secret
 
 ### Golden image tag
 
-`make images-mirror` mirrors the prebuilt images into the cluster. For each image it tries the `OPENSHELL_VERSION` tag first, then `v<version>`, and finally falls back to the `latest` tag, using the first that exists and storing it under the requested version (it also tags the result `latest`). If the golden image predates bundle signing, as the prebuilt images do, it ships no `verify-bundle`, so `saw-stage-installer` stages the installer tree without verification; the default signing mode `warn` still boots the VM, while `enforce` would refuse.
-
-`OPENSHELL_VERSION` defaults to `0.0.116` and selects a prebuilt gateway
-disk image tag. The `openshell-saw` chart has a separate in-VM BOM that
-pins OpenShell `0.1.2-rhaiv.0` images by digest. Changing a mirror tag does
-not upgrade the in-VM runtime. See [Versioned BOM installer](versioned-bom-installer.md).
+`make images-mirror` mirrors the CI-built GHCR golden image into the cluster.
+`IMAGE_REPO` defaults to `ghcr.io/validatedpatterns-sandbox`; `IMAGE_TAG` defaults
+to `latest`. For reproducible installs, run `make images-mirror IMAGE_TAG=sha-<full-commit>` using a commit published by CI on `main`. Both local
+and in-cluster mirroring use that exact tag and fail if it is absent; neither
+falls back to another build. The internal image also gets a `latest` alias,
+which the default VM disk source uses. For a pinned disk import, set
+`source.registryURL` to the GHCR image digest. Changing the source does not
+replace an existing VM disk. See [Container images](container-images.md) for
+CI image names, public package setup, and intentionally retained Quay dependencies.
 
 The default VM disk source is the `openshell-gateway:latest` image in the
 internal registry. To use another registry image, a DataSource, or an HTTP
@@ -494,7 +637,7 @@ source, set one of these values in an override file for `charts/openshell-saw`:
 
 ```yaml
 source:
-  registryURL: docker://quay.io/example/openshell-gateway:tag
+  registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest
 ```
 
 ```yaml

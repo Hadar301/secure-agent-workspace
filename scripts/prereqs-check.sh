@@ -2,7 +2,7 @@
 # Checks tools and cluster capacity. Quickstart mode also requires operators.
 set -euo pipefail
 
-for tool in oc helm jq openssl openshell uv; do
+for tool in oc helm jq openssl openshell uv python3; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     echo "Error: ${tool} is required." >&2
     exit 1
@@ -42,6 +42,15 @@ echo "OpenShell CLI: ${cli_version} (gateway BOM: ${expected})"
 oc whoami >/dev/null
 echo "OpenShift login: active"
 echo "Helm: $(helm version --short)"
+
+if [[ "${PREREQS_MODE:-pattern}" == pattern ]]; then
+  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    echo "Error: python3 with PyYAML is required for the pattern network check." >&2
+    exit 1
+  fi
+  python3 "${script_dir}/network-topology.py" check-pattern \
+    --values-file "${SAW_USERS_VALUES_FILE:-${script_dir}/../overrides/saw-users.yaml}"
+fi
 
 storage="$(oc get storageclass -o json)"
 if ! jq -e '.items | any(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true")' \

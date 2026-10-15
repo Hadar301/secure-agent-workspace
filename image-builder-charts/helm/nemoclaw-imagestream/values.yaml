@@ -1,14 +1,20 @@
 source:
+  # Supplied by make sandbox-build only after its discovery build completes.
+  discoveryImage: ""
   git:
     uri: "https://github.com/NVIDIA/NemoClaw.git"
-    ref: "6f3cced4230ae9660c049cc11804daf37797c595" # v0.0.124
+    ref: "ef5d55d19e2da33c2474db158588613828e1a9be" # v0.0.133
 
 build:
-  # Empty: the build node's architecture (buildah sets TARGETARCH), so an
-  # arm64 cluster builds an arm64 image. Set amd64/arm64 to force one.
+  discoveryNodeVersion: "24.19.0"
+  # Update with discoveryNodeVersion; multi-platform Node image index.
+  discoveryNodeDigest: "sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df"
+  # Required for the sandbox BuildConfig: upstream Dockerfile interpolates
+  # TARGETARCH in a FROM stage name, which OpenShift Buildah does not fill in.
+  # make sandbox-build detects homogeneous clusters or accepts BUILD_ARCH.
   targetArch: ""
-  # NemoClaw v0.0.124 base image (multi-arch: amd64 and arm64).
-  baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.124"
+  # NemoClaw v0.0.133 base image (multi-arch: amd64 and arm64).
+  baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.133"
   model: "claude-sonnet-4-6"
   inferenceBaseUrl: "https://inference.local/v1"
   inferenceApi: "openai-completions"

@@ -26,7 +26,10 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice"):
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace, *args],
+    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")]
+                if Path(chart) == CHART else [])
+    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
+                           *topology, *args],
                           capture_output=True, text=True)
 
 
@@ -40,6 +43,11 @@ def _pattern_saw_settings():
         if isinstance(value, dict):
             for k, v in value.items():
                 yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        elif isinstance(value, list):
+            # Empty topology lists match openshell-saw defaults. Keep them as
+            # lists rather than converting `[]` into a string via --set.
+            if value:
+                yield "--set-json", f"{prefix}={json.dumps(value)}"
         else:
             yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
 
@@ -103,6 +111,27 @@ def test_no_setup_job_and_no_ssh_provisioning(default_docs):
     text = yaml.safe_dump(list(default_docs.values()))
     for forbidden in ("virtctl", "guest_ssh", "guest_scp", "portforward", "openshell-aap-ssh"):
         assert forbidden not in text, forbidden
+
+
+def assert_gateway_service_ports(docs, extra=()):
+    service = docs[("Service", "saw-test-gateway")]
+    ports = service["spec"]["ports"]
+    assert {(p["port"], p["targetPort"]) for p in ports} == {
+        (17670, 17670), (18789, 18789), (8080, 8080), *extra
+    }
+    assert all(p["port"] != 22 and p["targetPort"] != 22 for p in ports)
+
+
+def test_gateway_service_has_application_ports_without_ssh(default_docs):
+    assert_gateway_service_ports(default_docs)
+    vm = default_docs[("VirtualMachine", "saw-test")]
+    ports = vm["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"][0]["ports"]
+    assert {"name": "ssh", "port": 22, "protocol": "TCP"} in ports
+
+
+def test_pattern_settings_gateway_service_has_no_ssh():
+    docs = render(*PATTERN_SAW_SETTINGS)
+    assert_gateway_service_ports(docs)
 
 
 
@@ -412,6 +441,8 @@ DEFAULT_EGRESS_HOSTS = [
     "cdn04.quay.io",
     "cdn05.quay.io",
     "cdn06.quay.io",
+    "ghcr.io",
+    "pkg-containers.githubusercontent.com",
     "registry.fedoraproject.org",
     "integrate.api.nvidia.com",
     "api.search.brave.com",
@@ -430,9 +461,6 @@ DEFAULT_EGRESS_HOSTS = [
     "iamcredentials.googleapis.com",
     "gmail.googleapis.com",
 ]
-# A dnsName rule cannot express this. A new wildcard in a shipped profile
-# must be added here on purpose, not silently skipped.
-KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
 NODE_ALLOW_PORTS = [
     {"protocol": "TCP", "port": 443},
     {"protocol": "TCP", "port": 80},
@@ -563,17 +591,32 @@ def test_egress_keycloak_port_comes_from_the_issuer():
     assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
 
 
-def test_egress_covers_every_shipped_profile_host(default_docs):
-    _, allowed = _egress_names(default_docs)
-    exact, wild = set(), set()
-    for path in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"):
-        for endpoint in (yaml.safe_load(path.read_text()) or {}).get("endpoints") or []:
-            host = endpoint["host"]
-            (wild if "*" in host else exact).add(host)
-    missing = exact - set(allowed)
-    assert not missing, "shipped profile hosts missing from the firewall: " + ", ".join(sorted(missing))
-    assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
-    assert not any("*" in host for host in allowed)
+def test_egress_covers_every_bom_and_profile_image(default_docs):
+    """Guest pulls must work with harness bundles disabled."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    allowed = set(values["egress"]["allow"])
+    _, rendered = _egress_names(default_docs)
+    images = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"image", "cliImage"} and isinstance(value, str):
+                    images.append(value)
+                else:
+                    collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(values["bom"])
+    for path in (ROOT / "charts/saw-bom/profiles").rglob("*.yaml"):
+        collect(yaml.safe_load(path.read_text()))
+    # `base` is an installer alias for the BOM sandbox image, not a registry.
+    registries = {image.split("/", 1)[0] for image in images if image != "base"}
+    assert registries <= allowed, f"image registries missing from egress.allow: {registries - allowed}"
+    assert registries <= set(rendered)
+    assert "pkg-containers.githubusercontent.com" in allowed
 
 
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
@@ -640,7 +683,7 @@ def test_owner_subject_is_passed_to_installer():
 def test_pattern_override_renders_with_nemoclaw(ab):
     docs = render(*PATTERN_SAW_SETTINGS)
     bom = yaml.safe_load(installer_data(docs)["installer-bom.yaml"])
-    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("quay.io/rh-ai-quickstart/nemoclaw-cli")
+    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("ghcr.io/validatedpatterns-sandbox/nemoclaw-cli")
     assert ab.validate_bom(bom)["spec"]["openshell"]["gateway"]
 
 
@@ -834,7 +877,7 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     assert users_app["extraValueFiles"] == ["/overrides/saw-users.yaml"]
     assert users_app["syncPolicy"]["automated"]["prune"] is True
     listed = yaml.safe_load((ROOT / "overrides/saw-users.yaml").read_text())["users"]
-    assert [user["name"] for user in listed] == ["alice"]
+    assert listed == []
     for app in ("governance-interceptor", "governance-policy"):
         assert apps[app]["namespace"] == "openshell-agents", app
 
@@ -909,13 +952,6 @@ def test_every_profile_names_its_binaries():
         assert "provider_type" not in doc, path.name
         if doc.get("endpoints"):
             assert doc.get("binaries"), path.name
-
-
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
-    for path in copies:
-        assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
 
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
@@ -1059,6 +1095,7 @@ def test_a_sandbox_ui_gets_a_route_a_service_port_and_a_vm_port(tmp_path):
     assert route["spec"]["tls"]["termination"] == "edge"
     service = docs[("Service", "saw-test-gateway")]
     assert {"name": "ui-4201", "port": 4201, "targetPort": 4201, "protocol": "TCP"} in service["spec"]["ports"]
+    assert_gateway_service_ports(docs, extra={(4201, 4201)})
     vm = docs[("VirtualMachine", "saw-test")]
     ports = vm["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"][0]["ports"]
     assert {"name": "ui-4201", "port": 4201, "protocol": "TCP"} in ports
@@ -1199,11 +1236,10 @@ def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
 
 # -- review follow-ups (harness hosts, gmail, docker:// with pullMethod pod) --
 
-HARNESS_EGRESS_HOSTS = ["ghcr.io", "pkg-containers.githubusercontent.com",
-                        "rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+HARNESS_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
 
 
-def test_egress_allows_sigstore_and_ghcr_only_when_harness_bundles_are_on(default_docs):
+def test_egress_allows_sigstore_only_when_harness_bundles_are_on(default_docs):
     """The installer re-verifies a harness image's cosign signature on every
     apply and removes the harness when that fails; without these hosts every
     image harness would be dropped on its first apply."""
@@ -1230,7 +1266,7 @@ def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
     docs = render("--set", "signing.mode=enforce", "--set", "signing.trustKeys[0]=openshell")
     _, allowed = _egress_names(docs)
     assert set(SIGSTORE_EGRESS_HOSTS) <= set(allowed)
-    assert "ghcr.io" not in allowed
+    assert "ghcr.io" in allowed
     # Harness already lists them: still one rule each.
     _, allowed = _egress_names(render("--set", "signing.mode=enforce",
                                       "--set", "signing.trustKeys[0]=openshell",

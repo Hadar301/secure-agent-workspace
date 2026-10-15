@@ -127,6 +127,24 @@ def test_the_generator_gets_valid_saw_users_defaults(docs):
     assert values["global"]["vpArgoNamespace"] == "vp-gitops"
 
 
+def generator_defaults(docs):
+    deploy = one(docs, "Deployment", "saw-workspaces-generator")
+    env = {e["name"]: e.get("value") for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
+    return json.loads(env["SAW_USERS_VALUES"])
+
+
+def test_portal_workspaces_get_the_governance_engine():
+    """A portal workspace's gateway must use the pattern's engine: without
+    global.governance, saw-users renders interceptor bindings against APF."""
+    values = generator_defaults(render("--set", "global.governance.engine=apf"))
+    assert values["global"]["governance"] == {"engine": "apf"}
+    assert "governance" in yaml.safe_load((ROOT / "charts" / "saw-users" / "values.yaml").read_text())["machineGlobals"]
+
+
+def test_portal_workspaces_without_governance_keep_the_default(docs):
+    assert "governance" not in generator_defaults(docs)["global"]
+
+
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
     step = task["spec"]["steps"][0]
@@ -146,7 +164,8 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
 
-def test_rbac_shows_admin_templates_to_admins_only(docs):
+def test_rbac_shows_admin_templates_to_admins_only():
+    docs = render("--set", "portal.admins[0]=admin")
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     assert config["permission"]["enabled"] is True
     kc = config["catalog"]["providers"]["keycloakOrg"]["default"]
@@ -395,7 +414,8 @@ def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off
 
 
-def test_admins_get_templates_for_another_user(docs):
+def test_admins_get_templates_for_another_user():
+    docs = render("--set", "portal.admins[0]=admin")
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
     create = yaml.safe_load(cm["data"]["create-workspace-for-user.yaml"])
     delete = yaml.safe_load(cm["data"]["delete-workspace-for-user.yaml"])

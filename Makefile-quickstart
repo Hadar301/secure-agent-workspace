@@ -1,20 +1,21 @@
 # Shared namespace: golden image, image builds, governance interceptor.
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
-QUAY_REPO      ?= quay.io/rh-ai-quickstart
-# PUSH=false: the build targets keep the image in this cluster's internal
-# registry instead of pushing it to QUAY_REPO (e.g. an arm64 cluster building
-# its own images).
-PUSH           ?= true
+# NemoClaw sandbox architecture. Empty detects one architecture among
+# schedulable nodes; set amd64/arm64 explicitly on mixed-architecture clusters.
+BUILD_ARCH     ?=
+# Only an explicit destination opts manual builds into publishing.
+ifeq ($(origin PUSH_IMAGE_REPO),undefined)
+PUSH_IMAGE_REPO := $(IMAGE_REPO)
+endif
+export PUSH_IMAGE_REPO
+IMAGE_REPO     ?= ghcr.io/validatedpatterns-sandbox
 # Images `make images-mirror` mirrors into the internal registry. Only the
 # gateway VM disk (golden image) is needed; the VM pulls sandbox and
-# NemoClaw CLI images from quay itself.
+# NemoClaw CLI images from GHCR itself.
 MIRROR_IMAGES  ?= openshell-gateway
-OPENSHELL_VERSION ?= 0.0.116
-# Where CI publishes the multi-arch (amd64 + arm64) NemoClaw and governance
-# interceptor images; `make nemoclaw-publish` copies them to QUAY_REPO.
-GHCR_REPO      ?= ghcr.io/validatedpatterns-sandbox
-NEMOCLAW_IMAGES ?= nemoclaw-sandbox nemoclaw-cli
+# CI publishes latest and sha-<commit>; this is an image tag, not an OpenShell release.
+IMAGE_TAG      ?= latest
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
 OPENSHELL_INTERCEPTOR_REF ?= v0.1.2
@@ -23,6 +24,10 @@ SANDBOX_IMAGE  ?=
 CONTAINER_RUNTIME ?= podman
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+# interceptor (OpenShell governance interceptor) or apf (docs/apf.md)
+GOVERNANCE_ENGINE ?= interceptor
+# Python for the APF bundle tooling (scripts/apf-bundle.py needs cryptography).
+APF_PYTHON ?= python3
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -41,12 +46,14 @@ OWNER          ?=
 SAW_NS         ?= saw-$(OPENSHELL_SAW_NAME)
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
+SAW_VALUES_FILE ?=
 KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= saw-keycloak
 KEYCLOAK_REALM ?= openshell
 # The Keycloak CR in KEYCLOAK_NS (another name for a Keycloak the cluster already runs)
 KEYCLOAK_NAME  ?= openshell-keycloak
+DEMO_ENABLED   ?= false
 # yes/no: let `make keycloak-deploy` import the realm into an existing Keycloak
 USE_EXISTING_KEYCLOAK ?=
 SCRIPTS_DIR    := scripts
@@ -55,26 +62,27 @@ WORKSPACE      ?= default
 
 # Pass values through the environment so spaces and special shell characters
 # in credentials do not become parts of a shell command.
-export NS BUILD_NS QUAY_REPO MIRROR_IMAGES OPENSHELL_VERSION OPENSHELL_INTERCEPTOR_REF
-export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED
+export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
+export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOVERNANCE_ENGINE
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
-export SAW_NS SAW_CHART KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
+export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
-.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build nemoclaw-publish \
+.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
-        saw-restart saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
+        saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
         clean-stale-operators pre-uninstall uninstall pattern-uninstall \
+        apf-keys apf-bundle apf-bundle-check governance-apf \
         .check-saw-name .check-ssh-key .check-gateway-ca .check-prereqs
 
 ##@ Setup and Images
@@ -92,62 +100,75 @@ ssh-key-generate: ## Generate or recover the SSH public key without replacing th
 
 # --- NemoClaw images ---
 
-sandbox-build: ## Build the sandbox image and push to Quay (OTEL=1 enables diagnostics)
+sandbox-build: .check-image-repo ## Build audited discovery artifacts, then the sandbox (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is nemoclaw-sandbox -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
-		--namespace $(BUILD_NS) --create-namespace \
+		--namespace $(BUILD_NS) --create-namespace --set-string source.discoveryImage=
+	@set -eu; \
+	discovery_build=$$(oc start-build nemoclaw-discovery-runtime -n "$(BUILD_NS)" -o name); \
+	oc logs "$$discovery_build" -n "$(BUILD_NS)" --follow || true; \
+	attempts=0; \
+	while :; do \
+		phase=$$(oc get "$$discovery_build" -n "$(BUILD_NS)" -o jsonpath='{.status.phase}'); \
+		case "$$phase" in Complete|Failed|Cancelled|Error) break ;; esac; \
+		if [ "$$attempts" -ge 360 ]; then echo "Error: timed out waiting for discovery build $$discovery_build ($$phase)." >&2; exit 1; fi; \
+		attempts=$$((attempts + 1)); sleep 5; \
+	done; \
+	if [ "$$phase" != Complete ]; then echo "Error: discovery build $$discovery_build is $$phase, not Complete." >&2; exit 1; fi; \
+	digest=$$(oc get "$$discovery_build" -n "$(BUILD_NS)" -o jsonpath='{.status.output.to.imageDigest}'); \
+	if ! printf '%s\n' "$$digest" | grep -Eq '^sha256:[0-9a-f]{64}$$'; then \
+		echo "Error: discovery build $$discovery_build has no valid output digest." >&2; exit 1; fi; \
+	discovery_image="image-registry.openshift-image-registry.svc:5000/$(BUILD_NS)/nemoclaw-discovery-runtime@$$digest"; \
+	build_arch="$(BUILD_ARCH)"; \
+	if [ -z "$$build_arch" ]; then \
+		build_arch=$$(oc get nodes -o json | jq -r '[.items[] | select(.spec.unschedulable != true) | .status.nodeInfo.architecture] | unique | if length == 1 then .[0] else "" end'); \
+	fi; \
+	case "$$build_arch" in amd64|arm64) ;; *) echo "Error: set BUILD_ARCH=amd64 or arm64 for the sandbox build." >&2; exit 1 ;; esac; \
+	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
+		--namespace "$(BUILD_NS)" --set-string "source.discoveryImage=$$discovery_image" \
+		--set-string "build.targetArch=$$build_arch" \
 		$(if $(filter 1,$(OTEL)),--set build.otelEnabled=1)
-	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
-	@if [ "$(PUSH)" = true ]; then \
-		echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."; \
-		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO) $(OPENSHELL_VERSION); \
-	else \
-		echo "PUSH=false: nemoclaw-sandbox:latest stays in this cluster's internal registry ($(BUILD_NS))."; \
-	fi
+	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow --wait
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
-cli-build: ## Build the NemoClaw CLI image and push to Quay
+cli-build: .check-image-repo ## Build the NemoClaw CLI image in-cluster (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is nemoclaw-cli -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
-	@if [ "$(PUSH)" = true ]; then \
-		echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."; \
-		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION); \
-	else \
-		echo "PUSH=false: nemoclaw-cli:latest stays in this cluster's internal registry ($(BUILD_NS))."; \
-	fi
-
-nemoclaw-publish: ## Copy the multi-arch NemoClaw images CI built (GHCR_REPO) to QUAY_REPO
-	@for img in $(NEMOCLAW_IMAGES); do \
-		echo "$(GHCR_REPO)/$$img:latest -> $(QUAY_REPO)/$$img:latest (+ :$(OPENSHELL_VERSION))"; \
-		oc image info --show-multiarch $(GHCR_REPO)/$$img:latest | grep -E '^ *(OS|Arch)' | sort -u; \
-		oc image mirror --keep-manifest-list=true $(GHCR_REPO)/$$img:latest $(QUAY_REPO)/$$img:latest || exit 1; \
-		oc image mirror --keep-manifest-list=true $(GHCR_REPO)/$$img:latest $(QUAY_REPO)/$$img:$(OPENSHELL_VERSION) || exit 1; \
-	done
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
 # --- Governance interceptor image ---
 
-governance-interceptor-build: ## Build the governance interceptor image and push to Quay
+governance-interceptor-build: .check-image-repo ## Build the governance interceptor in-cluster (IMAGE_REPO opts into pushing)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete is governance-interceptor -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install governance-interceptor-image $(HELM_DIR)governance-interceptor-image \
-		--namespace $(BUILD_NS) --create-namespace
+		--namespace $(BUILD_NS) --create-namespace \
+		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
+		--set-string output.externalImage=$(if $(PUSH_IMAGE_REPO),$(PUSH_IMAGE_REPO)/governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF)) \
+		--set-string output.imageStreamTag=$(if $(PUSH_IMAGE_REPO),,governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF))
 	oc start-build governance-interceptor -n $(BUILD_NS) --follow
-	@echo "The build pushed $$(helm get values governance-interceptor-image -n $(BUILD_NS) -a -o json | jq -r .output.externalImage)"
+	@echo "Image built in $(BUILD_NS)$(if $(PUSH_IMAGE_REPO), and pushed to $(PUSH_IMAGE_REPO))."
 
 governance-interceptor-build-local: ## Build the governance interceptor image in the cluster
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	helm upgrade --install governance-interceptor-image $(HELM_DIR)governance-interceptor-image \
 		--namespace $(BUILD_NS) --create-namespace \
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
+		--set output.externalImage= \
 		--set output.imageStreamTag=governance-interceptor:v$(patsubst v%,%,$(OPENSHELL_INTERCEPTOR_REF))
 	oc start-build governance-interceptor -n $(BUILD_NS) --follow
 
 # --- Gateway VM image ---
 
-gateway-build-docker: ## Build the Docker gateway image and push to Quay
+gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Docker gateway image (openshell-gateway-docker)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
@@ -164,14 +185,11 @@ gateway-build-docker: ## Build the Docker gateway image and push to Quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=docker
 	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
-	@if [ "$(PUSH)" = true ]; then \
-		echo "Pushing openshell-gateway-docker to $(QUAY_REPO)..."; \
-		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker $(QUAY_REPO) $(OPENSHELL_VERSION); \
-	else \
-		echo "PUSH=false: openshell-gateway-docker:latest stays in this cluster's internal registry ($(BUILD_NS))."; \
-	fi
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
-gateway-build-podman: ## Build the Podman gateway image and push to Quay
+gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Podman gateway image (openshell-gateway)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
 	@oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
@@ -188,19 +206,16 @@ gateway-build-podman: ## Build the Podman gateway image and push to Quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=podman
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
-	@if [ "$(PUSH)" = true ]; then \
-		echo "Pushing openshell-gateway to $(QUAY_REPO)..."; \
-		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION); \
-	else \
-		echo "PUSH=false: openshell-gateway:latest stays in this cluster's internal registry ($(BUILD_NS))."; \
-	fi
+	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
 
 gateway-build: ## Build the gateway with CONTAINER_RUNTIME=podman or docker
 	@case "$$CONTAINER_RUNTIME" in podman|docker) ;; *) echo "Error: CONTAINER_RUNTIME must be podman or docker." >&2; exit 1;; esac
 	@$(MAKE) "gateway-build-$$CONTAINER_RUNTIME"
 
-images-mirror: ## Mirror prebuilt images from Quay to the internal registry
+images-mirror: ## Mirror prebuilt images from GHCR to the internal registry
 	@$(SCRIPTS_DIR)/images-mirror.sh
 
 ##@ Pattern Lifecycle
@@ -252,14 +267,14 @@ sandbox-pre-delete: .check-saw-name ## Schedule deletion of a sandbox's VM and d
 ##@ Keycloak and Authentication
 
 keycloak-deploy: ## Deploy Keycloak and its realm in KEYCLOAK_NS
-	@$(SCRIPTS_DIR)/deploy-keycloak.sh
+	@DEMO_ENABLED=$(DEMO_ENABLED) $(SCRIPTS_DIR)/deploy-keycloak.sh
 
 keycloak-passwords: ## List users with passwords stored in Keycloak Secrets
 	@$(SCRIPTS_DIR)/keycloak-users.sh show
 
-keycloak-harden: ## For a realm imported earlier: password policy, brute-force lockout, no self-registration, generated passwords for the test users
-	@$(SCRIPTS_DIR)/keycloak-users.sh ensure
-	@$(SCRIPTS_DIR)/keycloak-users.sh harden
+keycloak-harden: ## Apply password policy, lockout, and no self-registration to an existing realm
+	@DEMO_ENABLED=$(DEMO_ENABLED) $(SCRIPTS_DIR)/keycloak-users.sh ensure
+	@DEMO_ENABLED=$(DEMO_ENABLED) $(SCRIPTS_DIR)/keycloak-users.sh harden
 
 USERS_FILE ?= overrides/saw-users.yaml
 KC_USER    ?=
@@ -365,6 +380,9 @@ harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO
 saw-restart: .check-saw-name ## Restart the VM to apply a changed BOM or profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
 
+saw-restart-pending: ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
+	@CONFIRM=$(CONFIRM) $(SCRIPTS_DIR)/saw-restart-pending.sh
+
 saw-ssh: .check-saw-name .check-gateway-ca ## Open a shell in a sandbox
 	@$(SCRIPTS_DIR)/saw-ssh.sh
 
@@ -424,6 +442,23 @@ governance-profile-create: .check-saw-name ## Create a profile from YAML (PROFIL
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)
 
+# --- APF (Agent Policy Fabric) governance: docs/apf.md ---
+
+APF_SEED ?= $(HOME)/.apf-keys/apf.seed
+GHCR_USER ?=
+
+apf-keys: ## Create the APF signing key (seed in APF_SEED, public key in the chart)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py keygen
+
+apf-bundle: ## Sign charts/governance-policy into the APF bundle (commit it to your deployment branch)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py build
+
+apf-bundle-check: ## Check the committed APF bundle: hashes, signature, up to date
+	@$(APF_PYTHON) scripts/apf-bundle.py verify
+
+governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=, GHCR_TOKEN= env)
+	@NS=$(NS) APF_SEED=$(APF_SEED) GHCR_USER=$(GHCR_USER) PYTHON=$(APF_PYTHON) $(SCRIPTS_DIR)/governance-apf.sh
+
 # --- Test ---
 
 ##@ Validation
@@ -436,7 +471,11 @@ test-deployment: ## Run the live OpenShift deployment test (read docs first)
 lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
-		helm lint "$$chart" --set sandboxName=lint || exit; \
+		if [ "$$chart" = charts/openshell-saw ]; then \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
+		else \
+			helm lint "$$chart" --set sandboxName=lint || exit; \
+		fi; \
 		done
 	@for script in scripts/*.sh tests/*.sh charts/openshell-saw/files/*.sh \
 		charts/openshell-saw/files/installer/*.sh charts/openshell-saw/files/guest/*.sh; do \
@@ -571,3 +610,7 @@ $(eval $(call deprecated_alias,governance-list-profiles,governance-profile-list)
 $(eval $(call deprecated_alias,governance-add-profile,governance-profile-add))
 $(eval $(call deprecated_alias,governance-remove-profile,governance-profile-remove))
 $(eval $(call deprecated_alias,governance-create-profile,governance-profile-create))
+
+.PHONY: .check-image-repo
+.check-image-repo:
+	@$(SCRIPTS_DIR)/check-build-repo.sh "$$PUSH_IMAGE_REPO"

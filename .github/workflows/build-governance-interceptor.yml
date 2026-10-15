@@ -4,17 +4,17 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/verify-public-image/**
       - .github/workflows/build-governance-interceptor.yml
       - .github/actions/build-push-image/**
       - tests/charts/test_governance_interceptor_image.py
-      - image-builder-charts/governance-interceptor/**
       - image-builder-charts/helm/governance-interceptor-image/**
   pull_request:
     paths:
+      - .github/actions/verify-public-image/**
       - .github/workflows/build-governance-interceptor.yml
       - .github/actions/build-push-image/**
       - tests/charts/test_governance_interceptor_image.py
-      - image-builder-charts/governance-interceptor/**
       - image-builder-charts/helm/governance-interceptor-image/**
   workflow_dispatch:
 
@@ -48,19 +48,27 @@ jobs:
         run: |
           VALUES="image-builder-charts/helm/governance-interceptor-image/values.yaml"
           REF=$(yq '.source.git.ref' "$VALUES")
-          DEFAULT_REF=$(sed -n 's/^ARG OPENSHELL_REF=//p' image-builder-charts/governance-interceptor/Dockerfile)
+          DEFAULT_REF=$(sed -n 's/^ARG OPENSHELL_REF=//p' image-builder-charts/helm/governance-interceptor-image/files/Dockerfile)
           test "$REF" = "$DEFAULT_REF"
           test "$REF" = "v0.1.2"
           echo "openshell_ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "openshell_uri=$(yq '.source.git.uri' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "builder_image=$(yq '.build.builderImage' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "runtime_image=$(yq '.build.ghcrRuntimeImage' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "context_dir=$(yq '.build.contextDir' "$VALUES")" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/build-push-image
         with:
           image_name: governance-interceptor
-          context: image-builder-charts/governance-interceptor
-          dockerfile: image-builder-charts/governance-interceptor/Dockerfile
+          context: image-builder-charts/helm/governance-interceptor-image/files
+          dockerfile: image-builder-charts/helm/governance-interceptor-image/files/Dockerfile
           cache_scope: governance-interceptor
           build_args: |
             OPENSHELL_REF=${{ steps.params.outputs.openshell_ref }}
+            OPENSHELL_URI=${{ steps.params.outputs.openshell_uri }}
+            BUILDER_IMAGE=${{ steps.params.outputs.builder_image }}
+            RUNTIME_IMAGE=${{ steps.params.outputs.runtime_image }}
+            CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
           # The chart pins ghcr.io/<owner>/governance-interceptor:<OpenShell ref>;
           # the interceptor must match the SAW gateways' OpenShell release.
           extra_tag: ${{ steps.params.outputs.openshell_ref }}
@@ -108,9 +116,14 @@ jobs:
       - name: Compile and test OpenShift interceptor builder
         uses: docker/build-push-action@v6
         with:
-          context: image-builder-charts/governance-interceptor
+          context: image-builder-charts/helm/governance-interceptor-image/files
           file: ${{ runner.temp }}/governance-build.Dockerfile
           target: builder
+          build-args: |
+            OPENSHELL_REF=${{ steps.params.outputs.openshell_ref }}
+            OPENSHELL_URI=${{ steps.params.outputs.openshell_uri }}
+            BUILDER_IMAGE=${{ steps.params.outputs.builder_image }}
+            CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
           push: false
           cache-from: type=gha,scope=governance-interceptor-openshift
           cache-to: type=gha,mode=max,scope=governance-interceptor-openshift,ignore-error=true

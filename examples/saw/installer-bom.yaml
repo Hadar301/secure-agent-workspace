@@ -28,4 +28,4 @@ spec:
       image: quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea
   # Optional: only needed by `type: nemoclaw` sandboxes.
   # nemoclaw:
-  #   cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli@sha256:<digest>
+  #   cliImage: ghcr.io/validatedpatterns-sandbox/nemoclaw-cli@sha256:<digest>

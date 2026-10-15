@@ -95,9 +95,11 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
                                                       "retry": {"limit": 20},
                                                       "syncOptions": ["ServerSideApply=true"]}
         # Found on the GB200: without server-side diff the VM stayed
-        # OutOfSync on the fields KubeVirt defaults.
+        # OutOfSync on the fields KubeVirt defaults. Found on OpenShift:
+        # without IncludeMutationWebhook every comparison failed on the
+        # user's Routes, so the app never synced a later commit.
         assert (application["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
-                == "ServerSideDiff=true")
+                == "ServerSideDiff=true,IncludeMutationWebhook=true")
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 
@@ -148,6 +150,40 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     # A user's own values win; openshell-saw ignores clusterCaSecret for an
     # external issuer.
     assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
+
+
+def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"governance": {"engine": "apf"}}}))
+    values = helm_values(app(docs, "saw-alice"))
+    assert values["global"]["governance"]["engine"] == "apf"
+    path = tmp_path / "saw-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    policies = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                and doc.get("kind") == "NetworkPolicy"
+                and doc["metadata"]["name"] == "saw-vm"]
+    # The pattern stages this off by default; select the first user here.
+    assert not policies
+    topology = yaml.safe_load((ROOT / "tests/fixtures/saw-network-topology.yaml").read_text())
+    values["networkPolicy"]["enabled"] = True
+    values["networkPolicy"].update(topology["networkPolicy"])
+    values["cleanupApi"].update(topology["cleanupApi"])
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    vm_policy = next(doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                     and doc.get("kind") == "NetworkPolicy"
+                     and doc["metadata"]["name"] == "saw-vm")
+    assert any(peer.get("podSelector", {}).get("matchLabels") == {
+        "app.kubernetes.io/name": "apf",
+        "app.kubernetes.io/instance": "governance-interceptor"}
+        for rule in vm_policy["spec"]["egress"] for peer in rule["to"])
 
 
 def test_empty_global_values_are_left_out(tmp_path):
@@ -223,9 +259,11 @@ def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"repoURL": "https://example.com/repo.git", "targetRevision": "main",
                    "vpArgoNamespace": "vp-gitops", "clusterDomain": "example.com",
-                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA"}}))
+                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA",
+                   "governance": {"engine": "apf"}}}))
     assert helm_values(app(docs, "saw-alice"))["global"] == {
-        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA"}
+        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA",
+        "governance": {"engine": "apf"}}
 
 
 @pytest.mark.parametrize("name,message", [
@@ -258,10 +296,24 @@ def test_nineteen_character_name_is_accepted(tmp_path):
 
 
 def test_shipped_override_renders_alice(tmp_path):
-    result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users.yaml"))
+    result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"))
     docs = docs_from(result)
     assert [doc["metadata"]["name"] for doc in by_kind(docs, "Namespace")] == ["saw-alice"]
     assert helm_values(app(docs, "saw-alice-bom")) == {"profiles": ["data-science"]}
+
+
+def test_owner_resolution_writes_only_a_dedicated_input():
+    result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"),
+                  "--set", "ownerResolution.enabled=true")
+    docs = docs_from(result)
+    config = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-owner-subject")
+    assert "data" not in config
+    role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-owner-resolver")
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"],
+                              "resourceNames": ["saw-owner-subject"], "verbs": ["get", "patch"]}]
+    saw_values = helm_values(app(docs, "saw-alice"))
+    assert saw_values["accessControl"]["owner"] == "alice"
+    assert saw_values["accessControl"]["ownerSubjectSource"] == "resolved"
 
 
 def test_missing_repo_url_fails(tmp_path):

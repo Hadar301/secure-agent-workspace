@@ -9,7 +9,8 @@ import yaml
 def main() -> int:
     rendered = subprocess.run(
         ["helm", "template", "saw-lint", "charts/openshell-saw",
-         "--namespace", "saw-lint", "--set", "sandboxName=saw-lint"],
+         "--namespace", "saw-lint", "-f", "tests/fixtures/saw-network-topology.yaml",
+         "--set", "sandboxName=saw-lint"],
         capture_output=True, text=True, check=False,
     )
     if rendered.returncode:
