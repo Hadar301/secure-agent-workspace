@@ -1,4 +1,4 @@
-{{- if .Values.route.webui }}
+{{- if and .Values.oidc.enabled .Values.route.webui }}
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:

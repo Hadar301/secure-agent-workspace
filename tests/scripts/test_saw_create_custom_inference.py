@@ -12,11 +12,18 @@ SCRIPT = ROOT / "scripts" / "openshell-saw-create.sh"
 
 FAKE_OC = r'''#!/usr/bin/env bash
 echo "oc $*" >> "$FAKE_LOG"
+if [[ "${KC_API_FAILURE:-}" == true && "$1" == get &&
+      ( "$2" == keycloaks || "$2" == routes ) ]]; then
+  echo "Error: Kubernetes API unavailable" >&2
+  exit 2
+fi
 case "$1" in
   whoami) echo admin ;;
   # Secrets in the namespace: EXISTING_SECRETS, plus those this run creates.
   get) if [[ "$2" == namespace ]]; then
          [[ -n "${EXISTING_SECRETS:-}" ]] && echo "namespace/$3"
+       elif [[ "$2" == ingress.config.openshift.io ]]; then
+         printf '%s' "${FAKE_APPS_DOMAIN:-}"
        elif [[ "$2" == network.config ]]; then
          echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}'
        elif [[ "$2" == service && "$3" == kubernetes ]]; then
@@ -56,7 +63,7 @@ def run(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("oc", FAKE_OC), ("helm", FAKE_HELM),
-                       ("uv", "#!/bin/sh\necho '[]'\n")):
+                       ("uv", "#!/bin/sh\nprintf '%s\\n' \"${SANDBOX_UI_VALUES:-[]}\"\n")):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     scripts = tmp_path / "scripts"
@@ -73,15 +80,94 @@ def run(tmp_path):
     (scripts / "keycloak-users.sh").chmod(0o755)
     log = tmp_path / "log"
 
-    def _run(**env):
+    def _invoke(**env):
+        unset_issuer = env.pop("UNSET_OIDC_ISSUER", False)
+        if env.pop("REAL_KEYCLOAK_HELPER", False):
+            (scripts / "keycloak-host.sh").unlink()
+            (scripts / "keycloak-host.sh").symlink_to(ROOT / "scripts" / "keycloak-host.sh")
         full = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_LOG": str(log),
                 "FAKE_DIR": str(tmp_path), "OPENSHELL_SAW_NAME": "cinf", "SAW_CHART": "charts/openshell-saw",
                 "OWNER": "alice", "OWNER_SUBJECT": "", "OIDC_ISSUER": "none",
                 "OIDC_TOKEN_DIR": str(tmp_path / "oidc"), "SCRIPTS_DIR": str(scripts), **env}
+        if unset_issuer:
+            full.pop("OIDC_ISSUER")
         result = subprocess.run(["bash", str(SCRIPT)], env=full, cwd=ROOT, capture_output=True, text=True)
+        return result, log.read_text(), tmp_path / "bom-values.yaml"
+
+    def _run(**env):
+        result, commands, bom_values = _invoke(**env)
         assert result.returncode == 0, result.stdout + result.stderr
-        return log.read_text(), tmp_path / "bom-values.yaml"
+        return commands, bom_values
+    _run.invoke = _invoke
     return _run
+
+
+@pytest.mark.parametrize("issuer", [None, ""])
+def test_missing_issuer_fails_before_cluster_write(run, issuer):
+    options = {"OIDC_ISSUER": issuer} if issuer is not None else {"UNSET_OIDC_ISSUER": True}
+    result, commands, _ = run.invoke(REAL_KEYCLOAK_HELPER=True,
+                                     PROVIDER="build", MODEL="m", API_KEY="k",
+                                     KEYCLOAK_NS="missing-keycloak", **options)
+    assert result.returncode != 0
+    assert "no Keycloak found in namespace missing-keycloak" in result.stderr
+    assert "resources created" not in result.stdout
+    assert not any(line.startswith(("oc create", "oc apply", "oc label", "helm upgrade"))
+                   for line in commands.splitlines())
+
+
+def test_issuer_discovery_api_failure_stops_before_cluster_write(run):
+    result, commands, _ = run.invoke(REAL_KEYCLOAK_HELPER=True,
+                                     OIDC_ISSUER="", KC_API_FAILURE="true",
+                                     PROVIDER="build", MODEL="m", API_KEY="k")
+    assert result.returncode != 0
+    assert "cannot query Keycloak" in result.stderr
+    assert "resources created" not in result.stdout
+    assert not any(line.startswith(("oc create", "oc apply", "oc label", "helm upgrade"))
+                   for line in commands.splitlines())
+
+
+def test_opt_out_overrides_values_and_prints_matching_configuration(run, tmp_path):
+    values = tmp_path / "oidc.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"enabled": True,
+                                               "issuerUrl": "https://wrong.example.test"},
+                                      "global": {"clusterDomain": "example.test"},
+                                      "sandboxUi": [{"workspace": "default", "sandbox": "notebook",
+                                                     "proxyPort": 18791, "forwardPort": 18789}]}))
+    result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k",
+                                     SAW_VALUES_FILE=str(values), OIDC_ISSUER="none")
+    assert result.returncode == 0, result.stderr
+    saw = next(line for line in commands.splitlines()
+               if line.startswith("helm upgrade --install cinf charts/openshell-saw"))
+    assert "oidc.enabled=false" in saw and "oidc.issuerUrl=" in saw
+    assert "sandboxUi=[]" in saw
+    assert "OIDC_ISSUER=none" in result.stdout
+    assert "Dashboard:" not in result.stdout
+    assert "openshell gateway login" not in result.stdout
+    assert "make saw-status" in result.stdout
+
+
+def test_local_issuer_summary_uses_selected_configuration(run):
+    result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k",
+                                     LOCAL_KC_HOST="keycloak.apps.test",
+                                     KEYCLOAK_NS="custom-keycloak", OIDC_CLIENT_ID="custom-client",
+                                     OIDC_ISSUER="")
+    assert result.returncode == 0, result.stderr
+    assert "oidc.enabled=true" in commands
+    assert "OIDC_ISSUER=https://keycloak.apps.test/realms/openshell" in result.stdout
+    assert "OIDC_CLIENT_ID=custom-client" in result.stdout
+    assert "KEYCLOAK_NS=custom-keycloak" in result.stdout
+    assert "Dashboard:" not in result.stdout
+    assert "openshell gateway login" not in result.stdout
+
+
+def test_summary_lists_enabled_sandbox_ui_routes(run):
+    ui = '[{"workspace":"default","sandbox":"notebook","proxyPort":18791,"forwardPort":18789}]'
+    result, _, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k",
+                              OIDC_ISSUER="", LOCAL_KC_HOST="keycloak.apps.test",
+                              SANDBOX_UI_VALUES=ui, FAKE_APPS_DOMAIN="apps.example.test")
+    assert result.returncode == 0, result.stderr
+    assert "make sandbox-ui" in result.stdout
+    assert "make openclaw-gui" in result.stdout
 
 
 def test_custom_endpoint_and_profile(run):
@@ -152,6 +238,7 @@ def test_external_issuer_does_not_require_local_keycloak(run):
     saw = next(line for line in log.splitlines()
                if line.startswith("helm upgrade --install cinf charts/openshell-saw"))
     assert f"oidc.issuerUrl={issuer}" in saw
+    assert "oidc.enabled=true" in saw
     assert "dashboard.enabled=false" in saw
     assert "route.webui=false" in saw
     assert "agent=" not in saw and "sandboxImage=" not in saw and "vertexSaJson=" not in saw

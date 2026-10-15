@@ -145,8 +145,12 @@ if [[ -f "${OIDC_TOKEN_DIR}/token.json" && -n "${OWNER}" ]]; then
 fi
 # --- Detect OIDC issuer (OIDC_ISSUER=none deploys without OIDC) ---
 local_keycloak=false
+oidc_disabled=false
+oidc_enabled=true
 if [[ "${OIDC_ISSUER}" == "none" ]]; then
   OIDC_ISSUER=""
+  oidc_disabled=true
+  oidc_enabled=false
 elif [[ -z "${OIDC_ISSUER}" ]]; then
   KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"
   OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
@@ -289,6 +293,7 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 helm_opts=(
   --set-string "sandboxName=${OPENSHELL_SAW_NAME}"
+  --set "oidc.enabled=${oidc_enabled}"
   --set-string "accessControl.owner=${OWNER}"
   --set-string "oidc.keycloakNamespace=${KEYCLOAK_NS}"
   --set-string "governance.namespace=${NS}"
@@ -308,6 +313,9 @@ if [[ "${dashboard_enabled}" != true ]]; then
   helm_opts+=(--set dashboard.enabled=false --set route.dashboard=false
     --set route.webui=false)
 fi
+if [[ "${oidc_disabled}" == true ]]; then
+  helm_opts+=(--set-string oidc.issuerUrl= --set-json 'sandboxUi=[]')
+fi
 [[ -z "${OWNER_SUBJECT}" ]] || helm_opts+=(--set-string "accessControl.ownerSubject=${OWNER_SUBJECT}")
 [[ -z "${ROUTE_HOST}" ]] || helm_opts+=(--set-string "route.host=${ROUTE_HOST}")
 if [[ -n "${APPS_DOMAIN}" ]]; then
@@ -319,6 +327,7 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
     helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
   fi
 fi
+ui_routes='[]'
 if [[ "${dashboard_enabled}" == true ]]; then
   ui_routes="$(uv run --locked python "${SCRIPTS_DIR}/sandbox-ui-values.py" "${PROFILES:-data-science}")"
   if [[ "${ui_routes}" != '[]' && "${APPS_DOMAIN}" != apps.* ]]; then
@@ -334,7 +343,7 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   "${helm_opts[@]}"
 
 echo ""
-echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."
+echo "Sandbox '${OPENSHELL_SAW_NAME}' resources created. Wait for the VM installer before connecting."
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
 
@@ -343,16 +352,19 @@ if [[ -n "${GW_URL}" ]]; then
   echo "  Gateway:   ${GW_URL}"
 fi
 
-if [[ "${dashboard_enabled}" == true ]]; then
-  DASH_URL=$(oc get route "${OPENSHELL_SAW_NAME}-dashboard" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
-  if [[ -n "${DASH_URL}" ]]; then
-    echo "  Dashboard: ${DASH_URL}"
-  fi
-fi
-
 echo ""
 echo "Next steps:"
-echo "  1. make saw-configure OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} SAW_NS=${DEPLOY_NS}"
-echo "  2. openshell gateway login"
+printf -v quoted_name '%q' "${OPENSHELL_SAW_NAME}"
+printf -v quoted_ns '%q' "${DEPLOY_NS}"
+printf -v quoted_issuer '%q' "${OIDC_ISSUER:-none}"
+printf -v quoted_client '%q' "${OIDC_CLIENT_ID}"
+printf -v quoted_kc_ns '%q' "${KEYCLOAK_NS}"
+echo "  1. make saw-status OPENSHELL_SAW_NAME=${quoted_name} SAW_NS=${quoted_ns}"
+echo "     Wait until both install and apply report Done."
+echo "  2. OIDC_ISSUER=${quoted_issuer} OIDC_CLIENT_ID=${quoted_client} KEYCLOAK_NS=${quoted_kc_ns} make saw-configure OPENSHELL_SAW_NAME=${quoted_name} SAW_NS=${quoted_ns}"
 echo "  3. openshell sandbox list"
+if [[ "${ui_routes}" != '[]' ]]; then
+  echo "  Sandbox UIs: make sandbox-ui SAW_NS=${quoted_ns}"
+fi
+echo "  OpenClaw UI, when enabled: make openclaw-gui OPENSHELL_SAW_NAME=${quoted_name} SAW_NS=${quoted_ns} SANDBOX_NAME=notebook"
 echo "Shell on the VM (adds your SSH key on demand): make saw-vm-ssh OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} SAW_NS=${DEPLOY_NS}"

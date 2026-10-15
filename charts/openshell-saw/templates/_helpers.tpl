@@ -37,7 +37,8 @@ Resolve the OIDC issuer URL.
 Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 */}}
 {{- define "openshell-sandbox.oidcIssuerUrl" -}}
-{{- if .Values.oidc.issuerUrl -}}
+{{- if not .Values.oidc.enabled -}}
+{{- else if .Values.oidc.issuerUrl -}}
   {{- .Values.oidc.issuerUrl -}}
 {{- else if .Values.global -}}
   {{- if .Values.global.clusterDomain -}}
@@ -267,7 +268,7 @@ nothing to do with the cluster's ingress CA. Attached like the provider
 Secrets (secret disk, mounted under /run/saw/secrets/<name>).
 */}}
 {{- define "openshell-sandbox.caBundleSecret" -}}
-{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- if and .Values.oidc.enabled .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
 {{- .Values.oidc.clusterCaSecret -}}
 {{- end -}}
 {{- end }}
@@ -376,6 +377,7 @@ in its first label with 19-character names), or entry.host when set.
 {{- $root := . -}}
 {{- $out := list -}}
 {{- $seen := dict -}}
+{{- if .Values.oidc.enabled -}}
 {{- range $e := .Values.sandboxUi | default list -}}
 {{- $ws := $e.workspace | default "" | toString -}}
 {{- $sb := $e.sandbox | default "" | toString -}}
@@ -403,6 +405,7 @@ in its first label with 19-character names), or entry.host when set.
 {{- $out = append $out (dict "workspace" $ws "sandbox" $sb "name" $label "host" $host
       "proxyPort" $port "forwardPort" (int $e.forwardPort)
       "portName" (printf "ui-%d" $port)) -}}
+{{- end -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
