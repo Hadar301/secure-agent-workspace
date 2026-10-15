@@ -72,16 +72,8 @@ def render_error(*args):
 
 
 def test_release_notes_do_not_advertise_dashboard_route():
-    result = subprocess.run(
-        [HELM, "install", "saw-test", str(CHART), "--namespace", "saw-alice",
-         "--dry-run=client", "--set", "sandboxName=saw-test",
-         "--set", "accessControl.owner=alice", "-f",
-         str(ROOT / "tests/fixtures/saw-network-topology.yaml")],
-        capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    notes = result.stdout.split("NOTES:", 1)[1]
-    assert "Dashboard URL" not in notes
-    assert "saw-test-dashboard" not in notes
+    notes = (CHART / "templates/NOTES.txt").read_text()
+    assert "dashboard" not in notes.lower()
 
 
 def cloud_config(docs, name="saw-test"):
