@@ -540,3 +540,16 @@ def test_extra_cas_reach_the_bundle(tmp_path):
     docs = render("-f", str(values))
     sources = next(d for d in docs if d["metadata"]["name"] == "saw-ca-sources")
     assert sources["data"]["extra-ca.crt"].strip() == pem
+
+
+def test_tekton_resources_compare_with_their_webhook_defaults(docs):
+    """Tekton's admission webhook fills in defaults, so a plain diff never
+    matches: the app stayed OutOfSync after every successful sync and the
+    pattern install's health check never passed (fresh cluster)."""
+    tekton = [d for d in docs if d.get("apiVersion", "").startswith("tekton.dev/")
+              and d["kind"] in ("Task", "Pipeline")]
+    assert {d["kind"] for d in tekton} == {"Task", "Pipeline"}
+    for d in tekton:
+        options = d["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
+        assert set(options.split(",")) == {"ServerSideDiff=true", "IncludeMutationWebhook=true"}, \
+            d["metadata"]["name"]
