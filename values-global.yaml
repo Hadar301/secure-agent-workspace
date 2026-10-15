@@ -9,6 +9,8 @@ global:
   #                values-secret.yaml needs the ghcr and apf-signing entries,
   #                and charts/governance-interceptor/files/apf needs a signed
   #                bundle you generate (make apf-keys apf-bundle, docs/apf.md).
+  # Leave interceptor here and pick APF per install instead:
+  #   ./pattern.sh make install GOVERNANCE_ENGINE=apf
   governance:
     engine: interceptor
 main:

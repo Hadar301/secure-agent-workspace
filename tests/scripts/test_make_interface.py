@@ -569,3 +569,39 @@ def test_saw_restart_pending_with_nothing_pending(tmp_path):
     result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
     assert result.returncode == 0, result.stderr
     assert "No SAW VM" in result.stdout
+
+
+def install_opts(*args, env=None):
+    """EXTRA_HELM_OPTS as `make install` hands it to the pattern framework."""
+    return run_make("--eval", 'probe-install-opts:\n\t@printf "%s" "$$EXTRA_HELM_OPTS"',
+                    "probe-install-opts", *args, env=env)
+
+
+def test_governance_engine_selects_the_engine_at_install():
+    """`./pattern.sh make install GOVERNANCE_ENGINE=apf`: a Pattern
+    extraParameter, which the operator passes to every application."""
+    result = install_opts("GOVERNANCE_ENGINE=apf")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "--set", "main.extraParameters[0].name=global.governance.engine",
+        "--set", "main.extraParameters[0].value=apf"]
+
+
+def test_values_global_decides_without_an_explicit_engine():
+    env = {k: v for k, v in os.environ.items() if k not in ("GOVERNANCE_ENGINE", "EXTRA_HELM_OPTS")}
+    result = install_opts(env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_the_engine_switch_keeps_other_helm_options():
+    env = {**os.environ, "EXTRA_HELM_OPTS": "--set main.foo=bar"}
+    result = install_opts("GOVERNANCE_ENGINE=interceptor", env=env)
+    assert result.stdout.split()[:2] == ["--set", "main.foo=bar"]
+    assert result.stdout.endswith("main.extraParameters[0].value=interceptor")
+
+
+def test_an_unknown_engine_stops_the_install():
+    result = install_opts("GOVERNANCE_ENGINE=opa")
+    assert result.returncode != 0
+    assert "GOVERNANCE_ENGINE must be interceptor or apf" in result.stderr

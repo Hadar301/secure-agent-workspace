@@ -11,10 +11,11 @@ bundle, and writes a JSONL audit trail.
 | | `interceptor` (default) | `apf` |
 |---|---|---|
 | Serves | `governance-policy` ConfigMaps | signed bundle built from the same files |
-| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0` (private; chart 0.2.0) |
+| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0-driverconfig.3` (private, amd64 and arm64; chart 0.2.1-driverconfig) |
 | Policy change | edit `charts/governance-policy`, push | edit, **re-sign** (`make apf-bundle`), push |
 | Runtime `openshell policy update` | validated | refused: "policy is managed by APF" |
 | Gateway bindings | 4 RPCs (`allowlist`) | APF's own declarations (`dynamic`): 10 RPCs, incl. post-commit audit |
+| Harness bundles | the interceptor's harness guard | APF's signed `driver_config` allowlist ([below](#harness-bundles)) |
 
 `charts/governance-policy` stays the only place policy is written. A profile APF cannot express
 is left out of the bundle, with a message when signing: today that is `gemini`, whose API key goes
@@ -25,13 +26,27 @@ translates `policy.yaml` into APF's `SandboxPolicy` and each `profiles/<id>.yaml
 
 ## The switch
 
-`values-global.yaml`:
+The default is `interceptor`, so a clone of the pattern installs without APF's private images or
+keys. Pick the engine when you install, without editing `values-global.yaml`:
+
+```bash
+./pattern.sh make install GOVERNANCE_ENGINE=apf     # or interceptor
+```
+
+`GOVERNANCE_ENGINE` becomes a Pattern `extraParameter` (`global.governance.engine`), which the
+operator passes to every application and which wins over `values-global.yaml`. Pass it as a `make`
+argument, as above: `pattern.sh` does not forward it from your shell. To switch back, run
+`make install` again with `GOVERNANCE_ENGINE=interceptor`. Without `GOVERNANCE_ENGINE`,
+`values-global.yaml` decides:
 
 ```yaml
 global:
   governance:
     engine: apf        # or interceptor
 ```
+
+The engine cannot come from `values-secret.yaml`: those values go to Vault, and Argo CD renders
+the charts from Git and the Pattern's parameters, not from Vault.
 
 It reaches two places:
 
@@ -65,7 +80,8 @@ all of them), and `governance.bindingPolicy` sets the mode per engine.
    pattern deploys from (your fork or deployment branch).
 4. **Secrets.** Uncomment the `ghcr` and `apf-signing` entries in `values-secret.yaml`
    (`~/.ghcr-token` holds the token) and load them (`./pattern.sh make load-secrets`, or install).
-5. **Switch.** Set `global.governance.engine: apf`, push.
+5. **Switch.** `./pattern.sh make install GOVERNANCE_ENGINE=apf` (or set
+   `global.governance.engine: apf` and push).
 
 Argo CD then replaces the interceptor with APF, and every SAW app (pattern and portal
 workspaces) re-renders its gateway config. **Running VMs do not pick it up on their own:**
@@ -186,9 +202,9 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
 - **OpenShell 0.1.x (the SAW's BOM since v0.1.2-rhaiv.0).** The gateway negotiates the extension
   protocol (`PeerMetadata`, protocol 1.0) with every interceptor and stops at startup when an
   interceptor does not speak it ("did not provide protocol metadata"), so APF must be a build for
-  OpenShell 0.1.x. That is why `apf.values` sets the 0.1.0 images: the APF chart's own 0.2.0
-  images were built against 0.0.x and a 0.1.2 gateway refuses them (seen live). 0.1.0 is APF's
-  crate version and its first 0.1.x build; the chart stays at 0.2.0.
+  OpenShell 0.1.x. That is why `apf.values` sets the `0.1.0-driverconfig.3` images: APF's
+  0.2.0 images were built against 0.0.x and a 0.1.2 gateway refuses them (seen live). 0.1.0 is
+  APF's crate version, not an older release.
 - **Profile annotations ([NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929)).**
   0.1.x hashes provider-profile annotations in map order, so a profile served with more than one
   annotation makes every sandbox with that provider fail ("Startup configuration did not
@@ -205,6 +221,35 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,
   so APF has no single gateway to call back).
 
+## Harness bundles
+
+A harness bundle ([harness-bundles.md](harness-bundles.md)) reaches the sandbox as a podman volume
+the installer mounts read-only at `/sandbox/harness`, through the `CreateSandbox` request's driver
+config. The gateway then needs `allow_driver_config = true`, and the governance engine must make
+sure that this is the only driver config anyone gets. The interceptor does it with its harness
+guard; APF does it with a `driver_config` allowlist in the signed `SandboxPolicy`, which
+`scripts/apf-bundle.py` writes into every bundle:
+
+```yaml
+driver_config:
+  deny_templates: true                  # a template's driver config can't be checked in advance
+  allowed:
+    - require_role: openshell-admin     # the installer's mTLS client certificate (OU)
+      drivers: [podman]                 # the SAW gateways' compute driver
+      max_mounts: 1
+      mounts:
+        - { type: volume, source_prefix: saw-harness-, target: /sandbox/harness, read_only: true }
+```
+
+APF admits that mount and denies, and audits, everything else: another target or source, a
+writable mount, a second mount, another driver, a non-admin caller, or a template. A bundle
+without the block denies all driver config, so a bundle signed before this change keeps harness
+sandboxes from starting (`driver_config.denied`) instead of opening the gap: run `make apf-bundle`
+and push. Roles come only from the identity the gateway authenticated, never from the request.
+`interceptor.computeDriver: podman` in `apf.values` tells APF which driver key to expect.
+`CreateSandboxTemplate` is not interceptable in OpenShell 0.1.x, so APF covers templates at
+`CreateSandbox` instead.
+
 ## Not covered
 
 - Tier 2 (APF's egress content middleware on port 9099): needs TLS between the sandbox supervisor
@@ -214,7 +259,3 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
 - Per-user or per-profile policy: APF injects one `default` policy, like the interceptor.
 - A durable audit volume (`audit.persistence` in the APF chart).
 - A durable anti-rollback counter in the APF pod: see [Rollback](#rollback).
-- Harness bundles ([harness-bundles.md](harness-bundles.md)). Their mount relies on the patched
-  interceptor admitting only the installer's read-only harness volume from an mTLS admin; APF has
-  no such guard. With `engine: apf` the chart refuses `allowDriverConfig` (a user with
-  `harnessEnabled`) and says so, rather than letting any caller attach the volume.
