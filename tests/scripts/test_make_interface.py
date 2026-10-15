@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -263,7 +264,9 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("prereqs-check", env=env)
     assert result.returncode != 0
-    assert "does not match gateway BOM 0.1.2-rhaiv.6" in result.stderr
+    values = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+    expected = values["bom"]["spec"]["openshell"]["cli"]["version"]
+    assert f"does not match gateway BOM {expected}" in result.stderr
     assert "oc must not run" not in result.stderr
 
 
