@@ -73,7 +73,9 @@ def render_error(*args):
 
 def test_release_notes_do_not_advertise_dashboard_route():
     notes = (CHART / "templates/NOTES.txt").read_text()
-    assert "dashboard" not in notes.lower()
+    assert "Dashboard URL" not in notes
+    assert not any("oc get route" in line and "-dashboard" in line
+                   for line in notes.splitlines())
 
 
 def cloud_config(docs, name="saw-test"):

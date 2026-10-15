@@ -146,6 +146,16 @@ def test_opt_out_overrides_values_and_prints_matching_configuration(run, tmp_pat
     assert "make saw-status" in result.stdout
 
 
+def test_opt_out_rejects_dashboard_before_cluster_write(run):
+    result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k",
+                                     OIDC_ISSUER="none", DASHBOARD="true")
+    assert result.returncode != 0
+    assert "DASHBOARD=true requires an OIDC issuer" in result.stderr
+    assert "resources created" not in result.stdout
+    assert not any(line.startswith(("oc create", "oc apply", "oc label", "helm upgrade"))
+                   for line in commands.splitlines())
+
+
 def test_local_issuer_summary_uses_selected_configuration(run):
     result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k",
                                      LOCAL_KC_HOST="keycloak.apps.test",
