@@ -11,7 +11,7 @@ bundle, and writes a JSONL audit trail.
 | | `interceptor` (default) | `apf` |
 |---|---|---|
 | Serves | `governance-policy` ConfigMaps | signed bundle built from the same files |
-| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0-driverconfig.3` (private, amd64 and arm64; chart 0.2.1-driverconfig) |
+| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0-driverconfig.3` (private, amd64 and arm64; chart 0.2.2-driverconfig) |
 | Policy change | edit `charts/governance-policy`, push | edit, **re-sign** (`make apf-bundle`), push |
 | Runtime `openshell policy update` | validated | refused: "policy is managed by APF" |
 | Gateway bindings | 4 RPCs (`allowlist`) | APF's own declarations (`dynamic`): 10 RPCs, incl. post-commit audit |
@@ -213,9 +213,18 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
 - `openshell provider list-profiles` in a SAW shows the SAW profiles (APF serves the catalog
   through `SnapshotProviderProfiles`): `openai`, `nvidia`, `brave` and `web-search`. APF's Provider
   schema accepts only `type`, `endpoints`, `binaries` and `credentials` (name, envVars, required,
-  style, header), so OpenShell's `inference_capable`, `category`, `discovery` and `query_param`
-  are not in the bundle. OpenShell 0.1.x has no inference routing: the agent calls the provider's
-  endpoint with a placeholder key, which needs the profile's `endpoints` and `binaries` (kept).
+  style, header, source), so OpenShell's `inference_capable`, `category`, `discovery` and
+  `query_param` are not in the bundle. OpenShell 0.1.x has no inference routing: the agent calls
+  the provider's endpoint with a placeholder key, which needs the profile's `endpoints` and
+  `binaries` (kept).
+- **Expiring tokens.** A credential's `source` says where APF gets it. `host-env` is a static value,
+  so a token that expires (a Google access token, after about an hour) stops working. A profile
+  credential with an OAuth2 `refresh` therefore becomes `source: {kind: oauth2, grant:
+  refresh-token, tokenUrl, refreshBeforeSeconds, parameters}`, whose parameters are the refresh
+  material the installer hands the gateway (`client_id`, `client_secret`, `refresh_token`).
+  Profiles whose refresh is optional stay `host-env` (`OPTIONAL_REFRESH` in
+  `scripts/apf-bundle.py`): Slack, where a bot token (`xoxb-`) never expires. Check on a new
+  install that `openshell provider refresh status gmail` shows a refreshed token after an hour.
 - `provider profile import` of a profile that is in the bundle is allowed or refused cleanly
   (the installer treats a refusal as non-fatal).
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,

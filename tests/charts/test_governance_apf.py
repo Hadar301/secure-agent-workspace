@@ -106,7 +106,7 @@ def test_apf_replaces_the_interceptor(apf_chart):
     assert app["metadata"]["finalizers"] == ["resources-finalizer.argocd.argoproj.io"]
     source = app["spec"]["source"]
     assert (source["repoURL"], source["chart"], source["targetRevision"]) == \
-        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.1-driverconfig")
+        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.2-driverconfig")
     helm = source["helm"]
     # The Service keeps the name every SAW gateway calls.
     assert helm["releaseName"] == "governance-interceptor"

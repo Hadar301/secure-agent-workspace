@@ -52,7 +52,7 @@ apf:
     # The driver-config preview line: APF admits the installer's harness mount
     # from the driver_config allowlist in the signed SandboxPolicy
     # (scripts/apf-bundle.py), and denies every other driver config.
-    version: 0.2.1-driverconfig
+    version: 0.2.2-driverconfig
   # Pattern: an Argo CD Application installs the APF chart. Quickstart (no
   # Argo CD) turns this off and `make governance-apf` runs helm instead.
   application:
