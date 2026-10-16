@@ -71,6 +71,13 @@ def render_error(*args):
     return result.stderr
 
 
+def test_release_notes_do_not_advertise_dashboard_route():
+    notes = (CHART / "templates/NOTES.txt").read_text()
+    assert "Dashboard URL" not in notes
+    assert not any("oc get route" in line and "-dashboard" in line
+                   for line in notes.splitlines())
+
+
 def cloud_config(docs, name="saw-test"):
     user_data = docs[("Secret", f"{name}-cloudinit")]["stringData"]["userData"]
     assert user_data.startswith("#cloud-config\n")
@@ -399,6 +406,34 @@ def test_gateway_oidc_for_users_with_roles():
                     "user_role": "openshell-user"}
     assert toml["openshell"]["gateway"]["auth"]["allow_unauthenticated_users"] is False
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env      # installer still uses mTLS
+
+
+@pytest.mark.parametrize("issuer", ["", "https://id.example.test/realms/test"])
+def test_disabled_oidc_cannot_be_restored_by_chart_defaults(issuer):
+    docs = render("--set", "oidc.enabled=false", "--set",
+                  "global.clusterDomain=example.test", "--set-string",
+                  f"oidc.issuerUrl={issuer}", "--set",
+                  "oidc.clusterCaSecret=saw-ingress-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["oidcIssuer"] == ""
+    assert config["caBundleSecret"] == ""
+    assert "saw-ingress-ca" not in config["secrets"]
+    _, toml = gateway_files(docs)
+    assert "oidc" not in toml["openshell"]["gateway"]
+    assert not any(kind == "Route" and (name.endswith("-dashboard") or
+                   name.endswith("-webui")) for kind, name in docs)
+
+
+def test_disabled_oidc_suppresses_sandbox_ui_routes(tmp_path):
+    values = tmp_path / "ui.yaml"
+    values.write_text(yaml.safe_dump({"sandboxUi": [{"workspace": "default",
+        "sandbox": "notebook", "proxyPort": 18791, "forwardPort": 18789}]}))
+    docs = render("-f", str(values), "--set", "oidc.enabled=false")
+    assert not any(kind == "Route" and name.endswith("-notebook-ui")
+                   for kind, name in docs)
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["sandboxUi"] == []
+    assert config["dashboard"]["enabled"] is False
 
 
 def test_governance_can_be_disabled():
