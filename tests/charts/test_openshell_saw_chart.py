@@ -71,6 +71,13 @@ def render_error(*args):
     return result.stderr
 
 
+def test_release_notes_do_not_advertise_dashboard_route():
+    notes = (CHART / "templates/NOTES.txt").read_text()
+    assert "Dashboard URL" not in notes
+    assert not any("oc get route" in line and "-dashboard" in line
+                   for line in notes.splitlines())
+
+
 def cloud_config(docs, name="saw-test"):
     user_data = docs[("Secret", f"{name}-cloudinit")]["stringData"]["userData"]
     assert user_data.startswith("#cloud-config\n")
@@ -373,17 +380,16 @@ def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     assert "OPENSHELL_DRIVERS" not in env
 
 
-def test_driver_config_is_off_by_default(default_docs):
-    """Any signed-in user can attach a labelled volume to a sandbox once this
-    is on, so it defaults off; a profile with a harnessRef must opt in."""
+def test_driver_config_is_on_for_agent_gate_mounts(default_docs):
+    """Every agent sandbox needs the trusted gate and audit volume mounts."""
     _, toml = gateway_files(default_docs)
-    assert "allow_driver_config" not in toml["openshell"]["drivers"]["podman"]
+    assert toml["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
-def test_gateway_allows_caller_driver_config_for_harness_mounts():
+def test_gateway_allows_caller_driver_config_for_agent_mounts():
     """0.1.x refuses --driver-config-json unless allow_driver_config is set;
     resource admission and the bind-mount switch keep their safe defaults."""
-    _, toml = gateway_files(render("--set", "allowDriverConfig=true"))
+    _, toml = gateway_files(render())
     podman = toml["openshell"]["drivers"]["podman"]
     assert podman["allow_driver_config"] is True
     assert "resource_admission" not in podman
@@ -399,6 +405,34 @@ def test_gateway_oidc_for_users_with_roles():
                     "user_role": "openshell-user"}
     assert toml["openshell"]["gateway"]["auth"]["allow_unauthenticated_users"] is False
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env      # installer still uses mTLS
+
+
+@pytest.mark.parametrize("issuer", ["", "https://id.example.test/realms/test"])
+def test_disabled_oidc_cannot_be_restored_by_chart_defaults(issuer):
+    docs = render("--set", "oidc.enabled=false", "--set",
+                  "global.clusterDomain=example.test", "--set-string",
+                  f"oidc.issuerUrl={issuer}", "--set",
+                  "oidc.clusterCaSecret=saw-ingress-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["oidcIssuer"] == ""
+    assert config["caBundleSecret"] == ""
+    assert "saw-ingress-ca" not in config["secrets"]
+    _, toml = gateway_files(docs)
+    assert "oidc" not in toml["openshell"]["gateway"]
+    assert not any(kind == "Route" and (name.endswith("-dashboard") or
+                   name.endswith("-webui")) for kind, name in docs)
+
+
+def test_disabled_oidc_suppresses_sandbox_ui_routes(tmp_path):
+    values = tmp_path / "ui.yaml"
+    values.write_text(yaml.safe_dump({"sandboxUi": [{"workspace": "default",
+        "sandbox": "notebook", "proxyPort": 18791, "forwardPort": 18789}]}))
+    docs = render("-f", str(values), "--set", "oidc.enabled=false")
+    assert not any(kind == "Route" and name.endswith("-notebook-ui")
+                   for kind, name in docs)
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["sandboxUi"] == []
+    assert config["dashboard"]["enabled"] is False
 
 
 def test_governance_can_be_disabled():
@@ -952,6 +986,33 @@ def test_every_profile_names_its_binaries():
         assert "provider_type" not in doc, path.name
         if doc.get("endpoints"):
             assert doc.get("binaries"), path.name
+
+
+def test_tool_actions_copy_matches_governance_policy():
+    """The installer cannot read another chart, so the consequential-tool
+    list is copied. The two files are the same policy."""
+    gov = ROOT / "charts" / "governance-policy" / "tool-actions.yaml"
+    copy = CHART / "files" / "installer" / "tool-actions.yaml"
+    assert copy.read_text() == gov.read_text()
+    assert yaml.safe_load(gov.read_text())["defaultAction"] == "deny"
+
+
+def test_installer_disk_ships_the_tool_gate(default_docs):
+    data = installer_data(default_docs)
+    assert data["tool-actions.yaml"] == (CHART / "files" / "installer" / "tool-actions.yaml").read_text()
+    assert "before_tool_call" in data["tool-gate-plugin.mjs"]
+    assert "parsePolicy" in data["tool-gate.mjs"]
+
+
+def test_governance_policy_configmap_ships_tool_actions():
+    result = helm_template(ROOT / "charts" / "governance-policy",
+                           release="governance-policy", namespace="openshell-agents")
+    assert result.returncode == 0, result.stderr
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    policy = next(d for d in docs if d["metadata"]["name"] == "governance-interceptor-policy")
+    assert policy["data"]["tool-actions.yaml"] == (
+        ROOT / "charts" / "governance-policy" / "tool-actions.yaml").read_text()
+    assert "policy.yaml" in policy["data"]
 
 
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):

@@ -658,6 +658,14 @@ Set only one source mode. Keep `source.dataSourceNamespace` at
 
 ### OpenClaw UI and the dashboard Route
 
+`make saw-create` prints resource creation status, then directs the operator
+to wait for `make saw-status` to report `Done` for install and apply. Its next
+steps use the selected OIDC issuer, namespace, and client. `make saw-configure`
+registers the gateway and signs in; use `openshell gateway login` later if
+that sign-in did not finish or a token expires. The create summary lists
+`make sandbox-ui` for enabled UI routes and does not advertise the unusable
+dashboard Route.
+
 The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which on OpenShell 0.1.x runs in its own network namespace with only loopback (network mode `none`, no port mappings). The Route therefore does not reach the OpenClaw UI and answers 503. Each sandbox has its own namespace, so several OpenClaw sandboxes all listen on 18789 without conflict.
 
 On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](self-service-portal.md#sandbox-web-uis). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.

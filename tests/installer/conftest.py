@@ -224,8 +224,8 @@ def secrets_dir(tmp_path):
 def config():
     return {"vmName": "saw-test", "namespace": "openshell-agents",
             "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
-            "ownerSubject": "", "oidcIssuer": "", "sandboxDashboardRoute": "",
-            "dashboard": {"enabled": False},
+            "ownerSubject": "subject-alice", "oidcIssuer": "", "sandboxDashboardRoute": "",
+            "dashboard": {"enabled": False, "owner": "alice"},
             "harness": {"cosign": {
                 "cacheTtlSeconds": 0,
                 "identity": "https://github.com/example/saw/.github/workflows/harness-bundles.yml@refs/heads/main",
@@ -242,6 +242,8 @@ def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir):
     (installer / "installer-bom.yaml").write_text(yaml.safe_dump(bom))
     (installer / "config.json").write_text(json.dumps(config))
     (installer / "apply_bom.py").write_text(SCRIPT.read_text())
+    for name in ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs"):
+        (installer / name).write_text((SCRIPT.parent / name).read_text())
     (installer / "gateway.env").write_text(GATEWAY_ENV)
     (installer / "gateway.toml").write_text(GATEWAY_TOML)
     (installer / "setup-dashboard.sh").write_text(

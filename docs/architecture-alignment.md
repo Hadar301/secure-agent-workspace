@@ -78,7 +78,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Largely implemented. Phase II runtime enforcement is now configured through the governance layer: a governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules, and the in-VM sandbox proxy injects provider credentials at request time so the real keys never enter the sandbox. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
+**Alignment:** Largely implemented. Phase II runtime enforcement is configured through the governance layer. A governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. The in-VM sandbox proxy injects provider credentials at request time, so the real keys never enter the sandbox. A unified, cluster-wide OCSF audit pipeline is still absent. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
 
 ### 6. Secret Management
 
@@ -106,7 +106,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 **Reference:** "OCSF-compatible audit path captures workspace lifecycle events, broker sessions, policy-release activity and runtime/tool events."
 
-**Implementation:** Partial. The governance interceptor logs its allow/deny decisions, and APF writes a JSONL audit trail; OpenShift's built-in audit logging captures API-server events and Keycloak logs authentication events. What is missing is a unified, OCSF-compatible pipeline that normalizes and forwards these.
+**Implementation:** Partial. Tool-call decisions (allow, deny, approval required, approved, rejected) are appended to `/sandbox/.saw/audit/tool-actions.jsonl` on the sandbox volume, each with the signed-in user and the current task; the governance interceptor logs its allow/deny decisions and APF writes a JSONL audit trail. OpenShift's built-in audit logging captures API-server events and Keycloak logs authentication events, all separate. What is missing is a unified, OCSF-compatible pipeline that normalizes and forwards these.
 
 **Gap:** Adding structured audit logging would require:
 1. Forwarding OpenShift audit logs, Keycloak events, and OpenShell gateway logs to a central collector
@@ -140,8 +140,8 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 | Reference Design Phase | This Implementation |
 |---|---|
-| **Phase I: Perimeter-based enforcement** | Implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Largely implemented — signed policy bundles (APF), credential proxying, and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
+| **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
+| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), credential proxying, and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
 
 ## Recommendations for Closing Gaps
 

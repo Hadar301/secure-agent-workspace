@@ -19,7 +19,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- $redirectUrl := "" }}
 {{- if $webuiHost }}{{- $redirectUrl = printf "https://%s/oauth2/callback" $webuiHost }}{{- end }}
 {{- $dashboardEnabled := false }}
-{{- if and .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
+{{- if and .Values.oidc.enabled .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
 {{- $signMode := .Values.signing.mode | default "warn" }}
 {{- if not (or (eq $signMode "off") (eq $signMode "warn") (eq $signMode "enforce")) }}
 {{- fail (printf "signing.mode must be off, warn, or enforce, got %q" $signMode) }}
@@ -91,6 +91,12 @@ data:
 {{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
   apply_bom.py: |
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
+  tool-actions.yaml: |
+{{ .Files.Get "files/installer/tool-actions.yaml" | indent 4 }}
+  tool-gate.mjs: |
+{{ .Files.Get "files/installer/tool-gate.mjs" | indent 4 }}
+  tool-gate-plugin.mjs: |
+{{ .Files.Get "files/installer/tool-gate-plugin.mjs" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
 {{- if .Files.Get "files/installer/bundle.sigstore.json" }}

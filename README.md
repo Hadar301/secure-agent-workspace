@@ -314,7 +314,9 @@ make saw-create \
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
-> **OIDC issuer:** `make saw-create` stops if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. External and no-OIDC modes disable the dashboard and web UI routes by default. Set `DASHBOARD=true` with an external issuer only after you register its dashboard and web UI redirect URIs yourself.
+> **OIDC issuer:** `make saw-create` stops before changing the cluster if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. This sets chart `oidc.enabled: false`, even when `global.clusterDomain` is set, and disables the dashboard and sandbox UI routes. An external issuer disables these routes by default. Set `DASHBOARD=true` with an external issuer only after you register its redirect URIs yourself.
+
+Updating the create script does not fix a gateway deployed earlier without OIDC. Check its effective `oidc.enabled` and `oidc.issuerUrl` Helm values and the rendered gateway configuration. Reapply that workspace with the intended issuer, then verify owner access and rejection without credentials.
 
 ```bash
 # 12. Follow the in-VM installer (in another terminal)
@@ -618,8 +620,8 @@ make openclaw-gui
 make saw-tui
 make saw-gui
 
-# Or access the dashboard directly via the route
-oc get route ${OPENSHELL_SAW_NAME}-dashboard -n ${SAW_NS:-saw-$OPENSHELL_SAW_NAME} -o jsonpath='https://{.spec.host}'
+# List owner-restricted sandbox UI routes, when the profile enables them
+make sandbox-ui
 
 # Installer status, and a shell on the gateway VM for debugging
 # (adds your SSH key to the VM on demand)
@@ -629,6 +631,9 @@ make saw-vm-ssh
 # Local tests and all 13 Helm charts (no cluster needed)
 make lint
 make test
+
+# Tool-action gate tests (needs node; not part of CI)
+make test-tool-gate
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
