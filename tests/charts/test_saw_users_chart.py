@@ -35,7 +35,10 @@ BOB = {
 
 
 def helm(*args):
-    return subprocess.run([HELM, *args], capture_output=True, text=True)
+    command = [HELM, *args]
+    if str(SAW_CHART) in command:
+        command += ["-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 def render_file(tmp_path, users, extra=None):
@@ -411,6 +414,8 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""
+    assert {(b["name"], b["key"]) for b in config["credentialProxy"]["secrets"]} == {
+        ("inference", "api_key"), ("web-search", "api_key")}
 
 
 @pytest.mark.parametrize("global_enabled,user_enabled,enabled", [
