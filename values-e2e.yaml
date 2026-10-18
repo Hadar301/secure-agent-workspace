@@ -1,0 +1,70 @@
+# Dedicated SAW deployment test. Select with TARGET_CLUSTERGROUP=e2e.
+# Keep values-prod.yaml unchanged.
+clusterGroup:
+  name: e2e
+  namespaces:
+    external-secrets:
+    external-secrets-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    openshift-cnv:
+      operatorGroup: true
+      targetNamespaces:
+        - openshift-cnv
+    openshell-agents:
+    saw-keycloak:
+      operatorGroup: true
+      targetNamespaces:
+        - saw-keycloak
+    vault:
+  subscriptions:
+    eso:
+      name: openshift-external-secrets-operator
+      namespace: external-secrets-operator
+      channel: stable-v1
+    openshift-virtualization:
+      name: kubevirt-hyperconverged
+      namespace: openshift-cnv
+      channel: stable
+    rhbk:
+      name: rhbk-operator
+      namespace: saw-keycloak
+      channel: stable-v26
+  applications:
+    openshift-external-secrets:
+      name: openshift-external-secrets
+      namespace: external-secrets
+      chart: openshift-external-secrets
+      chartVersion: 0.0.*
+    vault:
+      name: vault
+      namespace: vault
+      chart: hashicorp-vault
+      chartVersion: 0.1.*
+    openshift-cnv:
+      name: openshift-cnv
+      namespace: openshift-cnv
+      path: charts/openshift-cnv
+    openshell-keycloak:
+      name: openshell-keycloak
+      namespace: saw-keycloak
+      path: charts/openshell-keycloak
+      extraValueFiles:
+        - /overrides/keycloak-e2e.yaml
+    saw-users:
+      name: saw-users
+      namespace: openshell-agents
+      path: charts/saw-users
+      extraValueFiles:
+        - /overrides/saw-users-e2e.yaml
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20
+  imperative:
+    jobs:
+      - name: saw-ingress-ca
+        playbook: ansible/playbooks/saw-ingress-ca.yaml
+        timeout: 300

@@ -138,6 +138,47 @@
           ]
         }
       ]
+    },
+    "e2e": {
+      "description": "",
+      "secrets": {
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            },
+            {
+              "default": "nvidia/nemotron-3-super-120b-a12b",
+              "key": "model",
+              "kind": "text",
+              "required": true,
+              "title": "Model"
+            }
+          ],
+          "provider": "nvidia",
+          "providers": [
+            "nvidia"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "",
+          "enabled": true,
+          "name": "default",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "notebook",
+              "type": "openclaw",
+              "uiRoute": false
+            }
+          ]
+        }
+      ]
     }
   }
 }

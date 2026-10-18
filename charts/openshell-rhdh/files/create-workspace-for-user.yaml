@@ -26,10 +26,10 @@ spec:
       profile:
         title: Profile
         type: string
-        enum: [custom-inference, data-science]
+        enum: [custom-inference, data-science, e2e]
         enumNames: ['custom-inference: Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM,
             Ollama, ...)', 'data-science: Data science workspace with NVIDIA inference and web search;
-            CUDA development workspace with NVIDIA inference']
+            CUDA development workspace with NVIDIA inference', e2e]
         default: data-science
     dependencies:
       profile:
@@ -53,6 +53,12 @@ spec:
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
+        - properties:
+            profile: {const: e2e}
+            inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider nvidia)}
+            inference__model: {title: 'inference: Model', type: string, default: nvidia/nemotron-3-super-120b-a12b}
+          required: [inference__api_key, inference__model]
   steps:
   - id: request
     name: Submit the request

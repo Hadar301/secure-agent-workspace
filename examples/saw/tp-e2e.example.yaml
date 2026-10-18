@@ -1,0 +1,18 @@
+# Copy this file outside the repository. Set mode 0600 on it and the key file.
+cluster:
+  kubeconfig: /home/engineer/.kube/config
+  context: my-test-cluster
+inference:
+  provider: nvidia
+  model: nvidia/nemotron-3-super-120b-a12b
+  apiKeyFile: /home/engineer/.config/saw-e2e/nvidia-api-key
+cleanup: always
+# Optional:
+# vm:
+#   cores: 4
+#   memory: 8Gi
+#   diskSize: 40Gi
+#   storageClassName: fast-storage
+# oidc:
+#   caFile: /home/engineer/.config/saw-e2e/ingress-ca.pem
+# stateDir: /home/engineer/.local/state/saw-tp-e2e

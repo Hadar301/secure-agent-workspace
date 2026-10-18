@@ -1,0 +1,12 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: e2e
+spec:
+  providers:
+    - name: nvidia
+      type: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+      credentialSecret: inference
+      credentialSecretKey: api_key
+      modelSecretKey: model

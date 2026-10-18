@@ -1,0 +1,28 @@
+users:
+  - name: e2e-owner
+    profiles:
+      - e2e
+    vaultPrefix: secret/data/hub/saw-e2e-owner
+    pruneOnRemove: true
+    values:
+      governance:
+        enabled: false
+      containerRuntime: podman
+      vm:
+        readinessProbe: true
+      bom:
+        spec:
+          nemoclaw: null
+defaults:
+  profiles:
+    - e2e
+  openshellSaw:
+    governance:
+      enabled: false
+    networkPolicy:
+      enabled: true
+    cleanupOnDelete: true
+e2eRuntimeRequired: true
+ownerResolution:
+  enabled: true
+pruneOnRemove: true

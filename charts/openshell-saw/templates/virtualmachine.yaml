@@ -36,6 +36,9 @@ spec:
             pullMethod: {{ .Values.source.pullMethod | default "node" }}
         {{- end }}
         storage:
+          {{- with .Values.vm.storageClassName }}
+          storageClassName: {{ . | quote }}
+          {{- end }}
           accessModes:
             - ReadWriteOnce
           resources:

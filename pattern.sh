@@ -55,7 +55,8 @@ fi
 
 if [ -n "${KUBECONFIG:-}" ]; then
     # Check if KUBECONFIG path starts with HOME directory
-    if [[ ! "${KUBECONFIG}" =~ ^"${HOME}" ]]; then
+    if [[ ! "${KUBECONFIG}" =~ ^"${HOME}" &&
+          ( -z "${SAW_E2E_MOUNT:-}" || "${KUBECONFIG}" != "${SAW_E2E_MOUNT}/kubeconfig" ) ]]; then
         echo "${KUBECONFIG} is pointing outside of the HOME folder, this will make it unavailable from the container."
         echo "Please move it somewhere inside your $HOME folder, as that is what gets bind-mounted inside the container"
         exit 1
@@ -66,6 +67,14 @@ fi
 # if we are using podman machine then we do not bind mount anything (for now!)
 REMOTE_PODMAN=$(podman system connection list | tail -n +2 | wc -l) || REMOTE_PODMAN=0
 PKI_HOST_MOUNT_ARGS=()
+E2E_MOUNT_ARGS=()
+PODMAN_TTY_ARGS=(-it)
+if [ "${SAW_E2E_NONINTERACTIVE:-}" = 1 ]; then
+    PODMAN_TTY_ARGS=()
+fi
+if [ -n "${SAW_E2E_MOUNT:-}" ]; then
+    E2E_MOUNT_ARGS=(-v "${SAW_E2E_MOUNT}:${SAW_E2E_MOUNT}:ro")
+fi
 if [ "${REMOTE_PODMAN}" -eq 0 ]; then # If we are not using podman machine we check the hosts folders
     # We check /etc/pki/tls because on ubuntu /etc/pki/fwupd sometimes
     # exists but not /etc/pki/tls and we do not want to bind mount in such a case
@@ -90,7 +99,7 @@ fi
 # $HOME is mounted as itself for any files that are referenced with absolute paths
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
-podman run -it --rm --pull=newer \
+podman run "${PODMAN_TTY_ARGS[@]}" --rm --pull=newer \
     --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
@@ -112,6 +121,8 @@ podman run -it --rm --pull=newer \
     -e TARGET_CLUSTERGROUP \
     -e TARGET_VARIANT \
     -e TARGET_ORIGIN \
+    -e SSH_KEY_PATH \
+    -e PATTERN_TRACKING_ID \
     -e TOKEN_NAMESPACE \
     -e TOKEN_SECRET \
     -e UUID_FILE \
@@ -120,6 +131,7 @@ podman run -it --rm --pull=newer \
     -v "$(pwd -P)":"$(pwd -P)" \
     -v "${HOME}":"${HOME}" \
     -v "${HOME}":/pattern-home \
+    ${E2E_MOUNT_ARGS[@]+"${E2E_MOUNT_ARGS[@]}"} \
     ${PODMAN_ARGS[@]+"${PODMAN_ARGS[@]}"} \
     ${EXTRA_ARGS_ARRAY[@]+"${EXTRA_ARGS_ARRAY[@]}"} \
     -w "$(pwd -P)" \

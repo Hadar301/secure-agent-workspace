@@ -87,7 +87,8 @@ endif
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
-        sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e lint \
+        sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e \
+        test-saw-tp-e2e clean-saw-tp-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
@@ -471,6 +472,12 @@ test: test-installer ## Run local installer, chart, script, portal, and CLI test
 
 test-deployment: ## Run the live OpenShift deployment test (read docs first)
 	@$(SCRIPTS_DIR)/test-deployment.sh
+
+test-saw-tp-e2e: ## Run the minimal Pattern deployment test (E2E_CONFIG=/absolute/path)
+	@uv run --locked python $(SCRIPTS_DIR)/saw-tp-e2e.py run --config "$(E2E_CONFIG)" $(E2E_ARGS)
+
+clean-saw-tp-e2e: ## Recover cleanup from the cluster lock (E2E_CONFIG=/absolute/path)
+	@uv run --locked python $(SCRIPTS_DIR)/saw-tp-e2e.py cleanup --config "$(E2E_CONFIG)"
 
 lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \

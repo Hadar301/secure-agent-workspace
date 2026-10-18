@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run only after the framework removes the Argo CD applications.
 set -euo pipefail
+tracking_id="${PATTERN_TRACKING_ID:-secure-agent-workspace-prod}"
 
 namespaces="$(oc get namespaces -o json)"
 pattern_namespace="$(jq -r '.items[] |
@@ -48,7 +49,7 @@ fi
 # Its conversion webhook then points at a service that no longer exists.
 # A later install can create a HyperConverged object against the stale schema.
 if [[ "${namespace_present}" == true && \
-      "${pattern_namespace}" != "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv" ]]; then
+      "${pattern_namespace}" != "${tracking_id}:/Namespace:patterns-operator/openshift-cnv" ]]; then
   echo "Keeping the HyperConverged CRD: the CNV namespace has no pattern ownership."
   exit 0
 fi
@@ -66,8 +67,8 @@ if [[ -z "${crd}" ]]; then
   echo "HyperConverged CRD is already absent."
   exit 0
 fi
-if ! jq -e '.metadata.annotations["openshell.pattern/cleanup-on-uninstall"] ==
-    "secure-agent-workspace-prod" and
+if ! jq -e --arg tracking "${tracking_id}" '.metadata.annotations["openshell.pattern/cleanup-on-uninstall"] ==
+    $tracking and
   .metadata.labels["olm.managed"] == "true" and
   (.metadata.labels | has("operators.coreos.com/kubevirt-hyperconverged.openshift-cnv"))' \
   <<<"${crd}" >/dev/null; then

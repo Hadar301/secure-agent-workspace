@@ -1,0 +1,6 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  enabled: true

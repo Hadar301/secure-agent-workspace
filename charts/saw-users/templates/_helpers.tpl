@@ -75,6 +75,29 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $user := .user -}}
 {{- $root := .root -}}
 {{- $base := deepCopy ($root.Values.defaults.openshellSaw | default dict) -}}
+{{- if $root.Values.e2eRuntimeRequired -}}
+{{- $raw := $root.Values.global.e2eRuntime | default "" -}}
+{{- if not $raw -}}
+{{- fail "e2eRuntimeRequired: global.e2eRuntime is required" -}}
+{{- end -}}
+{{- $runtime := fromJson $raw -}}
+{{- if or (not $runtime.networkPolicy) (not $runtime.cleanupApi) (not $runtime.registryURL) -}}
+{{- fail "e2eRuntimeRequired: networkPolicy, cleanupApi, and registryURL are required" -}}
+{{- end -}}
+{{- $_ := set $base "networkPolicy" (mergeOverwrite (deepCopy ($base.networkPolicy | default dict)) $runtime.networkPolicy) -}}
+{{- $_ := set $base "cleanupApi" $runtime.cleanupApi -}}
+{{- $source := deepCopy ($base.source | default dict) -}}
+{{- $_ := set $source "registryURL" $runtime.registryURL -}}
+{{- $_ := set $base "source" $source -}}
+{{- if $runtime.vm -}}
+{{- $_ := set $base "vm" (mergeOverwrite (deepCopy ($base.vm | default dict)) $runtime.vm) -}}
+{{- end -}}
+{{- if $runtime.oidcCaBundle -}}
+{{- $oidcRuntime := deepCopy ($base.oidc | default dict) -}}
+{{- $_ := set $oidcRuntime "caBundle" $runtime.oidcCaBundle -}}
+{{- $_ := set $base "oidc" $oidcRuntime -}}
+{{- end -}}
+{{- end -}}
 {{- $ac := deepCopy (index $base "accessControl" | default dict) -}}
 {{- $_ := set $ac "owner" $user.name -}}
 {{- $_ := set $ac "ownerSubject" ($user.ownerSubject | default "" | toString) -}}
@@ -85,6 +108,11 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- if $v -}}
 {{- $_ := set $globals $k $v -}}
 {{- end -}}
+{{- end -}}
+{{- if $root.Values.e2eRuntimeRequired -}}
+{{- $domain := ($root.Values.global.e2eRuntime | fromJson).clusterDomain | default "" -}}
+{{- if not $domain -}}{{- fail "e2eRuntimeRequired: clusterDomain is required" -}}{{- end -}}
+{{- $_ := set $globals "clusterDomain" $domain -}}
 {{- end -}}
 {{- $_ := set $base "global" $globals -}}
 {{- /* Argo CD runs the chart's pre-delete hook when the app is deleted: only

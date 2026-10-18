@@ -58,6 +58,8 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Empty uses the cluster's default StorageClass.
+  storageClassName: ""
   # Share the installer ConfigMap, profiles, and provider Secrets over
   # virtiofs so a change is visible without restarting the VM. Off until
   # the guest units from a new cloud-init are in place: turning it on

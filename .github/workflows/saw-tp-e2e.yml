@@ -1,0 +1,54 @@
+name: SAW minimal Pattern deployment E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Unique label of the PR author's dedicated Linux runner
+        required: true
+        type: string
+      config_path:
+        description: Absolute path of the private config on that runner
+        required: true
+        type: string
+      source_sha:
+        description: Full SHA of the pushed PR implementation commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: saw-tp-e2e-${{ inputs.runner_label }}
+  cancel-in-progress: false
+
+jobs:
+  deployment:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 120
+    env:
+      E2E_CONFIG: ${{ inputs.config_path }}
+      E2E_SOURCE_SHA: ${{ inputs.source_sha }}
+      E2E_TARGET_BRANCH: ${{ github.ref_name }}
+      E2E_STATE_DIR: ${{ runner.temp }}/saw-tp-e2e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify selected SHA
+        run: |
+          test "$(git rev-parse HEAD)" = "$E2E_SOURCE_SHA"
+      - name: Run the deployment test
+        run: make test-saw-tp-e2e E2E_CONFIG="$E2E_CONFIG"
+      - name: Upload filtered test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saw-tp-e2e-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/saw-tp-e2e/*.report.json
+            ${{ runner.temp }}/saw-tp-e2e/*.junit.xml
+          if-no-files-found: warn
+          retention-days: 14

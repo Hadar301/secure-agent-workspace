@@ -1,0 +1,12 @@
+keycloak:
+  users:
+    - username: e2e-owner
+      firstName: E2E
+      lastName: Owner
+      roles:
+        - openshell-user
+  userPasswords:
+    externalSecret:
+      enabled: true
+ownerResolver:
+  enabled: true
