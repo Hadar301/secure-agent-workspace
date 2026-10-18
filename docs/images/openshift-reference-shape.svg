@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1620" role="img" aria-labelledby="title description">
+  <title id="title">Secure Agent Workspace implementation on OpenShift</title>
+  <desc id="description">Git configuration flows through Argo CD to an isolated user VM. Keycloak controls access, Vault and External Secrets Operator supply inputs, and the default governance interceptor controls the OpenShell gateway. RHDH self-service and APF are optional paths. OpenShift EgressFirewall limits external access.</desc>
+  <defs>
+    <style>
+      .canvas { fill: #f8fafc; }
+      .title { fill: #14213d; font: 700 58px Arial, sans-serif; }
+      .subtitle { fill: #40536f; font: 29px Arial, sans-serif; }
+      .cluster { fill: #eef4fb; stroke: #5c7ca8; stroke-width: 4; }
+      .namespace { fill: #fffaf0; stroke: #c3831e; stroke-width: 4; }
+      .vm { fill: #ffffff; stroke: #2960a3; stroke-width: 4; }
+      .card { fill: #ffffff; stroke: #9bb2cd; stroke-width: 3; }
+      .card-green { fill: #effaf6; stroke: #15806e; stroke-width: 3; }
+      .card-purple { fill: #f7f2ff; stroke: #8650bd; stroke-width: 3; stroke-dasharray: 12 9; }
+      .card-gold { fill: #fff7e8; stroke: #bd7b16; stroke-width: 3; }
+      .card-blue { fill: #f0f7ff; stroke: #3171b6; stroke-width: 3; }
+      .section { fill: #2b4e78; font: 700 31px Arial, sans-serif; letter-spacing: 1px; }
+      .card-title { fill: #142b48; font: 700 33px Arial, sans-serif; }
+      .card-title-small { fill: #142b48; font: 700 29px Arial, sans-serif; }
+      .body { fill: #34455e; font: 25px Arial, sans-serif; }
+      .body-small { fill: #34455e; font: 23px Arial, sans-serif; }
+      .label { fill: #345477; font: 24px Arial, sans-serif; }
+      .optional-label { fill: #6d3ba5; font: 700 22px Arial, sans-serif; }
+      .pill-text { fill: #4a3c22; font: 700 24px Arial, sans-serif; }
+      .arrow-blue { fill: none; stroke: #2464a6; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#blue-arrow); }
+      .arrow-teal { fill: none; stroke: #117d70; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#teal-arrow); }
+      .arrow-purple { fill: none; stroke: #8650bd; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 14 10; marker-end: url(#purple-arrow); }
+      .arrow-gold { fill: none; stroke: #b97913; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#gold-arrow); }
+    </style>
+    <marker id="blue-arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse"><path fill="#2464a6" d="M 1 1 L 11 6 L 1 11 z"/></marker>
+    <marker id="teal-arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse"><path fill="#117d70" d="M 1 1 L 11 6 L 1 11 z"/></marker>
+    <marker id="purple-arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse"><path fill="#8650bd" d="M 1 1 L 11 6 L 1 11 z"/></marker>
+    <marker id="gold-arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto-start-reverse"><path fill="#b97913" d="M 1 1 L 11 6 L 1 11 z"/></marker>
+  </defs>
+
+  <rect class="canvas" width="2400" height="1620"/>
+  <text class="title" x="100" y="95">Secure Agent Workspace on OpenShift</text>
+  <text class="subtitle" x="100" y="145">Current repository implementation · one isolated VM per user</text>
+  <path d="M 105 184 H 175" class="arrow-blue"/>
+  <text class="body-small" x="195" y="192">default path</text>
+  <path d="M 420 184 H 490" class="arrow-purple"/>
+  <text class="body-small" x="510" y="192">optional path</text>
+
+  <rect class="cluster" x="50" y="445" width="1930" height="1130" rx="32"/>
+  <text class="section" x="450" y="510">RED HAT OPENSHIFT CLUSTER</text>
+
+  <!-- Sources outside the cluster. -->
+  <rect class="card-blue" x="100" y="245" width="420" height="145" rx="23"/>
+  <text class="card-title" x="130" y="303">User</text>
+  <text class="body" x="130" y="350">Browser or OpenShell CLI</text>
+  <rect class="card-blue" x="810" y="245" width="600" height="145" rx="23"/>
+  <text class="card-title" x="845" y="303">Git configuration</text>
+  <text class="body" x="845" y="350">Charts · users · BOM · policy</text>
+
+  <!-- Control plane. The portal path is optional; Git to Argo CD is the default. -->
+  <rect class="card-purple" x="100" y="550" width="270" height="155" rx="22"/>
+  <text class="card-title-small" x="126" y="607">RHDH portal</text>
+  <text class="optional-label" x="126" y="649">OPTIONAL</text>
+  <text class="body-small" x="126" y="680">request workspace</text>
+
+  <rect class="card-purple" x="410" y="550" width="250" height="155" rx="22"/>
+  <text class="card-title-small" x="437" y="607">Tekton</text>
+  <text class="body-small" x="437" y="652">create / delete</text>
+  <text class="body-small" x="437" y="681">pipeline</text>
+
+  <rect class="card-purple" x="700" y="550" width="300" height="155" rx="22"/>
+  <text class="card-title-small" x="725" y="607">Registry</text>
+  <text class="body-small" x="725" y="652">ConfigMaps +</text>
+  <text class="body-small" x="725" y="681">ApplicationSet</text>
+
+  <rect class="card-blue" x="1060" y="550" width="320" height="155" rx="22"/>
+  <text class="card-title" x="1090" y="607">Argo CD</text>
+  <text class="body-small" x="1090" y="652">syncs Helm charts</text>
+  <text class="body-small" x="1090" y="681">and user resources</text>
+
+  <rect class="card-blue" x="1450" y="550" width="410" height="155" rx="22"/>
+  <text class="card-title" x="1480" y="607">Keycloak</text>
+  <text class="body-small" x="1480" y="652">OIDC users and roles</text>
+  <text class="body-small" x="1480" y="681">for portal, gateway, UI</text>
+
+  <!-- Shared services and workload inputs. -->
+  <rect class="card" x="100" y="815" width="340" height="215" rx="22"/>
+  <text class="card-title-small" x="126" y="872">Golden image</text>
+  <text class="body-small" x="126" y="918">BuildConfig →</text>
+  <text class="body-small" x="126" y="949">ImageStream → CDI</text>
+  <text class="body-small" x="126" y="992">Fedora VM image</text>
+
+  <rect class="card-gold" x="490" y="815" width="320" height="215" rx="22"/>
+  <text class="card-title-small" x="516" y="872">Vault + ESO</text>
+  <text class="body-small" x="516" y="918">External Secrets</text>
+  <text class="body-small" x="516" y="949">Operator syncs</text>
+  <text class="body-small" x="516" y="992">provider inputs</text>
+
+  <rect class="card-green" x="850" y="815" width="680" height="215" rx="22"/>
+  <text class="card-title-small" x="875" y="857">Governance service · one engine selected</text>
+  <rect class="card-green" x="875" y="880" width="300" height="125" rx="16"/>
+  <text class="card-title-small" x="894" y="931">Interceptor</text>
+  <text class="body-small" x="894" y="969">DEFAULT</text>
+  <text class="body-small" x="894" y="995">policy ConfigMaps</text>
+  <rect class="card-purple" x="1200" y="880" width="305" height="125" rx="16"/>
+  <text class="card-title-small" x="1219" y="931">APF</text>
+  <text class="body-small" x="1219" y="974">optional replacement</text>
+
+  <rect class="card-gold" x="1570" y="815" width="300" height="215" rx="22"/>
+  <text class="card-title-small" x="1595" y="872">Per-user routes</text>
+  <text class="body-small" x="1595" y="918">gateway API</text>
+  <text class="body-small" x="1595" y="949">dashboard + sandbox UI</text>
+  <text class="body-small" x="1595" y="992">in saw-&lt;user&gt;</text>
+
+  <!-- One namespace and one VM for each user. -->
+  <rect class="namespace" x="100" y="1130" width="1780" height="405" rx="26"/>
+  <text class="section" x="130" y="1260">PER-USER</text>
+  <text class="section" x="130" y="1300">NAMESPACE</text>
+  <text class="body" x="130" y="1344">saw-&lt;user&gt;</text>
+  <rect class="vm" x="470" y="1205" width="1310" height="240" rx="22"/>
+  <text class="card-title-small" x="500" y="1247">OpenShift Virtualization VM</text>
+  <rect class="card-blue" x="520" y="1280" width="480" height="125" rx="16"/>
+  <text class="card-title-small" x="542" y="1329">OpenShell gateway</text>
+  <text class="body-small" x="542" y="1374">BOM installer · OIDC · policy</text>
+  <rect class="card-green" x="1080" y="1280" width="630" height="125" rx="16"/>
+  <text class="card-title-small" x="1104" y="1329">Podman sandboxes</text>
+  <text class="body-small" x="1104" y="1374">Agents, tools, model access</text>
+  <rect class="card-gold" x="130" y="1464" width="800" height="46" rx="15"/>
+  <text class="pill-text" x="153" y="1496">EgressFirewall · default hostname allowlist</text>
+  <rect class="card" x="960" y="1464" width="885" height="46" rx="15"/>
+  <text class="pill-text" x="982" y="1496">NetworkPolicy · conditional for GitOps users</text>
+
+  <!-- Provider endpoints are outside the OpenShift boundary. -->
+  <rect class="card-gold" x="2040" y="1260" width="310" height="175" rx="22"/>
+  <text class="card-title-small" x="2064" y="1315">Approved</text>
+  <text class="card-title-small" x="2064" y="1352">providers</text>
+  <text class="body-small" x="2064" y="1399">Inference + APIs</text>
+
+  <!-- Draw connections last so arrowheads and labels remain visible. -->
+  <path d="M 305 245 V 212 H 1655 V 550" class="arrow-blue"/>
+  <text class="label" x="1430" y="186">OIDC sign-in</text>
+  <path d="M 235 390 V 550" class="arrow-purple"/>
+  <text class="optional-label" x="252" y="430">self-service</text>
+  <path d="M 1110 390 V 550" class="arrow-blue"/>
+  <text class="label" x="1133" y="483">desired state</text>
+
+  <path d="M 370 628 H 410" class="arrow-purple"/>
+  <path d="M 660 628 H 700" class="arrow-purple"/>
+  <path d="M 1000 628 H 1060" class="arrow-purple"/>
+  <path d="M 1220 705 V 765 H 1545 V 1130" class="arrow-blue"/>
+  <text class="label" x="1280" y="738">reconcile resources</text>
+  <path d="M 1655 705 V 815" class="arrow-blue"/>
+  <text class="label" x="1680" y="745">identity</text>
+
+  <path d="M 270 1030 V 1088 H 610 V 1205" class="arrow-blue"/>
+  <text class="label" x="290" y="1060">CDI disk</text>
+  <path d="M 650 1030 V 1205" class="arrow-gold"/>
+  <text class="label" x="668" y="1090">Secret inputs</text>
+  <path d="M 1025 1030 V 1110 H 980 V 1280" class="arrow-teal"/>
+  <text class="label" x="1045" y="1090">policy decisions</text>
+  <path d="M 1720 1030 V 1205" class="arrow-blue"/>
+  <text class="label" x="1740" y="1090">UI / CLI</text>
+  <path d="M 1000 1342 H 1080" class="arrow-teal"/>
+  <path d="M 1710 1342 H 2040" class="arrow-gold"/>
+  <text class="label" x="2040" y="1237">approved egress</text>
+</svg>
