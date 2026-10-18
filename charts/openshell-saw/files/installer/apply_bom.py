@@ -2997,9 +2997,12 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
     server_cert = tls / "server/tls.crt"
     if server_cert.is_file():
         for host in ("host.openshell.internal", route_host):
-            if host and not shell.run(["openssl", "x509", "-in", str(server_cert),
-                                       "-noout", "-checkhost", host], check=False,
-                                      quiet=True).ok:
+            if not host:
+                continue
+            check = shell.run(["openssl", "x509", "-in", str(server_cert), "-noout",
+                               "-checkhost", host], check=False, quiet=True)
+            # OpenSSL < 3.2 exits 0 on a mismatch and only prints "does NOT match".
+            if not check.ok or "does NOT match" in check.out:
                 rotate = True
     legacy_state = home / ".local/state/saw-installer"
     legacy_entry = home / ".config/openshell/gateways/saw-installer"
