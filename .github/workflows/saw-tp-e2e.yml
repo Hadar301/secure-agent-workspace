@@ -7,14 +7,17 @@ on:
         description: OpenShift API URL, for example https://api.example.test:6443
         required: true
         type: string
-      source_sha:
-        description: Full SHA of the pushed PR implementation commit
+      cluster_username:
+        description: OpenShift cluster username
         required: true
         type: string
-      model:
-        description: NVIDIA model identifier
+      cluster_password:
+        description: OpenShift cluster password (visible input, not a GitHub secret)
         required: true
-        default: nvidia/nemotron-3-super-120b-a12b
+        type: string
+      nvidia_api_key:
+        description: NVIDIA API key (visible input, not a GitHub secret)
+        required: true
         type: string
 
 permissions:
@@ -29,12 +32,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      E2E_SOURCE_SHA: ${{ inputs.source_sha }}
+      E2E_SOURCE_SHA: ${{ github.sha }}
       E2E_TARGET_BRANCH: ${{ github.ref_name }}
     steps:
+      - name: Mask manual credential inputs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+            for (const key of ['cluster_username', 'cluster_password', 'nvidia_api_key']) {
+              if (event.inputs?.[key]) core.setSecret(event.inputs[key]);
+            }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Verify selected SHA
         run: test "$(git rev-parse HEAD)" = "$E2E_SOURCE_SHA"
@@ -56,14 +68,6 @@ jobs:
           printf 'E2E_CONFIG=%s/saw-tp-e2e/config.yaml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'E2E_STATE_DIR=%s/saw-tp-e2e/reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Create private test inputs
-        env:
-          SAW_E2E_API_URL: ${{ inputs.cluster_api_url }}
-          SAW_E2E_MODEL: ${{ inputs.model }}
-          SAW_E2E_USERNAME: ${{ secrets.SAW_E2E_USERNAME }}
-          SAW_E2E_PASSWORD: ${{ secrets.SAW_E2E_PASSWORD }}
-          SAW_E2E_NVIDIA_API_KEY: ${{ secrets.SAW_E2E_NVIDIA_API_KEY }}
-          SAW_E2E_API_CA_PEM: ${{ secrets.SAW_E2E_API_CA_PEM }}
-          SAW_E2E_INGRESS_CA_PEM: ${{ secrets.SAW_E2E_INGRESS_CA_PEM }}
         run: uv run --locked python scripts/saw-tp-e2e-ci-config.py "$E2E_CONFIG"
       - name: Run the deployment test
         run: make test-saw-tp-e2e E2E_CONFIG="$E2E_CONFIG"
@@ -71,7 +75,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: saw-tp-e2e-${{ inputs.source_sha }}
+          name: saw-tp-e2e-${{ github.sha }}
           path: |
             ${{ runner.temp }}/saw-tp-e2e/reports/*.report.json
             ${{ runner.temp }}/saw-tp-e2e/reports/*.junit.xml

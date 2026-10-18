@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Write one private E2E config from GitHub Actions secret variables."""
+"""Write one private E2E config from a manual GitHub Actions event."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -11,10 +12,10 @@ import yaml
 
 
 REQUIRED = (
-    "SAW_E2E_API_URL",
-    "SAW_E2E_USERNAME",
-    "SAW_E2E_PASSWORD",
-    "SAW_E2E_NVIDIA_API_KEY",
+    "cluster_api_url",
+    "cluster_username",
+    "cluster_password",
+    "nvidia_api_key",
 )
 
 
@@ -24,8 +25,8 @@ def private_write(path: Path, value: bytes) -> None:
         stream.write(value)
 
 
-def write_config(path: Path, environ: dict[str, str]) -> None:
-    missing = [name for name in REQUIRED if not environ.get(name)]
+def write_config(path: Path, inputs: dict[str, str]) -> None:
+    missing = [name for name in REQUIRED if not inputs.get(name)]
     if missing:
         raise ValueError("missing required CI inputs: " + ", ".join(missing))
     if not path.is_absolute():
@@ -34,26 +35,17 @@ def write_config(path: Path, environ: dict[str, str]) -> None:
     os.chmod(path.parent, 0o700)
     config = {
         "cluster": {
-            "apiURL": environ["SAW_E2E_API_URL"],
-            "username": environ["SAW_E2E_USERNAME"],
-            "password": environ["SAW_E2E_PASSWORD"],
+            "apiURL": inputs["cluster_api_url"],
+            "username": inputs["cluster_username"],
+            "password": inputs["cluster_password"],
         },
         "inference": {
             "provider": "nvidia",
-            "model": environ.get("SAW_E2E_MODEL") or "nvidia/nemotron-3-super-120b-a12b",
-            "apiKey": environ["SAW_E2E_NVIDIA_API_KEY"],
+            "model": "nvidia/nemotron-3-super-120b-a12b",
+            "apiKey": inputs["nvidia_api_key"],
         },
         "cleanup": "always",
     }
-    for variable, section, key, filename in (
-        ("SAW_E2E_API_CA_PEM", "cluster", "caFile", "api-ca.pem"),
-        ("SAW_E2E_INGRESS_CA_PEM", "oidc", "caFile", "ingress-ca.pem"),
-    ):
-        value = environ.get(variable)
-        if value:
-            certificate = path.parent / filename
-            private_write(certificate, value.encode())
-            config.setdefault(section, {})[key] = str(certificate)
     private_write(path, yaml.safe_dump(config, sort_keys=False).encode())
 
 
@@ -62,8 +54,15 @@ def main() -> int:
         print("usage: saw-tp-e2e-ci-config.py ABSOLUTE_CONFIG_PATH", file=sys.stderr)
         return 2
     try:
-        write_config(Path(sys.argv[1]), dict(os.environ))
-    except (OSError, ValueError) as exc:
+        event_path = os.environ.get("GITHUB_EVENT_PATH")
+        if not event_path:
+            raise ValueError("GITHUB_EVENT_PATH is required")
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        inputs = event.get("inputs")
+        if not isinstance(inputs, dict):
+            raise ValueError("manual workflow inputs are absent")
+        write_config(Path(sys.argv[1]), inputs)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         print("CI input error: " + str(exc), file=sys.stderr)
         return 1
     return 0

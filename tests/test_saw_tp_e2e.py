@@ -80,17 +80,17 @@ def test_single_private_config_and_temporary_login(tmp_path):
     assert "private-password" not in kubeconfig.read_text()
 
 
-def test_ci_config_requires_secrets_and_writes_private_file(tmp_path):
+def test_ci_config_requires_inputs_and_writes_private_file(tmp_path):
     path = tmp_path / "private" / "config.yaml"
-    with pytest.raises(ValueError, match="SAW_E2E_PASSWORD"):
-        ci_config.write_config(path, {"SAW_E2E_API_URL": "https://api.example.test:6443"})
-    env = {
-        "SAW_E2E_API_URL": "https://api.example.test:6443",
-        "SAW_E2E_USERNAME": "test-admin",
-        "SAW_E2E_PASSWORD": "private-password",
-        "SAW_E2E_NVIDIA_API_KEY": "private-nvidia-key",
+    with pytest.raises(ValueError, match="cluster_password"):
+        ci_config.write_config(path, {"cluster_api_url": "https://api.example.test:6443"})
+    inputs = {
+        "cluster_api_url": "https://api.example.test:6443",
+        "cluster_username": "test-admin",
+        "cluster_password": "private-password",
+        "nvidia_api_key": "private-nvidia-key",
     }
-    ci_config.write_config(path, env)
+    ci_config.write_config(path, inputs)
     assert path.stat().st_mode & 0o077 == 0
     assert path.parent.stat().st_mode & 0o077 == 0
     assert e2e.load_config(path, require_key=True)["cluster"]["username"] == "test-admin"
