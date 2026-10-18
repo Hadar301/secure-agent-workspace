@@ -1,11 +1,13 @@
-# Copy this file outside the repository. Set mode 0600 on it and the key file.
+# Copy this file outside the repository. Set mode 0600.
 cluster:
-  kubeconfig: /home/engineer/.kube/config
-  context: my-test-cluster
+  apiURL: https://api.example.openshift.test:6443
+  username: my-cluster-admin
+  password: REPLACE_IN_PRIVATE_COPY
+  # caFile: /home/engineer/.config/saw-e2e/api-ca.pem
 inference:
   provider: nvidia
   model: nvidia/nemotron-3-super-120b-a12b
-  apiKeyFile: /home/engineer/.config/saw-e2e/nvidia-api-key
+  apiKey: REPLACE_IN_PRIVATE_COPY
 cleanup: always
 # Optional:
 # vm:

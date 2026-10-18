@@ -36,6 +36,43 @@ def test_invalid_private_config(tmp_path):
         e2e.load_config(config, require_key=True)
 
 
+def test_single_private_config_and_temporary_login(tmp_path):
+    config_file = tmp_path / "test.yaml"
+    config_file.write_text(
+        "cluster:\n  apiURL: https://api.example.test:6443\n"
+        "  username: test-admin\n  password: private-password\n"
+        "inference:\n  provider: nvidia\n"
+        "  model: nvidia/nemotron-3-super-120b-a12b\n"
+        "  apiKey: private-nvidia-key\n"
+    )
+    config_file.chmod(0o600)
+    config = e2e.load_config(config_file, require_key=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_oc = fake_bin / "oc"
+    fake_oc.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = login ]; then\n"
+        "  printf 'Password: '\n"
+        "  IFS= read -r supplied\n"
+        "  [ \"$supplied\" = private-password ]\n"
+        "elif [ \"$1\" = config ] && [ \"$2\" = current-context ]; then\n"
+        "  printf 'test-context\\n'\n"
+        "elif [ \"$1\" = config ] && [ \"$2\" = view ]; then\n"
+        "  printf 'apiVersion: v1\\nkind: Config\\n'\n"
+        "else exit 1; fi\n"
+    )
+    fake_oc.chmod(0o700)
+    kubeconfig = tmp_path / "kubeconfig"
+    e2e.private_write(kubeconfig, b"")
+    runner = e2e.CommandRunner({**os.environ, "PATH": str(fake_bin) + ":" + os.environ["PATH"],
+                                "KUBECONFIG": str(kubeconfig), "SAW_E2E_CONTEXT": ""},
+                               ["private-password", "private-nvidia-key"])
+    assert e2e.login_cluster(runner, config) == "test-context"
+    assert runner.env["SAW_E2E_CONTEXT"] == "test-context"
+    assert "private-password" not in kubeconfig.read_text()
+
+
 def test_atomic_lock_refuses_concurrent_run():
     class Runner:
         def run(self, label, args, **kwargs):

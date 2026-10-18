@@ -10,14 +10,17 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import pty
 import re
 import secrets
+import select
 import shutil
 import signal
 import ssl
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import urllib.error
 import urllib.parse
@@ -87,10 +90,25 @@ def load_config(path: Path, *, require_key: bool) -> dict:
     inference = data.get("inference")
     if not isinstance(cluster, dict) or not isinstance(inference, dict):
         raise E2EError("cluster and inference must be objects")
-    kubeconfig = Path(str(cluster.get("kubeconfig", "")))
-    context = cluster.get("context")
-    if not kubeconfig.is_absolute() or not kubeconfig.is_file() or not context:
-        raise E2EError("cluster.kubeconfig and cluster.context are required")
+    if cluster.get("apiURL"):
+        url = urllib.parse.urlparse(str(cluster["apiURL"]))
+        try:
+            port = url.port
+        except ValueError as exc:
+            raise E2EError("cluster.apiURL has an invalid port") from exc
+        if (url.scheme != "https" or not url.hostname or not port or url.username
+                or url.password or url.path not in ("", "/") or url.query):
+            raise E2EError("cluster.apiURL must be an HTTPS API URL with a port")
+        if not isinstance(cluster.get("username"), str) or not cluster["username"]:
+            raise E2EError("cluster.username is required")
+        if (not isinstance(cluster.get("password"), str) or not cluster["password"]
+                or "\n" in cluster["password"] or "\r" in cluster["password"]):
+            raise E2EError("cluster.password is required")
+    else:
+        kubeconfig = Path(str(cluster.get("kubeconfig", "")))
+        if not kubeconfig.is_absolute() or not kubeconfig.is_file() or not cluster.get("context"):
+            raise E2EError("cluster.apiURL with credentials or kubeconfig with context is required")
+        data["cluster"]["kubeconfig"] = str(kubeconfig)
     if inference.get("provider") != "nvidia":
         raise E2EError("inference.provider must be nvidia")
     model = inference.get("model")
@@ -98,16 +116,20 @@ def load_config(path: Path, *, require_key: bool) -> dict:
         raise E2EError("inference.model must be a NVIDIA model identifier")
     key_file = Path(str(inference.get("apiKeyFile", "")))
     if require_key:
-        if not key_file.is_absolute() or not key_file.is_file():
-            raise E2EError("inference.apiKeyFile must name an existing absolute file")
-        if key_file.stat().st_mode & 0o077:
-            raise E2EError("inference.apiKeyFile must be readable only by its owner")
-        if not key_file.read_bytes().strip():
-            raise E2EError("inference.apiKeyFile is empty")
+        if inference.get("apiKey"):
+            if not isinstance(inference["apiKey"], str) or "\n" in inference["apiKey"]:
+                raise E2EError("inference.apiKey must be one line")
+        else:
+            if not key_file.is_absolute() or not key_file.is_file():
+                raise E2EError("inference.apiKey or an absolute apiKeyFile is required")
+            if key_file.stat().st_mode & 0o077:
+                raise E2EError("inference.apiKeyFile must be readable only by its owner")
+            if not key_file.read_bytes().strip():
+                raise E2EError("inference.apiKeyFile is empty")
     if data.get("cleanup", "always") not in ("always", "retain"):
         raise E2EError("cleanup must be always or retain")
-    data["cluster"]["kubeconfig"] = str(kubeconfig)
-    data["inference"]["apiKeyFile"] = str(key_file)
+    if not inference.get("apiKey"):
+        data["inference"]["apiKeyFile"] = str(key_file)
     return data
 
 
@@ -321,11 +343,10 @@ def preflight_cluster(runner: CommandRunner, config: dict) -> dict:
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         raise E2EError("missing required tools: " + ", ".join(missing))
-    context = config["cluster"]["context"]
+    context = runner.env["SAW_E2E_CONTEXT"]
     contexts = runner.run("read kubeconfig contexts", ["oc", "config", "get-contexts", "-o", "name"])
     if context not in contexts.splitlines():
         raise E2EError("configured OpenShift context is absent from kubeconfig")
-    runner.run("select copied kubeconfig context", ["oc", "config", "use-context", context])
     runner.run("verify OpenShift login", ["oc", "whoami"])
     allowed = runner.run("verify cluster-admin", ["oc", "auth", "can-i", "*", "*", "--all-namespaces"])
     if allowed.strip() != "yes":
@@ -460,12 +481,82 @@ def prepare_workspace(config: dict, run_id: str) -> tuple[Path, Path, dict]:
     os.chmod(state_dir, 0o700)
     work = Path(tempfile.mkdtemp(prefix=f"saw-tp-e2e-{run_id}-"))
     os.chmod(work, 0o700)
-    private_write(work / "kubeconfig", Path(config["cluster"]["kubeconfig"]).read_bytes())
+    source = config["cluster"].get("kubeconfig")
+    private_write(work / "kubeconfig", Path(source).read_bytes() if source else b"")
     env = dict(os.environ)
     env.update(KUBECONFIG=str(work / "kubeconfig"), SAW_E2E_MOUNT=str(work),
-               SAW_E2E_NONINTERACTIVE="1", SAW_E2E_CONTEXT=config["cluster"]["context"],
+               SAW_E2E_NONINTERACTIVE="1",
+               SAW_E2E_CONTEXT=str(config["cluster"].get("context", "")),
                PATTERN_TRACKING_ID="secure-agent-workspace-e2e")
     return state_dir, work, env
+
+
+def login_cluster(runner: CommandRunner, config: dict) -> str:
+    cluster = config["cluster"]
+    if "apiURL" not in cluster:
+        context = cluster["context"]
+        runner.run("select copied kubeconfig context", ["oc", "config", "use-context", context])
+        return context
+    args = ["oc", "login", cluster["apiURL"], "--username", cluster["username"]]
+    ca_file = cluster.get("caFile")
+    if ca_file:
+        ca = Path(ca_file)
+        if not ca.is_absolute() or not ca.is_file():
+            raise E2EError("cluster.caFile must name an existing absolute file")
+        args.extend(["--certificate-authority", str(ca)])
+    master, slave = pty.openpty()
+    settings = termios.tcgetattr(slave)
+    settings[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, settings)
+    process = None
+    try:
+        process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave,
+                                   env=runner.env, cwd=ROOT, start_new_session=True)
+        os.close(slave)
+        slave = -1
+        deadline = time.monotonic() + 60
+        seen = b""
+        sent = False
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            readable, _, _ = select.select([master], [], [], 1)
+            if not readable:
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                process.wait(timeout=2)
+                break
+            if not chunk:
+                process.wait(timeout=2)
+                break
+            seen = (seen + chunk)[-8192:]
+            if not sent and re.search(rb"(?i)password(?: for [^\r\n:]+)?\s*:\s*$", seen):
+                os.write(master, cluster["password"].encode() + b"\n")
+                sent = True
+                seen = b""
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+            raise E2EError("OpenShift login timed out")
+        if process.returncode != 0 or not sent:
+            raise E2EError("OpenShift login failed; check the API URL, CA, and credentials")
+    finally:
+        os.close(master)
+        if slave >= 0:
+            os.close(slave)
+        if process and process.poll() is None:
+            process.kill()
+            process.wait()
+    context = runner.run("read generated context", ["oc", "config", "current-context"]).strip()
+    if not context:
+        raise E2EError("OpenShift login did not create a context")
+    flattened = runner.run("embed API CA in temporary kubeconfig",
+                           ["oc", "config", "view", "--raw", "--flatten", "-o", "yaml"])
+    private_write(Path(runner.env["KUBECONFIG"]), flattened.encode())
+    runner.env["SAW_E2E_CONTEXT"] = context
+    return context
 
 
 def discover_topology(runner: CommandRunner, work: Path, deadline: float) -> dict:
@@ -526,7 +617,9 @@ def pinned_image_digests() -> dict[str, str]:
 def generate_inputs(runner: CommandRunner, config: dict, work: Path) -> tuple[Path, str]:
     runner.run("generate test SSH key", ["ssh-keygen", "-q", "-t", "ed25519",
                                          "-N", "", "-f", str(work / "ssh-key")], timeout=30)
-    key = Path(config["inference"]["apiKeyFile"]).read_bytes().strip()
+    key = (config["inference"]["apiKey"].encode()
+           if config["inference"].get("apiKey") else
+           Path(config["inference"]["apiKeyFile"]).read_bytes()).strip()
     if b"\n" in key or b"\r" in key:
         raise E2EError("NVIDIA API key file must contain one line")
     private_write(work / "nvidia-key", key + b"\n")
@@ -921,10 +1014,11 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
     config = load_config(config_path, require_key=True)
     run_id = now().replace(":", "").replace("-", "") + "-" + uuid.uuid4().hex[:8]
     state_dir, work, env = prepare_workspace(config, run_id)
-    runner = CommandRunner(env)
+    runner = CommandRunner(env, [str(config["cluster"].get("password", "")),
+                                 str(config["inference"].get("apiKey", ""))])
     inventory = {
         "run_id": run_id, "started_at": now(), "source_sha": "",
-        "source_branch": "", "cluster_context": config["cluster"]["context"],
+        "source_branch": "", "cluster_context": "",
         "provider": "nvidia", "driver": "podman", "model": config["inference"]["model"],
         "image_digests": {}, "installed_versions": {}, "stages": [],
         "coverage": {"tested": ["OpenShift Virtualization", "Fedora 44", "Podman",
@@ -940,6 +1034,8 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
     error = ""
     try:
         stage(inventory, state_dir, "preflight.selection", checked_in_selection)
+        inventory["cluster_context"] = stage(inventory, state_dir,
+            "preflight.login", lambda: login_cluster(runner, config), runner.sensitive)
         inventory["image_digests"] = stage(inventory, state_dir,
             "preflight.pinned-images", pinned_image_digests)
         sha, branch = stage(inventory, state_dir, "preflight.source", lambda: source_identity(runner))
@@ -1043,10 +1139,9 @@ def execute_cleanup(config_path: Path) -> int:
     config = load_config(config_path, require_key=False)
     run_id = "recovery-" + uuid.uuid4().hex[:8]
     state_dir, work, env = prepare_workspace(config, run_id)
-    runner = CommandRunner(env)
+    runner = CommandRunner(env, [str(config["cluster"].get("password", ""))])
     try:
-        runner.run("select copied kubeconfig context", ["oc", "config", "use-context",
-                                                         config["cluster"]["context"]])
+        login_cluster(runner, config)
         inventory = read_lock(runner)
         branch = inventory.get("source_branch", "")
         if not branch:

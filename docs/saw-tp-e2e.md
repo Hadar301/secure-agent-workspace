@@ -8,11 +8,25 @@ External Secrets, network controls, and cleanup.
 ## Private inputs
 
 Each PR author supplies a dedicated cluster and Linux runner. Copy
-`examples/saw/tp-e2e.example.yaml` outside the repository. Set the config,
-kubeconfig, and NVIDIA key files to mode `0600`. The config must give an
-explicit kubeconfig context. The runner needs `oc`, `helm`, `podman`,
+`examples/saw/tp-e2e.example.yaml` outside the repository. Put the cluster
+API URL, username, password, and NVIDIA API key in that private copy. Set
+its mode to `0600`. The controller logs in and creates a temporary
+kubeconfig. It also supports a kubeconfig and separate API key file for
+existing setups. The runner needs `oc`, `helm`, `podman`,
 `virtctl`, `ssh-keygen`, `git`, `make`, `jq`, and `uv`. It needs network access
 to the cluster, ingress routes, the source Git remote, and required images.
+
+Create the private file with an editor. Do not place credential values in a
+shell command or in workflow inputs. To move it to the dedicated runner:
+
+```sh
+ssh runner@RUNNER_HOST 'install -d -m 700 ~/.config/saw-e2e'
+scp /absolute/private/test.yaml runner@RUNNER_HOST:~/.config/saw-e2e/test.yaml
+ssh runner@RUNNER_HOST 'chmod 600 ~/.config/saw-e2e/test.yaml'
+```
+
+The workflow config path is the absolute path to that file on the runner.
+For example, use `/home/runner/.config/saw-e2e/test.yaml`.
 
 The cluster needs cluster-admin access, a default StorageClass or an explicit
 `vm.storageClassName`, and capacity for the requested VM. Use a base cluster
@@ -41,8 +55,8 @@ Temporary inputs are removed after the run. The source private files remain.
 
 Start **SAW minimal Pattern deployment E2E** with `workflow_dispatch`. Give
 the dedicated runner label, the absolute config path on that runner, and the
-full pushed PR SHA. Put the config, kubeconfig, and key file on that runner
-before dispatch. The workflow uses the same `make test-saw-tp-e2e` target and
+full pushed PR SHA. Put the single private config on that runner before
+dispatch. The workflow uses the same `make test-saw-tp-e2e` target and
 uploads the filtered reports. It has no push or PR trigger. Do not add it as
 a required branch check.
 
@@ -61,9 +75,9 @@ for inspection. The lock also remains when cleanup fails. To retry cleanup:
 make clean-saw-tp-e2e E2E_CONFIG=/absolute/private/test.yaml
 ```
 
-Use the same cluster context and source checkout. Cleanup reads the cluster
+Use the same cluster and source checkout. Cleanup reads the cluster
 lock inventory. It removes test resources, checks that they are gone, and
-then releases the lock. It does not need the NVIDIA key file. If a runner
+then releases the lock. It does not use the NVIDIA key. If a runner
 stops during a run, use this command from another runner with the same
 checkout and cluster access.
 
