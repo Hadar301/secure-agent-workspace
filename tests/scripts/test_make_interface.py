@@ -37,7 +37,8 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
-        "status check-oidc-ca catalog catalog-check git-hooks"
+        "status check-oidc-ca catalog catalog-check git-hooks "
+        "test-credential-proxy credential-proxy-image test-credential-isolation"
     ).split()
     for target in targets:
         assert len(re.findall(rf"^  {target}\s", plain, re.MULTILINE)) == 1
@@ -56,6 +57,13 @@ def test_name_validation_stops_before_cluster_work():
         result = run_make("saw-delete", f"OPENSHELL_SAW_NAME={name}")
         assert result.returncode != 0
         assert "OPENSHELL_SAW_NAME" in result.stderr
+
+
+def test_credential_isolation_offline_render():
+    result = subprocess.run(["bash", "tests/test-credential-isolation.sh"], cwd=ROOT,
+                            env=dict(os.environ, SKIP_LIVE="1"), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "VM mounts metadata only" in result.stdout
 
 
 def test_invalid_runtime_stops_before_build():
