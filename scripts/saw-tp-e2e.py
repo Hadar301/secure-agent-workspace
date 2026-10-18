@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import base64
 import contextlib
 from datetime import datetime, timezone
 import io
