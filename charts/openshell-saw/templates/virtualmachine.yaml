@@ -90,6 +90,12 @@ spec:
               disk:
                 bus: virtio
             {{- end }}
+            {{- if eq .Values.accessControl.ownerSubjectSource "resolved" }}
+            - name: saw-owner
+              serial: saw-owner
+              disk:
+                bus: virtio
+            {{- end }}
             {{- end }}
           {{- if .Values.vm.liveInputs }}
           filesystems:
@@ -105,11 +111,6 @@ spec:
             - name: saw-owner
               virtiofs: {}
             {{- end }}
-          {{- end }}
-          {{- if and (not .Values.vm.liveInputs) (eq .Values.accessControl.ownerSubjectSource "resolved") }}
-          filesystems:
-            - name: saw-owner
-              virtiofs: {}
           {{- end }}
           interfaces:
             - name: default

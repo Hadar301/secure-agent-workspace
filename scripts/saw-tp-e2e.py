@@ -260,6 +260,16 @@ def render_charts(runner: CommandRunner, child_values: dict[str, dict], work: Pa
             kinds = {item.get("kind") for item in docs}
             if "VirtualMachine" not in kinds or "NetworkPolicy" not in kinds or "EgressFirewall" not in kinds:
                 raise E2EError("rendered VM lacks required network resources")
+            vms = [item for item in docs if item.get("kind") == "VirtualMachine"]
+            if len(vms) != 1:
+                raise E2EError("rendered VM selection changed")
+            template = vms[0]["spec"]["template"]["spec"]
+            devices = template["domain"]["devices"]
+            attached = {item["name"] for kind in ("disks", "filesystems")
+                        for item in devices.get(kind, [])}
+            volumes = {item["name"] for item in template.get("volumes", [])}
+            if not volumes.issubset(attached):
+                raise E2EError("rendered VM has a volume without a matching device")
             installers = [item for item in docs if item.get("kind") == "ConfigMap" and
                           item.get("metadata", {}).get("name") == f"{OWNER}-installer"]
             if len(installers) != 1:
