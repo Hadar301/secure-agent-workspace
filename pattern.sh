@@ -99,7 +99,7 @@ fi
 # $HOME is mounted as itself for any files that are referenced with absolute paths
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
-podman run "${PODMAN_TTY_ARGS[@]}" --rm --pull=newer \
+podman run ${PODMAN_TTY_ARGS[@]+"${PODMAN_TTY_ARGS[@]}"} --rm --pull=newer \
     --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
