@@ -7,26 +7,17 @@ External Secrets, network controls, and cleanup.
 
 ## Private inputs
 
-Each PR author supplies a dedicated cluster and Linux runner. Copy
+Each PR author supplies a dedicated cluster. Copy
 `examples/saw/tp-e2e.example.yaml` outside the repository. Put the cluster
 API URL, username, password, and NVIDIA API key in that private copy. Set
 its mode to `0600`. The controller logs in and creates a temporary
 kubeconfig. It also supports a kubeconfig and separate API key file for
-existing setups. The runner needs `oc`, `helm`, `podman`,
-`virtctl`, `ssh-keygen`, `git`, `make`, `jq`, and `uv`. It needs network access
+existing setups. A local test machine needs `oc`, `helm`, `podman`,
+`ssh-keygen`, `git`, `make`, `jq`, and `uv`. The controller downloads `virtctl`
+from the cluster after OpenShift Virtualization starts. It needs network access
 to the cluster, ingress routes, the source Git remote, and required images.
-
-Create the private file with an editor. Do not place credential values in a
-shell command or in workflow inputs. To move it to the dedicated runner:
-
-```sh
-ssh runner@RUNNER_HOST 'install -d -m 700 ~/.config/saw-e2e'
-scp /absolute/private/test.yaml runner@RUNNER_HOST:~/.config/saw-e2e/test.yaml
-ssh runner@RUNNER_HOST 'chmod 600 ~/.config/saw-e2e/test.yaml'
-```
-
-The workflow config path is the absolute path to that file on the runner.
-For example, use `/home/runner/.config/saw-e2e/test.yaml`.
+Create the local private file with an editor. Do not place credential values
+in a shell command or workflow inputs.
 
 The cluster needs cluster-admin access, a default StorageClass or an explicit
 `vm.storageClassName`, and capacity for the requested VM. Use a base cluster
@@ -53,12 +44,20 @@ Temporary inputs are removed after the run. The source private files remain.
 
 ## Manual CI
 
-Start **SAW minimal Pattern deployment E2E** with `workflow_dispatch`. Give
-the dedicated runner label, the absolute config path on that runner, and the
-full pushed PR SHA. Put the single private config on that runner before
-dispatch. The workflow uses the same `make test-saw-tp-e2e` target and
-uploads the filtered reports. It has no push or PR trigger. Do not add it as
-a required branch check.
+Use a fork that has the manual workflow file on its default branch. In the
+fork's **Settings → Secrets and variables → Actions**, add these repository
+secrets: `SAW_E2E_USERNAME`, `SAW_E2E_PASSWORD`, and
+`SAW_E2E_NVIDIA_API_KEY`. Add `SAW_E2E_API_CA_PEM` or
+`SAW_E2E_INGRESS_CA_PEM` only if the cluster needs a custom public CA.
+Each PR author uses secrets in their own fork. The API and ingress routes
+must be reachable from a GitHub-hosted Ubuntu runner.
+
+Start **SAW minimal Pattern deployment E2E** with `workflow_dispatch` in
+that fork. Select the PR branch. Enter the cluster API URL, full pushed PR
+SHA, and NVIDIA model. The workflow creates one owner-only config file on
+the temporary runner and calls the same `make test-saw-tp-e2e` target. It
+uploads filtered reports. It has no push or PR trigger. Do not add it as a
+required branch check.
 
 Record the local report, manual workflow link, CI report, and tested SHA on
 the implementation PR or child ticket. The local and CI runs must use the

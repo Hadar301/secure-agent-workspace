@@ -7,6 +7,7 @@ import argparse
 import base64
 import contextlib
 from datetime import datetime, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import tarfile
 import tempfile
 import termios
 import time
@@ -339,7 +341,7 @@ def _quantity(value: str) -> int:
 
 
 def preflight_cluster(runner: CommandRunner, config: dict) -> dict:
-    required = ("oc", "helm", "podman", "virtctl", "ssh-keygen", "git", "make")
+    required = ("oc", "helm", "podman", "ssh-keygen", "git", "make")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         raise E2EError("missing required tools: " + ", ".join(missing))
@@ -748,6 +750,43 @@ def vm_ready(runner: CommandRunner, deadline: float) -> None:
     wait_until("SAW VM readiness", deadline, check)
 
 
+def ensure_virtctl(runner: CommandRunner, config: dict, work: Path) -> None:
+    if shutil.which("virtctl", path=runner.env.get("PATH")):
+        return
+    item = runner.oc_json("read virtctl download", "get", "consoleclidownload",
+                          "virtctl-clidownloads-kubevirt-hyperconverged")
+    links = item.get("spec", {}).get("links", [])
+    candidates = [link.get("href", "") for link in links
+                  if "linux" in link.get("text", "").lower()
+                  and any(arch in link.get("text", "").lower() for arch in
+                          ("x86_64", "amd64", "x64"))]
+    if not candidates:
+        candidates = [link.get("href", "") for link in links
+                      if "/amd64/linux/" in link.get("href", "")]
+    if len(candidates) != 1 or not candidates[0].startswith("https://"):
+        raise E2EError("cluster has no single Linux x64 virtctl download")
+    try:
+        with urllib.request.urlopen(candidates[0], context=ingress_context(runner, config),
+                                    timeout=120) as response:
+            archive = response.read(100 * 1024 * 1024 + 1)
+        if len(archive) > 100 * 1024 * 1024:
+            raise E2EError("virtctl download exceeds 100 MiB")
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as bundle:
+            binaries = [member for member in bundle.getmembers()
+                        if member.isfile() and Path(member.name).name == "virtctl"]
+            if len(binaries) != 1:
+                raise E2EError("virtctl archive has no single executable")
+            binary = bundle.extractfile(binaries[0])
+            if binary is None:
+                raise E2EError("virtctl executable could not be read")
+            target = work / "bin" / "virtctl"
+            private_write(target, binary.read())
+            target.chmod(0o700)
+    except (urllib.error.URLError, tarfile.TarError, OSError) as exc:
+        raise E2EError("could not install virtctl from the cluster") from exc
+    runner.env["PATH"] = str(target.parent) + os.pathsep + runner.env.get("PATH", "")
+
+
 def add_guest_key(runner: CommandRunner, work: Path, deadline: float) -> None:
     public = (work / "ssh-key.pub").read_text(encoding="utf-8").strip()
     patch = work / "ssh-pubkey-patch.json"
@@ -1082,6 +1121,8 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
               lambda: application_health(runner, EXPECTED_APPS, sha, deployment_deadline))
         stage(inventory, state_dir, "gitops.child-health",
               lambda: application_health(runner, EXPECTED_CHILD_APPS, sha, deployment_deadline))
+        stage(inventory, state_dir, "vm.virtctl",
+              lambda: ensure_virtctl(runner, config, work))
         stage(inventory, state_dir, "secret.keycloak",
               lambda: secret_ready(runner, "saw-keycloak",
                                    "openshell-keycloak-user-passwords", deployment_deadline))

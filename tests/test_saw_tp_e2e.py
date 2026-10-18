@@ -1,9 +1,11 @@
 """Offline checks for the minimal deployment controller."""
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import tarfile
 
 import pytest
 
@@ -12,6 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("saw_tp_e2e", ROOT / "scripts/saw-tp-e2e.py")
 e2e = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(e2e)
+config_spec = importlib.util.spec_from_file_location(
+    "saw_tp_e2e_ci_config", ROOT / "scripts/saw-tp-e2e-ci-config.py"
+)
+ci_config = importlib.util.module_from_spec(config_spec)
+config_spec.loader.exec_module(ci_config)
 
 
 def test_minimal_render(tmp_path):
@@ -71,6 +78,49 @@ def test_single_private_config_and_temporary_login(tmp_path):
     assert e2e.login_cluster(runner, config) == "test-context"
     assert runner.env["SAW_E2E_CONTEXT"] == "test-context"
     assert "private-password" not in kubeconfig.read_text()
+
+
+def test_ci_config_requires_secrets_and_writes_private_file(tmp_path):
+    path = tmp_path / "private" / "config.yaml"
+    with pytest.raises(ValueError, match="SAW_E2E_PASSWORD"):
+        ci_config.write_config(path, {"SAW_E2E_API_URL": "https://api.example.test:6443"})
+    env = {
+        "SAW_E2E_API_URL": "https://api.example.test:6443",
+        "SAW_E2E_USERNAME": "test-admin",
+        "SAW_E2E_PASSWORD": "private-password",
+        "SAW_E2E_NVIDIA_API_KEY": "private-nvidia-key",
+    }
+    ci_config.write_config(path, env)
+    assert path.stat().st_mode & 0o077 == 0
+    assert path.parent.stat().st_mode & 0o077 == 0
+    assert e2e.load_config(path, require_key=True)["cluster"]["username"] == "test-admin"
+
+
+def test_virtctl_download_uses_cluster_link(tmp_path, monkeypatch):
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+        payload = b"#!/bin/sh\nexit 0\n"
+        info = tarfile.TarInfo("virtctl")
+        info.size = len(payload)
+        bundle.addfile(info, io.BytesIO(payload))
+    archive.seek(0)
+
+    class Runner:
+        def __init__(self):
+            self.env = {"PATH": "/usr/bin"}
+
+        def oc_json(self, *args):
+            return {"spec": {"links": [{"text": "Linux x86_64",
+                                         "href": "https://example.test/virtctl.tar.gz"}]}}
+
+    monkeypatch.setattr(e2e.shutil, "which", lambda *args, **kwargs: None)
+    monkeypatch.setattr(e2e, "ingress_context", lambda *args: None)
+    monkeypatch.setattr(e2e.urllib.request, "urlopen",
+                        lambda *args, **kwargs: io.BytesIO(archive.getvalue()))
+    runner = Runner()
+    e2e.ensure_virtctl(runner, {}, tmp_path)
+    assert (tmp_path / "bin/virtctl").read_bytes() == payload
+    assert runner.env["PATH"].startswith(str(tmp_path / "bin"))
 
 
 def test_atomic_lock_refuses_concurrent_run():
