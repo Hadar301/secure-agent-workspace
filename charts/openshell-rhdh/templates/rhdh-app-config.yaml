@@ -153,7 +153,11 @@ data:
               url: https://kubernetes.default.svc
               authProvider: serviceAccount
               skipTLSVerify: {{ .Values.tls.insecureSkipVerify }}
-              caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              {{- if not .Values.tls.insecureSkipVerify }}
+              # The CA bundle (the API's CA included): RHDH's pod has no
+              # service account mount.
+              caFile: /opt/saw-ca/ca-bundle.crt
+              {{- end }}
               skipMetricsLookup: true
               serviceAccountToken:
                 $file: /opt/app-root/src/saw/token

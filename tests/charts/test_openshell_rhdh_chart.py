@@ -127,6 +127,24 @@ def test_the_generator_gets_valid_saw_users_defaults(docs):
     assert values["global"]["vpArgoNamespace"] == "vp-gitops"
 
 
+def generator_defaults(docs):
+    deploy = one(docs, "Deployment", "saw-workspaces-generator")
+    env = {e["name"]: e.get("value") for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
+    return json.loads(env["SAW_USERS_VALUES"])
+
+
+def test_portal_workspaces_get_the_governance_engine():
+    """A portal workspace's gateway must use the pattern's engine: without
+    global.governance, saw-users renders interceptor bindings against APF."""
+    values = generator_defaults(render("--set", "global.governance.engine=apf"))
+    assert values["global"]["governance"] == {"engine": "apf"}
+    assert "governance" in yaml.safe_load((ROOT / "charts" / "saw-users" / "values.yaml").read_text())["machineGlobals"]
+
+
+def test_portal_workspaces_without_governance_keep_the_default(docs):
+    assert "governance" not in generator_defaults(docs)["global"]
+
+
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
     step = task["spec"]["steps"][0]
@@ -146,7 +164,8 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
 
-def test_rbac_shows_admin_templates_to_admins_only(docs):
+def test_rbac_shows_admin_templates_to_admins_only():
+    docs = render("--set", "portal.admins[0]=admin")
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     assert config["permission"]["enabled"] is True
     kc = config["catalog"]["providers"]["keycloakOrg"]["default"]
@@ -395,7 +414,8 @@ def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off
 
 
-def test_admins_get_templates_for_another_user(docs):
+def test_admins_get_templates_for_another_user():
+    docs = render("--set", "portal.admins[0]=admin")
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
     create = yaml.safe_load(cm["data"]["create-workspace-for-user.yaml"])
     delete = yaml.safe_load(cm["data"]["delete-workspace-for-user.yaml"])
@@ -459,7 +479,7 @@ def test_tls_is_verified_everywhere_by_default(docs):
     assert {"name": "saw-ca", "mountPath": "/opt/saw-ca", "readOnly": True} in pod["containers"][0]["volumeMounts"]
     assert s["proxy"] == [True, True]
     assert s["kubernetes"]["skipTLSVerify"] is False
-    assert s["kubernetes"]["caFile"] == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    assert s["kubernetes"]["caFile"] == "/opt/saw-ca/ca-bundle.crt"
     gen_env = _envs(s["generator"]["containers"][0])
     assert gen_env["KEYCLOAK_SKIP_VERIFY"] == "false" and gen_env["KEYCLOAK_CA_FILE"] == "/opt/saw-ca/ca-bundle.crt"
     assert [c["name"] for c in s["generator"]["initContainers"]] == ["saw-ca-bundle"]
@@ -474,10 +494,26 @@ def test_one_switch_turns_verification_off(docs):
     s = tls_settings(render("--set", "tls.insecureSkipVerify=true"))
     assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0" and s["patch"] is None
     assert s["proxy"] == [False, False]
-    assert s["kubernetes"]["skipTLSVerify"] is True
+    assert s["kubernetes"]["skipTLSVerify"] is True and "caFile" not in s["kubernetes"]
     assert _envs(s["generator"]["containers"][0])["KEYCLOAK_SKIP_VERIFY"] == "true"
     assert _envs(s["job"]["containers"][0])["INSECURE"] == "true"
     assert s["task"]["VAULT_SKIP_VERIFY"] == "true"
+
+
+def test_the_ca_bundle_gets_the_api_ca_without_a_service_account_mount(docs):
+    # The RHDH operator's pod has no service account mount: the init
+    # container gets the token and the API and service CAs projected.
+    s = tls_settings(docs)
+    for pod in (s["patch"]["spec"]["template"]["spec"], s["generator"], s["job"]):
+        init = pod["initContainers"][0]
+        assert _envs(init)["SA_DIR"] == "/opt/saw-ca-sa"
+        assert {"name": "saw-ca-sa", "mountPath": "/opt/saw-ca-sa", "readOnly": True} in init["volumeMounts"]
+        vol = next(v for v in pod["volumes"] if v["name"] == "saw-ca-sa")["projected"]["sources"]
+        assert vol[0]["serviceAccountToken"]["path"] == "token"
+        assert vol[1]["configMap"] == {"name": "kube-root-ca.crt", "items": [{"key": "ca.crt", "path": "ca.crt"}]}
+        assert vol[2]["configMap"]["name"] == "openshift-service-ca.crt"
+        # Only the init container sees the token.
+        assert all(m["name"] != "saw-ca-sa" for c in pod["containers"] for m in c.get("volumeMounts", []))
 
 
 def test_the_ca_bundle_sources_are_in_each_namespace(docs):
@@ -504,3 +540,16 @@ def test_extra_cas_reach_the_bundle(tmp_path):
     docs = render("-f", str(values))
     sources = next(d for d in docs if d["metadata"]["name"] == "saw-ca-sources")
     assert sources["data"]["extra-ca.crt"].strip() == pem
+
+
+def test_tekton_resources_compare_with_their_webhook_defaults(docs):
+    """Tekton's admission webhook fills in defaults, so a plain diff never
+    matches: the app stayed OutOfSync after every successful sync and the
+    pattern install's health check never passed (fresh cluster)."""
+    tekton = [d for d in docs if d.get("apiVersion", "").startswith("tekton.dev/")
+              and d["kind"] in ("Task", "Pipeline")]
+    assert {d["kind"] for d in tekton} == {"Task", "Pipeline"}
+    for d in tekton:
+        options = d["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
+        assert set(options.split(",")) == {"ServerSideDiff=true", "IncludeMutationWebhook=true"}, \
+            d["metadata"]["name"]

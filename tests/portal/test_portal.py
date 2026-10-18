@@ -1303,10 +1303,42 @@ def test_keycloak_user_ids_match_the_exact_user_name(portal, monkeypatch):
     class KC:
         def call(self, method, path):
             calls.append(path)
-            return [{"username": "carol2", "id": "x"}, {"username": "carol", "id": "c-1"}]
+            return [{"username": "carol", "id": "c-1", "enabled": True}]
     monkeypatch.setattr(portal, "keycloak_admin", lambda *a, **k: KC())
     assert portal.keycloak_user_ids("https://kc", "openshell", "rhdh", "s", ["carol"]) == {"carol": "c-1"}
-    assert calls == ["/users?exact=true&briefRepresentation=true&username=carol"]
+    assert calls == ["/users?exact=true&username=carol"]
+
+
+def test_keycloak_user_ids_reject_disabled_or_ambiguous_users(portal, monkeypatch):
+    class KC:
+        users = []
+        def call(self, method, path):
+            return self.users
+    kc = KC()
+    monkeypatch.setattr(portal, "keycloak_admin", lambda *a, **k: kc)
+    for users in ([{"username": "carol", "id": "c-1", "enabled": False}],
+                  [{"username": "carol", "id": "c-1", "enabled": True},
+                   {"username": "carol", "id": "c-2", "enabled": True}],
+                  [{"username": "carol2", "id": "c-1", "enabled": True}]):
+        kc.users = users
+        assert portal.keycloak_user_ids("https://kc", "openshell", "rhdh", "s", ["carol"]) == {}
+
+
+def test_owner_subject_cache_rechecks_account_recreation(portal, monkeypatch, tmp_path):
+    secret = tmp_path / "secret"
+    secret.write_text("s3\n")
+    for key, value in {"KEYCLOAK_URL": "https://kc.example.com", "KEYCLOAK_REALM": "openshell",
+                       "KEYCLOAK_CLIENT_ID": "rhdh", "KEYCLOAK_SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(key, value)
+    ids = {"carol": "old"}
+    monkeypatch.setattr(portal, "keycloak_user_ids", lambda *a, **k: dict(ids))
+    subjects = portal.OwnerSubjects(ttl=0)
+    workspaces = [{"name": "carol", "ownerSubject": ""}]
+    assert subjects.fill(workspaces)[0]["ownerSubject"] == "old"
+    ids["carol"] = "new"
+    assert subjects.fill(workspaces)[0]["ownerSubject"] == "new"
+    ids.clear()
+    assert subjects.fill(workspaces)[0]["ownerSubject"] == ""
 
 
 def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
@@ -1321,7 +1353,7 @@ def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
     (tmp_path / "trusted.crt").write_text(pem.format("TRUSTED"))
     (tmp_path / "extra.crt").write_text(pem.format("EXTRA"))
     monkeypatch.setattr(mod, "SYSTEM", (str(tmp_path / "system.crt"),))
-    monkeypatch.setattr(mod, "SA", str(tmp_path / "no-sa"))
+    monkeypatch.setattr(mod, "SA_DIRS", (str(tmp_path / "no-sa"),))
     monkeypatch.setenv("TRUSTED_CA_FILE", str(tmp_path / "trusted.crt"))
     monkeypatch.setenv("EXTRA_CA_FILE", str(tmp_path / "extra.crt"))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)

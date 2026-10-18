@@ -7,8 +7,10 @@ Standard library only. The bundle holds, in this order:
   * the cluster's trusted CA bundle, when mounted at TRUSTED_CA_FILE (a
     ConfigMap with config.openshift.io/inject-trusted-cabundle: the
     cluster proxy's additional CAs);
-  * the Kubernetes API's CA and the service CA (this pod's service
-    account): kubernetes.default.svc, and in-cluster services such as Vault;
+  * the Kubernetes API's CA and the service CA: kubernetes.default.svc, and
+    in-cluster services such as Vault. From SA_DIR (a projected volume the
+    chart mounts, since the RHDH operator does not mount the service
+    account's token), else this pod's service account;
   * the router's CA (openshift-config-managed/default-ingress-cert): routes
     such as Keycloak's, when the default ingress certificate is self-signed;
   * EXTRA_CA_FILE, when present (tls.extraCaBundle in the chart).
@@ -22,7 +24,7 @@ import ssl
 import sys
 import urllib.request
 
-SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+SA_DIRS = tuple(d for d in (os.environ.get("SA_DIR", ""), "/var/run/secrets/kubernetes.io/serviceaccount") if d)
 SYSTEM = ("/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/certs/ca-certificates.crt",
           ssl.get_default_verify_paths().cafile or "")
 INGRESS_CA = "/api/v1/namespaces/openshift-config-managed/configmaps/default-ingress-cert"
@@ -36,14 +38,19 @@ def read(path):
         return ""
 
 
+def sa_file(name):
+    """The first SA_DIRS/name that exists, else ""."""
+    return next((f"{d}/{name}" for d in SA_DIRS if os.path.isfile(f"{d}/{name}")), "")
+
+
 def ingress_ca():
     host, port = os.environ.get("KUBERNETES_SERVICE_HOST"), os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-    token = read(f"{SA}/token").strip()
-    if not (host and token):
+    token, ca = read(sa_file("token")).strip(), sa_file("ca.crt")
+    if not (host and token and ca):
         return ""
     req = urllib.request.Request(f"https://{host}:{port}{INGRESS_CA}",
                                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+    ctx = ssl.create_default_context(cafile=ca)
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
             return (json.load(resp).get("data") or {}).get("ca-bundle.crt", "")
@@ -57,8 +64,8 @@ def main(out):
     system = next((p for p in SYSTEM if p and read(p)), "")
     for what, pem in (("system CAs", read(system) if system else ""),
                       ("cluster trusted CA bundle", read(os.environ.get("TRUSTED_CA_FILE", ""))),
-                      ("Kubernetes API CA", read(f"{SA}/ca.crt")),
-                      ("service CA", read(f"{SA}/service-ca.crt")),
+                      ("Kubernetes API CA", read(sa_file("ca.crt"))),
+                      ("service CA", read(sa_file("service-ca.crt"))),
                       ("router CA", ingress_ca()),
                       ("extra CAs", read(os.environ.get("EXTRA_CA_FILE", "")))):
         if "BEGIN CERTIFICATE" in pem:

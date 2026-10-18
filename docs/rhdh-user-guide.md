@@ -34,14 +34,12 @@ A missing kind usually means an operator is still installing
 
 ### 1.2 Secrets in Vault
 
-Two entries of `values-secret.yaml.template` are generated when missing:
-`keycloak-users` (the test users' passwords) and `rhdh-oidc` (RHDH's
-Keycloak client secret and session secret). Add them to your
+The `rhdh-oidc` entry in `values-secret.yaml.template` generates RHDH's
+Keycloak client secret and session secret. Add it to your
 `values-secret` file and load it:
 
 ```bash
 ./pattern.sh make load-secrets
-oc get externalsecret -n saw-keycloak openshell-keycloak-user-passwords
 oc get externalsecret -n rhdh rhdh-oidc
 ```
 
@@ -53,7 +51,7 @@ The imperative job `saw-portal-vault` creates the Vault policy and role
 `saw-portal-writer`. Without the imperative framework, run once:
 
 ```bash
-make -f Makefile-quickstart portal-vault-setup
+make portal-vault-setup
 ```
 
 Check:
@@ -73,12 +71,15 @@ A new realm gets this from the chart. A realm imported before (an existing
 cluster) needs it applied once:
 
 ```bash
-make -f Makefile-quickstart keycloak-harden
+make keycloak-harden
 ```
 
-It sets the password policy and brute-force lockout, turns registration
-off, and gives the test users (developer, admin, alice, bob) their generated
-passwords. Check that the old default no longer works:
+It sets the password policy and brute-force lockout and turns registration
+off. It does not create demo accounts. For an existing install, first enroll
+real owners and an operator, then use the migration procedure in the
+deployment guide to review and disable confirmed demo accounts.
+
+If this realm had a known old demo password, check that it no longer works:
 
 ```bash
 KC=https://$(scripts/keycloak-host.sh saw-keycloak)
@@ -102,15 +103,15 @@ users:
     email: carol@example.com        # optional; also firstName, lastName
     roles: [openshell-user]         # default
 EOF
-make -f Makefile-quickstart keycloak-add-users USERS_FILE=/tmp/portal-users.yaml
+make keycloak-add-users USERS_FILE=/tmp/portal-users.yaml
 ```
 
-The new password is printed once and kept in Secret
-`openshell-keycloak-users`. Later:
+The command stores each new password in the
+`openshell-keycloak-users` Secret. It prints the Secret location. Later:
 
 ```bash
-make -f Makefile-quickstart keycloak-password KC_USER=carol         # show it
-make -f Makefile-quickstart keycloak-reset-password KC_USER=carol   # new one
+make keycloak-password KC_USER=carol         # show its Secret location
+make keycloak-reset-password KC_USER=carol   # generate and store a new one
 ```
 
 User names must be lowercase DNS labels of at most 19 characters. Running
@@ -199,7 +200,7 @@ The same run is on the workspace's catalog page: open `saw-carol` → the
 The installer inside the VM cannot report to the cluster, so a failure there
 (for example a missing key) shows as the `sandboxes` task running to its
 30-minute limit. The installer's log says why (next section:
-`openshell-saw-logs`).
+`make saw-logs`).
 
 ### Check what happened
 
@@ -233,7 +234,7 @@ and `carol-default-notebook-ui`.
 Follow the VM's installer until `apply: Done` (about 10 minutes):
 
 ```bash
-make -f Makefile-quickstart openshell-saw-logs OPENSHELL_SAW_NAME=carol
+make saw-logs OPENSHELL_SAW_NAME=carol
 ```
 
 In RHDH, **Catalog** lists `saw-carol` ("Agent
@@ -250,6 +251,18 @@ carol. Its description starts with the status: `Requested`, `Creating`,
 
 ## 5. Open the sandbox
 
+The redirect registrar registers the workspace's sign-in on its own. Check
+it, and create carol's Keycloak account if she has none (as an administrator;
+it waits for the routes):
+
+```bash
+make -f Makefile-quickstart keycloak-register KC_USER=carol
+```
+
+A sign-in that stops at Keycloak with "Invalid parameter: redirect_uri" means
+the URI is not registered yet: see the registrar's log
+(`oc logs -n saw-keycloak deploy/saw-redirect-registrar -c registrar`).
+
 The installer creates the profile's sandboxes; there is nothing to start.
 
 ### In the browser
@@ -264,14 +277,24 @@ Check that only the owner gets in: in a private window, open the same URL
 and sign in as another user (e.g. bob). Expected: 403 from the proxy, before
 OpenClaw.
 
+As tested on 2026-10-08, the `cuda-sandbox` image contains OpenClaw
+2026.7.1. Its first
+browser connection can stop at `pairing required` after Keycloak accepts the
+owner. In the sandbox, run `openclaw devices list` and verify the pending
+browser request before approving its exact request ID with
+`openclaw devices approve <requestId>`. The browser request can include
+`operator.admin`; approval grants that scope to the browser device. Remove
+the paired device after a temporary test. The `notebook` image uses a newer
+OpenClaw release and did not need this step in the live test.
+
 ### From the command line (admin)
 
 ```bash
 export OPENSHELL_SAW_NAME=carol
-make -f Makefile-quickstart openshell-saw-configure-gateway
+make saw-configure
 openshell gateway login carol          # sign in as carol in the browser
 openshell sandbox list
-make -f Makefile-quickstart openclaw-tui SANDBOX_NAME=notebook
+make openclaw-tui SANDBOX_NAME=notebook
 ```
 
 The TUI talks to the same OpenClaw gateway with the gateway password; it
@@ -287,7 +310,7 @@ must keep working with the UI's trusted-proxy mode.
 | 502 / 503 | OpenClaw is not running in the sandbox, or the VM is still installing | wait for `apply: Done`; check the gateway log |
 
 ```bash
-make -f Makefile-quickstart openshell-saw-vm-ssh OPENSHELL_SAW_NAME=carol \
+make saw-vm-ssh OPENSHELL_SAW_NAME=carol \
   CMD='openshell sandbox exec -n notebook --no-tty -- sh -c "tail -20 /tmp/openclaw-gateway.log; grep -h trusted_proxy /tmp/openclaw/openclaw-*.log | tail -5"'
 ```
 

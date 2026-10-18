@@ -488,3 +488,77 @@ def test_the_index_and_the_files_must_list_the_same_bundles(ab, shipped_harness_
     with pytest.raises(ab.InstallerError, match="missing from harness-index.yaml"):
         ab.check_harness_index(bundles, {"bundles": {}})
     ab.check_harness_index(bundles, {})  # no index shipped: nothing to compare
+
+
+# -- bundle MCP servers re-declared in openclaw.json -------------------------------
+
+def _mcp_info(ab, servers, declared=()):
+    manifest = yaml.safe_dump({"metadata": {"name": "demo"}, "spec": {
+        "mcpServers": [{"name": n, "governanceProfile": "web-search"} for n in declared]}})
+    tree = {"harness.yaml": (manifest.encode(), False), "plugin.json": (b'{"name": "demo"}', False),
+            "mcp.json": (json.dumps({"mcpServers": servers}).encode(), False)}
+    return ab.describe_harness_tree(tree)
+
+
+def test_a_stdio_server_gets_its_placeholders_through_openclaw_json(ab):
+    """OpenClaw expands only ${PLUGIN_ROOT}/${PLUGIN_DATA} in a bundle's
+    mcp.json, so ${BRAVE_API_KEY} would reach the server as literal text
+    (found live: Slack answered invalid_auth). openclaw.json expands it."""
+    info = _mcp_info(ab, {"search": {"type": "stdio", "command": "node",
+                                     "args": ["${PLUGIN_ROOT}/mcp/search.mjs", "--data=${PLUGIN_DATA}"],
+                                     "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}}})
+    entry = ab.harness_mcp_servers(info, ab.MCP_TRUST_ENV)["search"]
+    assert entry["command"] == "node"
+    assert entry["args"] == ["/sandbox/harness/mcp/search.mjs",
+                             "--data=/sandbox/.openclaw/saw-plugin-data/demo"]
+    assert entry["env"]["BRAVE_API_KEY"] == "${BRAVE_API_KEY}"
+    # and the sandbox's CA settings, so it trusts the egress proxy
+    for var in ab.MCP_TRUST_ENV:
+        assert entry["env"][var] == "${%s}" % var
+    assert entry["env"]["PLUGIN_ROOT"] == "/sandbox/harness"
+
+
+def test_only_the_ca_settings_the_sandbox_has_are_passed_on(ab):
+    """OpenClaw leaves an unset ${VAR} as literal text, and a Python server
+    given REQUESTS_CA_BUNDLE='${REQUESTS_CA_BUNDLE}' fails every HTTPS call."""
+    info = _mcp_info(ab, {"search": {"type": "stdio", "command": "python3",
+                                     "env": {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}}})
+    env = ab.harness_mcp_servers(info)["search"]["env"]
+    assert not set(env) & set(ab.MCP_TRUST_ENV)
+    env = ab.harness_mcp_servers(info, ("NODE_EXTRA_CA_CERTS",))["search"]["env"]
+    assert set(env) & set(ab.MCP_TRUST_ENV) == {"NODE_EXTRA_CA_CERTS"}
+    assert env["BRAVE_API_KEY"] == "${BRAVE_API_KEY}"
+
+
+def test_the_trust_settings_match_what_openshell_sets(ab):
+    """openshell-sandbox child_env::tls_env_vars: Deno and git included."""
+    assert set(ab.MCP_TRUST_ENV) == {"NODE_EXTRA_CA_CERTS", "DENO_CERT", "SSL_CERT_FILE",
+                                     "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"}
+
+
+def test_the_ca_probe_prints_names_only(ab):
+    probe = ab.mcp_trust_env_probe()
+    assert "printenv" in probe and all(var in probe for var in ab.MCP_TRUST_ENV)
+    assert 'echo "$v"' in probe and "$(printenv" in probe  # the name, never the value
+
+
+def test_a_relative_command_resolves_inside_the_bundle(ab):
+    info = _mcp_info(ab, {"tool": {"type": "stdio", "command": "./bin/tool"}})
+    assert ab.harness_mcp_servers(info)["tool"]["command"] == "/sandbox/harness/bin/tool"
+
+
+def test_a_remote_server_is_re_declared_only_for_its_headers(ab):
+    info = _mcp_info(ab, {
+        "docs": {"type": "streamable-http", "url": "https://docs.example.com/mcp",
+                 "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}},
+        "open": {"type": "sse", "url": "https://open.example.com/sse"}}, declared=("docs", "open"))
+    servers = ab.harness_mcp_servers(info)
+    assert servers == {"docs": {"url": "https://docs.example.com/mcp", "transport": "streamable-http",
+                                "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}}}
+
+
+def test_a_bundle_without_plugin_json_declares_nothing(ab):
+    manifest = yaml.safe_dump({"metadata": {"name": "demo"}, "spec": {}})
+    info = ab.describe_harness_tree({"harness.yaml": (manifest.encode(), False),
+                                     "skills/x/SKILL.md": (b"---\nname: x\n---\n", False)})
+    assert ab.harness_mcp_servers(info) == {}

@@ -8,13 +8,12 @@ Signature checks, live input updates, and profile pruning are below.
 
 ```text
 helm / Argo ──► openshell-saw chart
-                 ├─ VirtualMachine (+ root disk clone)
+                 ├─ VirtualMachine (+ root disk, imported by CDI)
                  ├─ <vm>-installer ConfigMap     installer-bom.yaml, config.json,
                  │                               apply_bom.py, setup-dashboard.sh
                  ├─ saw-bom-profiles ConfigMap   (saw-bom chart: SAW-BOM profiles)
                  ├─ provider Secrets             inference, web-search, ...
-                 ├─ <vm>-cloudinit Secret        static units and first-boot files
-                 └─ <vm>-prepare Job             cluster-side only, never touches the VM
+                 └─ <vm>-cloudinit Secret        static units and first-boot files
                             │
                             ▼
               iso9660 disks (default)  or  virtiofs (vm.liveInputs: true)
@@ -52,8 +51,11 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   It records what it created and, in the default `report` prune mode, only
   logs what a later profile change would delete. See
   [Removing things from a profile](#removing-things-from-a-profile).
-- The prepare Job only bootstraps the golden image DataSource and registers
-  the dashboard redirect URI in Keycloak (admin API). It has no VM access.
+- Nothing else runs in the SAW's namespace: no Job. The VM's root disk is
+  imported by CDI from the golden image (or cloned from a DataSource), and
+  the routes' redirect URIs are registered by the redirect registrar in
+  Keycloak's namespace (or, with it off, by an administrator:
+  `make -f Makefile-quickstart keycloak-register`).
 
 cloud-init runs once per VM, so it only writes static files (mount script,
 units, and the reconcile units when `vm.liveInputs` is true) and first-boot
@@ -68,31 +70,33 @@ steps succeeded for the same BOM. Logs go to the serial console:
 
 ```bash
 oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
-# or: make openshell-saw-logs OPENSHELL_SAW_NAME=<vm>
+# or: make saw-logs OPENSHELL_SAW_NAME=<vm>
 ```
 
 ## Namespaces
 
 | Namespace | What lives there |
 | --- | --- |
-| `saw-<name>` (one per SAW) | the SAW's VM, its installer/profile ConfigMaps, its provider Secrets, prepare Job. Labelled `openshell.pattern/saw=true`. |
-| `openshell-agents` (shared, `NS`) | golden image DataSource, image builds, governance interceptor + policy |
+| `saw-<name>` (one per SAW) | the SAW's VM, its installer/profile ConfigMaps, its provider Secrets. Labelled `openshell.pattern/saw=true`. |
+| `openshell-agents` (shared, `NS`) | golden image (in the internal registry, and its DataSource if any), image builds, governance interceptor + policy |
 | `saw-keycloak` (`KEYCLOAK_NS`, any name) | Keycloak and the RHBK operator |
 
 - A VM can only attach ConfigMaps/Secrets from its own namespace, so each
   SAW's `inference`/`web-search` Secrets and `saw-bom-profiles` ConfigMap
   must be in its `saw-<name>` namespace.
 - The governance interceptor admits gateway VMs from namespaces labelled
-  `openshell.pattern/saw=true` (`make openshell-saw-create` and
+  `openshell.pattern/saw=true` (`make saw-create` and
   `values-prod.yaml` set it). Without the label, sandbox creation is denied
   (`fail_closed`).
-- Each SAW gets a Role in the golden image namespace that lets its
-  `default` service account (which KubeVirt clones the root disk as) and its
-  prepare Job clone the image (`datavolumes/source`) and create the
-  DataSource there on first use.
-- Quickstart: `make openshell-saw-create OPENSHELL_SAW_NAME=alice` deploys
+- Each SAW may pull the golden image from the golden image namespace
+  (`system:image-puller` for its service accounts), which its root disk is
+  imported from by default. With `source.dataSource` set it clones that
+  DataSource instead, and gets a Role there that lets its `default` service
+  account (which KubeVirt clones the root disk as) clone it
+  (`datavolumes/source`).
+- Quickstart: `make saw-create OPENSHELL_SAW_NAME=alice` deploys
   into `saw-alice`; override with `SAW_NS=...`. Keycloak is looked up in
-  `KEYCLOAK_NS` (default `saw-keycloak`; `KEYCLOAK_NS=keycloak` to use a Keycloak the cluster already runs there). `make openshell-saw-delete` also
+  `KEYCLOAK_NS` (default `saw-keycloak`; `KEYCLOAK_NS=keycloak` to use a Keycloak the cluster already runs there). `make saw-delete` also
   deletes the namespace if it carries the SAW label.
 - Pattern: `values-prod.yaml` puts Keycloak/RHBK in `saw-keycloak` (so it never
   collides with a platform Keycloak in `keycloak`, as on many demo clusters).
@@ -134,8 +138,8 @@ KubeVirt's guest agent writes every key in it into `cloud-user`'s
 ([KubeVirt docs](https://kubevirt.io/user-guide/user_workloads/accessing_virtual_machines/)).
 
 ```bash
-make openshell-saw-vm-ssh OPENSHELL_SAW_NAME=alice            # interactive shell
-make openshell-saw-vm-ssh OPENSHELL_SAW_NAME=alice CMD='sudo cat /var/lib/saw/status.json'
+make saw-vm-ssh OPENSHELL_SAW_NAME=alice            # interactive shell
+make saw-vm-ssh OPENSHELL_SAW_NAME=alice CMD='sudo cat /var/lib/saw/status.json'
 ```
 
 The target adds `$(SSH_KEY_PATH).pub` to the Secret under your login name
@@ -158,7 +162,7 @@ provider Secrets are iso9660 disks filled at boot.
    at render time and by the installer).
 2. Sync/upgrade the chart. The installer ConfigMap is part of the VM template
    checksum, so KubeVirt marks the VM `RestartRequired`.
-3. `virtctl restart <vm>` (or `make openshell-saw-restart`). On boot,
+3. `virtctl restart <vm>` (or `make saw-restart`). On boot,
    `saw-install` installs only the changed components.
 
 A profile or Secret change is not in that checksum. The guest still does not
@@ -212,8 +216,8 @@ writes that file: empty (the chart default) bakes nothing, so `config.json`
 alone decides the mode, same as before the floor existed. **Set
 `signing.floor: enforce` when building a production image** — otherwise
 the floor described above is not actually in place and a namespace editor
-can still set `signing.mode: off`. `make build-gateway-podman` and
-`make build-gateway-docker` do not set it; they run
+can still set `signing.mode: off`. `make gateway-build-podman` and
+`make gateway-build-docker` do not set it; they run
 `helm upgrade --install openshell-gateway-image ...` without it, so add
 `--set signing.floor=enforce` to that command (or edit the Makefile) for a
 production build.
@@ -375,7 +379,7 @@ then:
 - runs `apply` only when profiles or Secrets changed. Existing providers get
   `provider update` with the new key. Sandboxes keep running.
 - writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
-  `make openshell-saw-status` shows whether that matches the cluster. A
+  `make saw-status` shows whether that matches the cluster. A
   failed install or apply is recorded there too (`lastFailedHash`); the
   next reconcile does not retry the exact same failing input for 5 minutes
   (`SAW_RECONCILE_BACKOFF`), so a component that is briefly unreachable

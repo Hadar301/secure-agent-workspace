@@ -17,6 +17,13 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- $seen := dict -}}
 {{- range .Values.users | default list -}}
 {{- $name := .name | default "" | toString -}}
+{{- if $.Values.ownerResolution.enabled -}}
+{{- $entryValues := .values | default dict -}}
+{{- $entryAccess := index $entryValues "accessControl" | default dict -}}
+{{- if or (hasKey . "ownerSubject") (hasKey $entryAccess "ownerSubject") (hasKey $entryAccess "owner") -}}
+{{- fail (printf "user %q: ownerResolution uses name as the only owner; remove ownerSubject and accessControl owner overrides" $name) -}}
+{{- end -}}
+{{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
 {{- fail (printf "user name %q must be a lowercase DNS label (letters, digits, and hyphens; must start and end with a letter or digit)" $name) -}}
 {{- end -}}
@@ -93,6 +100,13 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $extra := list -}}
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
+{{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
+     uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
+{{- $oidc := deepCopy (index $base "oidc" | default dict) -}}
+{{- if not (hasKey $oidc "clusterCaSecret") -}}
+{{- $_ := set $oidc "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- end -}}
+{{- $_ := set $base "oidc" $oidc -}}
 {{- /* harnessEnabled puts a harnessRef on a sandbox, which OpenShell 0.1.x
      refuses to mount without allow_driver_config; derive it here so the two
      flags can't drift apart. The user's own `values.allowDriverConfig`
@@ -101,6 +115,9 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $_ := set $base "allowDriverConfig" true -}}
 {{- end -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
+{{- if $root.Values.ownerResolution.enabled -}}
+{{- $_ := set $ac "ownerSubjectSource" "resolved" -}}
+{{- end -}}
 {{- mergeOverwrite $base $overlay | toYaml -}}
 {{- end -}}
 
@@ -216,7 +233,8 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- $root := .root -}}
 {{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
-      "secrets" (include "saw-users.secretNames" . | fromJsonArray)) -}}
+      "secrets" (include "saw-users.secretNames" . | fromJsonArray)
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}
@@ -232,6 +250,17 @@ metadata:
     openshell.pattern/owner: {{ $user.name | quote }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ .wave | quote }}
+    # With ServerSideApply (syncOptions below) there is no last-applied
+    # annotation to diff against, so fields the cluster defaults (KubeVirt
+    # adds the VM's firmware serial/uuid and machine type) would show the
+    # VM OutOfSync forever. Let the API server compute the diff instead.
+    # IncludeMutationWebhook=true: without it Argo strips webhook changes
+    # with its built-in schemas, which do not know OpenShift's Route, and
+    # every comparison fails ("unable to resolve parseableType for
+    # route.openshift.io/v1, Kind=Route"): a user with a dashboard or UI
+    # route never gets a later commit. With it, the dry run's webhook
+    # defaults (KubeVirt's included) are on both sides of the diff.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true,IncludeMutationWebhook=true
   {{- if include "saw-users.prune" (dict "root" $root "user" $user) }}
   finalizers:
     - {{ $root.Values.argo.finalizer }}
@@ -256,4 +285,11 @@ spec:
       selfHeal: true
     retry:
       limit: {{ $root.Values.argo.retryLimit }}
+    # Server-side apply: client-side apply copies every object into its
+    # kubectl.kubernetes.io/last-applied-configuration annotation, and
+    # annotations may hold at most 256 KiB. The VM's installer ConfigMap
+    # (apply_bom.py and friends) is past that; ConfigMaps themselves may
+    # hold 1 MiB.
+    syncOptions:
+      - ServerSideApply=true
 {{- end -}}

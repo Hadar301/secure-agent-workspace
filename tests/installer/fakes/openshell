@@ -148,10 +148,17 @@ elif op == "workspace delete":
         fail(f"Error: workspace '{name}' not found")
     state["workspaces"] = [w for w in state["workspaces"] if w != name]
 elif op == "workspace member":
-    member = [opt("--workspace"), opt("--subject"), opt("--role")]
-    if member in state["members"]:
-        fail("Error: member already exists")
-    state["members"].append(member)
+    if head[2] == "remove":
+        before = len(state["members"])
+        state["members"] = [m for m in state["members"]
+                            if m[:2] != [opt("--workspace"), opt("--subject")]]
+        if len(state["members"]) == before:
+            fail("Error: member not found")
+    else:
+        member = [opt("--workspace"), opt("--subject"), opt("--role")]
+        if member in state["members"]:
+            fail("Error: member already exists")
+        state["members"].append(member)
 elif op == "provider list-profiles":
     # catalog.json: {"<profile id>": ["<endpoint host>", ...]}; the default
     # stands in for the governance interceptor's catalog.
@@ -296,6 +303,13 @@ elif op == "sandbox exec":
     # the fake podman's volume directory, as the real mount would show it.
     if len(args) >= 2 and args[-2] == "cat":
         sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        # The installer's record of the MCP servers it declared in openclaw.json.
+        if args[-1] == "/sandbox/.openclaw/saw-mcp-servers.json":
+            if "sawMcpState" not in sb:
+                fail(f"cat: {args[-1]}: No such file or directory", 1)
+            print(sb["sawMcpState"])
+            save()
+            sys.exit(0)
         for mount in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
             target = mount["target"].rstrip("/") + "/"
             if args[-1].startswith(target):
@@ -332,6 +346,41 @@ elif op == "sandbox exec":
         return {}
 
     script = args[-1] if args else ""
+    if 'printenv "$v"' in script:
+        # mcp_trust_env_probe: the CA settings the sandbox has (trustEnv;
+        # default: all of them, as with the proxy CA). trustProbeFails: the
+        # probe's exec fails.
+        if state.get("trustProbeFails"):
+            fail("Error:   x exec failed", 1)
+        names = re.search(r"for v in (.*?); do", script).group(1).split()
+        have = sb.get("trustEnv", names)
+        print("\n".join(n for n in names if n in have))
+        save()
+        sys.exit(0)
+    if "saw-mcp-servers.json" in script:
+        # configure_harness_mcp: unset/set mcp.servers.<name>, then record them.
+        # The script runs under set -e: mcp-set-fails.json (server names)
+        # stops it at that server's set, before the record is written.
+        cfg = sb.setdefault("openclawConfig", {})
+        fails_file = state_dir / "mcp-set-fails.json"
+        failing = set(json.loads(fails_file.read_text())) if fails_file.exists() else set()
+        for line in script.splitlines():
+            m = re.search(r"openclaw config unset (mcp\.servers\.\S+)", line)
+            if m:
+                cfg.pop(m.group(1), None)
+            m = re.search(r"openclaw config set (mcp\.servers\.\S+)\s+(.*)", line)
+            if m:
+                if m.group(1).split(".", 2)[2] in failing:
+                    sb["mcpWrites"] = sb.get("mcpWrites", 0) + 1
+                    save()
+                    fail(f"Error: Config validation failed: {m.group(1)}", 1)
+                cfg[m.group(1)] = json.loads(shlex.split(m.group(2))[0])
+            m = re.search(r"printf '%s\\n' (.*) > /sandbox/.openclaw/saw-mcp-servers.json", line)
+            if m:
+                sb["sawMcpState"] = shlex.split(m.group(1))[0]
+        sb["mcpWrites"] = sb.get("mcpWrites", 0) + 1
+        save()
+        sys.exit(0)
     if "openclaw config set " in script:
         m = re.search(r"openclaw config set (\S+)\s+(.*)", script)
         if m:
@@ -360,6 +409,31 @@ elif op == "sandbox exec":
             print(json.dumps(val))
             save()
             sys.exit(0)
+    if "openclaw plugins inspect " in script:
+        # mcp-inspect.json overrides: {"<bundle>": ["server", ...]} (omit the
+        # bundle, or give it an empty list, to simulate a dropped server).
+        m = re.search(r"openclaw plugins inspect (\S+)", script)
+        bundle = m.group(1) if m else ""
+        override = state_dir / "mcp-inspect.json"
+        override_data = json.loads(override.read_text()) if override.exists() else {}
+        if bundle in override_data:
+            servers = override_data[bundle]
+        else:
+            files = harness_files()
+            try:
+                decl = json.loads(files.get("mcp.json", "{}")).get("mcpServers", {})
+            except ValueError:
+                decl = {}
+            servers = sorted(decl)
+        if "--json" in script:
+            print(json.dumps({"plugin": {"id": bundle, "status": "loaded", "enabled": True},
+                              "mcpServers": [{"name": name} for name in servers], "diagnostics": []}))
+        else:
+            print("MCP servers:")
+            for name in servers:
+                print(name)
+        save()
+        sys.exit(0)
     if "openclaw plugins list --json" in script:
         # plugins-list.json overrides the listing (a bundle OpenClaw has not
         # loaded, or output that does not parse).

@@ -1,4 +1,4 @@
-{{- if .Values.route.dashboard }}
+{{- if and .Values.oidc.enabled .Values.route.dashboard }}
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:

@@ -1,9 +1,16 @@
 # One entry per person. The pattern's list lives in overrides/saw-users.yaml.
 # A name is a lowercase DNS label, unique, and at most 19 characters: it is
 # the VM name (OpenShell's limit), in namespace saw-<name>, as with
-# `make openshell-saw-create OPENSHELL_SAW_NAME=<name>`. The dashboard route
+# `make saw-create OPENSHELL_SAW_NAME=<name>`. The dashboard route
 # label "<name>-dashboard-saw-<name>" is then at most 53 of 63.
 users: []
+
+# Pattern Keycloak accounts are resolved centrally. Disable this only for an
+# external issuer and supply a verified ownerSubject in each user entry.
+ownerResolution:
+  enabled: false
+  resolverNamespace: saw-keycloak
+  resolverServiceAccount: saw-owner-resolver
 
 # Default for every user; a user's own `pruneOnRemove` wins. Prefer setting it
 # on the one entry you are about to remove (in overrides/saw-users.yaml):
@@ -33,6 +40,12 @@ defaults:
   secrets:
     - inference
     - web-search
+  # The cluster's ingress CA, synced into every user namespace under this
+  # name (pattern-secrets, from Vault, written by the saw-ingress-ca
+  # imperative job) and trusted by the VM for the in-cluster Keycloak, for
+  # clusters whose *.apps certificate is OpenShift's self-signed default.
+  # Empty turns it off.
+  clusterCaSecret: saw-ingress-ca
   # Merged under each user's `values`. owner is the user name.
   openshellSaw:
     signing:
@@ -40,11 +53,33 @@ defaults:
     prune:
       mode: report
       sandboxes: false
-    job:
-      waitForSecrets: true
-      backoffLimit: 5
-    dashboard:
-      insecureSkipIssuerTlsVerify: true
+    # Existing pattern sandboxes opt in one at a time after `make prereqs-check`
+    # verifies the target cluster's CIDRs and Kubernetes API backends. Put the
+    # discovered values here, then set enabled: true under one user's values.
+    networkPolicy:
+      enabled: false
+      clusterNetworkCIDRs: []
+      serviceNetworkCIDRs: []
+    cleanupApi:
+      serviceIP: ""
+      endpoints: []
+    # Hosts the VM may reach beyond charts/openshell-saw `egress.allow`.
+    # egress:
+    #   extraAllow:
+    #     - vllm.example.net
+    # For an in-cluster Service, also allow its namespace/pods and port:
+    # networkPolicy:
+    #   extraEgress:
+    #     - to:
+    #         - namespaceSelector:
+    #             matchLabels:
+    #               kubernetes.io/metadata.name: models
+    #           podSelector:
+    #             matchLabels:
+    #               app: vllm
+    #       ports:
+    #         - protocol: TCP
+    #           port: 8000
 
 # Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
 # route and an owner-only oauth2-proxy in the VM that listens on
@@ -74,6 +109,8 @@ argo:
 machineGlobals:
   - clusterDomain
   - sshPublicKey
+  # Keep per-user SAW pod selectors aligned with the selected governance engine.
+  - governance
 
 syncWave:
   namespace: "-1"
