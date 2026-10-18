@@ -76,10 +76,11 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $root := .root -}}
 {{- $base := deepCopy ($root.Values.defaults.openshellSaw | default dict) -}}
 {{- if $root.Values.e2eRuntimeRequired -}}
-{{- $raw := $root.Values.global.e2eRuntime | default "" -}}
-{{- if not $raw -}}
-{{- fail "e2eRuntimeRequired: global.e2eRuntime is required" -}}
+{{- $encoded := $root.Values.global.e2eRuntimeB64 | default "" -}}
+{{- if not $encoded -}}
+{{- fail "e2eRuntimeRequired: global.e2eRuntimeB64 is required" -}}
 {{- end -}}
+{{- $raw := b64dec $encoded -}}
 {{- $runtime := fromJson $raw -}}
 {{- if or (not $runtime.networkPolicy) (not $runtime.cleanupApi) (not $runtime.registryURL) -}}
 {{- fail "e2eRuntimeRequired: networkPolicy, cleanupApi, and registryURL are required" -}}
@@ -110,7 +111,7 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- end -}}
 {{- end -}}
 {{- if $root.Values.e2eRuntimeRequired -}}
-{{- $domain := ($root.Values.global.e2eRuntime | fromJson).clusterDomain | default "" -}}
+{{- $domain := ((b64dec $root.Values.global.e2eRuntimeB64) | fromJson).clusterDomain | default "" -}}
 {{- if not $domain -}}{{- fail "e2eRuntimeRequired: clusterDomain is required" -}}{{- end -}}
 {{- $_ := set $globals "clusterDomain" $domain -}}
 {{- end -}}

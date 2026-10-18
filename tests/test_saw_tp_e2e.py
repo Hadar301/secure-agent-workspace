@@ -25,11 +25,23 @@ def test_minimal_render(tmp_path):
     e2e.checked_in_selection()
     assert "openclaw" in e2e.pinned_image_digests()
     runner = e2e.CommandRunner(dict(os.environ))
-    values = e2e.render_children(
-        runner, ROOT / "tests/fixtures/saw-e2e-runtime.json", "a" * 40
-    )
+    runtime = json.loads((ROOT / "tests/fixtures/saw-e2e-runtime.json").read_text())
+    runtime_file = e2e.write_runtime(tmp_path, runtime)
+    values = e2e.render_children(runner, runtime_file, "a" * 40)
     e2e.render_charts(runner, values, tmp_path)
     assert set(values) == e2e.EXPECTED_CHILD_APPS
+
+
+def test_runtime_parameter_survives_helm_set(tmp_path):
+    runtime = json.loads((ROOT / "tests/fixtures/saw-e2e-runtime.json").read_text())
+    encoded = e2e.write_runtime(tmp_path, runtime).read_text()
+    assert "," not in encoded
+    runner = e2e.CommandRunner(dict(os.environ))
+    runner.run("render with Argo CD parameter", [
+        "helm", "template", "saw-users", "charts/saw-users", "--namespace",
+        "openshell-agents", "-f", "overrides/saw-users-e2e.yaml",
+        "--set", f"global.e2eRuntimeB64={encoded}",
+    ])
 
 
 def test_invalid_private_config(tmp_path):

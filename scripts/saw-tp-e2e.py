@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import base64
 import contextlib
 from datetime import datetime, timezone
 import io
@@ -197,7 +198,7 @@ def render_children(runner: CommandRunner, runtime_file: Path, sha: str) -> dict
     output = runner.run("render SAW child applications", [
         "helm", "template", "saw-users", "charts/saw-users", "--namespace",
         "openshell-agents", "-f", "overrides/saw-users-e2e.yaml", "--set-file",
-        f"global.e2eRuntime={runtime_file}", "--set-string",
+        f"global.e2eRuntimeB64={runtime_file}", "--set-string",
         f"global.targetRevision={sha}",
     ])
     apps = {item["metadata"]["name"]: item for item in yaml_docs(output)
@@ -656,9 +657,18 @@ def pattern_environment(runner: CommandRunner, work: Path, branch: str) -> Comma
     env.update(TARGET_CLUSTERGROUP="e2e", TARGET_BRANCH=branch, TARGET_ORIGIN="origin",
                VALUES_SECRET=str(work / "values-secret.yaml"),
                SSH_KEY_PATH=str(work / "ssh-key"),
-               EXTRA_HELM_OPTS=("--set-string main.extraParameters[0].name=global.e2eRuntime "
-                                f"--set-file main.extraParameters[0].value={work / 'e2e-runtime.json'}"))
+               EXTRA_HELM_OPTS=("--set-string main.extraParameters[0].name=global.e2eRuntimeB64 "
+                                f"--set-file main.extraParameters[0].value={work / 'e2e-runtime.b64'}"))
     return CommandRunner(env, runner.sensitive)
+
+
+def write_runtime(work: Path, runtime: dict) -> Path:
+    raw = json.dumps(runtime, separators=(",", ":"))
+    path = work / "e2e-runtime.b64"
+    # Argo CD passes extraParameters to Helm as --set. Base64 avoids Helm
+    # treating JSON commas and brackets as --set syntax.
+    private_write(path, base64.b64encode(raw.encode()))
+    return path
 
 
 def pattern_show(runner: CommandRunner, deadline: float) -> None:
@@ -1088,8 +1098,7 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
                          lambda: discover_topology(runner, work, deployment_deadline))
         topology["clusterDomain"] = baseline["ingress_domain"]
         runtime = runtime_values(config, topology, "sha256:" + "0" * 64)
-        runtime_file = work / "e2e-runtime.json"
-        private_write(runtime_file, json.dumps(runtime, separators=(",", ":")).encode())
+        runtime_file = write_runtime(work, runtime)
         def validate_render():
             values = render_children(runner, runtime_file, sha)
             render_charts(runner, values, work)
@@ -1105,7 +1114,7 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
                        lambda: mirror_image(runner, deployment_deadline))
         inventory["image_digests"]["golden_vm"] = digest
         runtime = runtime_values(config, topology, digest)
-        private_write(runtime_file, json.dumps(runtime, separators=(",", ":")).encode())
+        write_runtime(work, runtime)
         stage(inventory, state_dir, "preflight.final-render", validate_render)
         stage(inventory, state_dir, "preflight.final-pattern-render",
               lambda: pattern_show(pattern, deployment_deadline))
@@ -1190,7 +1199,7 @@ def execute_cleanup(config_path: Path) -> int:
         # The cleanup path needs the checkout and Pattern scripts. It does
         # not need the engineer's API key or the original test password.
         private_write(work / "values-secret.yaml", b"version: '2.0'\nbackingStore: vault\nsecrets: []\n")
-        private_write(work / "e2e-runtime.json", b"{}\n")
+        write_runtime(work, {})
         cleanup_run(runner, inventory, state_dir, work)
         print(f"Cleaned run {inventory['run_id']}; cluster lock released.")
         return 0
