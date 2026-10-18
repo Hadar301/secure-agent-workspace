@@ -53,8 +53,8 @@ for part in ("server", "client"):
     assert not list(home.rglob("ca.key"))
     assert (tls / "client-ca.pem").read_bytes() == (tls / "ca.crt").read_bytes()
     assert (tls / "relay/tls.key").is_file()
-    subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-in",
-                              str(tls / "relay/tls.crt")], capture_output=True, text=True,
+    subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253",
+                              "-in", str(tls / "relay/tls.crt")], capture_output=True, text=True,
                              check=True).stdout
     assert "OU=openshell-user" in subject and "CN=saw-relay" in subject
     before = (tls / "ca.crt").read_bytes()

@@ -53,8 +53,9 @@ tmpfs. The first boot PKI script signs the server, a shared user client, and a
 the gateway starts. Only public certificates and nonadmin private keys remain
 under `~/.local/state/openshell/tls`.
 
-Each installer apply creates a separate admin CA in tmpfs and a two hour
-`OU=openshell-admin` client certificate. It temporarily appends that CA's
+Each installer apply creates a separate admin CA in tmpfs and a one-day
+`OU=openshell-admin` client certificate (trust ends earlier, when the run
+removes the CA from the bundle). It temporarily appends that CA's
 public certificate to `client-ca.pem`, waits for gateway TLS reload, runs the
 CLI with a tmpfs `XDG_CONFIG_HOME`, and removes the CA from the bundle and the
 tmpfs directory in `finally`. Forward and keepalive units use `saw-relay`,

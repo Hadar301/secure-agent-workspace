@@ -6454,7 +6454,9 @@ def _openssl(*args):
     result = subprocess.run(["openssl", *map(str, args)], capture_output=True, text=True,
                             check=False)
     if result.returncode:
-        raise InstallerError("could not issue the per-run admin certificate")
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise InstallerError("could not issue the per-run admin certificate "
+                             f"(openssl {args[0]}: {detail[-1] if detail else result.returncode})")
 
 
 @contextmanager
@@ -6505,13 +6507,9 @@ def admin_session(cfg, home, owner, as_current_user=False):
         ext = root_dir / "ext.cnf"
         ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
                        "extendedKeyUsage=clientAuth\n", encoding="utf-8")
-        now = datetime.now(timezone.utc)
-        from datetime import timedelta
-        start = (now - timedelta(minutes=5)).strftime("%Y%m%d%H%M%SZ")
-        end = (now + timedelta(hours=2)).strftime("%Y%m%d%H%M%SZ")
         _openssl("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key,
-                 "-set_serial", "0x" + secrets.token_hex(16), "-not_before", start,
-                 "-not_after", end, "-extfile", ext, "-out", crt)
+                 "-set_serial", "0x" + secrets.token_hex(16), "-days", "1",
+                 "-extfile", ext, "-out", crt)
         shredded = subprocess.run(["shred", "-u", "--", str(ca_key)],
                                   capture_output=True, check=False)
         if shredded.returncode:
