@@ -353,8 +353,11 @@ def test_a_networked_plugin_is_governed_by_profile(ab):
 
 def test_parse_profile_catalog_reads_ids_and_hosts(ab):
     out = ('[{"id": "web-search", "endpoints": [{"host": "api.tavily.com", "port": 443}]},'
-           ' {"id": "slack", "endpoints": []}]')
-    assert ab.parse_profile_catalog(out) == {"web-search": {"api.tavily.com"}, "slack": set()}
+           ' {"id": "slack", "endpoints": []}, {"endpoints": []}, "junk"]')
+    profiles = ab.parse_provider_profile_catalog(out)
+    # A malformed entry is skipped: one bad profile must not stop the apply.
+    assert sorted(profiles) == ["slack", "web-search"]
+    assert ab.parse_profile_catalog(profiles) == {"web-search": {"api.tavily.com"}, "slack": set()}
 
 
 def test_host_allowed_matches_one_dns_label_globs(ab):

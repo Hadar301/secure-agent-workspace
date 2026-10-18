@@ -66,6 +66,42 @@ spec:
       governanceProfile: local-mcp
 ```
 
+#### In-cluster MCP Services
+
+Use the Service DNS URL in `mcp.json`, as above; no external Route is needed.
+Allow the Service's namespace, pods, and port through
+[`networkPolicy.extraEgress`](deployment-guide.md#in-cluster-networkpolicy)
+and allow ingress from the SAW VM if the server restricts it.
+
+Publish a [governance profile](governance-interceptor.md#adding-a-new-provider-profile)
+for the Service host and port, with `protocol: mcp`, `enforcement: enforce`,
+the calling executable in `binaries`, and compatible `mcp.versions`. Its rules
+must allow `initialize`, `notifications/initialized`, `tools/list`, `ping`,
+and only the approved `tools/call` tools.
+
+For a server without a key, the profile must declare `credentials: []`
+(or only explicitly optional credentials). Add this provider to the selected
+BOM workspace's `providers.yaml`:
+
+```yaml
+- name: local-mcp
+  type: local-mcp
+  credentialFree: true
+```
+
+Use the governance profile ID for both `name` and `type`, and add it to the
+sandbox's `providers` list alongside its inference provider. Declare the
+server in `harness.yaml` and select the bundle with `harnessRef`, as above.
+
+The attachment is what lets the sandbox reach the Service: without it the
+request fails with `EACCES`. The installer creates and attaches the provider
+on apply, including for a sandbox that already exists, so the attachment
+survives a sandbox recreated by a `harnessRef` change. Because a keyless
+provider carries no key, its profile is the only gate: the installer refuses
+one whose profile requires a credential, declares a non-enforcing endpoint,
+or whose provider already has stored credentials. A keyless provider cannot
+be combined with a Secret or with model/inference settings.
+
 #### Servers that need an API key
 
 A server that calls a keyed service gets its key the same way OpenClaw gets
@@ -135,6 +171,12 @@ they put the real key in the sandbox, where the agent could read it.
 Everything a stdio server downloads at start (`npx -y <package>`) needs a
 profile that allows `registry.npmjs.org` too; a server shipped in the bundle
 (`node ${PLUGIN_ROOT}/mcp/server.mjs`) does not.
+
+API-key configuration is the same for external and in-cluster MCP servers: the
+provider's `type` must be one the installer knows (`PROVIDER_CRED_MAP` in
+`apply_bom.py`), because that is where the key's env var name comes from. A
+keyed service of a new type needs that one-line addition; until then only
+keyless providers can be declared in a SAW-BOM profile.
 
 ### Tool plugins (`plugins/<id>/`)
 
