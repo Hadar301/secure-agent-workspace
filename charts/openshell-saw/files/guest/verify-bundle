@@ -97,8 +97,8 @@ publish() {
 
 finish() {
   # enforce: never publish a bad/unverifiable stage -- the old, previously
-  # verified revision (if any) keeps running. warn/off: publish so this
-  # run's content executes, with the signature result recorded as-is.
+  # verified revision (if any) keeps running. warn: publish an intact stage
+  # even when its signature is absent or invalid.
   local sig="$1" msg="$2"
   echo "$msg" >&2
   record "$sig" "$msg" || true
@@ -110,18 +110,22 @@ finish() {
   exit 0
 }
 
+reject_incomplete_stage() {
+  # Signature mode controls verification, not whether the installer can run
+  # without its required files. Never publish a partial staged revision.
+  local msg="$1"
+  echo "$msg" >&2
+  record failed "$msg" || true
+  rm -rf "$stage"
+  exit 1
+}
+
 # Dereference every symlink while copying: a ConfigMap/virtiofs mount
 # presents each key as a symlink into a ..data directory that kubelet
 # atomically swaps. A copy that preserved those symlinks would still point
 # back at the live, mutable mount, defeating the whole point of staging.
 if ! cp -rL --preserve=mode "${INSTALLER_DIR}/." "${stage}/" 2>/dev/null; then
-  finish failed "could not stage the installer tree from ${INSTALLER_DIR}"
-fi
-
-if [[ "$mode" == "off" ]]; then
-  record off ""
-  publish
-  exit 0
+  reject_incomplete_stage "could not stage the installer tree from ${INSTALLER_DIR}"
 fi
 
 # Sign a manifest of "<sha256>  <path>" lines, one per covered file,
@@ -133,7 +137,7 @@ fi
 # format, including the three mandatory tool-gate files), or a genuine,
 # unmodified installer fails enforce.
 manifest_text() {
-  local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f
+  local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f hash
   shopt -s nullglob
   for extra in "${dir}"/provider-profile-*.yaml; do
     files+=("$(basename "$extra")")
@@ -144,14 +148,21 @@ manifest_text() {
   mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
   for f in "${files[@]}"; do
     [[ -f "${dir}/${f}" ]] || return 1
-    printf '%s  %s\n' "$(sha256sum "${dir}/${f}" | awk '{print $1}')" "$f"
+    hash=$(sha256sum "${dir}/${f}") || return 1
+    printf '%s  %s\n' "${hash%% *}" "$f"
   done
 }
 
 payload=$(mktemp)
 trap 'rm -f "$payload"' EXIT
 if ! manifest_text "$stage" > "$payload"; then
-  finish failed "installer bundle is missing one of its covered files"
+  reject_incomplete_stage "installer bundle is missing one of its covered files"
+fi
+
+if [[ "$mode" == "off" ]]; then
+  record off ""
+  publish
+  exit 0
 fi
 
 bundle="${stage}/bundle.sigstore.json"

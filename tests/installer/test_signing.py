@@ -33,14 +33,15 @@ def test_manifest_requires_every_tool_gate_file():
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
-def test_verify_bundle_rejects_a_missing_tool_gate_file(tmp_path):
+@pytest.mark.parametrize("mode", ["off", "warn", "enforce"])
+def test_verify_bundle_rejects_a_missing_tool_gate_file(tmp_path, mode):
     from pathlib import Path
     script = Path(__file__).resolve().parents[2] / "charts/openshell-saw/files/guest/verify-bundle"
     installer = tmp_path / "installer"
     installer.mkdir()
     _write_bundle_files(installer)
     (installer / "tool-gate-plugin.mjs").unlink()
-    (installer / "config.json").write_text(json.dumps({"signing": {"mode": "off"}}))
+    (installer / "config.json").write_text(json.dumps({"signing": {"mode": mode}}))
     status = tmp_path / "status.json"
     env = {**os.environ, "SAW_INSTALLER_DIR": str(installer), "SAW_STATUS_FILE": str(status),
            "SAW_STAGE_ROOT": str(tmp_path / "verified"),
@@ -48,6 +49,8 @@ def test_verify_bundle_rejects_a_missing_tool_gate_file(tmp_path):
     result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
     assert result.returncode == 1
     assert "missing one of its covered files" in result.stderr
+    assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
+    assert not (tmp_path / "verified" / "installer").exists()
 
 
 def _installer(ab, tmp_path, mode):

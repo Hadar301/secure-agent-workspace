@@ -16,7 +16,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Leave time for pytest to print failures even if a gateway test stalls.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

@@ -19,6 +19,7 @@ through the mount.
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -933,6 +934,7 @@ class FakeGateway:
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.starts = tmp_path / "starts"
+        self.log = tmp_path / "gateway.log"
         exe = self.bin / "openclaw"
         exe.write_text('#!/bin/sh\n'
                        'case "$*" in\n'
@@ -951,6 +953,10 @@ class FakeGateway:
         return proc
 
     def run(self, script):
+        # The real sandbox's PID 1 owns the podman log fd. A test runner's
+        # /proc/1/fd/2 may be a closed fd or a pipe that keeps this shell
+        # waiting for the fake gateway's 60-second lifetime.
+        script = script.replace("/proc/1/fd/2", shlex.quote(str(self.log)))
         result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
         time.sleep(1.5)
         return result.returncode

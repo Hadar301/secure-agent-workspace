@@ -8,6 +8,7 @@ on the port the route reaches, which signs in with Keycloak and admits only
 the workspace owner.
 """
 import json
+import shlex
 
 import pytest
 
@@ -534,6 +535,8 @@ esac
     for f in ("openclaw", "node"):
         (bin_dir / f).chmod(0o755)
     script = script.replace("nohup ", "")
+    # The test runner's PID 1 stderr is not the sandbox's podman log fd.
+    script = script.replace("/proc/1/fd/2", shlex.quote(str(tmp_path / "gateway.log")))
     subprocess.run(["sh", "-c", script], check=True, timeout=30,
                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
     import time
