@@ -29,10 +29,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      E2E_CONFIG: ${{ runner.temp }}/saw-tp-e2e/config.yaml
       E2E_SOURCE_SHA: ${{ inputs.source_sha }}
       E2E_TARGET_BRANCH: ${{ github.ref_name }}
-      E2E_STATE_DIR: ${{ runner.temp }}/saw-tp-e2e/reports
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,6 +51,10 @@ jobs:
           command -v podman
           command -v jq
           command -v uv
+      - name: Set private paths
+        run: |
+          printf 'E2E_CONFIG=%s/saw-tp-e2e/config.yaml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'E2E_STATE_DIR=%s/saw-tp-e2e/reports\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Create private test inputs
         env:
           SAW_E2E_API_URL: ${{ inputs.cluster_api_url }}
