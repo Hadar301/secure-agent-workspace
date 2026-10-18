@@ -3,6 +3,7 @@
   "status": "partial",
   "clusterVersion": "4.22.14",
   "branchRevisionAtDeployment": "c26b026b15fa9cbfc735139e5044e4d25bc72f51",
+  "branchRevisionAtFixValidation": "d41010cc241bad6d4d7026d63d640e763f640538",
   "patternInstall": {
     "command": "./pattern.sh make install",
     "existingPattern": "patterns-operator/secure-agent-workspace",
@@ -42,10 +43,21 @@
       "aud": "saw-protected-service",
       "subAzpClientId": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-pattern/identity-pattern/ws/default/sandbox/agent",
       "tokenMaterialRetained": false
+    },
+    "automaticProfileReconciliation": {
+      "drift": "Only the run-owned custom profile was changed to the old demo host.",
+      "resourceVersionBefore": 3,
+      "vmiUIDAfterInstallerRestart": "aaec0984-1a3a-4b48-8aba-3808d7430827",
+      "resourceVersionAfter": 4,
+      "approvedHostRestored": true,
+      "protectedGrantAfterRepair": "HTTP 200 with the expected sandbox SPIFFE ID and saw-protected-service audience",
+      "unchangedRestartVmiUID": "72d25325-2e54-4d1e-8e4f-c41e6a3f89ec",
+      "resourceVersionAfterUnchangedRestart": 4,
+      "enrollmentGenerationAfterBothRestarts": 1,
+      "protectedGrantAfterUnchangedRestart": "HTTP 200 with the expected sandbox SPIFFE ID and saw-protected-service audience"
     }
   },
   "open": [
-    "Validate and deploy the installer change that reconciles a changed custom dynamic-provider profile.",
     "Finish the existing Pattern install health wait without deleting applications that own existing SAWs.",
     "Remove the run-owned canary and issuer after the installer change is verified.",
     "Complete the automated TCP suite and correlated audit acceptance."

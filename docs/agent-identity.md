@@ -1009,9 +1009,12 @@ canary profile. The sandbox then loaded the new host and its protected request
 returned HTTP 200, with `saw-protected-service` as audience and its own SPIFFE
 ID in `sub`, `azp`, and `client_id`. No raw token was retained.
 
-The installer now has a profile-reconciliation change under test: it exports
-the current custom profile, compares it with the approved shipped fields, and
-uses the exported resource version for an update when they differ. This code
-change has not yet been deployed through the Pattern. The canary and its demo
-issuer remain until that check is complete. [Sanitized Pattern evidence](evidence/agent-identity-pattern-2026-10-07.json)
-records the partial install result, canary identity, and grant.
+The installer now exports the current custom profile, compares it with the
+approved shipped fields, and uses the exported resource version when an update
+is needed. On commit `d41010c`, only this canary's profile was changed back to
+the old host. The next installer restart restored the approved host and moved
+the profile from resource version 3 to 4. The protected request returned HTTP
+200. A second, unchanged VM restart kept resource version 4, enrollment
+generation 1, and the HTTP 200 grant. The complete Pattern install health wait
+remains open. [Sanitized Pattern evidence](evidence/agent-identity-pattern-2026-10-07.json)
+records the partial install result, automatic repair, and grants.
