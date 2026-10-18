@@ -211,10 +211,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
     ("gateway-interceptor-oidc.toml", ("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")),
 ])
 def test_interceptor_engine_gateway_toml_is_byte_identical(golden, args):
-    """The default engine must not change a single byte of gateway.toml: the
-    installer restarts the gateway whenever the file changes, and existing
-    VMs must not restart for this switch. The golden files are what the chart
-    rendered before the engine switch (PR #52 review)."""
+    """Keep the gateway settings stable apart from intentional gate mounts."""
     assert gateway_toml_text(*args) == (GOLDEN / golden).read_text()
 
 
@@ -258,35 +255,41 @@ def test_apf_bindings_can_still_be_narrowed(tmp_path):
 
 
 @pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
-def test_apf_engine_allows_harness_driver_config(flag):
-    """Harness bundles (#78) under APF: the gateway accepts driver config, and
-    APF admits only the installer's read-only harness mount from an admin
-    (the driver_config allowlist in the signed bundle; deny by default)."""
-    gateway = gateway_toml("--set", flag, "--set", "allowDriverConfig=true")
+def test_apf_engine_allows_agent_driver_config(flag):
+    """Every agent sandbox has gate and audit mounts, with or without a harness."""
+    gateway = gateway_toml("--set", flag)
     assert gateway["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
-def test_the_apf_bundle_admits_the_mount_the_installer_makes():
-    """The rule must match apply_bom.harness_mounts_json() exactly, or APF
-    denies every harness sandbox."""
+def test_the_apf_bundle_admits_the_mounts_the_installer_makes():
+    """Each installer combination matches exactly one signed allowlist entry."""
     import importlib.util
     import json
+    from types import SimpleNamespace
     spec = importlib.util.spec_from_file_location(
         "apply_bom_for_apf", ROOT / "charts" / "openshell-saw" / "files" / "installer" / "apply_bom.py")
     ab = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ab)
-    request = json.loads(ab.harness_mounts_json(ab.HARNESS_VOLUME_PREFIX + "abc123"))
     rule = load_script_rule()
-    assert list(request) == rule["allowed"][0]["drivers"] == ["podman"]
-    mount, = request["podman"]["mounts"]
-    allowed, = rule["allowed"][0]["mounts"]
-    assert set(mount) == {"type", "source", "target", "read_only"}
-    assert mount["type"] == allowed["type"] == "volume"
-    assert mount["source"].startswith(allowed["source_prefix"])
-    assert mount["target"] == allowed["target"] == ab.HARNESS_MOUNT
-    assert mount["read_only"] is allowed["read_only"] is True
-    assert rule["allowed"][0]["max_mounts"] == 1
-    assert rule["allowed"][0]["require_role"] == "openshell-admin"
+    for kind, ref, count in (("nemoclaw", {}, 2), ("openclaw", {"name": "demo"}, 3)):
+        ws = SimpleNamespace(name="default")
+        sb = SimpleNamespace(name="notebook", type=kind, harness_ref=ref)
+        request = json.loads(ab.sandbox_mounts_json(ws, sb))
+        matches = [entry for entry in rule["allowed"] if entry["max_mounts"] == count]
+        assert len(matches) == 1
+        entry, = matches
+        assert list(request) == entry["drivers"] == ["podman"]
+        assert entry["require_role"] == "openshell-admin"
+        mounts = request["podman"]["mounts"]
+        assert len(mounts) == count
+        for mount, allowed in zip(mounts, entry["mounts"]):
+            assert set(mount) == {"type", "source", "target", "read_only"}
+            assert mount["type"] == allowed["type"] == "volume"
+            assert mount["source"].startswith(allowed["source_prefix"])
+            assert mount["target"] == allowed["target"]
+            assert mount["read_only"] is allowed["read_only"]
+    assert ab.sandbox_mounts(SimpleNamespace(name="default"),
+                             SimpleNamespace(name="toolbox", type="generic", harness_ref={})) == []
     assert rule["deny_templates"] is True
 
 
@@ -295,11 +298,11 @@ def load_script_rule():
     spec = importlib.util.spec_from_file_location("apf_bundle_rule", ROOT / "scripts" / "apf-bundle.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.HARNESS_DRIVER_CONFIG
+    return mod.AGENT_DRIVER_CONFIG
 
 
-def test_interceptor_engine_keeps_harness_driver_config():
-    gateway = gateway_toml("--set", "allowDriverConfig=true")["openshell"]["drivers"]["podman"]
+def test_interceptor_engine_keeps_agent_driver_config():
+    gateway = gateway_toml()["openshell"]["drivers"]["podman"]
     assert gateway["allow_driver_config"] is True
 
 

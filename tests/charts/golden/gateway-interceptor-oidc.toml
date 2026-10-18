@@ -22,6 +22,13 @@ allow_unauthenticated_users = false
 [openshell.drivers.podman]
 supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:0179eb17dcc0098d3fce360035c0be0c26a39949ce09a397c7c259bf728170ff"
 sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:283838f9787bdd876ec8f110a5d5b5c752082a410f75173f0abf2533ae651989"
+# Agent sandboxes mount their trusted gate and audit volumes through caller
+# driver config; an OpenClaw harness adds a third mount. Admission is limited
+# to the installer's admin identity and exact volume targets.
+# Resource admission and enable_bind_mounts keep their defaults (on / off),
+# so only a volume labelled attachable for the caller's workspace can be
+# attached, and no host path or image.
+allow_driver_config = true
 
 [[openshell.gateway.interceptors]]
 name           = "governance"

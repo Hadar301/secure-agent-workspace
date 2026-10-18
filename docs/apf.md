@@ -15,7 +15,7 @@ bundle, and writes a JSONL audit trail.
 | Policy change | edit `charts/governance-policy`, push | edit, **re-sign** (`make apf-bundle`), push |
 | Runtime `openshell policy update` | validated | refused: "policy is managed by APF" |
 | Gateway bindings | 4 RPCs (`allowlist`) | APF's own declarations (`dynamic`): 10 RPCs, incl. post-commit audit |
-| Harness bundles | the interceptor's harness guard | APF's signed `driver_config` allowlist ([below](#harness-bundles)) |
+| Agent gate and harness mounts | the interceptor's mount guard | APF's signed `driver_config` allowlist ([below](#agent-gate-and-harness-mounts)) |
 
 `charts/governance-policy` stays the only place policy is written. A profile APF cannot express
 is left out of the bundle, with a message when signing: today that is `gemini`, whose API key goes
@@ -230,31 +230,38 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,
   so APF has no single gateway to call back).
 
-## Harness bundles
+## Agent gate and harness mounts
 
-A harness bundle ([harness-bundles.md](harness-bundles.md)) reaches the sandbox as a podman volume
-the installer mounts read-only at `/sandbox/harness`, through the `CreateSandbox` request's driver
-config. The gateway then needs `allow_driver_config = true`, and the governance engine must make
-sure that this is the only driver config anyone gets. The interceptor does it with its harness
-guard; APF does it with a `driver_config` allowlist in the signed `SandboxPolicy`, which
-`scripts/apf-bundle.py` writes into every bundle:
+Every agent sandbox mounts a read-only gate volume at `/sandbox/.saw/trusted` and an append-only
+audit volume at `/sandbox/.saw/audit`. An OpenClaw sandbox with a harness bundle
+([harness-bundles.md](harness-bundles.md)) also mounts that volume read-only at `/sandbox/harness`.
+The installer sends these exact combinations through `CreateSandbox` driver config. The gateway
+sets `allow_driver_config = true`; APF admits only the installer's podman volume mounts from its
+admin mTLS identity, using this signed `SandboxPolicy` block from `scripts/apf-bundle.py`:
 
 ```yaml
 driver_config:
-  deny_templates: true                  # a template's driver config can't be checked in advance
+  deny_templates: true
   allowed:
-    - require_role: openshell-admin     # the installer's mTLS client certificate (OU)
-      drivers: [podman]                 # the SAW gateways' compute driver
-      max_mounts: 1
+    - require_role: openshell-admin
+      drivers: [podman]
+      max_mounts: 2
+      mounts:
+        - { type: volume, source_prefix: saw-gate-, target: /sandbox/.saw/trusted, read_only: true }
+        - { type: volume, source_prefix: saw-audit-, target: /sandbox/.saw/audit, read_only: false }
+    - require_role: openshell-admin
+      drivers: [podman]
+      max_mounts: 3
       mounts:
         - { type: volume, source_prefix: saw-harness-, target: /sandbox/harness, read_only: true }
+        - { type: volume, source_prefix: saw-gate-, target: /sandbox/.saw/trusted, read_only: true }
+        - { type: volume, source_prefix: saw-audit-, target: /sandbox/.saw/audit, read_only: false }
 ```
 
-APF admits that mount and denies, and audits, everything else: another target or source, a
-writable mount, a second mount, another driver, a non-admin caller, or a template. A bundle
-without the block denies all driver config, so a bundle signed before this change keeps harness
-sandboxes from starting (`driver_config.denied`) instead of opening the gap: run `make apf-bundle`
-and push. Roles come only from the identity the gateway authenticated, never from the request.
+APF denies a changed target, source prefix, read-only flag, mount count, driver, caller role, or
+template. A bundle signed before this change denies the new agent mounts with
+`driver_config.denied`; run `make apf-bundle` and push before applying this installer. There is no
+APF signing key in this repository. Roles come from the gateway-authenticated identity.
 `interceptor.computeDriver: podman` in `apf.values` tells APF which driver key to expect.
 `CreateSandboxTemplate` is not interceptable in OpenShell 0.1.x, so APF covers templates at
 `CreateSandbox` instead.
