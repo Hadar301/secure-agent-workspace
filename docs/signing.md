@@ -64,6 +64,8 @@ visibility failure never skips signing. The gateway, NemoClaw and
 governance-interceptor images are **not** signed today. (The installer bundle
 is signed separately and key-based — see section 1.)
 
+Keyless means cosign signs with the workflow's GitHub Actions OIDC identity through Fulcio/sigstore (hence `id-token: write` and `cosign sign --yes` with no `--key`), and logs the signature in the public Rekor transparency log. There is therefore **no private signing key or publisher key to manage or distribute** for these images: a verifier matches the signing *identity* (the repo's `harness-bundles.yml` workflow) and the Rekor entry rather than a key. This is the opposite of the installer bundle in section 1, which is key-based (`COSIGN_PRIVATE_KEY`).
+
 Component-image *verification* on the VM is wired but still waits on the
 OpenShell publisher key:
 
