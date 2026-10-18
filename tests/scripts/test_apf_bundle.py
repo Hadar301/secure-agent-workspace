@@ -135,20 +135,28 @@ def test_translation_keeps_what_openshell_needs(work):
     assert brave["spec"]["binaries"][0] == "/usr/bin/curl"
 
 
-def test_the_policy_carries_the_harness_driver_config_rule(work):
-    """APF denies all driver config unless the signed SandboxPolicy allows it:
-    only the installer's harness volume, read-only, from an admin, podman."""
+def test_the_policy_carries_the_agent_driver_config_rules(work):
+    """Only the installer's two exact agent mount combinations are admitted."""
     policy = yaml.safe_load(work.members()["sandbox/default-policy.yaml"])
     rule = policy["spec"]["driver_config"]
     assert rule == {
         "deny_templates": True,
-        "allowed": [{
-            "require_role": "openshell-admin",
-            "drivers": ["podman"],
-            "max_mounts": 1,
-            "mounts": [{"type": "volume", "source_prefix": "saw-harness-",
-                        "target": "/sandbox/harness", "read_only": True}],
-        }],
+        "allowed": [
+            {"require_role": "openshell-admin", "drivers": ["podman"], "max_mounts": 2,
+             "mounts": [
+                 {"type": "volume", "source_prefix": "saw-gate-",
+                  "target": "/sandbox/.saw/trusted", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-audit-",
+                  "target": "/sandbox/.saw/audit", "read_only": False}]},
+            {"require_role": "openshell-admin", "drivers": ["podman"], "max_mounts": 3,
+             "mounts": [
+                 {"type": "volume", "source_prefix": "saw-harness-",
+                  "target": "/sandbox/harness", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-gate-",
+                  "target": "/sandbox/.saw/trusted", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-audit-",
+                  "target": "/sandbox/.saw/audit", "read_only": False}]},
+        ],
     }
 
 

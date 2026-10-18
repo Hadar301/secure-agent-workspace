@@ -44,11 +44,13 @@ import shlex
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import traceback
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -652,6 +654,11 @@ HARNESS_MOUNT = "/sandbox/harness"
 HARNESS_MARKER = ".saw-harness-revision"  # written into the volume with the bundle
 HARNESS_VOLUME_PREFIX = "saw-harness-"
 HARNESS_VOLUME_LABEL = "saw.redhat.com/harness-volume"
+GATE_MOUNT = "/sandbox/.saw/trusted"
+AUDIT_MOUNT = "/sandbox/.saw/audit"
+GATE_VOLUME_PREFIX = "saw-gate-"
+AUDIT_VOLUME_PREFIX = "saw-audit-"
+AUDIT_FILE = "tool-actions.jsonl"
 # A harness image is read fully into memory (tree_digest, the volume import
 # tarball); an unbounded one can exhaust the VM. 512 MiB comfortably covers a
 # real bundle (skills, a few native plugins) with headroom to spare.
@@ -692,12 +699,30 @@ def harness_volume_name(workspace, sandbox):
     return f"{HARNESS_VOLUME_PREFIX}{workspace}-{sandbox}-{tag}"
 
 
-def harness_mounts_json(volume):
-    """--driver-config-json for OpenShell's podman driver: the sandbox's
-    harness volume, read-only at HARNESS_MOUNT."""
-    return json.dumps({"podman": {"mounts": [{
-        "type": "volume", "source": volume, "target": HARNESS_MOUNT, "read_only": True}]}},
-        separators=(",", ":"))
+def sandbox_volume_name(prefix, workspace, sandbox):
+    tag = hashlib.sha256(f"{workspace}/{sandbox}".encode()).hexdigest()[:8]
+    return f"{prefix}{workspace}-{sandbox}-{tag}"
+
+
+def sandbox_mounts(ws, sb):
+    """The exact podman volume mounts required by this sandbox."""
+    mounts = []
+    if sb.harness_ref:
+        mounts.append({"type": "volume", "source": harness_volume_name(ws.name, sb.name),
+                       "target": HARNESS_MOUNT, "read_only": True})
+    if sb.type in ("openclaw", "nemoclaw"):
+        mounts += [
+            {"type": "volume", "source": sandbox_volume_name(GATE_VOLUME_PREFIX, ws.name, sb.name),
+             "target": GATE_MOUNT, "read_only": True},
+            {"type": "volume", "source": sandbox_volume_name(AUDIT_VOLUME_PREFIX, ws.name, sb.name),
+             "target": AUDIT_MOUNT, "read_only": False},
+        ]
+    return mounts
+
+
+def sandbox_mounts_json(ws, sb):
+    """--driver-config-json for the podman driver and APF allowlist."""
+    return json.dumps({"podman": {"mounts": sandbox_mounts(ws, sb)}}, separators=(",", ":"))
 
 
 def safe_rel_path(rel, where):
@@ -1303,20 +1328,22 @@ def check_harness_index(bundles, index):
             raise InstallerError(f"harness bundle '{name}' is missing from harness-index.yaml")
 
 
+def agent_mounts_planned(profiles):
+    return any(sb.enabled and sb.type in ("openclaw", "nemoclaw")
+               for _profile, ws in enabled_workspaces(profiles) for sb in ws.sandboxes)
+
+
 def check_driver_config_allowed(toml_path):
-    """A harness is mounted through caller driver config, which OpenShell
-    0.1.x refuses unless gateway.toml allows it (openshell-saw
-    allowDriverConfig). Checked before anything changes, instead of failing
-    at sandbox create. A missing file is left to install to report."""
+    """Agent trust volumes require caller driver config before any mutation."""
     try:
-        text = Path(toml_path).read_text(encoding="utf-8")
-    except OSError:
-        return
-    if not re.search(r"^\s*allow_driver_config\s*=\s*true\s*(#.*)?$", text, re.M):
+        gateway = tomllib.loads(Path(toml_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise InstallerError(f"cannot read gateway.toml for agent mounts: {exc}") from None
+    podman = gateway.get("openshell", {}).get("drivers", {}).get("podman", {})
+    if not isinstance(podman, dict) or podman.get("allow_driver_config") is not True:
         raise InstallerError(
-            "a sandbox has a harnessRef, but gateway.toml does not set allow_driver_config = "
-            "true, so OpenShell would refuse to mount it; set allowDriverConfig in the "
-            "openshell-saw chart")
+            "an agent sandbox is planned, but gateway.toml does not set "
+            "allow_driver_config = true, so OpenShell would refuse its trusted mounts")
 
 
 def validate_harness(profiles, bundles):
@@ -2293,58 +2320,24 @@ _TOOL_GATE_MANIFEST = """\
 }
 """
 
-# CJS so `node -e` can run it. The base64 is the file payload, not a secret.
-_TOOL_GATE_WRITER = """\
+# CJS so `node -e` can update OpenClaw's writable configuration. All trusted
+# code, policy and identity are already on the read-only volume.
+_TOOL_GATE_CONFIG = """\
 const fs = require("fs");
-const path = require("path");
-const SAW_TOOL_GATE_B64 = "__B64__";
-const payload = JSON.parse(Buffer.from(SAW_TOOL_GATE_B64, "base64").toString("utf8"));
-for (const [dest, body] of Object.entries(payload.files)) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, body);
+const file = "/sandbox/.openclaw/openclaw.json";
+const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+cfg.plugins = cfg.plugins || {};
+cfg.plugins.load = cfg.plugins.load || {};
+const paths = Array.isArray(cfg.plugins.load.paths) ? cfg.plugins.load.paths : [];
+cfg.plugins.load.paths = [...new Set([...paths, "/sandbox/.saw/trusted/plugin"])];
+if (Array.isArray(cfg.plugins.allow) && cfg.plugins.allow.length) {
+  cfg.plugins.allow = [...new Set([...cfg.plugins.allow, "saw-tool-gate"])];
 }
-fs.mkdirSync("/sandbox/.saw/audit", { recursive: true });
-const linkDir = "/sandbox/.openclaw/extensions/saw-tool-gate/node_modules";
-fs.mkdirSync(linkDir, { recursive: true });
-function findOpenClaw() {
-  const candidates = [
-    "/usr/local/lib/openclaw/node_modules/openclaw",
-    "/usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw",
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate + "/package.json")) return candidate;
-  }
-  try {
-    let dir = path.dirname(fs.realpathSync("/usr/local/bin/openclaw"));
-    for (let i = 0; i < 6; i++) {
-      const pkgPath = dir + "/package.json";
-      if (fs.existsSync(pkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-        if (pkg.name === "openclaw") return dir;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  } catch (err) {}
-  return "";
-}
-const target = findOpenClaw();
-const link = linkDir + "/openclaw";
-if (target) {
-  try { fs.unlinkSync(link); } catch (err) {}
-  fs.symlinkSync(target, link);
-}
-if (payload.enable) {
-  const cfgPath = "/sandbox/.openclaw/openclaw.json";
-  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-  cfg.plugins = cfg.plugins || {};
-  cfg.plugins.entries = cfg.plugins.entries || {};
-  const prev = cfg.plugins.entries["saw-tool-gate"] || {};
-  cfg.plugins.entries["saw-tool-gate"] = Object.assign({}, prev, { enabled: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\\n");
-}
-console.log("saw-tool-gate installed");
+cfg.plugins.entries = cfg.plugins.entries || {};
+cfg.plugins.entries["saw-tool-gate"] = {
+  ...cfg.plugins.entries["saw-tool-gate"], enabled: true,
+};
+fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n");
 """
 
 MANAGED_LABEL = "saw.redhat.com/managed=true"
@@ -2652,6 +2645,8 @@ class ProfileApplier:
         self.harness_volumes = set()  # volumes this apply wants to keep
         self.harness_images = set()   # harnessRef.image refs this apply wants to keep
         self.harness_digests = {}     # volume -> trusted tree digest, this apply
+        self.gate_expected = {}       # (workspace, sandbox) -> (source, digest, policy hash)
+        self.gate_refilled = {}       # (workspace, sandbox) -> gate bytes changed
         self.sandbox_failures = []    # "sandbox '<name>': <error>" kept for the raise at end
         for workspace in creds.values():
             for value in workspace.values():
@@ -2899,6 +2894,93 @@ class ProfileApplier:
         """The volume the sandbox should mount at HARNESS_MOUNT, or None."""
         return harness_volume_name(ws.name, sb.name) if sb.harness_ref else None
 
+    def tool_gate_identity(self, ws, sb):
+        dashboard = self.cfg.get("dashboard") or {}
+        owner = dashboard.get("owner") if isinstance(dashboard, dict) else ""
+        subject = self.cfg.get("ownerSubject") or ""
+        if not isinstance(owner, str) or not owner.strip():
+            raise InstallerError(f"sandbox '{sb.name}': dashboard.owner is required for the tool gate")
+        if not isinstance(subject, str) or not subject.strip():
+            raise InstallerError(f"sandbox '{sb.name}': ownerSubject is required for the tool gate")
+        return {"username": owner, "subject": subject,
+                "sandbox": sb.name, "workspace": ws.name}
+
+    def tool_gate_bundle(self, ws, sb):
+        """Derive the trusted tree and expected digest without mutating a volume."""
+        identity = self.tool_gate_identity(ws, sb)
+        here = Path(__file__).resolve().parent
+        names = ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
+        missing = [name for name in names if not (here / name).is_file()]
+        if missing:
+            raise InstallerError("tool gate files missing from the installer disk: " + ", ".join(missing))
+        policy = (here / "tool-actions.yaml").read_bytes()
+        policy_hash = "sha256:" + hashlib.sha256(policy).hexdigest()
+        plugin = (here / "tool-gate-plugin.mjs").read_bytes().replace(
+            b"__SAW_POLICY_HASH__", policy_hash.encode())
+        tree = {
+            "tool-actions.yaml": (policy, False),
+            "identity.json": ((json.dumps(identity, sort_keys=True) + "\n").encode(), False),
+            "plugin/package.json": (_TOOL_GATE_PACKAGE.encode(), False),
+            "plugin/openclaw.plugin.json": (_TOOL_GATE_MANIFEST.encode(), False),
+            "plugin/index.js": (plugin, False),
+            "plugin/tool-gate.mjs": ((here / "tool-gate.mjs").read_bytes(), False),
+        }
+        digest = harness_tree_digest(tree)
+        source = f"gate:{digest}"
+        return tree, source, digest, policy_hash
+
+    def prepare_tool_gate(self, ws, sb):
+        """Fill trusted plugin, policy and identity from the host, before create."""
+        if sb.type not in ("openclaw", "nemoclaw"):
+            return
+        tree, source, digest, policy_hash = self.tool_gate_bundle(ws, sb)
+        key = (ws.name, sb.name)
+        self.gate_expected[key] = (source, digest, policy_hash)
+        if self.sh.dry_run:
+            self.gate_refilled[key] = False
+            return
+        volume = sandbox_volume_name(GATE_VOLUME_PREFIX, *key)
+        mountpoint = self.volumes.ensure(volume, ws.name)
+        if mountpoint is None:
+            raise InstallerError(f"gate volume {volume} lacks sandbox admission labels")
+        current, _marker = self.volumes.current(mountpoint, source, digest)
+        self.gate_refilled[key] = current is None
+        if current is None:
+            self.volumes.fill(volume, mountpoint, source, tree)
+            log(f"Gate volume {volume} filled with policy {policy_hash}")
+        audit_volume = sandbox_volume_name(AUDIT_VOLUME_PREFIX, *key)
+        audit_dir = self.volumes.ensure(audit_volume, ws.name)
+        if audit_dir is None:
+            raise InstallerError(f"audit volume {audit_volume} lacks sandbox admission labels")
+        audit_dir.chmod(0o555)
+
+    def finalize_tool_audit(self, ws, sb):
+        """Make the sandbox user's log append-only, with an unwritable parent."""
+        if self.sh.dry_run:
+            return
+        volume = sandbox_volume_name(AUDIT_VOLUME_PREFIX, ws.name, sb.name)
+        info = self.volumes.inspect(volume)
+        if info is None or not self.volumes.admitted(info, ws.name):
+            raise InstallerError(f"audit volume {volume} is missing or lacks admission labels")
+        root = Path(info["Mountpoint"])
+        log_file = root / AUDIT_FILE
+        if log_file.is_symlink() or (log_file.exists() and not stat.S_ISREG(log_file.stat().st_mode)):
+            raise InstallerError(f"audit path {log_file} is not a regular file")
+        if not log_file.exists():
+            exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+            uid = self.cli(*exec_cmd, "id", "-u", quiet=True).out.strip()
+            gid = self.cli(*exec_cmd, "id", "-g", quiet=True).out.strip()
+            if not uid.isdigit() or not gid.isdigit():
+                raise InstallerError(f"sandbox '{sb.name}': cannot determine the audit writer's uid/gid")
+            root.chmod(0o755)
+            try:
+                log_file.touch(exist_ok=False)
+                log_file.chmod(0o600)
+                self._podman("unshare", "chown", f"{uid}:{gid}", str(log_file))
+            finally:
+                root.chmod(0o555)
+        self.sh.run(["sudo", "-n", "chattr", "+a", str(log_file)])
+
     def _podman(self, *args, **kw):
         return self.sh.run(["podman", *args], **kw)
 
@@ -2962,10 +3044,8 @@ class ProfileApplier:
                 self._podman("rm", "-f", cid, check=False, quiet=True, force=True)
             return read_harness_tar(exported)
 
-    def sandbox_harness_mount(self, ws, sb):
-        """(type, source, writable) of what the sandbox's container mounts at
-        HARNESS_MOUNT; None when it mounts nothing there; False when there
-        is no container to look at or its mounts cannot be inspected.
+    def sandbox_mount_map(self, ws, sb):
+        """Relevant workload mounts keyed by destination; False if uninspectable.
 
         Read from podman, which OpenShell's podman driver runs the sandbox
         container in:
@@ -3001,13 +3081,31 @@ class ProfileApplier:
             return False
         if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts):
             return False
+        found = {}
         for mount in mounts:
-            if mount.get("Destination") == HARNESS_MOUNT:
+            target = mount.get("Destination")
+            if target in (HARNESS_MOUNT, GATE_MOUNT, AUDIT_MOUNT):
                 kind = (mount.get("Type") or "").lower()
                 source = mount.get("Name") if kind == "volume" else mount.get("Source")
                 # Missing RW: treat as writable (not OK).
-                return (kind, source or "", bool(mount.get("RW", True)))
-        return None
+                if target in found:
+                    return False
+                found[target] = (kind, source or "", bool(mount.get("RW", True)))
+        return found
+
+    def sandbox_harness_mount(self, ws, sb):
+        seen = self.sandbox_mount_map(ws, sb)
+        return False if seen is False else seen.get(HARNESS_MOUNT)
+
+    def sandbox_mounts_ok(self, ws, sb):
+        seen = self.sandbox_mount_map(ws, sb)
+        if seen is False:
+            if sb.type in ("openclaw", "nemoclaw"):
+                raise InstallerError(f"cannot inspect trusted mounts in sandbox '{sb.name}'")
+            return True
+        desired = {mount["target"]: ("volume", mount["source"], not mount["read_only"])
+                   for mount in sandbox_mounts(ws, sb)}
+        return seen == desired
 
     def harness_mount_ok(self, ws, sb):
         """True when the sandbox mounts exactly its harness volume read-only,
@@ -3203,19 +3301,17 @@ class ProfileApplier:
         """configure_harness=False: the caller runs start_openclaw right
         after this, which configures the harness itself; skip the redundant
         round trip here."""
+        self.prepare_tool_gate(ws, sb)
         self.prepare_harness(ws, sb)
         state = self.sandbox_state(ws, sb)
-        if state == "running" and not self.sh.dry_run and not self.harness_mount_ok(ws, sb):
+        if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
             # Mounts are fixed at create: a sandbox created before its
             # harnessRef, one that still mounts a harness it no longer has,
             # or one that mounts another volume there is created again.
             # OpenShell 0.1.x deletes the per-sandbox /sandbox workspace
             # volume, including /sandbox/persist. Preserve needed files
             # separately before a recreation; the harness volume is distinct.
-            want = self.desired_harness_mount(ws, sb)
-            log(f"Sandbox '{sb.name}' " + (f"does not mount its harness volume {want}"
-                                           if want else "still mounts a removed harness")
-                + "; recreating it")
+            log(f"Sandbox '{sb.name}' has stale or missing trusted mounts; recreating it")
             self.delete_sandbox_and_wait(ws, sb)
             state = "missing"
         if state == "broken":
@@ -3249,9 +3345,8 @@ class ProfileApplier:
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
-        volume = self.desired_harness_mount(ws, sb)
-        if volume:
-            args += ["--driver-config-json", harness_mounts_json(volume)]
+        if sandbox_mounts(ws, sb):
+            args += ["--driver-config-json", sandbox_mounts_json(ws, sb)]
         for prov in sb.providers:
             if (ws.name, prov) in self.skipped:
                 log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
@@ -3340,6 +3435,7 @@ class ProfileApplier:
         These steps are best effort, as before; verification decides."""
         exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
         self.wait_exec_ready(ws, sb)
+        self.finalize_tool_audit(ws, sb)
         # No /sandbox chown: OpenShell 0.1.x runs the workload without
         # capabilities (root in the container cannot even read /sandbox) and
         # already gives /sandbox to the image's user.
@@ -3388,7 +3484,8 @@ class ProfileApplier:
         # (the installer never sees it). The gateway is restarted only when
         # the harness was refilled, none is running, or its settings (auth
         # mode, users, origins) changed: a restart cuts live sessions.
-        refilled = self.harness_refilled.get((ws.name, sb.name), False)
+        refilled = (self.harness_refilled.get((ws.name, sb.name), False)
+                    or self.gate_refilled.get((ws.name, sb.name), False))
         self.cli(*exec_cmd, "sh", "-c",
                  openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled),
                  check=False)
@@ -3403,6 +3500,9 @@ class ProfileApplier:
         """
         info = self.harness_info.get((ws.name, sb.name))
         desired = openclaw_harness_config(info) if info is not None else {}
+        if sb.type in ("openclaw", "nemoclaw"):
+            desired["plugins.load.paths"] = [
+                *desired.get("plugins.load.paths", []), f"{GATE_MOUNT}/plugin"]
         for key, value in desired.items():
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw config set {key} {shlex.quote(json.dumps(value))}",
@@ -3588,6 +3688,9 @@ class ProfileApplier:
                         "the bundle's own entry cannot pass it its provider placeholder "
                         f"or the proxy CA ({source})"]
         desired = openclaw_harness_config(info)
+        if sb.type in ("openclaw", "nemoclaw"):
+            desired["plugins.load.paths"] = [
+                *desired.get("plugins.load.paths", []), f"{GATE_MOUNT}/plugin"]
         for key in HARNESS_CONFIG_KEYS:
             got = self.cli(*exec_cmd, "sh", "-c",
                            f"{OPENCLAW_EXEC_ENV} openclaw config get {key}",
@@ -3603,6 +3706,58 @@ class ProfileApplier:
             if seen != desired[key]:
                 return [f"OpenClaw {key} does not match the harness ({got.out.strip() or 'unset'})"]
         return []
+
+    def verify_tool_gate(self, ws, sb):
+        """Check the trusted mounts, their content and the loaded plugin."""
+        if sb.type not in ("openclaw", "nemoclaw") or self.sh.dry_run:
+            return []
+        key = (ws.name, sb.name)
+        if key in self.gate_expected:
+            source, digest, policy_hash = self.gate_expected[key]
+        else:
+            _tree, source, digest, policy_hash = self.tool_gate_bundle(ws, sb)
+        gate_volume = sandbox_volume_name(GATE_VOLUME_PREFIX, *key)
+        audit_volume = sandbox_volume_name(AUDIT_VOLUME_PREFIX, *key)
+        failures = self.volumes.verify(gate_volume, ws.name, source, digest)
+        audit_info = self.volumes.inspect(audit_volume)
+        if audit_info is None or not self.volumes.admitted(audit_info, ws.name):
+            failures.append(f"audit volume {audit_volume} is missing or lacks admission labels")
+        elif not (Path(audit_info["Mountpoint"]) / AUDIT_FILE).is_file():
+            failures.append(f"audit volume {audit_volume} has no {AUDIT_FILE}")
+        seen = self.sandbox_mount_map(ws, sb)
+        if seen is False:
+            failures.append("could not inspect the sandbox's trusted mounts")
+        else:
+            if seen.get(GATE_MOUNT) != ("volume", gate_volume, False):
+                failures.append(f"{GATE_MOUNT} is not the read-only gate volume")
+            if seen.get(AUDIT_MOUNT) != ("volume", audit_volume, True):
+                failures.append(f"{AUDIT_MOUNT} is not the audit volume")
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        policy = self.cli(*exec_cmd, "sha256sum", f"{GATE_MOUNT}/tool-actions.yaml",
+                          check=False, quiet=True)
+        if not policy.ok or policy.out.split()[:1] != [policy_hash.removeprefix("sha256:")]:
+            failures.append("the sandbox's mounted tool-action policy hash does not match")
+        identity = self.cli(*exec_cmd, "cat", f"{GATE_MOUNT}/identity.json",
+                            check=False, quiet=True)
+        try:
+            actual = json.loads(identity.out) if identity.ok else None
+        except ValueError:
+            actual = None
+        if actual != self.tool_gate_identity(ws, sb):
+            failures.append("the sandbox's mounted tool-gate identity does not match the owner")
+        listed = self.cli(*exec_cmd, "sh", "-c",
+                          f"{OPENCLAW_EXEC_ENV} openclaw plugins list --json",
+                          check=False, quiet=True)
+        try:
+            plugins = (json.loads(listed.out).get("plugins") or []) if listed.ok else []
+        except (ValueError, AttributeError):
+            plugins = []
+        gate = next((row for row in plugins if isinstance(row, dict)
+                     and row.get("id") == "saw-tool-gate"), None)
+        if (not gate or not gate.get("enabled") or gate.get("status") != "loaded"
+                or gate.get("rootDir") != f"{GATE_MOUNT}/plugin"):
+            failures.append("OpenClaw has not loaded saw-tool-gate from the trusted mount")
+        return failures
 
     def cleanup_harness_volumes(self):
         """Remove harness volumes that no enabled sandbox wants any more (a
@@ -3641,45 +3796,21 @@ class ProfileApplier:
         self.ledger.save()
 
     def install_tool_gate(self, ws, sb, enable=True):
-        """Copy the tool-action policy and OpenClaw hook into an agent sandbox.
-
-        Generic sandboxes never get here. The consequential-tool list is the
-        YAML file, not this method. enable is false when OpenClaw has not
-        written openclaw.json yet.
-        """
-        here = Path(__file__).resolve().parent
-        needed = {
-            "tool-actions.yaml": here / "tool-actions.yaml",
-            "tool-gate.mjs": here / "tool-gate.mjs",
-            "tool-gate-plugin.mjs": here / "tool-gate-plugin.mjs",
-        }
-        missing = [name for name, path in needed.items() if not path.is_file()]
-        if missing:
-            raise InstallerError(
-                "tool gate files missing from the installer disk: " + ", ".join(missing))
-        identity = {
-            "username": self.cfg.get("vmName") or "",
-            "subject": self.cfg.get("ownerSubject") or "",
-            "sandbox": sb.name,
-            "workspace": ws.name,
-        }
-        ext = "/sandbox/.openclaw/extensions/saw-tool-gate"
-        files = {
-            f"{ext}/package.json": _TOOL_GATE_PACKAGE,
-            f"{ext}/openclaw.plugin.json": _TOOL_GATE_MANIFEST,
-            f"{ext}/index.js": needed["tool-gate-plugin.mjs"].read_text(encoding="utf-8"),
-            f"{ext}/tool-gate.mjs": needed["tool-gate.mjs"].read_text(encoding="utf-8"),
-            "/sandbox/.saw/tool-actions.yaml": needed["tool-actions.yaml"].read_text(encoding="utf-8"),
-            "/sandbox/.saw/identity.json": json.dumps(identity, indent=2) + "\n",
-        }
-        encoded = base64.b64encode(json.dumps({"files": files, "enable": enable}).encode()).decode()
-        script = _TOOL_GATE_WRITER.replace("__B64__", encoded)
-        log(f"Installing saw-tool-gate in sandbox '{sb.name}'")
-        result = self.cli(
-            "sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
-            "node", "-e", script, check=False, quiet=True)
-        if not result.ok:
-            log(f"ERROR: saw-tool-gate was not installed in '{sb.name}'")
+        """Configure OpenClaw to load the trusted plugin after harness setup."""
+        self.tool_gate_identity(ws, sb)
+        if not enable:
+            return
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        if not self.cli(*exec_cmd, "node", "-e", _TOOL_GATE_CONFIG,
+                        check=False, quiet=True).ok:
+            raise InstallerError(f"could not configure saw-tool-gate in sandbox '{sb.name}'")
+        oc_env = OPENCLAW_EXEC_ENV
+        enabled = self.cli(*exec_cmd, "sh", "-c",
+                           f"{oc_env} openclaw plugins enable saw-tool-gate --accept-capabilities "
+                           f"|| {oc_env} openclaw plugins enable saw-tool-gate",
+                           check=False, quiet=True)
+        if not enabled.ok:
+            raise InstallerError(f"could not enable saw-tool-gate in sandbox '{sb.name}'")
 
     def install_keepalive(self, ws, sb):
         """A system unit that keeps an exec session open so the sandbox stays
@@ -4033,6 +4164,8 @@ class ProfileApplier:
                                     f"provider: skipped {skipped}; the gateway has no profile for that type")
                 failures += [f"harness in sandbox '{sb.name}': {f}"
                              for f in self.verify_harness(ws, sb)]
+                failures += [f"tool gate in sandbox '{sb.name}': {f}"
+                             for f in self.verify_tool_gate(ws, sb)]
                 if sb.providers:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out
@@ -4118,8 +4251,10 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
     next to the config): a restart cuts live UI and CLI sessions."""
     q = shlex.quote
     users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
+    # The hook duplicates each audit line to gateway stderr. Send that
+    # stderr to the workload's PID 1 so podman logs keeps an outside copy.
     run = ("nohup openclaw gateway run --allow-unconfigured "
-           "--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &")
+           "--bind lan --port 18789 >> /proc/1/fd/2 2>&1 &")
     token_auth = [
         # JSON-quoted: `config set` parses values as JSON5, and a bare hex
         # secret of digits only would become a number.
@@ -4762,7 +4897,7 @@ class Inputs:
         self.secrets = self.root / "secrets"
         self.owner = self.root / "owner"
 
-    def load(self):
+    def load(self, check_agent_mounts=True):
         """Load and validate everything. Nothing is changed."""
         bom = load_bom(self.bom)
         cfg = load_config(self.config)
@@ -4780,7 +4915,7 @@ class Inputs:
         bundles = parse_harness_files(harness_files)
         check_harness_index(bundles, index)
         revisions = validate_harness(profiles, bundles)
-        if revisions:
+        if check_agent_mounts and agent_mounts_planned(profiles):
             check_driver_config_allowed(self.installer / "gateway.toml")
         harness = {"bundles": bundles, "revisions": revisions}
         return bom, cfg, profiles, creds, harness
@@ -4993,7 +5128,7 @@ def cmd_apply(args):
     bom_name = None
     try:
         status.set("Running")
-        bom, cfg, profiles, creds, harness = inputs.load()
+        bom, cfg, profiles, creds, harness = inputs.load(check_agent_mounts=False)
         bom_name = bom["metadata"]["name"]
         install = status.read().get("install", {})
         if not args.dry_run and (install.get("phase") != "Done" or install.get("bom") != bom_name):
@@ -5001,6 +5136,8 @@ def cmd_apply(args):
                 f"install has not finished for BOM {bom_name} "
                 f"(install: {install.get('phase') or 'never ran'}"
                 f"{' for ' + install['bom'] if install.get('bom') else ''}); run `install` first")
+        if agent_mounts_planned(profiles):
+            check_driver_config_allowed(inputs.installer / "gateway.toml")
 
         cfg = dict(cfg)
         prune = dict(cfg.get("prune") or {})

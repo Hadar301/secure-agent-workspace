@@ -1,8 +1,6 @@
-# Consequential tool actions. This list is the policy: nothing in the
-# tool-gate code names these tools. defaultAction applies when no rule
-# matches, and every call is still audited with the signed-in user and task.
+# Tool actions. Every unlisted tool is denied and every call is audited.
 version: 1
-defaultAction: allow
+defaultAction: deny
 rules:
   - id: exec-consequential
     tool: exec
@@ -10,9 +8,47 @@ rules:
     whenCommandMatches:
       - git push
       - gh pr merge
-      - "rm "
+      - rm
       - kubectl delete
       - oc delete
+  - id: exec-git-status
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - git status
+  - id: exec-git-diff
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - git diff
+  - id: exec-git-log
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - git log
+  - id: exec-git-show
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - git show
+  - id: read
+    tool: read
+    action: allow
+  - id: memory-search
+    tool: memory_search
+    action: allow
+  - id: memory-get
+    tool: memory_get
+    action: allow
+  - id: session-status
+    tool: session_status
+    action: allow
+  - id: sessions-list
+    tool: sessions_list
+    action: allow
+  - id: sessions-history
+    tool: sessions_history
+    action: allow
   - id: message-send
     tool: message
     action: approval

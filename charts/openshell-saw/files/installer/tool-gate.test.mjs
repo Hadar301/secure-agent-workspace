@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   parsePolicy,
   resolutionRecord,
 } from "./tool-gate.mjs";
+import toolGatePlugin from "./tool-gate-plugin.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const policyText = readFileSync(path.join(here, "../../../governance-policy/tool-actions.yaml"), "utf8");
@@ -23,6 +24,15 @@ const identity = {
   sandbox: "notebook",
   workspace: "default",
 };
+
+test("the mounted plugin loads and registers its hook without a writable SDK link", () => {
+  const events = [];
+  toolGatePlugin.register({ on: (name, handler) => events.push([name, handler]) });
+  assert.equal(toolGatePlugin.id, "saw-tool-gate");
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], "before_tool_call");
+  assert.equal(typeof events[0][1], "function");
+});
 
 function call(overrides = {}) {
   return decide({
@@ -42,11 +52,11 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.equal(source.includes("saw-denied-tool"), false);
   const policy = parsePolicy(policyText);
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
-    "exec-consequential",
-    "message-send",
-    "saw-denied-tool",
+    "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
+    "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
+    "message-send", "saw-denied-tool",
   ]);
-  assert.equal(policy.defaultAction, "allow");
+  assert.equal(policy.defaultAction, "deny");
   const installerCopy = readFileSync(path.join(here, "tool-actions.yaml"), "utf8");
   assert.equal(installerCopy, policyText);
 });
@@ -55,7 +65,7 @@ test("an ordinary tool call is allowed and audited with the user and task", () =
   const decided = call({ taskTitle: "fix egress" });
   assert.equal(decided.effect.kind, "allow");
   assert.equal(decided.record.decision, "allow");
-  assert.equal(decided.record.rule, "default");
+  assert.equal(decided.record.rule, "exec-git-status");
   assert.deepEqual(decided.record.user, { username: "alice", subject: "subject-alice" });
   assert.deepEqual(decided.record.task, { id: "session-1", title: "fix egress" });
   assert.equal(decided.record.sandbox, "notebook");
@@ -76,7 +86,7 @@ test("a consequential exec does not execute until approval", () => {
     assert.equal(hook.requireApproval.pluginId, "saw-tool-gate");
     assert.ok(hook.requireApproval.allowedDecisions.includes("deny"));
   }
-  assert.equal(call({ params: { command: "echo rm" } }).effect.kind, "allow");
+  assert.equal(call({ params: { command: "echo rm foo" } }).effect.kind, "deny");
 });
 
 test("a denied tool does not execute", () => {
@@ -150,13 +160,16 @@ function assertAuditShape(record) {
   assert.equal(typeof record.workspace, "string");
   assert.equal(typeof record.tool, "string");
   assert.equal(typeof record.rule, "string");
+  assert.ok(record.policyHash === null || /^sha256:[0-9a-f]{64}$/.test(record.policyHash));
   assert.match(record.argsDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(typeof record.summary, "string");
   assert.ok(["allow", "deny", "approval_required", "approved", "rejected"].includes(record.decision));
 }
 
 function auditFile() {
-  return path.join(mkdtempSync(path.join(tmpdir(), "saw-tool-gate-")), "audit", "tool-actions.jsonl");
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), "saw-tool-gate-")), "audit");
+  mkdirSync(dir);
+  return path.join(dir, "tool-actions.jsonl");
 }
 
 function readAudit(file) {
@@ -202,7 +215,7 @@ test("a missing session id blocks the call and is logged with a null task", () =
 test("git status is allowed and git push or rm -rf require approval", () => {
   const status = call({ params: { command: "git status" } });
   assert.equal(status.record.decision, "allow");
-  assert.equal(status.record.rule, "default");
+  assert.equal(status.record.rule, "exec-git-status");
   assert.equal(hookResult(status, () => {}), undefined);
 
   for (const command of ["git push", "rm -rf /tmp/probe"]) {
@@ -215,13 +228,15 @@ test("git status is allowed and git push or rm -rf require approval", () => {
   }
 });
 
-test("an unknown tool uses defaultAction allow and is still audited", () => {
+test("read is explicitly allowed; an unknown tool is denied", () => {
   const decided = call({ toolName: "read", params: { path: "/sandbox/notes.txt" } });
   assert.equal(decided.effect.kind, "allow");
   assert.equal(decided.record.decision, "allow");
-  assert.equal(decided.record.rule, "default");
+  assert.equal(decided.record.rule, "read");
   assert.equal(decided.record.tool, "read");
   assertAuditShape(decided.record);
+  assert.equal(call({ toolName: "unknown" }).record.rule, "default");
+  assert.equal(call({ toolName: "write" }).effect.kind, "deny");
 });
 
 test("a missing or invalid policy file is denied and written to the audit log", () => {
@@ -331,7 +346,7 @@ test("the audit line redacts api keys and tokens and keeps the schema", () => {
     auditFile: file,
   });
   const line = readAudit(file)[0];
-  assert.equal(result.record.decision, "allow");
+  assert.equal(result.record.decision, "deny");
   assertAuditShape(line);
   const encoded = JSON.stringify(line);
   assert.equal(encoded.includes("sk-live-secret"), false);
@@ -344,14 +359,82 @@ test("the audit line redacts api keys and tokens and keeps the schema", () => {
 
 test("the audit line carries the user and task and not the raw credential", () => {
   const decided = call({ params: { command: "echo nvapi-super-secret" } });
-  assert.equal(decided.effect.kind, "allow");
+  assert.equal(decided.effect.kind, "deny");
   assert.equal(decided.record.summary.includes("nvapi-super-secret"), false);
   assert.equal(decided.record.summary.includes("nvapi-***"), true);
   const dir = mkdtempSync(path.join(tmpdir(), "saw-tool-gate-"));
   const file = path.join(dir, "audit", "tool-actions.jsonl");
+  mkdirSync(path.dirname(file));
   appendAudit(file, decided.record);
   const line = JSON.parse(readFileSync(file, "utf8"));
   assert.equal(line.user.username, "alice");
   assert.equal(line.task.id, "session-1");
   assert.equal(JSON.stringify(line).includes("nvapi-super-secret"), false);
+});
+
+test("only the listed read-only tools are allowed", () => {
+  for (const toolName of ["read", "memory_search", "memory_get", "session_status",
+    "sessions_list", "sessions_history"]) {
+    assert.equal(call({ toolName, params: {} }).effect.kind, "allow", toolName);
+  }
+  for (const toolName of ["web_fetch", "web_search", "write", "edit", "browser", "cron",
+    "gateway", "mcp__unknown", "unknown"]) {
+    assert.equal(call({ toolName, params: {} }).effect.kind, "deny", toolName);
+  }
+});
+
+test("exec matching is anchored and accepts supported parameter fields", () => {
+  for (const params of [
+    { command: "git status --short" }, { cmd: "git diff HEAD" },
+    { script: "git log -3" }, { args: ["/usr/bin/git", "show", "HEAD"] },
+    { command: "  FOO=bar   /usr/bin/git\tstatus  " },
+  ]) {
+    assert.equal(call({ params }).effect.kind, "allow", JSON.stringify(params));
+  }
+  for (const params of [
+    { command: "echo rm foo" }, { command: "git statusful" },
+    { command: "git push; git status" }, { command: "curl https://example.test" },
+  ]) {
+    assert.equal(call({ params }).effect.kind, "deny", JSON.stringify(params));
+  }
+  for (const params of [{ command: "/bin/rm -rf /tmp" }, { command: "rm\t-rf /tmp" }]) {
+    assert.equal(call({ params }).effect.kind, "approval", JSON.stringify(params));
+  }
+});
+
+test("unreadable and opaque exec calls fail closed before policy matching", () => {
+  for (const params of [{}, { command: "  " }, { args: [] }]) {
+    assert.equal(call({ params }).record.rule, "exec-unreadable");
+  }
+  for (const command of ["sh -c 'git push'", "bash -c 'git status'", "git status; rm -rf /",
+    "git status && rm -rf /", "git status | cat", "git status\nrm -rf /",
+    "env git status", "sudo git status", "node -e 'process.exit()'",
+    "git diff --output=/tmp/written", "GIT_EXTERNAL_DIFF=/tmp/evil git diff",
+    "PATH=/tmp/evil git status"]) {
+    assert.equal(call({ params: { command } }).record.rule, "exec-opaque", command);
+  }
+  assert.equal(call({ params: { command: "git status", script: "rm -rf /" } }).record.rule,
+    "exec-opaque");
+});
+
+test("incomplete identity and policy hash mismatch deny with audit fields", () => {
+  for (const identity of [{}, { username: "" }, { username: "alice", subject: "" }]) {
+    const decided = call({ identity });
+    assert.equal(decided.record.rule, "identity-missing");
+    assertAuditShape(decided.record);
+  }
+  const changed = call({ expectedPolicyHash: "sha256:" + "0".repeat(64) });
+  assert.equal(changed.record.rule, "policy-hash");
+  assert.equal(changed.effect.kind, "deny");
+  assertAuditShape(changed.record);
+  assert.notEqual(changed.record.policyHash, "sha256:" + "0".repeat(64));
+});
+
+test("an unavailable audit file blocks an otherwise allowed call", () => {
+  const missing = path.join(mkdtempSync(path.join(tmpdir(), "saw-tool-gate-")), "missing", "log");
+  const result = evaluateToolCall({ policyText, identity, toolName: "read", params: {},
+    sessionKey: "session-1", auditFile: missing });
+  assert.equal(result.record.decision, "deny");
+  assert.equal(result.record.rule, "audit-unwritable");
+  assert.equal(result.hook.block, true);
 });

@@ -224,8 +224,8 @@ def secrets_dir(tmp_path):
 def config():
     return {"vmName": "saw-test", "namespace": "openshell-agents",
             "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
-            "ownerSubject": "", "oidcIssuer": "", "sandboxDashboardRoute": "",
-            "dashboard": {"enabled": False},
+            "ownerSubject": "subject-alice", "oidcIssuer": "", "sandboxDashboardRoute": "",
+            "dashboard": {"enabled": False, "owner": "alice"},
             "harness": {"cosign": {
                 "cacheTtlSeconds": 0,
                 "identity": "https://github.com/example/saw/.github/workflows/harness-bundles.yml@refs/heads/main",

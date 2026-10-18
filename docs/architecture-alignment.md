@@ -144,7 +144,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Per-tool approval and user/task audit are implemented (`tool-actions.yaml`, `saw-tool-gate`). Policy bundles, credential proxying, and OCSF collection are not |
+| **Phase II: Runtime-based enforcement** | Per-tool approval and user/task audit are implemented (`tool-actions.yaml`, `saw-tool-gate`). Signed APF policy bundles are implemented; credential proxying and OCSF collection are not |
 
 ## Recommendations for Closing Gaps
 

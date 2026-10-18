@@ -336,16 +336,13 @@ allow_unauthenticated_users = false
 [openshell.drivers.podman]
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
-{{- if .Values.allowDriverConfig }}
-# Sandboxes mount their harness volume through caller driver config. The
-# governance engine admits only the installer's read-only harness mount from
-# an admin: the interceptor's guard, or APF's signed driver_config allowlist
-# (scripts/apf-bundle.py; APF denies all driver config without it).
+# Agent sandboxes mount their trusted gate and audit volumes through caller
+# driver config; an OpenClaw harness adds a third mount. Admission is limited
+# to the installer's admin identity and exact volume targets.
 # Resource admission and enable_bind_mounts keep their defaults (on / off),
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
 allow_driver_config = true
-{{- end }}
 {{- if .Values.governance.enabled }}
 
 {{- $engine := include "openshell-sandbox.governanceEngine" . }}

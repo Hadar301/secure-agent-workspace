@@ -156,24 +156,21 @@ Why a volume and not an image mount: OpenShell 0.1.x refuses image and host
 path mounts while resource admission is on (the default), and admits a volume
 only when it carries the `openshell.ai/sandbox-attachable=true` and
 `openshell.ai/sandbox-attachable-workspace=<workspace>` labels, which the
-installer sets. The gateway also needs `allow_driver_config = true`
-(`allowDriverConfig` in the openshell-saw chart, **off by default** — turn
-it on together with a profile that has a `harnessRef`, e.g. saw-bom's
-`harnessEnabled`); the installer stops before changing anything when a sandbox
-has a `harnessRef` and it is off. Turning it off later stops every sandbox
-created with a harness (the podman driver re-checks them), so recreate those
-first. With admission on and bind mounts off, a signed-in user of the
-workspace can attach nothing but the workspace's own labelled volumes; if
-one is attached writable and changed, the next apply finds the tree digest
-changed and refills it.
+installer sets. The gateway sets `allow_driver_config = true` for every agent
+sandbox's tool gate and audit mounts. The saw-users `harnessEnabled` flag
+still controls whether a harness bundle is shipped and whether the VM permits
+Sigstore egress for a harness image. With admission on and bind mounts off, a signed-in user of the
+ workspace can attach nothing but the workspace's own labelled volumes. The
+ harness volume stays read-only, and the installer checks its tree digest on
+ each apply.
 
 The shipped `ds-default` demo pin is opt-in (`harnessEnabled: false` in
 saw-bom). With it off, sandbox.yaml loses its `harnessRef` and no harness
 keys ship, so an upgrade does not recreate notebooks. Set `harnessEnabled: true`
 to try the demo; under saw-users that also sets `allowDriverConfig: true` on
-the user's openshell-saw app (`saw-users.openshellValues`), so the two flags
-can't drift apart. Driving saw-bom and openshell-saw directly (no saw-users)
-still needs both set by hand.
+the user's openshell-saw app (`saw-users.openshellValues`) for Sigstore egress.
+Driving saw-bom and openshell-saw directly (no saw-users) needs that setting
+for image-sourced harness signature checks.
 
 ### OCI image (recommended)
 
@@ -383,9 +380,10 @@ requires `oc`, Python with PyYAML, the deployment controller's tooling, and
 ### Security properties
 
 - With the governance interceptor enabled, caller driver config requires
-  an mTLS platform admin and permits only the installer's read-only podman
-  harness volume at `/sandbox/harness`. OIDC admins, bind mounts, writable
-  mounts, other targets and other driver options are refused at creation.
+  an mTLS platform admin and permits only the installer's gate and audit
+  volumes, optionally with a read-only harness volume at `/sandbox/harness`.
+  The gate is read-only and the audit mount is writable only at its dedicated
+  target; OIDC admins, bind mounts, other targets and driver options are refused.
   OpenShell 0.1.2 does not support intercepting `CreateSandboxTemplate`;
   template-based `CreateSandbox` requests are refused because the gateway
   resolves their driver config after interception. Templates may be stored,

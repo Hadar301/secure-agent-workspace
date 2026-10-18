@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export const POLICY_PATH = "/sandbox/.saw/tool-actions.yaml";
-export const IDENTITY_PATH = "/sandbox/.saw/identity.json";
+export const POLICY_PATH = "/sandbox/.saw/trusted/tool-actions.yaml";
+export const IDENTITY_PATH = "/sandbox/.saw/trusted/identity.json";
 export const TASK_PATH = "/sandbox/.saw/current-task.json";
 export const AUDIT_PATH = "/sandbox/.saw/audit/tool-actions.jsonl";
 
@@ -134,10 +134,41 @@ function redact(value) {
 
 export function commandText(params) {
   if (!params || typeof params !== "object") return "";
-  const cmd = params.command ?? params.cmd ?? "";
-  if (Array.isArray(cmd)) return cmd.map((part) => String(part)).join(" ");
-  if (typeof cmd === "string") return cmd;
-  return "";
+  const texts = ["command", "cmd", "script", "args"].map((key) => {
+    const value = params[key];
+    if (Array.isArray(value)) return value.every((part) => typeof part === "string") ? value.join(" ") : "\n";
+    if (value === undefined || value === null) return "";
+    return typeof value === "string" ? value : "\n";
+  }).filter((value) => value.trim());
+  // Distinct representations must not let a harmless field conceal a second
+  // command. The newline makes the combined input opaque below.
+  return [...new Set(texts)].join("\n");
+}
+
+function normalizedExec(command) {
+  if (!command.trim()) return { error: "exec-unreadable" };
+  if (/[;&|`\n\r<>]|\$\(|\$\{/.test(command)) return { error: "exec-opaque" };
+  const words = command.trim().split(/\s+/);
+  const assignments = [];
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=\S*$/.test(words[0])) assignments.push(words.shift());
+  if (!words.length) return { error: "exec-unreadable" };
+  words[0] = path.posix.basename(words[0]).toLowerCase();
+  // These assignments can change the executable or make an inspection call
+  // invoke Git helpers. Other inert leading assignments are normalized away.
+  if (assignments.some((item) => /^(?:GIT_|LD_|PATH=|NODE_OPTIONS=)/i.test(item))) {
+    return { error: "exec-opaque" };
+  }
+  const wrappers = new Set(["sh", "bash", "dash", "zsh", "ksh", "busybox", "env", "xargs",
+    "eval", "sudo", "command", "nice", "nohup", "time"]);
+  if (wrappers.has(words[0]) || (["python", "python3", "perl", "ruby", "node"].includes(words[0])
+      && words.slice(1).some((part) => part === "-c" || part === "-e"))) {
+    return { error: "exec-opaque" };
+  }
+  if (words[0] === "git" && ["diff", "log", "show"].includes(words[1]) &&
+      words.slice(2).some((part) => /^--(?:output|ext-diff|textconv)(?:=|$)/.test(part) || part === "-o")) {
+    return { error: "exec-opaque" };
+  }
+  return { command: words.join(" ") };
 }
 
 function digest(params) {
@@ -168,6 +199,7 @@ function baseRecord(input, extras) {
     workspace: identity && typeof identity.workspace === "string" ? identity.workspace : "",
     tool: typeof input.toolName === "string" ? input.toolName : "",
     rule: extras.rule,
+    policyHash: extras.policyHash,
     argsDigest: digest(input.params),
     summary: summaryOf(typeof input.toolName === "string" ? input.toolName : "", input.params),
     decision: extras.decision,
@@ -199,11 +231,12 @@ function decisionName(action) {
   return action;
 }
 
-function blocked(input, rule, reason) {
+function blocked(input, rule, reason, task = { id: null, title: null }) {
   return {
     record: baseRecord(input, {
-      task: { id: null, title: null },
+      task,
       rule,
+      policyHash: input.policyHash ?? null,
       decision: "deny",
     }),
     effect: { kind: "deny", blockReason: reason },
@@ -213,18 +246,29 @@ function blocked(input, rule, reason) {
 function ruleMatches(rule, tool, command) {
   if (rule.tool !== tool) return false;
   if (!rule.whenCommandMatches) return true;
-  return rule.whenCommandMatches.some((needle) => command.includes(needle));
+  return rule.whenCommandMatches.some((needle) => {
+    const normalized = needle.toLowerCase().replace(/\s+/g, " ").trim();
+    return command === normalized || command.startsWith(`${normalized} `);
+  });
 }
 
 export function decide(input) {
   const tool = typeof input.toolName === "string" ? input.toolName : "";
+  const policyHash = typeof input.policyText === "string"
+    ? `sha256:${createHash("sha256").update(input.policyText, "utf8").digest("hex")}` : null;
+  input = { ...input, policyHash };
+  if (policyHash && input.expectedPolicyHash && policyHash !== input.expectedPolicyHash) {
+    return blocked(input, "policy-hash", "Tool call blocked: tool-action policy hash changed");
+  }
   let policy;
   try {
     policy = parsePolicy(input.policyText);
   } catch {
     return blocked(input, "policy-invalid", "Tool call blocked: tool-action policy is missing or invalid");
   }
-  if (!input.identity || typeof input.identity !== "object") {
+  if (!input.identity || typeof input.identity !== "object" ||
+      typeof input.identity.username !== "string" || !input.identity.username.trim() ||
+      typeof input.identity.subject !== "string" || !input.identity.subject.trim()) {
     return blocked(input, "identity-missing", "Tool call blocked: signed-in user is not recorded");
   }
   if (!tool) return blocked(input, "no-tool", "Tool call blocked: the tool name is missing");
@@ -234,12 +278,15 @@ export function decide(input) {
   if (!session) return blocked(input, "no-task", "Tool call blocked: no current task");
   const title = typeof input.taskTitle === "string" && input.taskTitle ? input.taskTitle : session;
   const task = { id: session, title };
-  const command = commandText(input.params);
+  const rawCommand = commandText(input.params);
+  const exec = tool === "exec" ? normalizedExec(rawCommand) : null;
+  if (exec?.error) return blocked(input, exec.error, `Tool call blocked: ${exec.error}`, task);
+  const command = exec ? exec.command : rawCommand;
   const rule = policy.rules.find((item) => ruleMatches(item, tool, command));
   const action = rule ? rule.action : policy.defaultAction;
   const ruleId = rule ? rule.id : "default";
   return {
-    record: baseRecord(input, { task, rule: ruleId, decision: decisionName(action) }),
+    record: baseRecord(input, { task, rule: ruleId, policyHash, decision: decisionName(action) }),
     effect: effectFor(action, tool, ruleId),
   };
 }
@@ -275,8 +322,9 @@ export function hookResult(decided, onResolution) {
 }
 
 export function appendAudit(file, record) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify(record)}\n`);
+  const line = `${JSON.stringify(record)}\n`;
+  fs.appendFileSync(file, line);
+  process.stderr.write(line);
 }
 
 export function readJson(file) {
@@ -312,6 +360,7 @@ export function evaluateToolCall(input) {
   const identity = input.identityText !== undefined ? parseIdentity(input.identityText) : input.identity;
   const decided = decide({
     policyText: input.policyText,
+    expectedPolicyHash: input.expectedPolicyHash,
     identity,
     taskTitle: input.taskTitle,
     toolName: input.toolName,
@@ -324,8 +373,10 @@ export function evaluateToolCall(input) {
     try {
       appendAudit(input.auditFile, decided.record);
     } catch {
+      const record = { ...decided.record, rule: "audit-unwritable", decision: "deny" };
+      process.stderr.write(`${JSON.stringify(record)}\n`);
       return {
-        record: decided.record,
+        record,
         hook: { block: true, blockReason: "Tool call blocked: the audit trail could not be written" },
       };
     }
@@ -335,7 +386,8 @@ export function evaluateToolCall(input) {
     try {
       appendAudit(input.auditFile, resolutionRecord(decided.record, resolution));
     } catch {
-      // The tool already did not run.
+      const record = { ...resolutionRecord(decided.record, resolution), auditWriteFailed: true };
+      process.stderr.write(`${JSON.stringify(record)}\n`);
     }
   });
   return { record: decided.record, hook };

@@ -380,17 +380,16 @@ def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     assert "OPENSHELL_DRIVERS" not in env
 
 
-def test_driver_config_is_off_by_default(default_docs):
-    """Any signed-in user can attach a labelled volume to a sandbox once this
-    is on, so it defaults off; a profile with a harnessRef must opt in."""
+def test_driver_config_is_on_for_agent_gate_mounts(default_docs):
+    """Every agent sandbox needs the trusted gate and audit volume mounts."""
     _, toml = gateway_files(default_docs)
-    assert "allow_driver_config" not in toml["openshell"]["drivers"]["podman"]
+    assert toml["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
-def test_gateway_allows_caller_driver_config_for_harness_mounts():
+def test_gateway_allows_caller_driver_config_for_agent_mounts():
     """0.1.x refuses --driver-config-json unless allow_driver_config is set;
     resource admission and the bind-mount switch keep their safe defaults."""
-    _, toml = gateway_files(render("--set", "allowDriverConfig=true"))
+    _, toml = gateway_files(render())
     podman = toml["openshell"]["drivers"]["podman"]
     assert podman["allow_driver_config"] is True
     assert "resource_admission" not in podman
@@ -995,6 +994,7 @@ def test_tool_actions_copy_matches_governance_policy():
     gov = ROOT / "charts" / "governance-policy" / "tool-actions.yaml"
     copy = CHART / "files" / "installer" / "tool-actions.yaml"
     assert copy.read_text() == gov.read_text()
+    assert yaml.safe_load(gov.read_text())["defaultAction"] == "deny"
 
 
 def test_installer_disk_ships_the_tool_gate(default_docs):

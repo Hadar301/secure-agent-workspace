@@ -136,8 +136,9 @@ def test_owner_subject_becomes_admin_of_each_workspace(ab, fake_env, config, pro
     make_applier(ab, config, creds, ownerSubject="f3c1-owner-subject").apply(profiles)
 
 
-def test_no_owner_subject_adds_no_members(ab, fake_env, config, profiles, creds):
-    make_applier(ab, config, creds).apply(profiles)
+def test_no_owner_subject_fails_agent_apply(ab, fake_env, config, profiles, creds):
+    with pytest.raises(ab.InstallerError, match="ownerSubject is required"):
+        make_applier(ab, config, creds, ownerSubject="").apply(profiles)
     assert fake_env.openshell_state()["members"] == []
 
 
@@ -147,7 +148,8 @@ def test_owner_recreation_removes_stale_membership(ab, fake_env, config, profile
     make_applier(ab, config, creds, ownerSubject="new-subject").apply(profiles)
     assert fake_env.openshell_state()["members"] == [
         ["cuda-dev", "new-subject", "admin"], ["default", "new-subject", "admin"]]
-    make_applier(ab, config, creds, ownerSubject="").apply(profiles)
+    with pytest.raises(ab.InstallerError, match="ownerSubject is required"):
+        make_applier(ab, config, creds, ownerSubject="").apply(profiles)
     assert fake_env.openshell_state()["members"] == []
 
 
@@ -160,7 +162,8 @@ def test_owner_revocation_clears_retained_disabled_workspace(
             if workspace.name == "cuda-dev":
                 workspace.enabled = False
 
-    make_applier(ab, config, creds, ownerSubject="").apply(profiles)
+    with pytest.raises(ab.InstallerError, match="ownerSubject is required"):
+        make_applier(ab, config, creds, ownerSubject="").apply(profiles)
 
     state = fake_env.openshell_state()
     assert "cuda-dev" in state["workspaces"]
@@ -403,18 +406,11 @@ def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):
 
 
 def test_verify_fails_when_openclaw_cannot_run_in_the_sandbox(ab, fake_env, config, profiles, creds):
-    """Live: the sandbox was Ready but `openclaw` was denied by the sandbox
-    filesystem policy; the best-effort setup steps hid it and verify passed.
-
-    The harness is unaffected: it reaches the sandbox through the volume
-    mount, not through `sandbox exec`, so only the openclaw failure shows."""
+    """A gate that cannot be enabled fails the apply before gateway startup."""
     fake_env.exec_fails_in("notebook")
     applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
-    failures = applier.verify(profiles)
-    assert failures == [
-        "openclaw cannot run in sandbox 'notebook': "
-        "sh: line 1: /usr/local/sbin/openclaw: Permission denied"]
+    with pytest.raises(ab.InstallerError, match="could not enable saw-tool-gate"):
+        applier.apply(profiles)
 
 
 def test_verify_runs_openclaw_in_agent_sandboxes_only(ab, fake_env, config, profiles, creds):
@@ -504,14 +500,15 @@ def test_full_apply_mounts_the_harness_into_notebook(ab, fake_env, config, profi
     applier.apply(profiles)
     name = ab.harness_volume_name("default", "notebook")
     notebook = fake_env.openshell_state()["sandboxes"]["default/notebook"]
-    assert notebook["driverConfig"] == {"podman": {"mounts": [{
+    assert notebook["driverConfig"]["podman"]["mounts"][0] == {
         "type": "volume", "source": name,
-        "target": "/sandbox/harness", "read_only": True}]}}
+        "target": "/sandbox/harness", "read_only": True}
+    assert len(notebook["driverConfig"]["podman"]["mounts"]) == 3
     volume = fake_env.state / "volumes" / name
     assert (volume / "skills" / "pattern-author" / "SKILL.md").is_file()
     scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
     assert "base64 -d" not in scripts
-    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins"]'""" in scripts
+    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
     # The bundle and its native plugin, each enabled (2026.9.x keeps them off).
     assert "openclaw plugins enable ds-default --accept-capabilities" in scripts
     assert "openclaw plugins enable saw-echo --accept-capabilities" in scripts
