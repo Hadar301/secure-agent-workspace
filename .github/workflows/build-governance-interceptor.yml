@@ -76,28 +76,14 @@ jobs:
           platform: ${{ matrix.platform }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}
 
-  merge:
-    needs: build
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read the extra tag from values.yaml
-        id: params
-        run: |
-          echo "openshell_ref=$(yq '.source.git.ref' image-builder-charts/helm/governance-interceptor-image/values.yaml)" \
-            >> "$GITHUB_OUTPUT"
-
-      - uses: ./.github/actions/merge-image
-        with:
-          image_name: governance-interceptor
-          extra_tag: ${{ steps.params.outputs.openshell_ref }}
-          registry_token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Compile the OpenShift build source too, including its behavioral tests.
-      # This targets the builder stage; no registry credentials or push required.
+      # Compile the OpenShift build source too, including its behavioral
+      # tests, on each architecture. This targets the builder stage; no
+      # registry credentials or push required.
       - uses: azure/setup-helm@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Render OpenShift builder Dockerfile
         shell: bash
@@ -126,6 +112,25 @@ jobs:
             BUILDER_IMAGE=${{ steps.params.outputs.builder_image }}
             CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
           push: false
-          cache-from: type=gha,scope=governance-interceptor-openshift
-          cache-to: type=gha,mode=max,scope=governance-interceptor-openshift,ignore-error=true
+          cache-from: type=gha,scope=governance-interceptor-openshift-${{ matrix.runner }}
+          cache-to: type=gha,mode=max,scope=governance-interceptor-openshift-${{ matrix.runner }},ignore-error=true
           provenance: false
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the extra tag from values.yaml
+        id: params
+        run: |
+          echo "openshell_ref=$(yq '.source.git.ref' image-builder-charts/helm/governance-interceptor-image/values.yaml)" \
+            >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: governance-interceptor
+          extra_tag: ${{ steps.params.outputs.openshell_ref }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
