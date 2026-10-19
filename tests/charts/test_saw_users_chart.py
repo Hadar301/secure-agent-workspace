@@ -114,13 +114,15 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
                                     "sshVaultPrefix": "secret/data/hub",
                                     "secrets": ["inference", "web-search"],
-                                    "clusterCaSecret": "saw-ingress-ca"}
+                                    "clusterCaSecret": "saw-ingress-ca",
+                                    "clusterCaVaultKey": ""}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
     assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
                            "sshVaultPrefix": "secret/data/hub",
                            "secrets": ["inference", "web-search"],
-                           "clusterCaSecret": "saw-ingress-ca"}
+                           "clusterCaSecret": "saw-ingress-ca",
+                           "clusterCaVaultKey": ""}
 
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"

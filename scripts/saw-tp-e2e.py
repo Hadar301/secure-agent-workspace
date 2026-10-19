@@ -1124,7 +1124,10 @@ def execute_run(config_path: Path, *, retain: bool = False) -> int:
         locked = True
         topology = stage(inventory, state_dir, "preflight.network",
                          lambda: discover_topology(runner, work, deployment_deadline))
-        topology["clusterDomain"] = baseline["ingress_domain"]
+        ingress_domain = baseline["ingress_domain"]
+        if not ingress_domain.startswith("apps."):
+            raise E2EError("cluster ingress domain must start with apps. for the SAW chart")
+        topology["clusterDomain"] = ingress_domain.removeprefix("apps.")
         runtime = runtime_values(config, topology, "sha256:" + "0" * 64)
         runtime_file = write_runtime(work, runtime)
         def validate_render():
