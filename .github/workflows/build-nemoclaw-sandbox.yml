@@ -93,6 +93,21 @@ jobs:
           git checkout -q FETCH_HEAD
           echo "UPSTREAM_DIR=${UPSTREAM_DIR}" >> "${GITHUB_ENV}"
 
+      # NemoClaw v0.0.133 pins curl 8.14.1-2+deb13u5, but trixie-security now
+      # ships libcurl4t64 deb13u7, so apt cannot resolve the pair on a cold
+      # build cache. Apply NVIDIA/NemoClaw#13158 (released in v0.0.135); drop
+      # this step once source.git.ref is v0.0.135 or later.
+      - name: Align upstream curl pin with Debian security
+        run: |
+          dockerfile="${UPSTREAM_DIR}/Dockerfile"
+          if grep -qF 'curl=8.14.1-2+deb13u5' "${dockerfile}"; then
+            sed 's/curl=8\.14\.1-2+deb13u5/curl=8.14.1-2+deb13u7/g' "${dockerfile}" > "${dockerfile}.saw"
+            mv "${dockerfile}.saw" "${dockerfile}"
+            grep -nF 'curl=8.14.1-2+deb13u7' "${dockerfile}"
+          else
+            echo "::notice::NemoClaw no longer pins curl deb13u5; drop this step."
+          fi
+
       - name: Inject reviewed runtimes into build context
         run: |
           mkdir -p "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/mcp-tool-discovery"
