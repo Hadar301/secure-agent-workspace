@@ -415,6 +415,8 @@ The cleanup API firewall exception remains while `cleanupOnDelete: true`, even i
 
 **Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
 
+For an in-cluster MCP server, also configure its sandbox provider and MCP permissions; see [In-cluster MCP Services](harness-bundles.md#in-cluster-mcp-services).
+
 ### Internal Connectivity
 
 | From | To | Protocol | Purpose |

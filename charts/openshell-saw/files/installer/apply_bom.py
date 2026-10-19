@@ -548,6 +548,7 @@ class Provider:
     model_secret_key: str = ""
     inference_timeout: int = 0
     base_url: str = ""
+    credential_free: bool = False
 
 
 @dataclass
@@ -970,21 +971,35 @@ def describe_harness_tree(files, inline=False):
     }
 
 
-def parse_profile_catalog(output):
-    """{profile id: set of endpoint hosts} from
-    `openshell provider list-profiles -o json` (checked on OpenShell 0.0.116)."""
+def parse_provider_profile_catalog(output):
+    """{profile id: profile record} from
+    `openshell provider list-profiles -o json` (checked on OpenShell 0.0.116).
+    A malformed entry is skipped, not fatal: one bad profile in the gateway
+    must not stop an apply that does not use it. What a profile is used for
+    (credentials, enforcement) is checked where it is used."""
     try:
         doc = json.loads(output or "")
     except ValueError:
         raise InstallerError("openshell provider list-profiles -o json did not return JSON") from None
     if isinstance(doc, dict):
         doc = doc.get("profiles") or doc.get("items") or []
-    catalog = {}
-    for item in doc if isinstance(doc, list) else []:
-        if isinstance(item, dict) and item.get("id"):
-            catalog[item["id"]] = {e.get("host") for e in item.get("endpoints") or []
-                                   if isinstance(e, dict) and e.get("host")}
-    return catalog
+    doc = doc if isinstance(doc, list) else []
+    return {item["id"]: item for item in doc
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]}
+
+
+def parse_profile_catalog(profiles):
+    """{profile id: set of endpoint hosts} from parse_provider_profile_catalog()."""
+    return {pid: {e.get("host") for e in item.get("endpoints") or []
+                  if isinstance(e, dict) and e.get("host")}
+            for pid, item in profiles.items()}
+
+
+def in_cluster_host(host):
+    """A Kubernetes Service name: <svc>.<ns>.svc[.cluster.local]. The VM
+    reaches these through networkPolicy.extraEgress, never the EgressFirewall."""
+    labels = host.lower().rstrip(".").split(".")
+    return len(labels) >= 3 and (labels[2:3] == ["svc"] and labels[3:] in ([], ["cluster", "local"]))
 
 
 def host_allowed(host, patterns):
@@ -1258,6 +1273,7 @@ def parse_profiles(files):
                     ws.providers.append(Provider(
                         name=p["name"], type=p["type"],
                         enabled=p.get("enabled", True),
+                        credential_free=p.get("credentialFree", False),
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
@@ -1399,11 +1415,31 @@ def validate_profiles(profiles):
         for p in ws.providers:
             if not p.enabled:
                 continue
-            if p.type not in PROVIDER_CRED_MAP:
+            if not isinstance(p.credential_free, bool):
+                errors.append(f"{where}: provider '{p.name}' credentialFree must be a boolean")
+            elif p.credential_free:
+                # A keyless provider is an attachment to a governed service
+                # (an in-cluster MCP Service): no key, no model, and a type
+                # that is a live governance profile, not a built-in type.
+                for label, value in (("name", p.name), ("type", p.type)):
+                    if not NAME_RE.match(value or "") or len(value) > OPENSHELL_NAME_LIMIT:
+                        errors.append(f"{where}: keyless provider {label} must be a "
+                                      f"DNS label of at most {OPENSHELL_NAME_LIMIT} characters")
+                if p.type in PROVIDER_CRED_MAP:
+                    errors.append(f"{where}: provider '{p.name}' credentialFree cannot disable "
+                                  f"the credential requirement of built-in type '{p.type}'")
+                if p.credential_secret:
+                    errors.append(f"{where}: provider '{p.name}' credentialFree cannot be "
+                                  "combined with credentialSecret")
+                if (p.model or p.nemoclaw_provider or p.model_secret_key or p.base_url_secret_key
+                        or p.base_url or p.inference_timeout):
+                    errors.append(f"{where}: keyless provider '{p.name}' cannot be combined "
+                                  "with model/inference settings")
+            if not p.credential_free and p.type not in PROVIDER_CRED_MAP:
                 errors.append(f"{where}: provider '{p.name}' has unsupported type '{p.type}'")
-            if not p.credential_secret:
+            if not p.credential_secret and not p.credential_free:
                 errors.append(f"{where}: provider '{p.name}' has no credentialSecret")
-            elif not SECRET_NAME_RE.match(p.credential_secret):
+            elif p.credential_secret and not SECRET_NAME_RE.match(p.credential_secret):
                 errors.append(f"{where}: provider '{p.name}' has an invalid credentialSecret name")
             if not SECRET_KEY_RE.match(p.credential_secret_key or ""):
                 errors.append(f"{where}: provider '{p.name}' has an invalid credentialSecretKey")
@@ -1474,7 +1510,7 @@ def resolve_credentials(profiles, secrets_dir):
     creds = {}
     for _, ws in enabled_workspaces(profiles):
         for p in ws.providers:
-            if not p.enabled:
+            if not p.enabled or p.credential_free:
                 continue
             base = secrets_dir / p.credential_secret
             key_file = base / p.credential_secret_key
@@ -2640,6 +2676,7 @@ class ProfileApplier:
         self.harness = harness or {"bundles": {}}
         self.volumes = HarnessVolume(shell)
         self.catalogs = {}            # workspace -> {profile id: endpoint hosts}
+        self.catalog_details = {}     # workspace -> {profile id: profile record}
         self.harness_info = {}        # (workspace, sandbox) -> describe_harness_tree()
         self.harness_refilled = {}    # (workspace, sandbox) -> volume was (re)filled this apply
         self.harness_volumes = set()  # volumes this apply wants to keep
@@ -2774,15 +2811,19 @@ class ProfileApplier:
         `--credential NAME` (no value) makes the CLI read the key from the
         environment variable NAME, so the key never appears in argv
         (/proc/<pid>/cmdline) or in logs."""
-        credential = self.creds[ws.name][provider.name]
-        env_name = PROVIDER_CRED_MAP[provider.type]
-        env = {env_name: credential}
+        env, credential_args = {}, ()
+        env_name = PROVIDER_CRED_MAP.get(provider.type, "")
+        if provider.credential_free:
+            self.check_keyless_profile(ws, provider)
+        else:
+            env = {env_name: self.creds[ws.name][provider.name]}
+            credential_args = ("--credential", env_name)
         # A custom endpoint is recorded on the provider; start_openclaw
         # points the agent at it.
         config = (("--config", f"{BASE_URL_CONFIG_KEYS[provider.type]}={provider.base_url}")
                   if provider.base_url else ())
         create = ("provider", "create", "--name", provider.name, "--type", provider.type,
-                  *ws_args(ws.name), "--credential", env_name, *config)
+                  *ws_args(ws.name), *credential_args, *config)
         created = self.cli(*create, env=env, ok_if_exists=True, check=False)
         if (not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err)
                 and provider.type in self.provider_profiles):
@@ -2803,7 +2844,22 @@ class ProfileApplier:
         if not created.ok:
             raise InstallerError(f"could not create provider '{provider.name}' in workspace "
                                  f"'{ws.name}' (openshell provider create failed)")
-        if created.existed:
+        if created.existed and provider.credential_free:
+            # An existing provider of this name may be a keyed one from an
+            # earlier BOM. Reusing it would leave its key in the sandbox
+            # with nothing in the BOM that says so.
+            existing = self.cli("provider", "get", provider.name, *ws_args(ws.name),
+                                check=False, quiet=True)
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", existing.out)
+            current_type = re.search(r"(?m)^\s*Type:\s*(\S+)\s*$", plain)
+            credential_keys = re.search(r"(?m)^\s*Credential keys:[ \t]*([^\n]*)$", plain)
+            if not existing.ok or not current_type or current_type[1] != provider.type:
+                raise InstallerError(f"keyless provider '{provider.name}' has an unverified or "
+                                     "mismatched existing type; refusing to reuse it")
+            if not credential_keys or credential_keys[1].strip() != "<none>":
+                raise InstallerError(f"keyless provider '{provider.name}' already has credentials "
+                                     "or their absence cannot be verified; remove them explicitly first")
+        if created.existed and not provider.credential_free:
             updated = self.cli("provider", "update", provider.name, *ws_args(ws.name),
                                "--credential", env_name, *config, env=env, check=False)
             if not updated.ok:
@@ -2819,6 +2875,51 @@ class ProfileApplier:
             # re-imported it (PR #54 review, 6a).
             self.remember("profile", ws.name, provider.type)
 
+    def check_keyless_profile(self, ws, provider):
+        """A keyless provider carries no key, so the governance profile is
+        the only thing between the sandbox and the service: it must exist,
+        declare no required credential, and enforce its endpoints."""
+        self.governance_catalog(ws)
+        profile = self.catalog_details[ws.name].get(provider.type)
+        if profile is None:
+            raise InstallerError(f"keyless provider '{provider.name}' needs live profile "
+                                 f"'{provider.type}' in workspace '{ws.name}'")
+        # A profile with no key omits `credentials` entirely (the shape of the
+        # shipped web-search profile); an empty list means the same.
+        declarations = profile.get("credentials")
+        if declarations is None:
+            declarations = []
+        if not isinstance(declarations, list) or any(
+                not isinstance(d, dict) or d.get("required", True) is not False
+                for d in declarations):
+            raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                 f"'{provider.type}': credentials are required or their "
+                                 "declarations are malformed")
+        # Without a key the endpoints are the only control, so each one must
+        # say it is enforced. An endpoint that does not declare enforcement is
+        # refused rather than assumed enforcing: this check is what the key
+        # would otherwise be.
+        endpoints = profile.get("endpoints")
+        if not isinstance(endpoints, list) or not endpoints:
+            raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                 f"'{provider.type}': it declares no endpoints")
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict) or endpoint.get("enforcement") != "enforce":
+                raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                     f"'{provider.type}': endpoint "
+                                     f"'{endpoint.get('host') if isinstance(endpoint, dict) else endpoint}' "
+                                     "is not enforced")
+            # Keyless exists for in-cluster Services, where the cluster's own
+            # network is part of the control. An outside host reached with no
+            # key would widen the sandbox's egress with nothing in the BOM
+            # naming a Secret; shipped web-search declares no credential and
+            # would otherwise qualify.
+            if not in_cluster_host(endpoint.get("host") or ""):
+                raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                     f"'{provider.type}': endpoint "
+                                     f"'{endpoint.get('host')}' is not an in-cluster Service "
+                                     "(credentialFree is for .svc hosts)")
+
     def import_provider_profile(self, ws, profile_id):
         """The gateway has no profile for this provider type (governed
         profiles come from the governance interceptor, which may be off).
@@ -2833,6 +2934,9 @@ class ProfileApplier:
         if not result.ok:
             raise InstallerError(f"could not import the '{profile_id}' provider profile into "
                                  f"workspace '{ws.name}'")
+        # Earlier custom providers may have cached the catalog before this import.
+        self.catalogs.pop(ws.name, None)
+        self.catalog_details.pop(ws.name, None)
         self.remember("profile", ws.name, profile_id)
 
     # -- sandboxes -------------------------------------------------------
@@ -2842,7 +2946,7 @@ class ProfileApplier:
         sandbox's own providers, preferring one with a model. Never another
         provider of the workspace: found live, a skipped `custom` provider
         made OpenClaw onboard with `brave` and a default NVIDIA model."""
-        usable = self.usable(ws)
+        usable = [p for p in self.usable(ws) if not p.credential_free]
         if names:
             usable = [p for n in names for p in usable if p.name == n]
         return next((p for p in usable if p.model), usable[0] if usable else None)
@@ -3133,9 +3237,10 @@ class ProfileApplier:
             if not listed.ok:
                 raise InstallerError("cannot read the gateway's provider profile catalog "
                                      f"for workspace '{ws.name}' (openshell provider "
-                                     "list-profiles failed); refusing to fill a harness "
+                                     "list-profiles failed); refusing to apply "
                                      "without a governance check")
-            self.catalogs[ws.name] = parse_profile_catalog(listed.out)
+            self.catalog_details[ws.name] = parse_provider_profile_catalog(listed.out)
+            self.catalogs[ws.name] = parse_profile_catalog(self.catalog_details[ws.name])
         return self.catalogs[ws.name]
 
     def check_harness_governance(self, ws, sb, info):
@@ -3370,7 +3475,15 @@ class ProfileApplier:
             if prov in attached or (ws.name, prov) in self.skipped:
                 continue
             log(f"Attaching provider '{prov}' to existing sandbox '{sb.name}'")
-            self.cli("sandbox", "provider", "attach", sb.name, prov, *ws_args(ws.name), check=False)
+            keyless = any(p.name == prov and p.credential_free for p in self.usable(ws))
+            # A keyless provider is the sandbox's permission to reach its
+            # governed service, and the attachment installs the policy for
+            # processes started after it: wait for it, and restart OpenClaw
+            # so the running gateway is covered too.
+            self.cli("sandbox", "provider", "attach", sb.name, prov, *ws_args(ws.name),
+                     *(("--wait",) if keyless else ()), check=keyless)
+            if keyless:
+                self.harness_refilled[(ws.name, sb.name)] = True
 
     def onboard_nemoclaw(self, ws, sb, provider):
         home = Path(os.environ.get("HOME", "/home/cloud-user"))

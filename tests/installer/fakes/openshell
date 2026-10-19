@@ -167,8 +167,11 @@ elif op == "provider list-profiles":
                    "web-search": ["api.tavily.com", "api.search.brave.com", "registry.npmjs.org"],
                    "brave": ["api.search.brave.com"], "nvidia": ["integrate.api.nvidia.com"],
                    "github": ["api.github.com"]})
-    print(json.dumps([{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
-                      for pid, hosts in sorted(catalog.items())]))
+    # A value may also be a full profile record (credentials, endpoints),
+    # as a keyless provider's profile needs.
+    print(json.dumps([entry if isinstance(entry, dict) else
+                      {"id": pid, "endpoints": [{"host": h, "port": 443} for h in entry]}
+                      for pid, entry in sorted(catalog.items())]))
 elif op == "provider profile" and head[2] == "import":
     # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
     import yaml
@@ -204,9 +207,12 @@ elif op == "provider update":
     if configs:
         state["providers"][key]["config"] = configs
 elif op == "provider get":
-    if f"{ws}/{head[2]}" not in state["providers"]:
+    prov = state["providers"].get(f"{ws}/{head[2]}")
+    if prov is None:
         fail("Error: provider not found")
     print(f"Name: {head[2]}")
+    print(f"Type: {prov['type']}")
+    print(f"Credential keys: {prov['credential'] or '<none>'}")
 elif op == "provider list":
     print("NAME TYPE")
     for key in sorted(state["providers"]):

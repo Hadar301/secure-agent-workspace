@@ -597,6 +597,8 @@ Users can create their own workspace from Red Hat Developer Hub: they pick a SAW
 
 A sandbox's `harnessRef` in its SAW-BOM profile names a harness bundle: skills, MCP servers (`mcp.json`) and OpenClaw tool plugins (`.mjs`). The installer puts it, unchanged, into a volume the sandbox mounts read-only at `/sandbox/harness`, and points OpenClaw at it. Keys never go in a bundle: a server or plugin that calls a service gets its key through a provider attached to the sandbox. A bundle is either an OCI image built from `harness-bundles/` and published to GHCR by CI (`harnessRef: { image: ghcr.io/<owner>/saw-harness-<bundle>@sha256:… }`), or an inline bundle in the saw-bom chart (`harnessRef: { name: <bundle> }`). Details: [docs/harness-bundles.md](docs/harness-bundles.md).
 
+For an MCP server running inside OpenShift, see [In-cluster MCP Services](docs/harness-bundles.md#in-cluster-mcp-services) for network rules, governance, provider attachment, and BOM provider provisioning.
+
 ### Validating the deployment
 
 ```bash

@@ -181,6 +181,10 @@ class FakeWorld:
         path = self.state / "openshell.json"
         return json.loads(path.read_text()) if path.exists() else None
 
+    def set_catalog(self, catalog):
+        """{profile id: [host, ...]} or {profile id: full profile record}."""
+        (self.state / "catalog.json").write_text(json.dumps(catalog))
+
     def set_openshell_state(self, data):
         (self.state / "openshell.json").write_text(json.dumps(data))
 
