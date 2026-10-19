@@ -72,14 +72,15 @@ For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom in
 
 ### Architecture diagrams
 
-The first diagram shows this repository's current implementation. Solid arrows
-show the default path. Dashed arrows show optional paths. The two diagrams that
-follow illustrate the [NVIDIA Secure Agent Workspace OpenShift Virtualization
-reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
+The first diagram shows an OpenShift Virtualization and APF governance reference
+architecture. It shows conceptual Phase I and Phase II workspaces. APF is an
+optional governance engine in this repository; the OpenShell governance
+interceptor is the default. The two diagrams that follow also illustrate the
+[NVIDIA Secure Agent Workspace OpenShift Virtualization reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
 
-#### Current implementation architecture
+#### OpenShift Virtualization and APF reference architecture
 
-![Current Secure Agent Workspace implementation on OpenShift, with optional RHDH and APF paths](docs/images/openshift-reference-shape.svg)
+![Reference architecture with an endpoint, Phase I and Phase II workspace VMs, APF governance, and corporate services](docs/images/openshift-reference-shape.png)
 
 #### Reference design: GitOps policy model
 
