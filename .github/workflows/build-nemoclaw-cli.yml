@@ -29,7 +29,8 @@ jobs:
   # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
     strategy:
-      fail-fast: true
+      # Each architecture reports its own result; merge still needs both.
+      fail-fast: false
       matrix:
         include:
           - platform: linux/amd64

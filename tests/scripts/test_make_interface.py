@@ -460,6 +460,16 @@ def test_public_image_check_targets_the_published_tag():
     assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"
 
 
+@pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
+                                  "build-governance-interceptor.yml"])
+def test_platform_builds_report_independently_and_merge_needs_both(name):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+    build, merge = workflow["jobs"]["build"], workflow["jobs"]["merge"]
+    assert build["strategy"]["fail-fast"] is False
+    assert {e["platform"] for e in build["strategy"]["matrix"]["include"]} == {"linux/amd64", "linux/arm64"}
+    assert merge["needs"] == "build"
+
+
 @pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
 def test_sandbox_build_consumes_only_its_completed_discovery_build(tmp_path, phase, digest):
     bindir = tmp_path / "bin"
