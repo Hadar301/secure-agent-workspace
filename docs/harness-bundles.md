@@ -79,9 +79,13 @@ the calling executable in `binaries`, and compatible `mcp.versions`. Its rules
 must allow `initialize`, `notifications/initialized`, `tools/list`, `ping`,
 and only the approved `tools/call` tools.
 
-For a server without a key, the profile must declare `credentials: []`
-(or only explicitly optional credentials). Add this provider to the selected
-BOM workspace's `providers.yaml`:
+For a server without a key, the profile must declare no required credential:
+omit `credentials` entirely, as the shipped `web-search` profile does, or list
+only explicitly optional ones. Every endpoint must declare
+`enforcement: enforce` and an in-cluster host (`<svc>.<ns>.svc`, optionally
+`.cluster.local`); an endpoint that leaves enforcement out, or names an outside
+host, is refused. Add this provider to the selected BOM workspace's
+`providers.yaml`:
 
 ```yaml
 - name: local-mcp
@@ -98,9 +102,13 @@ request fails with `EACCES`. The installer creates and attaches the provider
 on apply, including for a sandbox that already exists, so the attachment
 survives a sandbox recreated by a `harnessRef` change. Because a keyless
 provider carries no key, its profile is the only gate: the installer refuses
-one whose profile requires a credential, declares a non-enforcing endpoint,
-or whose provider already has stored credentials. A keyless provider cannot
-be combined with a Secret or with model/inference settings.
+one whose profile requires a credential, declares no endpoint or an endpoint
+that is not enforced or not in-cluster, or whose provider already has stored
+credentials. A keyed service needs a normal provider with its Secret. A
+keyless provider cannot be combined with a Secret or with model/inference
+settings. The profile must be live in the gateway's catalog, so a keyless
+provider needs the governance interceptor; the installer's own
+`provider-profile-*.yaml` import does not satisfy it.
 
 #### Servers that need an API key
 

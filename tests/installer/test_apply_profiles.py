@@ -577,6 +577,56 @@ def test_a_keyless_provider_refuses_an_unenforced_endpoint(ab, fake_env, config,
         make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
 
 
+def test_a_keyless_profile_may_omit_its_credentials(ab, fake_env, config, profiles, creds):
+    """A profile with no key leaves `credentials` out, as the shipped
+    web-search profile does; that is not 'malformed'."""
+    fake_env.set_catalog({**KEYLESS_CATALOG,
+                          "local-mcp": {"id": "local-mcp",
+                                        "endpoints": [{"host": "mcp.apps.svc.cluster.local",
+                                                       "port": 8080, "enforcement": "enforce"}]}})
+    make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
+    assert fake_env.openshell_state()["providers"]["default/local-mcp"]["credential"] is None
+
+
+def test_a_keyless_provider_refuses_an_endpoint_that_does_not_declare_enforcement(
+        ab, fake_env, config, profiles, creds):
+    """An undeclared enforcement is not assumed to be 'enforce': this check
+    is what the missing key would otherwise be."""
+    fake_env.set_catalog({**KEYLESS_CATALOG,
+                          "local-mcp": {"id": "local-mcp", "credentials": [],
+                                        "endpoints": [{"host": "mcp.apps.svc.cluster.local",
+                                                       "port": 8080}]}})
+    with pytest.raises(ab.InstallerError, match="not enforced"):
+        make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
+
+
+def test_a_keyless_provider_refuses_an_outside_host(ab, fake_env, config, profiles, creds):
+    """credentialFree is for in-cluster Services. Shipped web-search declares
+    no credential and would otherwise qualify for keyless egress to npmjs."""
+    fake_env.set_catalog({**KEYLESS_CATALOG,
+                          "local-mcp": {"id": "local-mcp",
+                                        "endpoints": [{"host": "registry.npmjs.org", "port": 443,
+                                                       "enforcement": "enforce"}]}})
+    with pytest.raises(ab.InstallerError, match="not an in-cluster Service"):
+        make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
+
+
+def test_in_cluster_host(ab):
+    assert ab.in_cluster_host("mcp.apps.svc")
+    assert ab.in_cluster_host("mcp.apps.svc.cluster.local")
+    assert not ab.in_cluster_host("registry.npmjs.org")
+    assert not ab.in_cluster_host("svc.evil.com")
+    assert not ab.in_cluster_host("mcp.apps.svc.cluster.local.evil.com")
+
+
+def test_a_keyless_provider_refuses_a_profile_without_endpoints(
+        ab, fake_env, config, profiles, creds):
+    fake_env.set_catalog({**KEYLESS_CATALOG,
+                          "local-mcp": {"id": "local-mcp", "credentials": [], "endpoints": []}})
+    with pytest.raises(ab.InstallerError, match="declares no endpoints"):
+        make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
+
+
 def test_a_keyless_provider_does_not_reuse_a_keyed_one_of_the_same_name(
         ab, fake_env, config, profiles, creds):
     fake_env.set_catalog(KEYLESS_CATALOG)
@@ -586,3 +636,41 @@ def test_a_keyless_provider_does_not_reuse_a_keyed_one_of_the_same_name(
         "sandboxes": {}, "inference": {}, "system_inference": None})
     with pytest.raises(ab.InstallerError, match="already has credentials"):
         make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
+
+
+def test_a_keyless_provider_reaches_a_sandbox_that_already_runs(
+        ab, fake_env, config, profiles, creds, shipped_profile_files):
+    """The attachment is the sandbox's permission to reach the Service. Adding
+    the provider to an existing SAW must attach it to the running sandbox and
+    restart OpenClaw, which only covers processes started after the attach."""
+    fake_env.set_catalog(KEYLESS_CATALOG)
+    make_applier(ab, config, creds).apply(profiles)
+    before = len([c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]])
+
+    later = with_keyless(ab, ab.parse_profiles(shipped_profile_files))
+    make_applier(ab, config, creds).apply(later)
+
+    state = fake_env.openshell_state()
+    assert state["sandboxes"]["default/notebook"]["providers"] == ["nvidia", "local-mcp"]
+    attach = next(c for c in fake_env.openshell_calls()
+                  if c[:3] == ["sandbox", "provider", "attach"] and "local-mcp" in c)
+    assert "--wait" in attach
+    creates = [c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]]
+    assert len(creates) == before, "the running sandbox must not be recreated to attach a provider"
+
+
+def test_attaching_a_keyless_provider_marks_openclaw_for_restart(
+        ab, fake_env, config, profiles, creds, shipped_profile_files):
+    """The attachment covers processes started after it, so the running
+    OpenClaw gateway needs the restart that openclaw_gateway_script does for
+    a refilled harness."""
+    fake_env.set_catalog(KEYLESS_CATALOG)
+    make_applier(ab, config, creds).apply(profiles)
+
+    later = with_keyless(ab, ab.parse_profiles(shipped_profile_files))
+    ws = next(w for p in later for w in p.workspaces if w.name == "default")
+    sb = next(s for s in ws.sandboxes if s.name == "notebook")
+    applier = make_applier(ab, config, creds)
+    applier.cli("provider", "create", "--name", "local-mcp", "--type", "local-mcp")
+    applier.attach_missing_providers(ws, sb)
+    assert applier.harness_refilled[("default", "notebook")] is True

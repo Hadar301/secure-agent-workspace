@@ -966,6 +966,13 @@ def parse_profile_catalog(profiles):
             for pid, item in profiles.items()}
 
 
+def in_cluster_host(host):
+    """A Kubernetes Service name: <svc>.<ns>.svc[.cluster.local]. The VM
+    reaches these through networkPolicy.extraEgress, never the EgressFirewall."""
+    labels = host.lower().rstrip(".").split(".")
+    return len(labels) >= 3 and (labels[2:3] == ["svc"] and labels[3:] in ([], ["cluster", "local"]))
+
+
 def host_allowed(host, patterns):
     """A profile endpoint host may be a glob (*-aiplatform.googleapis.com);
     ports are not part of the match. Each `*` is one DNS label (no dots)."""
@@ -2801,21 +2808,41 @@ class ProfileApplier:
         if profile is None:
             raise InstallerError(f"keyless provider '{provider.name}' needs live profile "
                                  f"'{provider.type}' in workspace '{ws.name}'")
+        # A profile with no key omits `credentials` entirely (the shape of the
+        # shipped web-search profile); an empty list means the same.
         declarations = profile.get("credentials")
+        if declarations is None:
+            declarations = []
         if not isinstance(declarations, list) or any(
                 not isinstance(d, dict) or d.get("required", True) is not False
                 for d in declarations):
             raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
                                  f"'{provider.type}': credentials are required or their "
                                  "declarations are malformed")
-        # ponytail: an endpoint that declares no enforcement is left to the
-        # profile review in charts/governance-policy; only a declared
-        # non-enforcing one is refused here.
-        for endpoint in profile.get("endpoints") or []:
-            if isinstance(endpoint, dict) and endpoint.get("enforcement", "enforce") != "enforce":
+        # Without a key the endpoints are the only control, so each one must
+        # say it is enforced. An endpoint that does not declare enforcement is
+        # refused rather than assumed enforcing: this check is what the key
+        # would otherwise be.
+        endpoints = profile.get("endpoints")
+        if not isinstance(endpoints, list) or not endpoints:
+            raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                 f"'{provider.type}': it declares no endpoints")
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict) or endpoint.get("enforcement") != "enforce":
                 raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
-                                     f"'{provider.type}': endpoint '{endpoint.get('host')}' is "
-                                     "not enforced")
+                                     f"'{provider.type}': endpoint "
+                                     f"'{endpoint.get('host') if isinstance(endpoint, dict) else endpoint}' "
+                                     "is not enforced")
+            # Keyless exists for in-cluster Services, where the cluster's own
+            # network is part of the control. An outside host reached with no
+            # key would widen the sandbox's egress with nothing in the BOM
+            # naming a Secret; shipped web-search declares no credential and
+            # would otherwise qualify.
+            if not in_cluster_host(endpoint.get("host") or ""):
+                raise InstallerError(f"keyless provider '{provider.name}' cannot use profile "
+                                     f"'{provider.type}': endpoint "
+                                     f"'{endpoint.get('host')}' is not an in-cluster Service "
+                                     "(credentialFree is for .svc hosts)")
 
     def import_provider_profile(self, ws, profile_id):
         """The gateway has no profile for this provider type (governed
