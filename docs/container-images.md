@@ -21,6 +21,12 @@ those deployment overrides local when preparing changes for upstream.
 | `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
 
+`nemoclaw-cli`, `nemoclaw-sandbox` and `governance-interceptor` tags are
+multi-architecture indexes (`linux/amd64`, `linux/arm64`): each architecture
+builds natively and pushes by digest, and the merge job joins the digests with
+`.github/actions/merge-image`. The gateway disks are x86_64 only; an arm64
+cluster builds its own ([arm64 guide](arm64.md)).
+
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies
 the published commit tag with an empty Docker auth configuration (harness builds

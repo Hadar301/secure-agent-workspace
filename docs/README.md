@@ -37,6 +37,7 @@ quickstart, and the supported-provider and secrets tables.
 | [Custom inference](custom-inference.md) | Point a SAW at your own OpenAI-compatible server (vLLM, Ollama, …) |
 | [Container runtime](container-runtime.md) | Rootless podman (default) vs. docker (legacy) |
 | [Container images](container-images.md) | CI-published images, mirroring, registries, retained Quay dependencies |
+| [arm64 clusters](arm64.md) | Run on arm64 (GB200 / Grace): multi-arch images, golden image and interceptor builds |
 | [Signing](signing.md) | What is signed and how — installer bundle, BOM components, APF policy, images |
 
 ## Operations
@@ -50,6 +51,7 @@ quickstart, and the supported-provider and secrets tables.
 | I want to… | See |
 |---|---|
 | Deploy the whole pattern end to end | [deployment-guide](deployment-guide.md) |
+| Deploy on an arm64 cluster | [arm64](arm64.md) |
 | Let users request their own workspace | [self-service-portal](self-service-portal.md) + [rhdh-user-guide](rhdh-user-guide.md) |
 | Create a harness bundle (skills / MCP / tools) | [harness-bundles](harness-bundles.md) |
 | Use my own model server | [custom-inference](custom-inference.md) |
