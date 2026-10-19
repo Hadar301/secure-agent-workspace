@@ -14,4 +14,4 @@ OpenShift Virtualization runs guests on the host architecture. On an arm64 clust
 
 Ensure the internal image registry is available with persistent storage before building. Confirm the OpenShift Virtualization, Keycloak, RHDH, External Secrets, and Pipelines operators support your OpenShift version and architecture. Check the golden ImageStreamTag and DataVolume before creating workspaces. Use the normal pattern install workflow only for a new deployment; preserve the existing Pattern CR and workspaces during an upgrade.
 
-GPU passthrough has separate requirements. Follow [GPU passthrough](gpu-passthrough.md) before enabling it for a VM.
+GPU passthrough has separate requirements and is not covered by this guide.
