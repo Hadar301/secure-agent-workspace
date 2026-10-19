@@ -471,11 +471,13 @@ def test_platform_builds_keep_the_repository_source_label():
 @pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
                                   "build-governance-interceptor.yml"])
 def test_platform_builds_report_independently_and_merge_needs_both(name):
-    workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+    text = (ROOT / ".github/workflows" / name).read_text()
+    workflow = yaml.safe_load(text)
     build, merge = workflow["jobs"]["build"], workflow["jobs"]["merge"]
     assert build["strategy"]["fail-fast"] is False
     assert {e["platform"] for e in build["strategy"]["matrix"]["include"]} == {"linux/amd64", "linux/arm64"}
     assert merge["needs"] == "build"
+    assert text.count(".github/actions/merge-image/**") == 2
 
 
 @pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
