@@ -17,3 +17,6 @@ secrets:
 # <sshVaultPrefix>/cluster-ingress-ca, written by the saw-ingress-ca
 # imperative job); empty = none. saw-users sets saw-ingress-ca.
 clusterCaSecret: ""
+# Optional Vault KV v2 key relative to the store's mount. The ingress CA
+# imperative job writes hub/cluster-ingress-ca under the secret mount.
+clusterCaVaultKey: ""

@@ -263,7 +263,8 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
       "secrets" (include "saw-users.secretNames" . | fromJsonArray)
-      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")
+      "clusterCaVaultKey" ($root.Values.defaults.clusterCaVaultKey | default "")) -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}

@@ -296,9 +296,13 @@ def render_charts(runner: CommandRunner, child_values: dict[str, dict], work: Pa
                 if not IMAGE_RE.search(component.get("image", "")):
                     raise E2EError("rendered installer contains an unpinned component")
         if chart.endswith("pattern-secrets"):
-            external = {item["metadata"]["name"] for item in docs if item.get("kind") == "ExternalSecret"}
+            external = {item["metadata"]["name"]: item for item in docs
+                        if item.get("kind") == "ExternalSecret"}
             if "inference" not in external or "web-search" in external:
                 raise E2EError("rendered External Secrets selection changed")
+            ca = external.get("saw-ingress-ca", {}).get("spec", {}).get("data", [])
+            if len(ca) != 1 or ca[0].get("remoteRef", {}).get("key") != "hub/cluster-ingress-ca":
+                raise E2EError("rendered ingress CA Vault path changed")
     keycloak = yaml_docs(runner.run("render minimal Keycloak", [
         "helm", "template", "e2e-keycloak", "charts/openshell-keycloak",
         "--namespace", "saw-keycloak", "-f", "overrides/keycloak-e2e.yaml"]))

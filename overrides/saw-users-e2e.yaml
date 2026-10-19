@@ -16,6 +16,7 @@ users:
 defaults:
   profiles:
     - e2e
+  clusterCaVaultKey: hub/cluster-ingress-ca
   openshellSaw:
     governance:
       enabled: false
