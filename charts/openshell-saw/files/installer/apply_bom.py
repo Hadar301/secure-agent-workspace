@@ -955,8 +955,9 @@ def parse_provider_profile_catalog(output):
         raise InstallerError("openshell provider list-profiles -o json did not return JSON") from None
     if isinstance(doc, dict):
         doc = doc.get("profiles") or doc.get("items") or []
-    return {item["id"]: item for item in doc if isinstance(doc, list)
-            and isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]}
+    doc = doc if isinstance(doc, list) else []
+    return {item["id"]: item for item in doc
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]}
 
 
 def parse_profile_catalog(profiles):

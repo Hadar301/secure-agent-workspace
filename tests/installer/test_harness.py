@@ -360,6 +360,12 @@ def test_parse_profile_catalog_reads_ids_and_hosts(ab):
     assert ab.parse_profile_catalog(profiles) == {"web-search": {"api.tavily.com"}, "slack": set()}
 
 
+@pytest.mark.parametrize("output", ["null", "123", "true", '"unexpected"',
+                                    '{"profiles": 123}', '{"items": true}'])
+def test_a_non_list_profile_catalog_is_empty(ab, output):
+    assert ab.parse_provider_profile_catalog(output) == {}
+
+
 def test_host_allowed_matches_one_dns_label_globs(ab):
     assert ab.host_allowed("us-central1-aiplatform.googleapis.com",
                            {"*-aiplatform.googleapis.com"})
@@ -565,4 +571,3 @@ def test_a_bundle_without_plugin_json_declares_nothing(ab):
     info = ab.describe_harness_tree({"harness.yaml": (manifest.encode(), False),
                                      "skills/x/SKILL.md": (b"---\nname: x\n---\n", False)})
     assert ab.harness_mcp_servers(info) == {}
-
