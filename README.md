@@ -72,17 +72,20 @@ For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom in
 
 ### Architecture diagrams
 
-The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
+The first diagram shows this repository's current implementation. Solid arrows
+show the default path. Dashed arrows show optional paths. The two diagrams that
+follow illustrate the [NVIDIA Secure Agent Workspace OpenShift Virtualization
+reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
 
-#### Reference Architecture
+#### Current implementation architecture
 
-![OpenShift Virtualization Reference Implementation](docs/images/openshift-reference-shape.png)
+![Current Secure Agent Workspace implementation on OpenShift, with optional RHDH and APF paths](docs/images/openshift-reference-shape.svg)
 
-#### GitOps Policy Model
+#### Reference design: GitOps policy model
 
 ![GitOps Policy Model — End-to-End Policy Flow](docs/images/gitops-policy-model.png)
 
-#### Storage Layout
+#### Reference design: storage layout
 
 ![NFS storage layout for policy bundles and workspace persistence](docs/images/nfs-storage-layout.png)
 
