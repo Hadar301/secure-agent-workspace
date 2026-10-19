@@ -460,6 +460,14 @@ def test_public_image_check_targets_the_published_tag():
     assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"
 
 
+def test_platform_builds_keep_the_repository_source_label():
+    action = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    builds = [s for s in action["runs"]["steps"] if s.get("uses", "").startswith("docker/build-push-action")]
+    assert len(builds) == 2
+    assert {b["with"]["labels"] for b in builds} == {
+        "org.opencontainers.image.source=https://github.com/${{ github.repository }}"}
+
+
 @pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
                                   "build-governance-interceptor.yml"])
 def test_platform_builds_report_independently_and_merge_needs_both(name):
