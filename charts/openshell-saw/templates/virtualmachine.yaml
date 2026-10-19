@@ -90,15 +90,10 @@ spec:
               disk:
                 bus: virtio
             {{- end }}
-            {{- if eq .Values.accessControl.ownerSubjectSource "resolved" }}
-            - name: saw-owner
-              serial: saw-owner
-              disk:
-                bus: virtio
             {{- end }}
-            {{- end }}
-          {{- if .Values.vm.liveInputs }}
+          {{- if or .Values.vm.liveInputs (eq .Values.accessControl.ownerSubjectSource "resolved") }}
           filesystems:
+            {{- if .Values.vm.liveInputs }}
             - name: saw-installer
               virtiofs: {}
             - name: saw-profiles
@@ -107,6 +102,9 @@ spec:
             - name: saw-sec-{{ $i }}
               virtiofs: {}
             {{- end }}
+            {{- end }}
+            # The resolver can supply or revoke the subject after boot.
+            # Keep this mount live even when other inputs use ISO disks.
             {{- if eq .Values.accessControl.ownerSubjectSource "resolved" }}
             - name: saw-owner
               virtiofs: {}

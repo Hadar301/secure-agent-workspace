@@ -1094,6 +1094,20 @@ def test_cleanup_hook_can_be_turned_off():
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
 
 
+@pytest.mark.parametrize("live_inputs", ["true", "false"])
+def test_resolved_owner_always_uses_live_virtiofs(live_inputs):
+    docs = render("--set", f"vm.liveInputs={live_inputs}",
+                  "--set", "accessControl.ownerSubjectSource=resolved")
+    spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
+    devices = spec["domain"]["devices"]
+    assert "saw-owner" not in {d["name"] for d in devices["disks"]}
+    assert {f["name"]: f["virtiofs"] for f in devices["filesystems"]}["saw-owner"] == {}
+    assert {v["name"] for v in spec["volumes"]} == {
+        d["name"] for kind in ("disks", "filesystems") for d in devices.get(kind, [])}
+    cfg = cloud_config(docs)
+    assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
+
+
 def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     docs = render("--set", "vm.liveInputs=true")
     spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
@@ -1107,6 +1121,21 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     assert "openshell.pattern/cloudinit-checksum" in annotations
     cfg = cloud_config(docs)
     assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
+
+
+@pytest.mark.parametrize("governance", ["true", "false"])
+def test_ungoverned_sandboxes_receive_the_saw_policy(governance):
+    docs = render("--set", f"governance.enabled={governance}")
+    config = json.loads(installer_data(docs)["config.json"])
+    if governance == "true":
+        assert config["sandboxPolicy"] == ""
+    else:
+        policy = yaml.safe_load(config["sandboxPolicy"])
+        expected = yaml.safe_load((ROOT / "charts/governance-policy/policy.yaml").read_text())
+        assert policy == expected
+        assert policy["version"] == 1
+        assert "permissions" not in policy
+        assert "network_policies" not in policy
 
 
 def test_signing_mode_defaults_to_warn(default_docs):

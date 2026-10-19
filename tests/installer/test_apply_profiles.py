@@ -63,6 +63,24 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     assert applier.verify(profiles) == []
 
 
+def test_explicit_sandbox_policy_replaces_legacy_image_policy(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    policy = "version: 1\nfilesystem_policy:\n  read_only: [/usr]\n"
+    applier = make_applier(ab, config, creds, sandboxPolicy=policy)
+    cli = applier.cli
+    captured = []
+
+    def capture(*args, **kwargs):
+        if args[:2] == ("sandbox", "create"):
+            assert "--policy" in args
+            captured.append(Path(args[args.index("--policy") + 1]).read_text())
+        return cli(*args, **kwargs)
+
+    monkeypatch.setattr(applier, "cli", capture)
+    applier.apply(profiles)
+    assert captured and all(value == policy for value in captured)
+
+
 def test_openclaw_calls_the_native_endpoint_with_the_placeholder_key(
         ab, fake_env, config, profiles, creds):
     """0.1.x removed https://inference.local: OpenClaw calls NVIDIA directly,

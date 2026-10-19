@@ -285,10 +285,16 @@ def render_charts(runner: CommandRunner, child_values: dict[str, dict], work: Pa
             volumes = {item["name"] for item in template.get("volumes", [])}
             if not volumes.issubset(attached):
                 raise E2EError("rendered VM has a volume without a matching device")
+            if "saw-owner" not in {item["name"] for item in devices.get("filesystems", [])}:
+                raise E2EError("rendered VM must receive owner updates through virtiofs")
             installers = [item for item in docs if item.get("kind") == "ConfigMap" and
                           item.get("metadata", {}).get("name") == f"{OWNER}-installer"]
             if len(installers) != 1:
                 raise E2EError("rendered installer ConfigMap is absent")
+            installer_config = json.loads(installers[0]["data"]["config.json"])
+            policy = yaml.safe_load(installer_config.get("sandboxPolicy", ""))
+            if not isinstance(policy, dict) or policy.get("version") != 1 or "filesystem_policy" not in policy:
+                raise E2EError("rendered installer lacks a compatible sandbox policy")
             bom = yaml.safe_load(installers[0]["data"]["installer-bom.yaml"])
             if "nemoclaw" in bom.get("spec", {}):
                 raise E2EError("rendered installer still includes NemoClaw")

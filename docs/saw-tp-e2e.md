@@ -84,6 +84,16 @@ checkout and cluster access.
 
 ## Coverage
 
+The resolved owner subject uses a live virtiofs ConfigMap mount, even when
+the other VM inputs use ISO disks. The guest can receive the subject after
+Keycloak becomes ready without a VM restart.
+
+With governance disabled, the installer supplies the SAW sandbox policy
+explicitly. The pinned OpenClaw image has a legacy policy schema that
+OpenShell 0.1.2 rejects. The explicit policy uses the same filesystem and
+process restrictions as the normal SAW policy. Provider profiles supply
+the permitted inference endpoints.
+
 The test covers the minimal Pattern, OpenShift Virtualization, one Fedora 44
 VM, Podman, OpenClaw, NVIDIA inference, Keycloak/OIDC, Vault, External
 Secrets, and network controls. SPIRE, RPM installation, Codex, Anthropic,

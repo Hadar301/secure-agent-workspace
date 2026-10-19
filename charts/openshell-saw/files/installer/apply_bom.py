@@ -359,6 +359,7 @@ CONFIG_DEFAULTS = {
     "mtlsGateway": "saw-installer",
     "ownerSubject": "",
     "ownerSubjectSource": "",
+    "sandboxPolicy": "",
     "sandboxDashboardRoute": "",
     "sandboxUi": [],
     "sandboxUiProxy": {},
@@ -405,6 +406,8 @@ def load_config(path):
         raise InstallerError("installer config: ownerSubjectSource must be empty or resolved")
     if source == "resolved" and merged["ownerSubject"]:
         raise InstallerError("installer config: resolved owner cannot also have ownerSubject")
+    if not isinstance(merged["sandboxPolicy"], str):
+        raise InstallerError("installer config: sandboxPolicy must be a YAML string")
     if not merged.get("vmName"):
         raise InstallerError("installer config: vmName is required")
     if not NAME_RE.match(merged["runtimeUser"].replace("_", "-")):
@@ -3352,9 +3355,17 @@ class ProfileApplier:
                 log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
                 continue
             args += ["--provider", prov]
-        # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
-        args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
-        self.cli(*args, timeout=900)
+        # Without a governance interceptor, supply the chart's restrictive
+        # policy explicitly. The pinned OpenClaw image carries a legacy
+        # policy schema that OpenShell 0.1.x cannot activate.
+        with tempfile.TemporaryDirectory(prefix="saw-sandbox-policy-") as tmp:
+            if self.cfg.get("sandboxPolicy"):
+                policy = Path(tmp) / "policy.yaml"
+                policy.write_text(self.cfg["sandboxPolicy"], encoding="utf-8")
+                args += ["--policy", str(policy)]
+            # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
+            args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
+            self.cli(*args, timeout=900)
         self.remember("sandbox", ws.name, sb.name)
 
     def attach_missing_providers(self, ws, sb):

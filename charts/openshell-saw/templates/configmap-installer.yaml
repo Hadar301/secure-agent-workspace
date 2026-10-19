@@ -42,6 +42,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "mtlsGateway" "saw-installer"
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "ownerSubjectSource" (.Values.accessControl.ownerSubjectSource | default "")
+      "sandboxPolicy" (ternary "" (.Files.Get "files/installer/sandbox-policy.yaml") .Values.governance.enabled)
       "oidcIssuer" $oidcIssuer
       "caBundle" (.Values.oidc.caBundle | default "")
       "caBundleSecret" (include "openshell-sandbox.caBundleSecret" .)
