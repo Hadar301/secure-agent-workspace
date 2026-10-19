@@ -52,8 +52,6 @@ jobs:
             >> "$GITHUB_OUTPUT"
           echo "git_uri=$(yq '.source.git.uri' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
-          echo "target_arch=$(yq '.build.targetArch' "$VALUES")" \
-            >> "$GITHUB_OUTPUT"
           echo "discovery_node_version=$(yq '.build.discoveryNodeVersion' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
           echo "base_image=$(yq '.build.baseImage' "$VALUES")" \
