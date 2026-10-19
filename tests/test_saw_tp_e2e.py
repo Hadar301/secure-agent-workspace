@@ -44,6 +44,14 @@ def test_runtime_parameter_survives_helm_set(tmp_path):
     ])
 
 
+def test_ansible_failure_summary_omits_task_output():
+    output = ("TASK [Wait for SAW health] ***\n"
+              "fatal: [localhost]: FAILED! => secret-value\n")
+    summary = e2e.ansible_failure_summary(output)
+    assert "Wait for SAW health" in summary
+    assert "secret-value" not in summary
+
+
 def test_invalid_private_config(tmp_path):
     config = tmp_path / "test.yaml"
     config.write_text("cluster: {}\ninference: {}\n")

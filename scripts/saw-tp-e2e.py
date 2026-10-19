@@ -80,6 +80,17 @@ def clean_message(message: str, sensitive: list[str]) -> str:
     return message[:1200]
 
 
+def ansible_failure_summary(output: str) -> str:
+    tasks = re.findall(r"(?m)^TASK \[([^\]\r\n]{1,150})\]", output)
+    fatal = len(re.findall(r"(?m)^fatal: \[", output))
+    parts = []
+    if tasks:
+        parts.append("last Ansible task: " + tasks[-1])
+    if fatal:
+        parts.append(f"Ansible fatal results: {fatal}")
+    return "; ".join(parts)
+
+
 def load_config(path: Path, *, require_key: bool) -> dict:
     if not path.is_absolute() or not path.is_file():
         raise E2EError("E2E_CONFIG must name an existing absolute file")
@@ -154,6 +165,10 @@ class CommandRunner:
             raise E2EError(f"{label} could not start: {exc.strerror}") from exc
         if result.returncode:
             detail = clean_message(result.stderr or result.stdout, self.sensitive)
+            if label == "install minimal Pattern":
+                summary = ansible_failure_summary(result.stdout)
+                if summary:
+                    detail += "\n" + clean_message(summary, self.sensitive)
             raise E2EError(f"{label} failed with exit code {result.returncode}: {detail}")
         return result.stdout
 
