@@ -88,8 +88,8 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
       # guestmount uses a small QEMU appliance (via libguestfs direct backend)
-      # to access the disk image. KVM accelerates the x86 runner; on arm64 the
-      # appliance can run under TCG if /dev/kvm is unavailable.
+      # to access the disk image. KVM accelerates the x86 runner; arm64 uses
+      # TCG because the GitHub-hosted arm64 runner has no usable /dev/kvm.
       - name: Install build dependencies
         run: |
           case "$(uname -m)" in
@@ -313,10 +313,14 @@ jobs:
         run: |
           cp fedora-base.qcow2 base.qcow2
 
-          # Mount the disk via FUSE — no QEMU VM execution, no SLIRP networking.
-          # All commands below run on the host with host network access.
+          # Mount the disk via FUSE. libguestfs runs its QEMU appliance locally;
+          # all image customization commands run on the host.
           sudo mkdir -p "${GUEST}"
-          sudo guestmount -a base.qcow2 -i --rw "${GUEST}"
+          guestfs_env=(LIBGUESTFS_BACKEND=direct)
+          if [[ "${{ matrix.platform }}" == linux/arm64 ]]; then
+            guestfs_env+=(LIBGUESTFS_BACKEND_SETTINGS=force_tcg LIBGUESTFS_DEBUG=1)
+          fi
+          sudo env "${guestfs_env[@]}" guestmount -a base.qcow2 -i --rw "${GUEST}"
 
           # Bind-mount host pseudo-filesystems so dnf scriptlets work
           sudo mount -t proc  proc     "${GUEST}/proc"
@@ -397,7 +401,11 @@ jobs:
           cp fedora-base.qcow2 base.qcow2
 
           sudo mkdir -p "${GUEST}"
-          sudo guestmount -a base.qcow2 -i --rw "${GUEST}"
+          guestfs_env=(LIBGUESTFS_BACKEND=direct)
+          if [[ "${{ matrix.platform }}" == linux/arm64 ]]; then
+            guestfs_env+=(LIBGUESTFS_BACKEND_SETTINGS=force_tcg LIBGUESTFS_DEBUG=1)
+          fi
+          sudo env "${guestfs_env[@]}" guestmount -a base.qcow2 -i --rw "${GUEST}"
 
           sudo mount -t proc  proc     "${GUEST}/proc"
           sudo mount -t sysfs sys      "${GUEST}/sys"
