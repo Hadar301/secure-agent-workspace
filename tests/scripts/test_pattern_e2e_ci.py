@@ -65,6 +65,33 @@ def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch
     assert "build terminal status" in str(error.value)
 
 
+def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
+    digest = "sha256:" + "a" * 64
+    waited = []
+    monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs: None)
+
+    def fake_oc_json(*args):
+        if args[1] == "builds":
+            name = args[-1].split("=", 1)[1]
+            phase = "Running" if name == "governance-interceptor" else "Complete"
+            return {"items": [{"metadata": {"name": name + "-1",
+                                            "creationTimestamp": "2026-10-20T00:00:00Z"},
+                               "status": {"phase": phase,
+                                          "output": {"to": {"imageDigest": digest}}}}]}
+        return {"status": {"phase": "Complete",
+                           "output": {"to": {"imageDigest": digest}}}}
+
+    def fake_wait(label, predicate, **_kwargs):
+        waited.append(label)
+        assert predicate()
+
+    monkeypatch.setattr(runner, "oc_json", fake_oc_json)
+    monkeypatch.setattr(runner, "wait_for", fake_wait)
+    runner.build()
+    assert waited == ["governance-interceptor build terminal phase"]
+    assert runner.report["image_digests"]["governance-interceptor"] == digest
+
+
 def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     runner.locked = True
     monkeypatch.setattr(runner, "setup_files", lambda: None)

@@ -342,8 +342,19 @@ class Runner:
             if not entries:
                 raise E2EError(f"{name} has no build")
             latest = sorted(entries, key=lambda b: b["metadata"]["creationTimestamp"])[-1]
+            build_name = latest["metadata"]["name"]
+            terminal = {"Complete", "Failed", "Cancelled", "Error"}
+            if latest.get("status", {}).get("phase") not in terminal:
+                self.wait_for(
+                    f"{name} build terminal phase",
+                    lambda: self.oc_json("get", "build", build_name, "-n", NAMESPACE)
+                    .get("status", {}).get("phase") in terminal,
+                    seconds=7200,
+                )
+                latest = self.oc_json("get", "build", build_name, "-n", NAMESPACE)
             if latest.get("status", {}).get("phase") != "Complete":
-                raise E2EError(f"{name} build did not finish successfully")
+                phase = latest.get("status", {}).get("phase", "unknown")
+                raise E2EError(f"{name} build finished in {phase}")
             digest = latest.get("status", {}).get("output", {}).get("to", {}).get("imageDigest", "")
             if not DIGEST.fullmatch(digest):
                 raise E2EError(f"{name} build has no output digest")

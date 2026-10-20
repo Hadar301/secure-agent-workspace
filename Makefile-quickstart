@@ -143,7 +143,7 @@ cli-build: .check-image-repo ## Build the NemoClaw CLI image in-cluster (IMAGE_R
 	@oc delete is nemoclaw-cli -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
-	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
+	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
@@ -158,7 +158,7 @@ governance-interceptor-build: .check-image-repo ## Build the governance intercep
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
 		--set-string output.externalImage=$(if $(PUSH_IMAGE_REPO),$(PUSH_IMAGE_REPO)/governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF)) \
 		--set-string output.imageStreamTag=$(if $(PUSH_IMAGE_REPO),,governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF))
-	oc start-build governance-interceptor -n $(BUILD_NS) --follow
+	oc start-build governance-interceptor -n $(BUILD_NS) --follow --wait
 	@echo "Image built in $(BUILD_NS)$(if $(PUSH_IMAGE_REPO), and pushed to $(PUSH_IMAGE_REPO))."
 
 governance-interceptor-build-local: ## Build the governance interceptor image in the cluster
@@ -168,7 +168,7 @@ governance-interceptor-build-local: ## Build the governance interceptor image in
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
 		--set output.externalImage= \
 		--set output.imageStreamTag=governance-interceptor:v$(patsubst v%,%,$(OPENSHELL_INTERCEPTOR_REF))
-	oc start-build governance-interceptor -n $(BUILD_NS) --follow
+	oc start-build governance-interceptor -n $(BUILD_NS) --follow --wait
 
 # --- Gateway VM image ---
 
@@ -191,7 +191,7 @@ gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-clu
 	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=docker
-	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
+	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
@@ -215,7 +215,7 @@ gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-clu
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=podman
-	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+	oc start-build openshell-gateway -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
