@@ -55,6 +55,21 @@ def test_lock_owner_change_prevents_release(runner, monkeypatch):
     assert runner.locked
 
 
+def test_release_removes_run_created_lock_namespace(runner, monkeypatch):
+    runner.locked = True
+    runner.lock_namespace_created = True
+    calls = []
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: {"metadata": {
+        "annotations": {"saw.redhat.com/run-id": runner.run_id,
+                        "saw.redhat.com/sha": runner.sha}}})
+    monkeypatch.setattr(runner, "call", lambda args, **_kwargs:
+                        calls.append(args))
+    runner.release_lock()
+    assert calls[0][:4] == ["oc", "delete", "configmap", pattern_e2e.LOCK_NAME]
+    assert calls[1][:4] == ["oc", "delete", "namespace", runner.lock_ns]
+    assert runner.locked is False
+
+
 def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch):
     monkeypatch.setattr(pattern_e2e.subprocess, "run", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=1, stdout="build root cause",

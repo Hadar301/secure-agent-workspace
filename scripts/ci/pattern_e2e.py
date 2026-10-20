@@ -70,6 +70,7 @@ class Runner:
                     "CI_WEB_SEARCH_KEY"):
             self.env.pop(key, None)
         self.locked = False
+        self.lock_namespace_created = False
         self.install_attempted = False
         self.build_attempted = False
         self.cancelled = False
@@ -226,6 +227,11 @@ class Runner:
         actual_uid = self.oc_json("get", "namespace", "kube-system")["metadata"]["uid"]
         if actual_uid != expected_uid:
             raise E2EError("cluster UID does not match CI_CLUSTER_UID")
+        existing = self.call(["oc", "get", "namespace", self.lock_ns],
+                             allow_failure=True)
+        if existing.returncode and "NotFound" not in existing.stderr:
+            raise E2EError("cannot inspect CI lock namespace")
+        self.lock_namespace_created = bool(existing.returncode)
         namespace_doc = {"apiVersion": "v1", "kind": "Namespace",
                          "metadata": {"name": self.lock_ns,
                                       "labels": {"openshell.pattern/ci-lock": "true"}}}
@@ -268,6 +274,9 @@ class Runner:
             raise E2EError("cluster lock owner changed; manual recovery is required")
         self.call(["oc", "delete", "configmap", LOCK_NAME, "-n", self.lock_ns,
                    "--wait=true"], timeout=90)
+        if self.lock_namespace_created:
+            self.call(["oc", "delete", "namespace", self.lock_ns, "--wait=true",
+                       "--timeout=20m"], timeout=1300)
         self.locked = False
 
     def preflight(self) -> None:
