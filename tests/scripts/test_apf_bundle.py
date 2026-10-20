@@ -127,11 +127,77 @@ def test_translation_keeps_what_openshell_needs(work):
     assert "/usr/bin/node-*" in openai["spec"]["binaries"]
     assert openai["spec"]["credentials"][0] == {
         "name": "api_key", "envVars": ["OPENAI_API_KEY"], "required": True,
-        "style": "bearer", "header": "authorization"}
+        "style": "bearer", "header": "authorization",
+        "source": {"kind": "host-env", "name": "OPENAI_API_KEY"}}
     # A profile without provider_type: its id is the type users create.
     brave = yaml.safe_load(files["provider-profiles/brave.yaml"])
     assert brave["spec"]["type"] == "brave"
     assert brave["spec"]["binaries"][0] == "/usr/bin/curl"
+
+
+def test_the_policy_carries_the_agent_driver_config_rules(work):
+    """Only the installer's two exact agent mount combinations are admitted."""
+    policy = yaml.safe_load(work.members()["sandbox/default-policy.yaml"])
+    rule = policy["spec"]["driver_config"]
+    assert rule == {
+        "deny_templates": True,
+        "allowed": [
+            {"require_role": "openshell-admin", "drivers": ["podman"], "max_mounts": 2,
+             "mounts": [
+                 {"type": "volume", "source_prefix": "saw-gate-",
+                  "target": "/sandbox/.saw/trusted", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-audit-",
+                  "target": "/sandbox/.saw/audit", "read_only": False}]},
+            {"require_role": "openshell-admin", "drivers": ["podman"], "max_mounts": 3,
+             "mounts": [
+                 {"type": "volume", "source_prefix": "saw-harness-",
+                  "target": "/sandbox/harness", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-gate-",
+                  "target": "/sandbox/.saw/trusted", "read_only": True},
+                 {"type": "volume", "source_prefix": "saw-audit-",
+                  "target": "/sandbox/.saw/audit", "read_only": False}]},
+        ],
+    }
+
+
+GMAIL = {
+    "id": "gmail",
+    "credentials": [{
+        "name": "access_token", "env_vars": ["GMAIL_ACCESS_TOKEN"], "required": True,
+        "auth_style": "bearer", "header_name": "authorization",
+        "refresh": {"strategy": "oauth2_refresh_token",
+                    "token_url": "https://oauth2.googleapis.com/token",
+                    "refresh_before_seconds": 300, "max_lifetime_seconds": 3600,
+                    "material": [{"name": "client_id"}, {"name": "client_secret", "secret": True},
+                                 {"name": "refresh_token", "secret": True}]}}],
+    "endpoints": [{"host": "gmail.googleapis.com", "port": 443}],
+}
+
+
+def test_an_expiring_token_gets_an_oauth2_refresh_source(work):
+    """host-env is a static value, so a Google access token served that way
+    stops working after about an hour (seen live). APF must mint and refresh
+    it: oauth2 with the refresh-token grant, from the profile's material."""
+    (work.POLICY_DIR / "profiles" / "gmail.yaml").write_text(yaml.safe_dump(GMAIL))
+    gmail = yaml.safe_load(work.members()["provider-profiles/gmail.yaml"])
+    assert gmail["spec"]["credentials"][0]["source"] == {
+        "kind": "oauth2", "grant": "refresh-token",
+        "tokenUrl": "https://oauth2.googleapis.com/token", "refreshBeforeSeconds": 300,
+        "parameters": {"client_id": "GMAIL_CLIENT_ID", "client_secret": "GMAIL_CLIENT_SECRET",
+                       "refresh_token": "GMAIL_REFRESH_TOKEN"}}
+
+
+def test_a_static_token_stays_host_env(work):
+    """No refresh, or an optional one (a Slack xoxb- token never expires)."""
+    slack = {**GMAIL, "id": "slack", "credentials": [{
+        **GMAIL["credentials"][0], "name": "api_token", "env_vars": ["SLACK_BOT_TOKEN", "SLACK_TOKEN"],
+        "refresh": {**GMAIL["credentials"][0]["refresh"], "token_url": "https://slack.com/api/oauth.v2.access"}}]}
+    (work.POLICY_DIR / "profiles" / "slack.yaml").write_text(yaml.safe_dump(slack))
+    files = work.members()
+    source = yaml.safe_load(files["provider-profiles/slack.yaml"])["spec"]["credentials"][0]["source"]
+    assert source == {"kind": "host-env", "name": "SLACK_BOT_TOKEN"}
+    nvidia = yaml.safe_load(files["provider-profiles/nvidia.yaml"])["spec"]["credentials"][0]
+    assert nvidia["source"] == {"kind": "host-env", "name": nvidia["envVars"][0]}
 
 
 def test_profiles_apf_cannot_express_stay_out(work, capsys):
@@ -158,7 +224,7 @@ def test_providers_use_only_fields_apf_accepts(work):
         assert set(doc["metadata"]) <= {"name", "title", "description"}, path
         assert set(doc["spec"]) <= {"type", "endpoints", "binaries", "credentials"}, path
         for cred in doc["spec"].get("credentials", []):
-            assert set(cred) <= {"name", "envVars", "required", "style", "header"}, path
+            assert set(cred) <= {"name", "envVars", "required", "style", "header", "source"}, path
 
 
 def test_rebuild_is_idempotent_and_bumps_the_revision_on_change(work, capsys):

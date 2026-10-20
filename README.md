@@ -72,17 +72,21 @@ For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom in
 
 ### Architecture diagrams
 
-The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
+The first diagram shows an OpenShift Virtualization and APF governance reference
+architecture. It shows conceptual Phase I and Phase II workspaces. APF is an
+optional governance engine in this repository; the OpenShell governance
+interceptor is the default. The two diagrams that follow also illustrate the
+[NVIDIA Secure Agent Workspace OpenShift Virtualization reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
 
-#### Reference Architecture
+#### OpenShift Virtualization and APF reference architecture
 
-![OpenShift Virtualization Reference Implementation](docs/images/openshift-reference-shape.png)
+![Reference architecture with an endpoint, Phase I and Phase II workspace VMs, APF governance, and corporate services](docs/images/openshift-reference-shape.png)
 
-#### GitOps Policy Model
+#### Reference design: GitOps policy model
 
 ![GitOps Policy Model — End-to-End Policy Flow](docs/images/gitops-policy-model.png)
 
-#### Storage Layout
+#### Reference design: storage layout
 
 ![NFS storage layout for policy bundles and workspace persistence](docs/images/nfs-storage-layout.png)
 
@@ -154,6 +158,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Software | Version |
 |---|---|
 | Red Hat OpenShift | 4.22+ |
+| Cluster architecture | x86_64 or arm64 ([arm64 notes](docs/arm64.md)) |
 | Network plugin | OVN-Kubernetes (the OpenShift default), for each workspace's egress firewall; set `egress.enabled: false` otherwise |
 | OpenShift Virtualization operator | stable channel |
 | Red Hat Build of Keycloak operator | stable-v26 channel |
@@ -215,6 +220,7 @@ make ssh-key-generate
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from ghcr.io/validatedpatterns-sandbox to the internal registry.
 # No build needed — images are pre-built by maintainers.
+# On arm64, skip this: the prebuilt gateway disk is x86_64 (docs/arm64.md).
 make images-mirror
 
 # 5b. Optional: check whether workspace VMs will trust Keycloak's
@@ -280,6 +286,7 @@ make quickstart-prereqs-check
 make ssh-key-generate
 
 # 6. Copy pre-built images to the cluster
+# On arm64, skip this: the prebuilt gateway disk is x86_64 (docs/arm64.md).
 make images-mirror
 
 # 7. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
@@ -314,7 +321,9 @@ make saw-create \
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
-> **OIDC issuer:** `make saw-create` stops if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. External and no-OIDC modes disable the dashboard and web UI routes by default. Set `DASHBOARD=true` with an external issuer only after you register its dashboard and web UI redirect URIs yourself.
+> **OIDC issuer:** `make saw-create` stops before changing the cluster if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. This sets chart `oidc.enabled: false`, even when `global.clusterDomain` is set, and disables the dashboard and sandbox UI routes. An external issuer disables these routes by default. Set `DASHBOARD=true` with an external issuer only after you register its redirect URIs yourself.
+
+Updating the create script does not fix a gateway deployed earlier without OIDC. Check its effective `oidc.enabled` and `oidc.issuerUrl` Helm values and the rendered gateway configuration. Reapply that workspace with the intended issuer, then verify owner access and rejection without credentials.
 
 ```bash
 # 12. Follow the in-VM installer (in another terminal)
@@ -450,8 +459,7 @@ It requires confirmation for interactive TUI and GUI checks. It runs
 inference and access checks and records their status codes. See
 [the deployment guide](docs/deployment-guide.md#live-deployment-test).
 
-The existing Python CLI has a smaller command set than Make. See
-[CLI migration gaps](docs/cli-migration-gaps.md) before moving an operation.
+The existing Python CLI has a smaller command set than Make.
 
 #### Supported inference providers
 
@@ -509,7 +517,7 @@ Every SAW gateway calls a fail-closed governance service. By default that is the
 - Check that you can pull:
   ```bash
   docker login ghcr.io -u <github-user> --password-stdin < ~/.ghcr-token
-  docker pull ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0
+  docker pull ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0-driverconfig.3
   ```
 
 **2. Create your signing key and bundle.** This repository ships no key and no bundle. Each deployment makes its own, so no deployment trusts someone else's key.
@@ -586,11 +594,13 @@ While APF is not running the gateways refuse write operations (fail closed). If 
 
 ### Self-service workspaces and sandbox web UIs
 
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 
 A sandbox's `harnessRef` in its SAW-BOM profile names a harness bundle: skills, MCP servers (`mcp.json`) and OpenClaw tool plugins (`.mjs`). The installer puts it, unchanged, into a volume the sandbox mounts read-only at `/sandbox/harness`, and points OpenClaw at it. Keys never go in a bundle: a server or plugin that calls a service gets its key through a provider attached to the sandbox. A bundle is either an OCI image built from `harness-bundles/` and published to GHCR by CI (`harnessRef: { image: ghcr.io/<owner>/saw-harness-<bundle>@sha256:… }`), or an inline bundle in the saw-bom chart (`harnessRef: { name: <bundle> }`). Details: [docs/harness-bundles.md](docs/harness-bundles.md).
+
+For an MCP server running inside OpenShift, see [In-cluster MCP Services](docs/harness-bundles.md#in-cluster-mcp-services) for network rules, governance, provider attachment, and BOM provider provisioning.
 
 ### Validating the deployment
 
@@ -619,8 +629,8 @@ make openclaw-gui
 make saw-tui
 make saw-gui
 
-# Or access the dashboard directly via the route
-oc get route ${OPENSHELL_SAW_NAME}-dashboard -n ${SAW_NS:-saw-$OPENSHELL_SAW_NAME} -o jsonpath='https://{.spec.host}'
+# List owner-restricted sandbox UI routes, when the profile enables them
+make sandbox-ui
 
 # Installer status, and a shell on the gateway VM for debugging
 # (adds your SSH key to the VM on demand)
@@ -630,6 +640,9 @@ make saw-vm-ssh
 # Local tests and all 13 Helm charts (no cluster needed)
 make lint
 make test
+
+# Tool-action gate tests (needs node; not part of CI)
+make test-tool-gate
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh

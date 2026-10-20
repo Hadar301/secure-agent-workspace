@@ -9,6 +9,13 @@ metadata:
   namespace: {{ .Values.portal.namespace }}
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
+  annotations:
+    # Tekton's admission webhook fills in defaults (on steps, params and
+    # results), so a client-side diff never matches and the app stays
+    # OutOfSync after every successful sync, which also stops the pattern
+    # install's health check (seen on a fresh cluster with Pipelines 1.24).
+    # Let the API server's dry run, webhooks included, compute the diff.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true,IncludeMutationWebhook=true
 spec:
   params:
     - name: action
@@ -96,6 +103,13 @@ metadata:
   namespace: {{ $.Values.portal.namespace }}
   labels:
     {{- include "openshell-rhdh.labels" $ | nindent 4 }}
+  annotations:
+    # Tekton's admission webhook fills in defaults (on steps, params and
+    # results), so a client-side diff never matches and the app stays
+    # OutOfSync after every successful sync, which also stops the pattern
+    # install's health check (seen on a fresh cluster with Pipelines 1.24).
+    # Let the API server's dry run, webhooks included, compute the diff.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true,IncludeMutationWebhook=true
 spec:
   params:
     - name: request

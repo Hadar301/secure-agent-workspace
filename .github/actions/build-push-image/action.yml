@@ -114,6 +114,7 @@ runs:
         build-args: ${{ inputs.build_args }}
         platforms: ${{ inputs.platform }}
         tags: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}
+        labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
         outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }}
         cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }},ignore-error=true

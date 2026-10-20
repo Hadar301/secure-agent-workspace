@@ -69,6 +69,19 @@ export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OW
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
+# Pattern install: `./pattern.sh make install GOVERNANCE_ENGINE=apf` selects the
+# governance engine for this cluster without editing values-global.yaml. It
+# becomes a Pattern extraParameter (global.governance.engine), which the
+# operator passes to every application and which overrides values-global.yaml.
+# Only an explicit GOVERNANCE_ENGINE does this; otherwise values-global.yaml
+# decides. Run make install again with the other engine to switch back.
+ifneq ($(findstring $(origin GOVERNANCE_ENGINE),command line environment),)
+ifeq ($(filter interceptor apf,$(GOVERNANCE_ENGINE)),)
+$(error GOVERNANCE_ENGINE must be interceptor or apf, not "$(GOVERNANCE_ENGINE)")
+endif
+export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) --set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=$(GOVERNANCE_ENGINE)
+endif
+
 .PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
@@ -514,16 +527,25 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 
 # --- Local Python tests (no cluster needed) ---
 TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal cli/tests
-.PHONY: test-installer
+.PHONY: test-installer test-tool-gate
 test-installer: ## Run the complete local Python test suite with uv
 	@if [ -n "$(PYTHON)" ]; then \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest \
-			-q -p no:cacheprovider $(TEST_PATHS); \
+		-q -p no:cacheprovider $(TEST_PATHS); \
 	else \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
 		uv run --locked pytest -q -p no:cacheprovider \
 			$(TEST_PATHS); \
 	fi
+
+test-tool-gate: ## Tool-action gate tests (needs node on PATH)
+	@py="$(PYTHON)"; [ -n "$$py" ] || py=python3; \
+	"$$py" -c "import pytest, yaml" 2>/dev/null || { \
+		echo "Missing test dependencies for $$py. Install them with:"; \
+		echo "  $$py -m pip install -r tests/requirements.txt"; exit 1; }; \
+	command -v node >/dev/null || { echo "node is required for make test-tool-gate"; exit 1; }; \
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} "$$py" -m pytest -q -p no:cacheprovider \
+		tests/installer/test_tool_gate.py
 
 ##@ Internal Checks
 

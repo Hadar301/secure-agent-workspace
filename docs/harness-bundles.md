@@ -66,6 +66,50 @@ spec:
       governanceProfile: local-mcp
 ```
 
+#### In-cluster MCP Services
+
+Use the Service DNS URL in `mcp.json`, as above; no external Route is needed.
+Allow the Service's namespace, pods, and port through
+[`networkPolicy.extraEgress`](deployment-guide.md#in-cluster-networkpolicy)
+and allow ingress from the SAW VM if the server restricts it.
+
+Publish a [governance profile](governance-interceptor.md#adding-a-new-provider-profile)
+for the Service host and port, with `protocol: mcp`, `enforcement: enforce`,
+the calling executable in `binaries`, and compatible `mcp.versions`. Its rules
+must allow `initialize`, `notifications/initialized`, `tools/list`, `ping`,
+and only the approved `tools/call` tools.
+
+For a server without a key, the profile must declare no required credential:
+omit `credentials` entirely, as the shipped `web-search` profile does, or list
+only explicitly optional ones. Every endpoint must declare
+`enforcement: enforce` and an in-cluster host (`<svc>.<ns>.svc`, optionally
+`.cluster.local`); an endpoint that leaves enforcement out, or names an outside
+host, is refused. Add this provider to the selected BOM workspace's
+`providers.yaml`:
+
+```yaml
+- name: local-mcp
+  type: local-mcp
+  credentialFree: true
+```
+
+Use the governance profile ID for both `name` and `type`, and add it to the
+sandbox's `providers` list alongside its inference provider. Declare the
+server in `harness.yaml` and select the bundle with `harnessRef`, as above.
+
+The attachment is what lets the sandbox reach the Service: without it the
+request fails with `EACCES`. The installer creates and attaches the provider
+on apply, including for a sandbox that already exists, so the attachment
+survives a sandbox recreated by a `harnessRef` change. Because a keyless
+provider carries no key, its profile is the only gate: the installer refuses
+one whose profile requires a credential, declares no endpoint or an endpoint
+that is not enforced or not in-cluster, or whose provider already has stored
+credentials. A keyed service needs a normal provider with its Secret. A
+keyless provider cannot be combined with a Secret or with model/inference
+settings. The profile must be live in the gateway's catalog, so a keyless
+provider needs the governance interceptor; the installer's own
+`provider-profile-*.yaml` import does not satisfy it.
+
 #### Servers that need an API key
 
 A server that calls a keyed service gets its key the same way OpenClaw gets
@@ -136,6 +180,12 @@ Everything a stdio server downloads at start (`npx -y <package>`) needs a
 profile that allows `registry.npmjs.org` too; a server shipped in the bundle
 (`node ${PLUGIN_ROOT}/mcp/server.mjs`) does not.
 
+API-key configuration is the same for external and in-cluster MCP servers: the
+provider's `type` must be one the installer knows (`PROVIDER_CRED_MAP` in
+`apply_bom.py`), because that is where the key's env var name comes from. A
+keyed service of a new type needs that one-line addition; until then only
+keyless providers can be declared in a SAW-BOM profile.
+
 ### Tool plugins (`plugins/<id>/`)
 
 Plain ES modules (`.mjs`, or `.js` with `"type": "module"`), self-contained:
@@ -156,24 +206,21 @@ Why a volume and not an image mount: OpenShell 0.1.x refuses image and host
 path mounts while resource admission is on (the default), and admits a volume
 only when it carries the `openshell.ai/sandbox-attachable=true` and
 `openshell.ai/sandbox-attachable-workspace=<workspace>` labels, which the
-installer sets. The gateway also needs `allow_driver_config = true`
-(`allowDriverConfig` in the openshell-saw chart, **off by default** — turn
-it on together with a profile that has a `harnessRef`, e.g. saw-bom's
-`harnessEnabled`); the installer stops before changing anything when a sandbox
-has a `harnessRef` and it is off. Turning it off later stops every sandbox
-created with a harness (the podman driver re-checks them), so recreate those
-first. With admission on and bind mounts off, a signed-in user of the
-workspace can attach nothing but the workspace's own labelled volumes; if
-one is attached writable and changed, the next apply finds the tree digest
-changed and refills it.
+installer sets. The gateway sets `allow_driver_config = true` for every agent
+sandbox's tool gate and audit mounts. The saw-users `harnessEnabled` flag
+still controls whether a harness bundle is shipped and whether the VM permits
+Sigstore egress for a harness image. With admission on and bind mounts off, a signed-in user of the
+ workspace can attach nothing but the workspace's own labelled volumes. The
+ harness volume stays read-only, and the installer checks its tree digest on
+ each apply.
 
 The shipped `ds-default` demo pin is opt-in (`harnessEnabled: false` in
 saw-bom). With it off, sandbox.yaml loses its `harnessRef` and no harness
 keys ship, so an upgrade does not recreate notebooks. Set `harnessEnabled: true`
 to try the demo; under saw-users that also sets `allowDriverConfig: true` on
-the user's openshell-saw app (`saw-users.openshellValues`), so the two flags
-can't drift apart. Driving saw-bom and openshell-saw directly (no saw-users)
-still needs both set by hand.
+the user's openshell-saw app (`saw-users.openshellValues`) for Sigstore egress.
+Driving saw-bom and openshell-saw directly (no saw-users) needs that setting
+for image-sourced harness signature checks.
 
 ### OCI image (recommended)
 
@@ -383,9 +430,10 @@ requires `oc`, Python with PyYAML, the deployment controller's tooling, and
 ### Security properties
 
 - With the governance interceptor enabled, caller driver config requires
-  an mTLS platform admin and permits only the installer's read-only podman
-  harness volume at `/sandbox/harness`. OIDC admins, bind mounts, writable
-  mounts, other targets and other driver options are refused at creation.
+  an mTLS platform admin and permits only the installer's gate and audit
+  volumes, optionally with a read-only harness volume at `/sandbox/harness`.
+  The gate is read-only and the audit mount is writable only at its dedicated
+  target; OIDC admins, bind mounts, other targets and driver options are refused.
   OpenShell 0.1.2 does not support intercepting `CreateSandboxTemplate`;
   template-based `CreateSandbox` requests are refused because the gateway
   resolves their driver config after interception. Templates may be stored,

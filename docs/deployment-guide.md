@@ -1,41 +1,5 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
-## NetworkPolicy upgrade procedure
-
-This release introduces default-deny NetworkPolicy. The standalone
-`openshell-saw` chart enables it by default and refuses to render until pod
-CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
-backend IPs and ports are supplied. `make saw-create` discovers these values
-before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
-overlay for other settings; conflicting topology values in it are rejected.
-
-For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
-for each user, so a sync does not cut off active VMs. Roll it out one user at a
-time:
-
-1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
-   destinations. Add each required namespace, pod selector, and TCP port under
-   that user's `networkPolicy.extraEgress`.
-2. Run `make prereqs-check`. It reads the live Network resource, the
-   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
-   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
-   user's effective topology must match the live topology or this command
-   fails with a replacement snippet.
-3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
-   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
-   Check the user's actual in-cluster workflows before enabling the next user.
-
-Argo CD cannot discover topology during Helm rendering. Run the preflight
-before each enablement and after API EndpointSlice changes; update the values
-and sync before an old endpoint is removed. Hosted control planes can expose
-the API on TCP 443 or another port, so use the discovered endpoint ports, not
-an assumed control-plane node port. On a hosted cluster with
-`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
-endpoints too; the legacy control-plane node fallback has no target there.
-The exact API exception remains in EgressFirewall through a temporary
-NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
-correct. See [network troubleshooting](troubleshooting.md).
-
 ## Overview
 
 The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. Production has no demo users. For an explicit demo and separate browser sign-in steps, see [Keycloak production and demo users](../README.md#keycloak-production-and-demo-users).
@@ -318,6 +282,42 @@ A workspace that stays Starting is usually waiting on a provider Secret. The vir
 oc get events -n saw-<user> | grep FailedMount
 ```
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Upgrading from the single-user layout
 
 Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
@@ -395,6 +395,8 @@ egress:
 
 ### In-cluster NetworkPolicy
 
+> Rolling default-deny NetworkPolicy out on an existing deployment is a staged, one-user-at-a-time procedure — see [NetworkPolicy upgrade procedure](#networkpolicy-upgrade-procedure).
+
 The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
 
 The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
@@ -412,6 +414,8 @@ The chart has no assumed CIDR or API endpoint values. `make saw-create` discover
 The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
 
 **Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
+
+For an in-cluster MCP server, also configure its sandbox provider and MCP permissions; see [In-cluster MCP Services](harness-bundles.md#in-cluster-mcp-services).
 
 ### Internal Connectivity
 
@@ -656,9 +660,17 @@ Set only one source mode. Keep `source.dataSourceNamespace` at
 
 ### OpenClaw UI and the dashboard Route
 
+`make saw-create` prints resource creation status, then directs the operator
+to wait for `make saw-status` to report `Done` for install and apply. Its next
+steps use the selected OIDC issuer, namespace, and client. `make saw-configure`
+registers the gateway and signs in; use `openshell gateway login` later if
+that sign-in did not finish or a token expires. The create summary lists
+`make sandbox-ui` for enabled UI routes and does not advertise the unusable
+dashboard Route.
+
 The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which on OpenShell 0.1.x runs in its own network namespace with only loopback (network mode `none`, no port mappings). The Route therefore does not reach the OpenClaw UI and answers 503. Each sandbox has its own namespace, so several OpenClaw sandboxes all listen on 18789 without conflict.
 
-On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](rhdh-architecture.md#opening-a-sandbox-ui). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
+On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](self-service-portal.md#sandbox-web-uis). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
 
 ### Web search in the default sandbox
 

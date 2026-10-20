@@ -164,6 +164,9 @@ additionalProviderSecrets:
 # users (roles from realm_access.roles) and mTLS from the local installer.
 # The installer never logs in to Keycloak.
 oidc:
+  # Set false only when this workspace is intentionally deployed without OIDC.
+  # This also disables issuer discovery from global.clusterDomain.
+  enabled: true
   issuerUrl: ""
   clientId: "openshell-cli"
   keycloakName: "openshell-keycloak"

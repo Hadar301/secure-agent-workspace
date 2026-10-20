@@ -28,13 +28,6 @@ Once the installer reports "apply: Done", connect:
 
     openshell --gateway $(oc get route {{ include "openshell-sandbox.fullname" . }}-gateway -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}') sandbox list
 {{- end }}
-{{- if .Values.route.dashboard }}
-
-  Dashboard URL:
-
-    oc get route {{ include "openshell-sandbox.fullname" . }}-dashboard -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}'
-{{- end }}
-
   Shell on the VM (debugging). Adds your public key to the
   {{ include "openshell-sandbox.sshKeySecretName" . }} Secret; KubeVirt pushes it into the running VM:
 

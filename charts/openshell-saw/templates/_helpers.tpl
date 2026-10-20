@@ -37,7 +37,8 @@ Resolve the OIDC issuer URL.
 Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 */}}
 {{- define "openshell-sandbox.oidcIssuerUrl" -}}
-{{- if .Values.oidc.issuerUrl -}}
+{{- if not .Values.oidc.enabled -}}
+{{- else if .Values.oidc.issuerUrl -}}
   {{- .Values.oidc.issuerUrl -}}
 {{- else if .Values.global -}}
   {{- if .Values.global.clusterDomain -}}
@@ -267,7 +268,7 @@ nothing to do with the cluster's ingress CA. Attached like the provider
 Secrets (secret disk, mounted under /run/saw/secrets/<name>).
 */}}
 {{- define "openshell-sandbox.caBundleSecret" -}}
-{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- if and .Values.oidc.enabled .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
 {{- .Values.oidc.clusterCaSecret -}}
 {{- end -}}
 {{- end }}
@@ -335,16 +336,13 @@ allow_unauthenticated_users = false
 [openshell.drivers.podman]
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
-{{- if .Values.allowDriverConfig }}
-{{- if and .Values.governance.enabled (eq (include "openshell-sandbox.governanceEngine" .) "apf") }}
-{{- fail "allowDriverConfig (harness bundles) needs governance.engine interceptor: the interceptor's guard admits only the installer's read-only harness mount, and APF has no such guard. Turn harness bundles off for this workspace, or use the interceptor engine." }}
-{{- end }}
-# Sandboxes mount their harness volume through caller driver config.
+# Agent sandboxes mount their trusted gate and audit volumes through caller
+# driver config; an OpenClaw harness adds a third mount. Admission is limited
+# to the installer's admin identity and exact volume targets.
 # Resource admission and enable_bind_mounts keep their defaults (on / off),
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
 allow_driver_config = true
-{{- end }}
 {{- if .Values.governance.enabled }}
 
 {{- $engine := include "openshell-sandbox.governanceEngine" . }}
@@ -376,6 +374,7 @@ in its first label with 19-character names), or entry.host when set.
 {{- $root := . -}}
 {{- $out := list -}}
 {{- $seen := dict -}}
+{{- if .Values.oidc.enabled -}}
 {{- range $e := .Values.sandboxUi | default list -}}
 {{- $ws := $e.workspace | default "" | toString -}}
 {{- $sb := $e.sandbox | default "" | toString -}}
@@ -403,6 +402,7 @@ in its first label with 19-character names), or entry.host when set.
 {{- $out = append $out (dict "workspace" $ws "sandbox" $sb "name" $label "host" $host
       "proxyPort" $port "forwardPort" (int $e.forwardPort)
       "portName" (printf "ui-%d" $port)) -}}
+{{- end -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}

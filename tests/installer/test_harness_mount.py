@@ -19,6 +19,7 @@ through the mount.
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -106,9 +107,11 @@ def test_an_image_is_unpacked_into_a_volume_not_mounted(ab, fake_env, config, pr
     fake_env.set_images({IMAGE_V1: {"__tree__": {**V1, "bin/run.sh": "#!/bin/sh\n"}}})
     applier = make_applier(ab, config, creds)
     applier.apply(use_ref(profiles, {"image": IMAGE_V1}))
-    assert notebook(fake_env)["driverConfig"] == {"podman": {"mounts": [{
+    mounts = notebook(fake_env)["driverConfig"]["podman"]["mounts"]
+    assert mounts[0] == {
         "type": "volume", "source": volume_name(ab), "target": "/sandbox/harness",
-        "read_only": True}]}}
+        "read_only": True}
+    assert [m["target"] for m in mounts[1:]] == [ab.GATE_MOUNT, ab.AUDIT_MOUNT]
     volume = fake_env.state / "volumes" / volume_name(ab)
     assert (volume / "skills/demo/SKILL.md").read_text() == V1["skills/demo/SKILL.md"]
     assert (volume / "bin/run.sh").stat().st_mode & 0o111, "an image keeps file modes"
@@ -226,7 +229,7 @@ def test_an_unparseable_plugins_list_fails_verify(
 
 
 def live_listing(**overrides):
-    """The 2026.9.5 row shape: Source is an origin string, rootDir the path."""
+    """The pinned 2026.9.6 row shape: Source is an origin string, rootDir the path."""
     bundle = {"id": "demo", "name": "demo", "format": "bundle",
               "source": "$OPENCLAW_HOME/harness", "rootDir": "/sandbox/harness",
               "enabled": True, "status": "loaded",
@@ -236,6 +239,9 @@ def live_listing(**overrides):
     for name, enabled in overrides.pop("native", {"old-tool": True}).items():
         plugins.append({"id": name, "format": "openclaw",
                         "enabled": enabled, "status": "loaded"})
+    plugins.append({"id": "saw-tool-gate", "format": "openclaw",
+                    "rootDir": "/sandbox/.saw/trusted/plugin",
+                    "enabled": True, "status": "loaded"})
     return json.dumps({"plugins": plugins})
 
 
@@ -354,7 +360,8 @@ def test_signature_refusal_removes_active_harness_and_recovers(
     (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
     with pytest.raises(ab.InstallerError, match="is not signed by"):
         make_applier(ab, cfg, creds).apply(profiles)
-    assert not notebook(fake_env).get("driverConfig"), "revoked code must stop running"
+    assert all(m["target"] != ab.HARNESS_MOUNT for m in
+               notebook(fake_env)["driverConfig"]["podman"]["mounts"]), "revoked code must stop running"
     assert not (fake_env.state / "volumes" / volume_name(ab)).exists()
     paths = fake_env.openshell_state()["sandboxes"]["default/notebook"].get("openclawConfig", {})
     assert "/sandbox/harness" not in json.dumps(paths)
@@ -384,7 +391,8 @@ def test_signature_refusal_stops_sandbox_when_mount_inspection_is_unknown(
     monkeypatch.setattr(applier, "_podman", broken_inspection)
     with pytest.raises(ab.InstallerError, match="is not signed by"):
         applier.apply(profiles)
-    assert not notebook(fake_env).get("driverConfig")
+    assert all(m["target"] != ab.HARNESS_MOUNT for m in
+               notebook(fake_env)["driverConfig"]["podman"]["mounts"])
 
 
 def cache_config(config, tmp_path):
@@ -522,7 +530,8 @@ def test_a_rerun_configures_the_harness_only_once(ab, fake_env, config, profiles
     use_ref(profiles, {"image": IMAGE_V1})
     make_applier(ab, cfg, creds).apply(profiles)
     make_applier(ab, cfg, creds).apply(profiles)
-    scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    scripts = [c[-1] for c in fake_env.openshell_calls()
+               if c[:4] == ["sandbox", "exec", "-n", "notebook"]]
     sets = [s for s in scripts if "openclaw config set plugins.load.paths" in s]
     assert len(sets) == 2, "one configure_harness per apply (create, then rerun); not two per apply"
 
@@ -570,7 +579,8 @@ def test_an_unused_harness_image_is_removed_after_the_ref_changes(
 def test_a_sandbox_created_before_its_harness_is_recreated(ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds, harness={"bundles": {}}).apply(use_ref(profiles, {}))
-    assert "driverConfig" not in notebook(fake_env)
+    assert [m["target"] for m in notebook(fake_env)["driverConfig"]["podman"]["mounts"]] == [
+        ab.GATE_MOUNT, ab.AUDIT_MOUNT]
     applier = make_applier(ab, config, creds)
     applier.apply(use_ref(profiles, {"image": IMAGE_V1}))
     assert notebook(fake_env)["driverConfig"]["podman"]["mounts"][0]["source"] == volume_name(ab)
@@ -596,7 +606,8 @@ def test_removing_the_harness_ref_unmounts_it_and_removes_the_volume(
     applier = make_applier(ab, config, creds, harness={"bundles": {}})
     applier.apply(profiles)
     assert len(notebook_deletes(fake_env)) == 1
-    assert "driverConfig" not in notebook(fake_env)
+    assert [m["target"] for m in notebook(fake_env)["driverConfig"]["podman"]["mounts"]] == [
+        ab.GATE_MOUNT, ab.AUDIT_MOUNT]
     assert not (fake_env.state / "volumes" / volume_name(ab)).exists()
     assert applier.verify(profiles) == []
 
@@ -897,7 +908,7 @@ def test_openclaw_loads_the_bundle_from_the_mount(ab, fake_env, config, profiles
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
-    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins"]'""" in scripts
+    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
     assert "base64 -d" not in scripts, "bundle files never go through exec"
 
 
@@ -923,6 +934,7 @@ class FakeGateway:
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.starts = tmp_path / "starts"
+        self.log = tmp_path / "gateway.log"
         exe = self.bin / "openclaw"
         exe.write_text('#!/bin/sh\n'
                        'case "$*" in\n'
@@ -941,6 +953,10 @@ class FakeGateway:
         return proc
 
     def run(self, script):
+        # The real sandbox's PID 1 owns the podman log fd. A test runner's
+        # /proc/1/fd/2 may be a closed fd or a pipe that keeps this shell
+        # waiting for the fake gateway's 60-second lifetime.
+        script = script.replace("/proc/1/fd/2", shlex.quote(str(self.log)))
         result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
         time.sleep(1.5)
         return result.returncode
@@ -1034,25 +1050,25 @@ def test_the_gateway_check_does_not_count_the_script_itself(ab, tmp_path):
     assert out.stdout.strip() == "0"
 
 
-def test_a_shape_change_unsets_the_stale_config_key(ab, fake_env, config, profiles, creds):
-    """plugins/ → skills only must unset plugins.load.paths."""
+def test_a_shape_change_keeps_only_the_gate_plugin_path(ab, fake_env, config, profiles, creds):
+    """A skills-only harness drops its plugin paths but keeps the trusted gate."""
     use_ref(profiles, {"name": "demo"})
     make_applier(ab, config, creds, harness=_inline(ab, "demo", V1)).apply(profiles)
     skills_only = {k: v for k, v in V1.items()
                    if k == "harness.yaml" or k.startswith("skills/")}
     make_applier(ab, config, creds, harness=_inline(ab, "demo", skills_only)).apply(profiles)
     scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
-    assert any("openclaw config unset plugins.load.paths" in s for s in scripts)
+    assert any("openclaw config set plugins.load.paths '[\"/sandbox/.saw/trusted/plugin\"]'" in s for s in scripts)
     assert any("skills.load.extraDirs" in s and "config set" in s for s in scripts)
 
 
-def test_a_removed_harness_ref_unsets_its_config_keys(ab, fake_env, config, profiles, creds):
+def test_a_removed_harness_ref_keeps_only_the_gate_path(ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     use_ref(profiles, {})
     make_applier(ab, config, creds, harness={"bundles": {}}).apply(profiles)
     scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
-    assert any("openclaw config unset plugins.load.paths" in s for s in scripts)
+    assert any("openclaw config set plugins.load.paths '[\"/sandbox/.saw/trusted/plugin\"]'" in s for s in scripts)
     assert any("openclaw config unset skills.load.extraDirs" in s for s in scripts)
 
 
@@ -1107,7 +1123,11 @@ def test_a_harness_needs_driver_config_allowed(ab, tmp_path):
         ab.check_driver_config_allowed(toml)
     toml.write_text('[openshell.drivers.podman]\nallow_driver_config = true\n')
     ab.check_driver_config_allowed(toml)
-    ab.check_driver_config_allowed(tmp_path / "missing.toml")
+    toml.write_text('[openshell.gateway]\nallow_driver_config = true\n')
+    with pytest.raises(ab.InstallerError, match="allow_driver_config"):
+        ab.check_driver_config_allowed(toml)
+    with pytest.raises(ab.InstallerError, match="gateway.toml"):
+        ab.check_driver_config_allowed(tmp_path / "missing.toml")
 
 
 def test_mcp_servers_are_declared_once_and_follow_the_bundle(ab, fake_env, config, profiles, creds):
@@ -1205,4 +1225,3 @@ def test_a_missing_mcp_declaration_fails_verify(ab, fake_env, config, profiles, 
     del state["sandboxes"]["default/notebook"]["openclawConfig"]["mcp.servers.echo"]
     fake_env.set_openshell_state(state)
     assert any("does not declare MCP server 'echo'" in f for f in applier.verify(profiles))
-

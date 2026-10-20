@@ -106,7 +106,7 @@ def test_apf_replaces_the_interceptor(apf_chart):
     assert app["metadata"]["finalizers"] == ["resources-finalizer.argocd.argoproj.io"]
     source = app["spec"]["source"]
     assert (source["repoURL"], source["chart"], source["targetRevision"]) == \
-        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.0")
+        ("ghcr.io/mkhaas/apf/charts", "apf", "0.2.2-driverconfig")
     helm = source["helm"]
     # The Service keeps the name every SAW gateway calls.
     assert helm["releaseName"] == "governance-interceptor"
@@ -120,12 +120,14 @@ def test_apf_replaces_the_interceptor(apf_chart):
     assert values["trustRoot"] == {"existingConfigMap": "governance-apf-trust"}
     # Never the dev key baked into the APF chart.
     assert values["signing"] == {"existingSecret": "governance-apf-signing"}
-    # The 0.1.0 images: the first APF build that speaks OpenShell 0.1.x's
-    # extension protocol (the chart's own 0.2.0 images are refused by a 0.1.x
-    # gateway at startup, seen live). Same pull secret.
-    assert values["gateway"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0"
-    assert values["policyService"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-service:0.1.0"
-    assert values["compile"]["image"] == "ghcr.io/mkhaas/apf/apf-compile:0.1.0"
+    # Images that speak OpenShell 0.1.x's extension protocol (a 0.1.x gateway
+    # refuses older ones at startup, seen live) and enforce the driver_config
+    # allowlist. Same pull secret. SAW signs its own bundle, so no apf-compile.
+    assert values["gateway"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0-driverconfig.3"
+    assert values["policyService"]["image"] == "ghcr.io/mkhaas/apf/apf-policy-service:0.1.0-driverconfig.3"
+    assert "compile" not in values
+    # APF admits driver config only for the gateway's own compute driver.
+    assert values["interceptor"]["computeDriver"] == "podman"
     # A new bundle restarts the APF pod (its chart only watches inputs it renders).
     import hashlib
     files = apf_chart / "files" / "apf"
@@ -209,10 +211,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
     ("gateway-interceptor-oidc.toml", ("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")),
 ])
 def test_interceptor_engine_gateway_toml_is_byte_identical(golden, args):
-    """The default engine must not change a single byte of gateway.toml: the
-    installer restarts the gateway whenever the file changes, and existing
-    VMs must not restart for this switch. The golden files are what the chart
-    rendered before the engine switch (PR #52 review)."""
+    """Keep the gateway settings stable apart from intentional gate mounts."""
     assert gateway_toml_text(*args) == (GOLDEN / golden).read_text()
 
 
@@ -256,20 +255,54 @@ def test_apf_bindings_can_still_be_narrowed(tmp_path):
 
 
 @pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
-def test_apf_engine_refuses_harness_driver_config(flag):
-    """Harness bundles (#78) rely on the patched interceptor to admit only the
-    installer's read-only harness mount from an mTLS admin. APF has no such
-    guard, so the chart refuses the combination instead of dropping it."""
-    result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
-                             "-f", str(TOPOLOGY),
-                             "--set", flag, "--set", "allowDriverConfig=true"],
-                            capture_output=True, text=True)
-    assert result.returncode != 0
-    assert "allowDriverConfig" in result.stderr and "interceptor" in result.stderr
+def test_apf_engine_allows_agent_driver_config(flag):
+    """Every agent sandbox has gate and audit mounts, with or without a harness."""
+    gateway = gateway_toml("--set", flag)
+    assert gateway["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
-def test_interceptor_engine_keeps_harness_driver_config():
-    gateway = gateway_toml("--set", "allowDriverConfig=true")["openshell"]["drivers"]["podman"]
+def test_the_apf_bundle_admits_the_mounts_the_installer_makes():
+    """Each installer combination matches exactly one signed allowlist entry."""
+    import importlib.util
+    import json
+    from types import SimpleNamespace
+    spec = importlib.util.spec_from_file_location(
+        "apply_bom_for_apf", ROOT / "charts" / "openshell-saw" / "files" / "installer" / "apply_bom.py")
+    ab = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ab)
+    rule = load_script_rule()
+    for kind, ref, count in (("nemoclaw", {}, 2), ("openclaw", {"name": "demo"}, 3)):
+        ws = SimpleNamespace(name="default")
+        sb = SimpleNamespace(name="notebook", type=kind, harness_ref=ref)
+        request = json.loads(ab.sandbox_mounts_json(ws, sb))
+        matches = [entry for entry in rule["allowed"] if entry["max_mounts"] == count]
+        assert len(matches) == 1
+        entry, = matches
+        assert list(request) == entry["drivers"] == ["podman"]
+        assert entry["require_role"] == "openshell-admin"
+        mounts = request["podman"]["mounts"]
+        assert len(mounts) == count
+        for mount, allowed in zip(mounts, entry["mounts"]):
+            assert set(mount) == {"type", "source", "target", "read_only"}
+            assert mount["type"] == allowed["type"] == "volume"
+            assert mount["source"].startswith(allowed["source_prefix"])
+            assert mount["target"] == allowed["target"]
+            assert mount["read_only"] is allowed["read_only"]
+    assert ab.sandbox_mounts(SimpleNamespace(name="default"),
+                             SimpleNamespace(name="toolbox", type="generic", harness_ref={})) == []
+    assert rule["deny_templates"] is True
+
+
+def load_script_rule():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("apf_bundle_rule", ROOT / "scripts" / "apf-bundle.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.AGENT_DRIVER_CONFIG
+
+
+def test_interceptor_engine_keeps_agent_driver_config():
+    gateway = gateway_toml()["openshell"]["drivers"]["podman"]
     assert gateway["allow_driver_config"] is True
 
 

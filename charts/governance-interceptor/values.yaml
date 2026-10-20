@@ -49,7 +49,10 @@ apf:
   chart:
     repoURL: ghcr.io/mkhaas/apf/charts
     name: apf
-    version: 0.2.0
+    # The driver-config preview line: APF admits the installer's harness mount
+    # from the driver_config allowlist in the signed SandboxPolicy
+    # (scripts/apf-bundle.py), and denies every other driver config.
+    version: 0.2.2-driverconfig
   # Pattern: an Argo CD Application installs the APF chart. Quickstart (no
   # Argo CD) turns this off and `make governance-apf` runs helm instead.
   application:
@@ -83,21 +86,22 @@ apf:
       # APF would call back to one gateway here; SAW has a gateway per user
       # VM, and they read the catalog through SnapshotProviderProfiles.
       gatewayEndpoint: ""
+      # The SAW gateways' compute driver. APF admits driver config only for
+      # this driver (a mount under another driver key is denied).
+      computeDriver: podman
     bundle:
       manifest: bundle.yaml
     tier: 1
-    # APF 0.1.0 is the first build for OpenShell 0.1.x: its Describe returns
-    # the extension protocol metadata (PeerMetadata, protocol 1.0) the SAW
-    # gateways require. The 0.2.0 images the chart pins by default were built
-    # for OpenShell 0.0.x, and a 0.1.x gateway refuses them at startup ("did
-    # not provide protocol metadata"). 0.1.0 is APF's crate version, not an
-    # older release; the chart (0.2.0 above) works with these images.
+    # APF images for OpenShell 0.1.x: Describe returns the extension
+    # protocol metadata (PeerMetadata, protocol 1.0) the SAW gateways
+    # require, and the gateway enforces the driver_config allowlist. Both
+    # are multi-arch (amd64, arm64). 0.1.0 is APF's crate version, not an
+    # older release. apf-compile ships inside the policy-service image; SAW
+    # signs its bundle with scripts/apf-bundle.py and does not need it.
     gateway:
-      image: ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0
+      image: ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0-driverconfig.3
     policyService:
-      image: ghcr.io/mkhaas/apf/apf-policy-service:0.1.0
-    compile:
-      image: ghcr.io/mkhaas/apf/apf-compile:0.1.0
+      image: ghcr.io/mkhaas/apf/apf-policy-service:0.1.0-driverconfig.3
 
 # Where the APF Application object is created. The pattern injects
 # global.vpArgoNamespace; argo.namespace is the fallback.

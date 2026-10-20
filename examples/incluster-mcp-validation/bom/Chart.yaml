@@ -1,0 +1,4 @@
+apiVersion: v2
+name: incluster-mcp-validation-bom
+version: 0.1.1
+description: Isolated keyless in-cluster MCP validation BOM

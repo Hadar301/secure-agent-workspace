@@ -30,6 +30,23 @@ def test_github_supplies_the_same_reviewed_runtime(tmp_path):
         assert (target / name).read_bytes() == (RUNTIME / name).read_bytes()
 
 
+def test_ci_aligns_the_upstream_curl_pin_before_building(tmp_path):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-nemoclaw-sandbox.yml").read_text())
+    steps = workflow["jobs"]["build"]["steps"]
+    pin = next(i for i, s in enumerate(steps) if s.get("name") == "Align upstream curl pin with Debian security")
+    image_build = next(i for i, s in enumerate(steps) if s.get("uses") == "./.github/actions/build-push-image")
+    assert pin < image_build
+    dockerfile = tmp_path / "Dockerfile"
+    line = "RUN apt-get install -y ca-certificates=20250419 curl=8.14.1-2+deb13u5 && rm -rf /var/lib/apt/lists/*\n"
+    dockerfile.write_text("FROM node AS npm12\n" + line)
+    env = dict(os.environ, UPSTREAM_DIR=str(tmp_path), BASH_ENV="/dev/null")
+    subprocess.run(["bash", "-eu", "-c", steps[pin]["run"]], env=env, check=True, capture_output=True)
+    assert dockerfile.read_text() == "FROM node AS npm12\n" + line.replace("deb13u5", "deb13u7")
+    # A later NemoClaw ref without the stale pin is left as is.
+    subprocess.run(["bash", "-eu", "-c", steps[pin]["run"]], env=env, check=True, capture_output=True)
+    assert "deb13u5" not in dockerfile.read_text()
+
+
 def test_reviewed_lock_contains_fixed_dependencies():
     manifest = json.loads((RUNTIME / "package.json").read_text())
     lock = json.loads((RUNTIME / "package-lock.json").read_text())

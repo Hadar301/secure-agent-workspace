@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -276,10 +277,13 @@ def test_volume_tarball_is_root_owned_world_readable_and_round_trips(ab, tmp_pat
 
 
 def test_mount_json_matches_the_openshell_podman_driver_schema(ab):
-    """A volume mount (0.1.x resource admission refuses image mounts)."""
-    assert json.loads(ab.harness_mounts_json("saw-harness-x")) == {"podman": {"mounts": [{
-        "type": "volume", "source": "saw-harness-x", "target": "/sandbox/harness",
-        "read_only": True}]}}
+    """Agent mounts are named volumes; no host or image mounts are sent."""
+    ws = SimpleNamespace(name="default")
+    sb = SimpleNamespace(name="notebook", type="openclaw", harness_ref={"name": "demo"})
+    mounts = json.loads(ab.sandbox_mounts_json(ws, sb))["podman"]["mounts"]
+    assert [m["target"] for m in mounts] == [ab.HARNESS_MOUNT, ab.GATE_MOUNT, ab.AUDIT_MOUNT]
+    assert [m["read_only"] for m in mounts] == [True, True, False]
+    assert all(m["type"] == "volume" for m in mounts)
 
 
 def test_volume_names_do_not_collide(ab):
@@ -353,8 +357,17 @@ def test_a_networked_plugin_is_governed_by_profile(ab):
 
 def test_parse_profile_catalog_reads_ids_and_hosts(ab):
     out = ('[{"id": "web-search", "endpoints": [{"host": "api.tavily.com", "port": 443}]},'
-           ' {"id": "slack", "endpoints": []}]')
-    assert ab.parse_profile_catalog(out) == {"web-search": {"api.tavily.com"}, "slack": set()}
+           ' {"id": "slack", "endpoints": []}, {"endpoints": []}, "junk"]')
+    profiles = ab.parse_provider_profile_catalog(out)
+    # A malformed entry is skipped: one bad profile must not stop the apply.
+    assert sorted(profiles) == ["slack", "web-search"]
+    assert ab.parse_profile_catalog(profiles) == {"web-search": {"api.tavily.com"}, "slack": set()}
+
+
+@pytest.mark.parametrize("output", ["null", "123", "true", '"unexpected"',
+                                    '{"profiles": 123}', '{"items": true}'])
+def test_a_non_list_profile_catalog_is_empty(ab, output):
+    assert ab.parse_provider_profile_catalog(output) == {}
 
 
 def test_host_allowed_matches_one_dns_label_globs(ab):
@@ -562,4 +575,3 @@ def test_a_bundle_without_plugin_json_declares_nothing(ab):
     info = ab.describe_harness_tree({"harness.yaml": (manifest.encode(), False),
                                      "skills/x/SKILL.md": (b"---\nname: x\n---\n", False)})
     assert ab.harness_mcp_servers(info) == {}
-
