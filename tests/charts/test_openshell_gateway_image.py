@@ -66,6 +66,17 @@ def test_ci_picks_fedora_and_cosign_by_runner_architecture():
         assert key in params
 
 
+def test_ci_builds_both_disks_on_both_architectures():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    build = workflow["jobs"]["build"]
+    combos = {(e["image_name"], e["platform"]) for e in build["strategy"]["matrix"]["include"]}
+    assert combos == {(i, p) for i in ("openshell-gateway", "openshell-gateway-docker")
+                      for p in ("linux/amd64", "linux/arm64")}
+    assert build["runs-on"] == "${{ matrix.runner }}"
+    push = next(s for s in build["steps"] if s.get("uses") == "./.github/actions/build-push-image")
+    assert push["with"]["platform"] == "${{ matrix.platform }}"
+
+
 def test_podman_signed_pull_and_static_enforce_policy_are_gone():
     """Replaced by apply_bom.py generating a per-pull policy.json from the
     BOM's own signature field: the old static, single-registry enforce.json

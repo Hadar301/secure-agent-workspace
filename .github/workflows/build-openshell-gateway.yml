@@ -28,15 +28,27 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - container_runtime: docker
             image_name: openshell-gateway-docker
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - container_runtime: docker
+            image_name: openshell-gateway-docker
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - container_runtime: podman
             image_name: openshell-gateway
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - container_runtime: podman
+            image_name: openshell-gateway
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +59,7 @@ jobs:
             sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          [ -e /dev/kvm ] || echo "::notice::No /dev/kvm on this runner; libguestfs runs its appliance under TCG (slower)."
 
       - name: Read build parameters from values.yaml
         id: params
@@ -71,17 +84,19 @@ jobs:
           echo "fedora_cache_key=$(printf '%s' "${FEDORA_CLOUD}" | sha256sum | cut -c1-16)" \
             >> "$GITHUB_OUTPUT"
 
-      # Runner requirement: GitHub-hosted ubuntu-latest with KVM enabled.
       # guestmount uses a small QEMU appliance (via libguestfs direct backend)
-      # to access the disk image — KVM accelerates that appliance.
+      # to access the disk image. KVM accelerates the x86 runner; on arm64 the
+      # appliance can run under TCG if /dev/kvm is unavailable.
       - name: Install build dependencies
         run: |
+          case "$(uname -m)" in
+            x86_64)  qemu_pkgs=(qemu-system-x86) ;;
+            aarch64) qemu_pkgs=(qemu-system-arm qemu-efi-aarch64) ;;
+            *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+          esac
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libguestfs-tools \
-            qemu-utils \
-            qemu-system-x86 \
-            curl
+            libguestfs-tools qemu-utils "${qemu_pkgs[@]}" curl psmisc
           # libguestfs supermin needs to read the running kernel image.
           # Ubuntu runner kernels are root-only by default, which causes
           # "supermin exited with error status 1" for non-root users.
@@ -443,5 +458,6 @@ jobs:
           image_name: ${{ matrix.image_name }}
           context: .
           dockerfile: image-builder-charts/helm/openshell-gateway-image/Dockerfile
+          platform: ${{ matrix.platform }}
           cache_scope: openshell-gateway-${{ matrix.container_runtime }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}
