@@ -19,6 +19,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -385,32 +386,69 @@ class Runner:
             for index, cidr in enumerate(topology["networkPolicy"][key]):
                 parameters.append((f"defaults.openshellSaw.networkPolicy.{key}[{index}]", cidr))
         for index, endpoint in enumerate(topology["cleanupApi"]["endpoints"]):
-            # The Pattern operator formats unquoted numeric values as Go
-            # float64 with %s, which corrupts the Argo CD Helm parameter.
             parameters.extend((
                 (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].ip", endpoint["ip"]),
                 (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].port",
-                 f'"{endpoint["port"]}"'),
+                 str(endpoint["port"])),
             ))
         # These arguments contain only public network data and image digests.
         # The Pattern install chart stores them in spec.extraParameters.
         options = ["--set", "global.extraValueFiles[0]=/values-ci.yaml"]
         for index, (name, value) in enumerate(parameters):
-            quoted_port = name.startswith("defaults.openshellSaw.cleanupApi.endpoints[") \
-                and name.endswith("].port")
-            valid = re.fullmatch(r'"[1-9][0-9]{0,4}"', value) if quoted_port else \
-                re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value)
-            if not valid:
+            if not re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value):
                 raise E2EError(f"invalid runtime override for {name}")
             options.extend(("--set-string", f"main.extraParameters[{index}].name={name}"))
             options.extend(("--set-string", f"main.extraParameters[{index}].value={value}"))
         return " ".join(options)
 
+    def quote_pattern_api_ports(self, topology: dict[str, Any]) -> bool:
+        response = self.call(["oc", "get", "pattern", "secure-agent-workspace",
+                              "-n", "patterns-operator", "-o", "json"],
+                             allow_failure=True)
+        if response.returncode:
+            missing = ("NotFound", "not found", "doesn't have a resource type")
+            if any(marker in response.stderr for marker in missing):
+                return False
+            raise E2EError("cannot read Pattern resource while installing")
+        pattern = json.loads(response.stdout)
+        parameters = pattern.get("spec", {}).get("extraParameters") or []
+        patches = []
+        for index, endpoint in enumerate(topology["cleanupApi"]["endpoints"]):
+            name = f"defaults.openshellSaw.cleanupApi.endpoints[{index}].port"
+            matches = [(position, item) for position, item in enumerate(parameters)
+                       if item.get("name") == name]
+            if len(matches) != 1:
+                raise E2EError(f"Pattern resource has no unique {name} parameter")
+            position, item = matches[0]
+            plain = str(endpoint["port"])
+            quoted = f'"{plain}"'
+            if item.get("value") == quoted:
+                continue
+            if item.get("value") != plain:
+                raise E2EError(f"Pattern resource has unexpected {name} value")
+            path = f"/spec/extraParameters/{position}/value"
+            patches.extend(({"op": "test", "path": path, "value": plain},
+                            {"op": "replace", "path": path, "value": quoted}))
+        if patches:
+            # The Pattern operator renders plain numeric values as
+            # %!s(float64=6443) in child Argo CD Helm parameters.
+            self.call(["oc", "patch", "pattern", "secure-agent-workspace",
+                       "-n", "patterns-operator", "--type=json", "-p",
+                       json.dumps(patches)])
+        return True
+
     def install(self) -> None:
         topology = self.topology()
         self.env["EXTRA_HELM_OPTS"] = self.install_options(topology)
         self.install_attempted = True
-        self.call(["./pattern.sh", "make", "install"], timeout=7200)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            install = pool.submit(self.call, ["./pattern.sh", "make", "install"],
+                                  timeout=7200)
+            while not install.done():
+                if self.quote_pattern_api_ports(topology):
+                    break
+                time.sleep(10)
+            install.result()
 
     def wait_for(self, label: str, predicate, *, seconds: int, interval: int = 20) -> None:
         deadline = time.monotonic() + seconds
