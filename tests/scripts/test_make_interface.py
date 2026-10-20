@@ -364,7 +364,8 @@ esac
     assert result.returncode == 0, result.stderr
     expected = [
         f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
-        f"registry.example/openshell-agents/openshell-gateway:{tag} --insecure=true"]
+        f"registry.example/openshell-agents/openshell-gateway:{tag} "
+        "--insecure=true --keep-manifest-list=true"]
     destinations = f"openshell-gateway:{tag}"
     if tag != "latest":
         expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")
@@ -376,6 +377,11 @@ esac
     assert result.returncode != 0
     assert len(log.read_text().splitlines()) == 1
     assert ":latest" not in log.read_text()
+
+
+def test_in_cluster_mirror_copies_the_entire_manifest_list():
+    template = (ROOT / "scripts/mirror-images-job.yaml").read_text()
+    assert "skopeo copy --all --src-tls-verify=true" in template
 
 
 def test_public_image_check_ignores_login_and_reports_private_packages(tmp_path):

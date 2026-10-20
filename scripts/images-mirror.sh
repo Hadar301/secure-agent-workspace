@@ -38,7 +38,8 @@ for image in ${images}; do
     exit 1
   fi
   if ! oc image mirror "${repo}/${image}:${version}" \
-    "${registry}/${build_ns}/${image}:${version}" --insecure=true >"${log}" 2>&1; then
+    "${registry}/${build_ns}/${image}:${version}" \
+    --insecure=true --keep-manifest-list=true >"${log}" 2>&1; then
     cat "${log}" >&2
     echo "Error: image mirror failed for ${repo}/${image}:${version}. Check the tag and registry access." >&2
     exit 1
