@@ -175,15 +175,18 @@ governance-interceptor-build-local: ## Build the governance interceptor image in
 gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Docker gateway image (openshell-gateway-docker)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
-	@oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete datasource openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete pvc openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete builds -l buildconfig=openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete is openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@resources=$$(oc api-resources --api-group=cdi.kubevirt.io -o name) || exit $$?; \
 	GOLDEN_FLAG=""; \
-	if ! printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+	if printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+		oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
+	else \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
+	if printf '%s\n' "$$resources" | grep -q '^datasources.cdi.kubevirt.io$$'; then \
+		oc delete datasource openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
 	fi; \
 	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
@@ -196,15 +199,18 @@ gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-clu
 gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Podman gateway image (openshell-gateway)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
-	@oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete datasource openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete pvc openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete builds -l buildconfig=openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete is openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@resources=$$(oc api-resources --api-group=cdi.kubevirt.io -o name) || exit $$?; \
 	GOLDEN_FLAG=""; \
-	if ! printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+	if printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+		oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
+	else \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
+	if printf '%s\n' "$$resources" | grep -q '^datasources.cdi.kubevirt.io$$'; then \
+		oc delete datasource openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
 	fi; \
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
