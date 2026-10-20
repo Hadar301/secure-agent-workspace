@@ -30,27 +30,15 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - container_runtime: docker
-            image_name: openshell-gateway-docker
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - container_runtime: docker
-            image_name: openshell-gateway-docker
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-          - container_runtime: podman
-            image_name: openshell-gateway
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - container_runtime: podman
-            image_name: openshell-gateway
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
+        container_runtime: [docker, podman]
+        platform: [linux/amd64, linux/arm64]
+        # Docker guest customization is slow without KVM on hosted arm64 runners.
+        # Build it on main and on demand, without holding up every gateway PR.
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"container_runtime":"docker","platform":"linux/arm64"}]' || '[]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -79,13 +67,13 @@ jobs:
               COSIGN_SHA256="$(yq -r '.cosign.aarch64.sha256' "$VALUES")" ;;
             *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
           esac
-          echo "cosign_url=${COSIGN_URL}" >> "$GITHUB_OUTPUT"
-          echo "cosign_sha256=${COSIGN_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "signing_floor=$(yq -r '.signing.floor // ""' "$VALUES")" >> "$GITHUB_OUTPUT"
-          echo "fedora_cloud=${FEDORA_CLOUD}" \
-            >> "$GITHUB_OUTPUT"
-          echo "fedora_cache_key=$(printf '%s' "${FEDORA_CLOUD}" | sha256sum | cut -c1-16)" \
-            >> "$GITHUB_OUTPUT"
+          {
+            echo "cosign_url=${COSIGN_URL}"
+            echo "cosign_sha256=${COSIGN_SHA256}"
+            echo "signing_floor=$(yq -r '.signing.floor // ""' "$VALUES")"
+            echo "fedora_cloud=${FEDORA_CLOUD}"
+            echo "fedora_cache_key=$(printf '%s' "${FEDORA_CLOUD}" | sha256sum | cut -c1-16)"
+          } >> "$GITHUB_OUTPUT"
 
       # guestmount uses a small QEMU appliance (via libguestfs direct backend)
       # to access the disk image. KVM accelerates the x86 runner; arm64 uses
@@ -466,7 +454,7 @@ jobs:
 
       - uses: ./.github/actions/build-push-image
         with:
-          image_name: ${{ matrix.image_name }}
+          image_name: ${{ matrix.container_runtime == 'docker' && 'openshell-gateway-docker' || 'openshell-gateway' }}
           context: .
           dockerfile: image-builder-charts/helm/openshell-gateway-image/Dockerfile
           platform: ${{ matrix.platform }}

@@ -481,7 +481,9 @@ def test_platform_builds_report_independently_and_merge_needs_both(name):
     workflow = yaml.safe_load(text)
     build, merge = workflow["jobs"]["build"], workflow["jobs"]["merge"]
     assert build["strategy"]["fail-fast"] is False
-    assert {e["platform"] for e in build["strategy"]["matrix"]["include"]} == {"linux/amd64", "linux/arm64"}
+    matrix = build["strategy"]["matrix"]
+    platforms = matrix.get("platform") or [e["platform"] for e in matrix["include"]]
+    assert set(platforms) == {"linux/amd64", "linux/arm64"}
     assert merge["needs"] == "build"
     assert text.count(".github/actions/merge-image/**") == 2
 
