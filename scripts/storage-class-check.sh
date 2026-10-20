@@ -144,7 +144,7 @@ metadata:
   name: ${HPP_CLASS}
   annotations:
     ${DEFAULT_ANNOTATION}: "true"
-provisioner: kubevirt.io/hostpath-provisioner
+provisioner: kubevirt.io.hostpath-provisioner
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 parameters:

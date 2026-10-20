@@ -220,7 +220,6 @@ make ssh-key-generate
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from ghcr.io/validatedpatterns-sandbox to the internal registry.
 # No build needed — images are pre-built by maintainers.
-# On arm64, skip this: the prebuilt gateway disk is x86_64 (docs/arm64.md).
 make images-mirror
 
 # 5b. Optional: check whether workspace VMs will trust Keycloak's
@@ -286,7 +285,6 @@ make quickstart-prereqs-check
 make ssh-key-generate
 
 # 6. Copy pre-built images to the cluster
-# On arm64, skip this: the prebuilt gateway disk is x86_64 (docs/arm64.md).
 make images-mirror
 
 # 7. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;

@@ -57,6 +57,34 @@ def test_the_base_image_matches_the_build_architecture():
     assert 'unsupported architecture' in text
 
 
+def test_ci_picks_fedora_and_cosign_by_runner_architecture():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    params = next(s["run"] for s in workflow["jobs"]["build"]["steps"] if s.get("id") == "params")
+    assert 'case "$(uname -m)" in' in params and "unsupported architecture" in params
+    for key in (".build.fedoraCloud'", ".build.fedoraCloudAarch64'", ".cosign.url'",
+                ".cosign.sha256'", ".cosign.aarch64.url'", ".cosign.aarch64.sha256'"):
+        assert key in params
+
+
+def test_ci_builds_podman_on_both_architectures_and_docker_on_amd64():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    build = workflow["jobs"]["build"]
+    matrix = build["strategy"]["matrix"]
+    assert matrix["container_runtime"] == ["docker", "podman"]
+    assert matrix["platform"] == ["linux/amd64", "linux/arm64"]
+    excluded = {(e["container_runtime"], e["platform"]) for e in matrix["exclude"]}
+    combinations = {(runtime, platform) for runtime in matrix["container_runtime"]
+                    for platform in matrix["platform"]} - excluded
+    assert combinations == {("docker", "linux/amd64"), ("podman", "linux/amd64"),
+                            ("podman", "linux/arm64")}
+    assert "ubuntu-24.04-arm" in build["runs-on"]
+    push = next(s for s in build["steps"] if s.get("uses") == "./.github/actions/build-push-image")
+    assert push["with"]["platform"] == "${{ matrix.container_runtime == 'podman' && matrix.platform || '' }}"
+    assert "openshell-gateway-docker" in push["with"]["image_name"]
+    assert "openshell-gateway'" in push["with"]["image_name"]
+    assert workflow["jobs"]["merge"]["strategy"]["matrix"]["image_name"] == ["openshell-gateway"]
+
+
 def test_podman_signed_pull_and_static_enforce_policy_are_gone():
     """Replaced by apply_bom.py generating a per-pull policy.json from the
     BOM's own signature field: the old static, single-registry enforce.json

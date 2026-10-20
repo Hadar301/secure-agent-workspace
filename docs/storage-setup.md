@@ -15,9 +15,9 @@ the install stalls.
    StorageProfile** (so DataVolume imports don't hang).
 3. The VM root disk asks for **ReadWriteOnce** — any CSI works; RWX is **not**
    required for the workspaces.
-4. **Bare-metal / arm64 only:** turn on the internal image registry with storage
-   (RWX recommended), because the golden image is built on the cluster and
-   pushed there.
+4. **Bare-metal clusters (x86 or arm64):** turn on the internal image registry
+   with storage (RWX recommended). `make images-mirror` copies the golden image
+   there; an optional on-cluster build also pushes there.
 
 ---
 
@@ -82,14 +82,14 @@ RWO works. You do **not** need ReadWriteMany for the workspace VMs. (A
 consequence: these VMs are not live-migratable, because an RWO root disk pins
 them to one node — expected.)
 
-## 4. Bare-metal / arm64 clusters: the internal image registry
+## 4. Bare-metal clusters: the internal image registry
 
-On bare-metal clusters (including **arm64 / Grace / GB200**) the internal image
-registry is usually off (`managementState: Removed`). On arm64 the golden VM
-image and the governance interceptor are **built on the cluster** (the prebuilt
-images are x86_64) and pushed to the internal registry, which the workspace VMs
-then import their root disk from — so the registry needs storage. Turn it on
-with a class that can hold it, ideally **ReadWriteMany**:
+On bare-metal clusters (x86 or arm64, including **Grace / GB200**) the internal
+image registry is often off (`managementState: Removed`). `make images-mirror`
+copies the multi-architecture golden VM image into the internal registry; an
+optional on-cluster build pushes its result there too. Workspace VMs import
+their root disk from the registry, so it needs storage. Turn it on with a
+class that can hold it, ideally **ReadWriteMany**:
 
 ```bash
 oc get configs.imageregistry.operator.openshift.io cluster \
@@ -101,7 +101,7 @@ oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p \
 
 `"claim":""` lets the registry operator create its PVC from the **default**
 StorageClass, so step 1 covers this too. See [arm64 notes](arm64.md) for the
-full on-cluster build flow.
+optional on-cluster build flow.
 
 ## 5. Verify, then install
 
@@ -122,7 +122,7 @@ oc get vm,vmi -A                           # VMs reach Running
 | `DataVolume`/PVC stuck `Pending` | No default StorageClass, or the default class's provisioner can't bind (step 1) |
 | Import stuck `ImportScheduled` / CDI never binds | Default class has no usable CDI StorageProfile / access mode (step 2) |
 | VM never starts, no `-root` PVC | Same as above — the disk was never provisioned |
-| On-cluster golden-image build can't push (arm64) | Internal registry still `Removed` or has no storage (step 4) |
+| Image mirror or on-cluster build can't push | Internal registry still `Removed` or has no storage (step 4) |
 | Two classes marked default | Ambiguous provisioning — leave exactly one default |
 
 ## Automated pre-check (`make storage-class-check`)

@@ -364,7 +364,8 @@ esac
     assert result.returncode == 0, result.stderr
     expected = [
         f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
-        f"registry.example/openshell-agents/openshell-gateway:{tag} --insecure=true"]
+        f"registry.example/openshell-agents/openshell-gateway:{tag} "
+        "--insecure=true --keep-manifest-list=true"]
     destinations = f"openshell-gateway:{tag}"
     if tag != "latest":
         expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")
@@ -376,6 +377,11 @@ esac
     assert result.returncode != 0
     assert len(log.read_text().splitlines()) == 1
     assert ":latest" not in log.read_text()
+
+
+def test_in_cluster_mirror_copies_the_entire_manifest_list():
+    template = (ROOT / "scripts/mirror-images-job.yaml").read_text()
+    assert "skopeo copy --all --src-tls-verify=true" in template
 
 
 def test_public_image_check_ignores_login_and_reports_private_packages(tmp_path):
@@ -469,15 +475,32 @@ def test_platform_builds_keep_the_repository_source_label():
 
 
 @pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
-                                  "build-governance-interceptor.yml"])
+                                  "build-governance-interceptor.yml", "build-openshell-gateway.yml"])
 def test_platform_builds_report_independently_and_merge_needs_both(name):
     text = (ROOT / ".github/workflows" / name).read_text()
     workflow = yaml.safe_load(text)
     build, merge = workflow["jobs"]["build"], workflow["jobs"]["merge"]
     assert build["strategy"]["fail-fast"] is False
-    assert {e["platform"] for e in build["strategy"]["matrix"]["include"]} == {"linux/amd64", "linux/arm64"}
+    matrix = build["strategy"]["matrix"]
+    platforms = matrix.get("platform") or [e["platform"] for e in matrix["include"]]
+    assert set(platforms) == {"linux/amd64", "linux/arm64"}
     assert merge["needs"] == "build"
     assert text.count(".github/actions/merge-image/**") == 2
+
+
+def test_merge_downloads_only_its_own_image_digests():
+    import fnmatch
+    merge = yaml.safe_load((ROOT / ".github/actions/merge-image/action.yml").read_text())
+    build = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    pattern = next(s for s in merge["runs"]["steps"]
+                   if s.get("uses", "").startswith("actions/download-artifact"))["with"]["pattern"]
+    upload = next(s for s in build["runs"]["steps"]
+                  if s.get("uses", "").startswith("actions/upload-artifact"))["with"]["name"]
+    assert upload == "digests-${{ inputs.image_name }}-${{ steps.plat.outputs.suffix }}"
+    own = pattern.replace("${{ inputs.image_name }}", "openshell-gateway")
+    assert fnmatch.fnmatchcase("digests-openshell-gateway-linux-arm64", own)
+    # The docker disk shares the prefix; its digests must not join the podman tag.
+    assert not fnmatch.fnmatchcase("digests-openshell-gateway-docker-linux-arm64", own)
 
 
 @pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
@@ -677,3 +700,18 @@ def test_storage_check_fails_clearly_when_no_class_and_non_interactive(tmp_path)
     assert result.returncode != 0
     assert "default StorageClass" in result.stderr
     assert "docs/storage-setup.md" in result.stderr
+
+
+def test_storage_check_hpp_class_uses_the_csi_provisioner(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    applied = tmp_path / "applied.yaml"
+    _oc_storageclass(bindir, '{"items":[]}', extra_cases=(
+        '  "get crd hostpathprovisioners.hostpathprovisioner.kubevirt.io") exit 0 ;;\n'
+        f'  "apply -f -") cat >> "{applied}" ;;'))
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SAW_STORAGE_ASSUME_YES="1")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    text = applied.read_text()
+    # storagePools (not legacy pathConfig) deploys only the CSI driver, named with a dot.
+    assert "provisioner: kubevirt.io.hostpath-provisioner" in text
+    assert "- name: saw-hpp" in text and "storagePool: saw-hpp" in text
