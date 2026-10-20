@@ -103,6 +103,23 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 
+def test_agent_apps_ignore_only_kubevirt_vm_defaults(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
+    pointers = [
+        "/spec/template/metadata/annotations/kubevirt.io~1pci-topology-version",
+        "/spec/template/spec/architecture",
+        "/spec/template/spec/domain/devices/interfaces/0/macAddress",
+        "/spec/template/spec/domain/firmware/serial",
+        "/spec/template/spec/domain/firmware/uuid",
+        "/spec/template/spec/domain/machine",
+    ]
+    for name in ("saw-alice", "saw-bob"):
+        assert app(docs, name)["spec"]["ignoreDifferences"] == [{
+            "group": "kubevirt.io", "kind": "VirtualMachine", "jsonPointers": pointers}]
+    for name in ("saw-alice-bom", "saw-alice-secrets", "saw-bob-bom", "saw-bob-secrets"):
+        assert "ignoreDifferences" not in app(docs, name)["spec"]
+
+
 def test_waves_release_names_and_value_overrides(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
 

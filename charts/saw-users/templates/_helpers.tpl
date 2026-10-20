@@ -272,6 +272,18 @@ metadata:
   {{- end }}
 spec:
   project: {{ $root.Values.argo.project }}
+  {{- if .ignoreVMDefaults }}
+  ignoreDifferences:
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /spec/template/metadata/annotations/kubevirt.io~1pci-topology-version
+        - /spec/template/spec/architecture
+        - /spec/template/spec/domain/devices/interfaces/0/macAddress
+        - /spec/template/spec/domain/firmware/serial
+        - /spec/template/spec/domain/firmware/uuid
+        - /spec/template/spec/domain/machine
+  {{- end }}
   destination:
     name: {{ $root.Values.argo.destinationName }}
     namespace: {{ printf "saw-%s" $user.name }}
