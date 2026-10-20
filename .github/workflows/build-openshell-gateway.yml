@@ -52,9 +52,19 @@ jobs:
         id: params
         run: |
           VALUES="image-builder-charts/helm/openshell-gateway-image/values.yaml"
-          FEDORA_CLOUD="$(yq -r '.build.fedoraCloud' "$VALUES")"
-          echo "cosign_url=$(yq -r '.cosign.url' "$VALUES")" >> "$GITHUB_OUTPUT"
-          echo "cosign_sha256=$(yq -r '.cosign.sha256' "$VALUES")" >> "$GITHUB_OUTPUT"
+          case "$(uname -m)" in
+            x86_64)
+              FEDORA_CLOUD="$(yq -r '.build.fedoraCloud' "$VALUES")"
+              COSIGN_URL="$(yq -r '.cosign.url' "$VALUES")"
+              COSIGN_SHA256="$(yq -r '.cosign.sha256' "$VALUES")" ;;
+            aarch64)
+              FEDORA_CLOUD="$(yq -r '.build.fedoraCloudAarch64' "$VALUES")"
+              COSIGN_URL="$(yq -r '.cosign.aarch64.url' "$VALUES")"
+              COSIGN_SHA256="$(yq -r '.cosign.aarch64.sha256' "$VALUES")" ;;
+            *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+          esac
+          echo "cosign_url=${COSIGN_URL}" >> "$GITHUB_OUTPUT"
+          echo "cosign_sha256=${COSIGN_SHA256}" >> "$GITHUB_OUTPUT"
           echo "signing_floor=$(yq -r '.signing.floor // ""' "$VALUES")" >> "$GITHUB_OUTPUT"
           echo "fedora_cloud=${FEDORA_CLOUD}" \
             >> "$GITHUB_OUTPUT"
