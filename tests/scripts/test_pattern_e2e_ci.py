@@ -65,6 +65,19 @@ def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch
     assert "build terminal status" in str(error.value)
 
 
+def test_install_quotes_api_port_for_pattern_operator(runner):
+    digest = "sha256:" + "a" * 64
+    runner.report["image_digests"] = {name: digest for name in (
+        "governance-interceptor", "nemoclaw-sandbox", "nemoclaw-cli",
+        "openshell-gateway")}
+    topology = {"cleanupApi": {"serviceIP": "172.30.0.1", "endpoints": [
+        {"ip": "192.0.2.10", "port": 6443}]}, "networkPolicy": {
+        "clusterNetworkCIDRs": ["10.128.0.0/14"],
+        "serviceNetworkCIDRs": ["172.30.0.0/16"]}}
+    options = runner.install_options(topology)
+    assert 'main.extraParameters[9].value="6443"' in options
+
+
 def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     digest = "sha256:" + "a" * 64
     waited = []

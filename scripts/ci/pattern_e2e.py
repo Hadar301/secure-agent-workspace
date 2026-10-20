@@ -385,16 +385,22 @@ class Runner:
             for index, cidr in enumerate(topology["networkPolicy"][key]):
                 parameters.append((f"defaults.openshellSaw.networkPolicy.{key}[{index}]", cidr))
         for index, endpoint in enumerate(topology["cleanupApi"]["endpoints"]):
+            # The Pattern operator formats unquoted numeric values as Go
+            # float64 with %s, which corrupts the Argo CD Helm parameter.
             parameters.extend((
                 (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].ip", endpoint["ip"]),
                 (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].port",
-                 str(endpoint["port"])),
+                 f'"{endpoint["port"]}"'),
             ))
         # These arguments contain only public network data and image digests.
         # The Pattern install chart stores them in spec.extraParameters.
         options = ["--set", "global.extraValueFiles[0]=/values-ci.yaml"]
         for index, (name, value) in enumerate(parameters):
-            if not re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value):
+            quoted_port = name.startswith("defaults.openshellSaw.cleanupApi.endpoints[") \
+                and name.endswith("].port")
+            valid = re.fullmatch(r'"[1-9][0-9]{0,4}"', value) if quoted_port else \
+                re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value)
+            if not valid:
                 raise E2EError(f"invalid runtime override for {name}")
             options.extend(("--set-string", f"main.extraParameters[{index}].name={name}"))
             options.extend(("--set-string", f"main.extraParameters[{index}].value={value}"))
