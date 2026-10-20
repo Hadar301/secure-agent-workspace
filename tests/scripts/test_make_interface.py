@@ -632,3 +632,48 @@ def test_an_unknown_engine_stops_the_install():
     result = install_opts("GOVERNANCE_ENGINE=opa")
     assert result.returncode != 0
     assert "GOVERNANCE_ENGINE must be interceptor or apf" in result.stderr
+
+
+def _oc_storageclass(bindir, items_json, extra_cases=""):
+    executable(bindir / "oc", f'''
+case "$*" in
+  "get storageclass -o json") echo '{items_json}' ;;
+{extra_cases}
+  *) echo "unexpected oc call: $*" >&2; exit 4 ;;
+esac
+''')
+
+
+def test_storage_check_passes_when_a_default_exists(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    _oc_storageclass(bindir, '{"items":[{"metadata":{"name":"ocs","annotations":'
+                     '{"storageclass.kubernetes.io/is-default-class":"true"}}}]}')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "Default StorageClass: available" in result.stdout
+
+
+def test_storage_check_adopts_an_existing_class_when_confirmed(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    patch_log = tmp_path / "patched"
+    _oc_storageclass(
+        bindir,
+        '{"items":[{"metadata":{"name":"thin-csi","annotations":{}}}]}',
+        extra_cases=f'  "patch storageclass thin-csi "*) echo "{patch_log}" >"{patch_log}"; echo patched ;;')
+    # No TTY under subprocess; SAW_STORAGE_ASSUME_YES stands in for the "yes".
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SAW_STORAGE_ASSUME_YES="1")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    assert patch_log.exists(), "oc patch was not called to set the default"
+    assert "Marked StorageClass 'thin-csi'" in result.stdout
+
+
+def test_storage_check_fails_clearly_when_no_class_and_non_interactive(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    _oc_storageclass(bindir, '{"items":[]}')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode != 0
+    assert "default StorageClass" in result.stderr
+    assert "docs/storage-setup.md" in result.stderr

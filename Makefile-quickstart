@@ -82,7 +82,7 @@ endif
 export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) --set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=$(GOVERNANCE_ENGINE)
 endif
 
-.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
+.PHONY: prereqs-check quickstart-prereqs-check storage-class-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
@@ -104,6 +104,9 @@ prereqs-check: .check-prereqs ## Check tools and cluster capacity before Pattern
 
 quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickstart
 	@PREREQS_MODE=quickstart $(SCRIPTS_DIR)/prereqs-check.sh
+
+storage-class-check: ## Ensure a default StorageClass exists for the VM disks (offers to reuse one or enable HPP)
+	@$(SCRIPTS_DIR)/storage-class-check.sh
 
 check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
 	@$(SCRIPTS_DIR)/check-oidc-ca.sh
