@@ -677,3 +677,18 @@ def test_storage_check_fails_clearly_when_no_class_and_non_interactive(tmp_path)
     assert result.returncode != 0
     assert "default StorageClass" in result.stderr
     assert "docs/storage-setup.md" in result.stderr
+
+
+def test_storage_check_hpp_class_uses_the_csi_provisioner(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    applied = tmp_path / "applied.yaml"
+    _oc_storageclass(bindir, '{"items":[]}', extra_cases=(
+        '  "get crd hostpathprovisioners.hostpathprovisioner.kubevirt.io") exit 0 ;;\n'
+        f'  "apply -f -") cat >> "{applied}" ;;'))
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SAW_STORAGE_ASSUME_YES="1")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    text = applied.read_text()
+    # storagePools (not legacy pathConfig) deploys only the CSI driver, named with a dot.
+    assert "provisioner: kubevirt.io.hostpath-provisioner" in text
+    assert "- name: saw-hpp" in text and "storagePool: saw-hpp" in text
