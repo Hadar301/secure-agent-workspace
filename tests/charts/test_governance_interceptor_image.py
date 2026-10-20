@@ -62,6 +62,15 @@ def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
     assert f'ADMIN_CERT_SUBJECT = "/O=openshell/OU={role}/CN=saw-installer"' in installer
 
 
+def test_openshift_builder_check_runs_in_every_platform_build():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-governance-interceptor.yml").read_text())
+    names = [s.get("name") for s in workflow["jobs"]["build"]["steps"]]
+    assert "Render OpenShift builder Dockerfile" in names
+    assert "Compile and test OpenShift interceptor builder" in names
+    merge_uses = [s["uses"] for s in workflow["jobs"]["merge"]["steps"] if "uses" in s]
+    assert merge_uses == ["actions/checkout@v4", "./.github/actions/merge-image"]
+
+
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_gateway_allows_driver_guard_without_noninterceptable_template_rpc():
     out = subprocess.run(

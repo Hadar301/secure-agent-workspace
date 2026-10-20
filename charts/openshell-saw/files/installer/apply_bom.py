@@ -3056,7 +3056,9 @@ class ProfileApplier:
         audit_dir = self.volumes.ensure(audit_volume, ws.name)
         if audit_dir is None:
             raise InstallerError(f"audit volume {audit_volume} lacks sandbox admission labels")
-        audit_dir.chmod(0o555)
+        # A running rootless sandbox may remap the volume owner to a subordinate
+        # UID, so host-side chmod fails even though podman owns the volume.
+        self._podman("unshare", "chmod", "555", str(audit_dir))
 
     def finalize_tool_audit(self, ws, sb):
         """Make the sandbox user's log append-only, with an unwritable parent."""
@@ -3076,13 +3078,13 @@ class ProfileApplier:
             gid = self.cli(*exec_cmd, "id", "-g", quiet=True).out.strip()
             if not uid.isdigit() or not gid.isdigit():
                 raise InstallerError(f"sandbox '{sb.name}': cannot determine the audit writer's uid/gid")
-            root.chmod(0o755)
+            self._podman("unshare", "chmod", "755", str(root))
             try:
-                log_file.touch(exist_ok=False)
-                log_file.chmod(0o600)
+                self._podman("unshare", "touch", str(log_file))
+                self._podman("unshare", "chmod", "600", str(log_file))
                 self._podman("unshare", "chown", f"{uid}:{gid}", str(log_file))
             finally:
-                root.chmod(0o555)
+                self._podman("unshare", "chmod", "555", str(root))
         self.sh.run(["sudo", "-n", "chattr", "+a", str(log_file)])
 
     def _podman(self, *args, **kw):
