@@ -106,6 +106,9 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
 def test_agent_apps_ignore_only_kubevirt_vm_defaults(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     pointers = [
+        "/metadata/annotations/kubemacpool.io~1transaction-timestamp",
+        "/metadata/annotations/kubevirt.io~1latest-observed-api-version",
+        "/metadata/annotations/kubevirt.io~1storage-observed-api-version",
         "/spec/template/metadata/annotations/kubevirt.io~1pci-topology-version",
         "/spec/template/spec/architecture",
         "/spec/template/spec/domain/devices/interfaces/0/macAddress",
@@ -142,8 +145,9 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
     assert bom["spec"]["source"]["path"] == "charts/saw-bom"
-    assert helm_values(bom) == {"profiles": ["data-science"]}
-    assert helm_values(app(docs, "saw-bob-bom")) == {"profiles": ["custom"]}
+    assert helm_values(bom) == {"profiles": ["data-science"], "imageOverrides": {}}
+    assert helm_values(app(docs, "saw-bob-bom")) == {
+        "profiles": ["custom"], "imageOverrides": {}}
 
     alice = app(docs, "saw-alice")
     assert alice["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
@@ -220,6 +224,7 @@ def test_demo_harness_turns_on_allow_driver_config(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "alice", "harnessEnabled": True}]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": ["data-science"], "harnessEnabled": True,
+        "imageOverrides": {},
     }
     assert helm_values(app(docs, "saw-alice"))["allowDriverConfig"] is True
 
@@ -316,7 +321,8 @@ def test_shipped_override_renders_alice(tmp_path):
     result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"))
     docs = docs_from(result)
     assert [doc["metadata"]["name"] for doc in by_kind(docs, "Namespace")] == ["saw-alice"]
-    assert helm_values(app(docs, "saw-alice-bom")) == {"profiles": ["data-science"]}
+    assert helm_values(app(docs, "saw-alice-bom")) == {
+        "profiles": ["data-science"], "imageOverrides": {}}
 
 
 def test_owner_resolution_writes_only_a_dedicated_input():
@@ -441,4 +447,5 @@ def test_names_that_would_take_another_users_apps_are_refused(tmp_path, name):
 def test_a_user_can_opt_into_the_demo_harness(tmp_path):
     docs = docs_from(render_file(tmp_path, [dict(ALICE, harnessEnabled=True)]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
-        "profiles": ["data-science"], "harnessEnabled": True}
+        "profiles": ["data-science"], "harnessEnabled": True,
+        "imageOverrides": {}}

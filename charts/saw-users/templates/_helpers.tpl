@@ -277,6 +277,9 @@ spec:
     - group: kubevirt.io
       kind: VirtualMachine
       jsonPointers:
+        - /metadata/annotations/kubemacpool.io~1transaction-timestamp
+        - /metadata/annotations/kubevirt.io~1latest-observed-api-version
+        - /metadata/annotations/kubevirt.io~1storage-observed-api-version
         - /spec/template/metadata/annotations/kubevirt.io~1pci-topology-version
         - /spec/template/spec/architecture
         - /spec/template/spec/domain/devices/interfaces/0/macAddress
