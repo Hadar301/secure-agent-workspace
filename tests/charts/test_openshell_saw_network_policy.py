@@ -91,6 +91,13 @@ def test_default_deny_and_policy_scopes():
     assert shell.returncode == 0, shell.stderr
 
 
+def test_json_number_api_port_renders_as_integer():
+    docs = render("--set-json", 'cleanupApi.endpoints=[{"ip":"192.0.2.10","port":6443}]')
+    assert {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
+            "ports": [{"protocol": "TCP", "port": 6443}]} in (
+                docs[("EgressFirewall", "default")]["spec"]["egress"])
+
+
 def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
     api_rule = {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
         "ports": [{"protocol": "TCP", "port": 6443}]}

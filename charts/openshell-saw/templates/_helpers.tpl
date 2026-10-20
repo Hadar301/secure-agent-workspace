@@ -454,7 +454,7 @@ rule. The list can be empty only while NetworkPolicy is disabled. */}}
   {{- end -}}
   {{- $ip := get $entry "ip" | toString -}}
   {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $ip) -}}
-  {{- $rawPort := get $entry "port" | toString -}}
+  {{- $rawPort := printf "%v" (get $entry "port") -}}
   {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $rawPort)) (gt (int $rawPort) 65535) -}}
     {{- fail (printf "cleanupApi endpoint %q has invalid TCP port %q" $ip $rawPort) -}}
   {{- end -}}
