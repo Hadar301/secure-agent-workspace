@@ -53,6 +53,30 @@ def test_agent_gate_files_come_from_read_only_volume(
     assert any(call["args"][1:3] == ["chattr", "+a"] for call in fake_env.other_calls("sudo"))
 
 
+def test_audit_volume_permissions_use_podman_user_namespace(
+        ab, fake_env, config, shipped_profile_files, secrets_dir, monkeypatch):
+    """A sandbox can remap a rootless volume beyond the host user's ownership."""
+    host_chmod = Path.chmod
+
+    def reject_host_chmod(path, mode, *args, **kwargs):
+        if "/volumes/saw-audit-" in str(path):
+            raise PermissionError("rootless volume owner is a subordinate UID")
+        return host_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", reject_host_chmod)
+    profiles = ab.parse_profiles(shipped_profile_files)
+    creds = ab.resolve_credentials(profiles, secrets_dir)
+    applier_for(ab, config, creds).apply(profiles)
+
+    audit = fake_env.state / "volumes" / ab.sandbox_volume_name(
+        ab.AUDIT_VOLUME_PREFIX, "default", "notebook")
+    assert (audit / "tool-actions.jsonl").is_file()
+    assert audit.stat().st_mode & 0o222 == 0
+    calls = fake_env.podman_calls()
+    assert any(call[:3] == ["unshare", "touch", str(audit / "tool-actions.jsonl")]
+               for call in calls)
+
+
 def test_generic_sandbox_has_no_gate(ab, fake_env, config):
     provider = ab.Provider(name="nvidia", type="nvidia", model="nvidia/nemotron-3-super-120b-a12b")
     workspace = ab.Workspace(name="default", providers=[provider], sandboxes=[
