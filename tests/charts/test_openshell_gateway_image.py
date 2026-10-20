@@ -66,19 +66,23 @@ def test_ci_picks_fedora_and_cosign_by_runner_architecture():
         assert key in params
 
 
-def test_ci_builds_both_disks_on_main_and_skips_slow_pr_variant():
+def test_ci_builds_podman_on_both_architectures_and_docker_on_amd64():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
     build = workflow["jobs"]["build"]
     matrix = build["strategy"]["matrix"]
     assert matrix["container_runtime"] == ["docker", "podman"]
     assert matrix["platform"] == ["linux/amd64", "linux/arm64"]
-    assert "github.event_name == 'pull_request'" in matrix["exclude"]
-    assert '[{"container_runtime":"docker","platform":"linux/arm64"}]' in matrix["exclude"]
+    excluded = {(e["container_runtime"], e["platform"]) for e in matrix["exclude"]}
+    combinations = {(runtime, platform) for runtime in matrix["container_runtime"]
+                    for platform in matrix["platform"]} - excluded
+    assert combinations == {("docker", "linux/amd64"), ("podman", "linux/amd64"),
+                            ("podman", "linux/arm64")}
     assert "ubuntu-24.04-arm" in build["runs-on"]
     push = next(s for s in build["steps"] if s.get("uses") == "./.github/actions/build-push-image")
-    assert push["with"]["platform"] == "${{ matrix.platform }}"
+    assert push["with"]["platform"] == "${{ matrix.container_runtime == 'podman' && matrix.platform || '' }}"
     assert "openshell-gateway-docker" in push["with"]["image_name"]
     assert "openshell-gateway'" in push["with"]["image_name"]
+    assert workflow["jobs"]["merge"]["strategy"]["matrix"]["image_name"] == ["openshell-gateway"]
 
 
 def test_podman_signed_pull_and_static_enforce_policy_are_gone():

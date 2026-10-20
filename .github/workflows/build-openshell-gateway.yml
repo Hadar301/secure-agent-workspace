@@ -36,9 +36,10 @@ jobs:
       matrix:
         container_runtime: [docker, podman]
         platform: [linux/amd64, linux/arm64]
-        # Docker guest customization is slow without KVM on hosted arm64 runners.
-        # Build it on main and on demand, without holding up every gateway PR.
-        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"container_runtime":"docker","platform":"linux/arm64"}]' || '[]') }}
+        # Docker is the legacy VM runtime; ARM clusters use the Podman disk.
+        exclude:
+          - container_runtime: docker
+            platform: linux/arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -457,7 +458,7 @@ jobs:
           image_name: ${{ matrix.container_runtime == 'docker' && 'openshell-gateway-docker' || 'openshell-gateway' }}
           context: .
           dockerfile: image-builder-charts/helm/openshell-gateway-image/Dockerfile
-          platform: ${{ matrix.platform }}
+          platform: ${{ matrix.container_runtime == 'podman' && matrix.platform || '' }}
           cache_scope: openshell-gateway-${{ matrix.container_runtime }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -467,7 +468,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image_name: [openshell-gateway, openshell-gateway-docker]
+        image_name: [openshell-gateway]
     steps:
       - uses: actions/checkout@v4
 
