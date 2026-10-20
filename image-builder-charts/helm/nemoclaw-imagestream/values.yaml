@@ -3,7 +3,7 @@ source:
   discoveryImage: ""
   git:
     uri: "https://github.com/NVIDIA/NemoClaw.git"
-    ref: "ef5d55d19e2da33c2474db158588613828e1a9be" # v0.0.133
+    ref: "f4de239dc8802027cd66266e59fbc6ec2d24a985" # fixes Debian curl package pin
 
 build:
   discoveryNodeVersion: "24.19.0"

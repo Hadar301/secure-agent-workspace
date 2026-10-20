@@ -55,6 +55,16 @@ def test_lock_owner_change_prevents_release(runner, monkeypatch):
     assert runner.locked
 
 
+def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch):
+    monkeypatch.setattr(pattern_e2e.subprocess, "run", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=1, stdout="build root cause",
+                                        stderr="build terminal status"))
+    with pytest.raises(pattern_e2e.E2EError) as error:
+        runner.call(["make", "sandbox-build"])
+    assert "build root cause" in str(error.value)
+    assert "build terminal status" in str(error.value)
+
+
 def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     runner.locked = True
     monkeypatch.setattr(runner, "setup_files", lambda: None)

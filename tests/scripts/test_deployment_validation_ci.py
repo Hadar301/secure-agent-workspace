@@ -126,3 +126,18 @@ def test_redhat_catalog_verifies_login_only_tag(monkeypatch):
     assert urls == ["https://catalog.redhat.com/api/containers/v1/repositories/"
                     "registry/registry.access.redhat.com/repository/"
                     "rhel9/postgresql-16/tag/latest"]
+
+
+def test_skopeo_uses_digest_without_tag(monkeypatch):
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dv.subprocess, "run", fake_run)
+    digest = "sha256:" + "a" * 64
+    dv.check_reference(dv.Reference("image", f"docker.io/library/node:24@{digest}",
+                                    "values.yaml", "image"))
+    assert commands == [["skopeo", "inspect", "--raw",
+                         f"docker://docker.io/library/node@{digest}"]]

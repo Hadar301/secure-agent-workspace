@@ -287,7 +287,13 @@ def check_reference(ref: Reference) -> None:
                     raise RuntimeError("Red Hat catalog has no image for this tag")
             retry_call(inspect_catalog, "Red Hat catalog lookup failed")
             return
-        command = ["skopeo", "inspect", "--raw", f"docker://{ref.value}"]
+        image = ref.value
+        if "@" in image:
+            name, digest = image.rsplit("@", 1)
+            if ":" in name.rsplit("/", 1)[-1]:
+                name = name.rsplit(":", 1)[0]
+            image = f"{name}@{digest}"
+        command = ["skopeo", "inspect", "--raw", f"docker://{image}"]
         def inspect() -> None:
             run = subprocess.run(command, capture_output=True, timeout=45, check=False)
             if run.returncode:

@@ -100,7 +100,9 @@ class Runner:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise E2EError(f"{args[0]} failed: {exc.__class__.__name__}") from exc
         if completed.returncode and not allow_failure:
-            detail = self.redact((completed.stderr or completed.stdout).strip())[-700:]
+            output = "\n".join(part for part in (completed.stdout.strip()[-1400:],
+                                                  completed.stderr.strip()[-500:]) if part)
+            detail = self.redact(output)
             raise E2EError(f"{args[0]} {args[1] if len(args) > 1 else ''} "
                            f"failed ({completed.returncode}): {detail}")
         return completed
