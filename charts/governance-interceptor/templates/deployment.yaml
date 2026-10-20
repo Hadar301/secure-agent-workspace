@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: interceptor
-          image: {{ .Values.image }}
+          image: {{ dig "ci" "governanceImage" .Values.image (.Values.global | default dict) }}
           imagePullPolicy: Always
           args:
             - --listen

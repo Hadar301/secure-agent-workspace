@@ -9,7 +9,6 @@ openshell:
   version: "0.1.2"
   gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.1.2-rhaiv.0"
   supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.1.2-rhaiv.0"
-  pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 # Pinned cosign used only to verify the installer bundle. The OpenShell
 # publisher key is not known, so this does not verify those images (that

@@ -1,0 +1,18 @@
+# The manual E2E run creates only these two ordinary user workspaces.
+pruneOnRemove: true
+users:
+  - name: ciowner
+    profiles: [data-science]
+    pruneOnRemove: true
+  - name: cisecond
+    profiles: [data-science]
+    pruneOnRemove: true
+defaults:
+  openshellSaw:
+    networkPolicy:
+      enabled: true
+      clusterNetworkCIDRs: []
+      serviceNetworkCIDRs: []
+    cleanupApi:
+      serviceIP: ""
+      endpoints: []

@@ -1,0 +1,25 @@
+# Added to the Pattern CR only for a manual CI cluster run.
+# The normal prod values remain the base for this cluster group.
+clusterGroup:
+  namespaces:
+    rhdh: null
+    rhdh-operator: null
+    saw-portal: null
+    redhat-ods-operator: null
+  subscriptions:
+    rhdh: null
+    openshift-pipelines: null
+    openshift-ai: null
+  applications:
+    openshell-rhdh: null
+    openshell-keycloak:
+      extraValueFiles:
+        - /overrides/keycloak-ci.yaml
+    saw-users:
+      extraValueFiles:
+        - /overrides/saw-users-ci.yaml
+  imperative:
+    jobs:
+      - name: saw-ingress-ca
+        playbook: ansible/playbooks/saw-ingress-ca.yaml
+        timeout: 300

@@ -1,0 +1,17 @@
+# Offline render values for the CI deployment check.
+users:
+  - name: ciowner
+    profiles: [data-science]
+  - name: cisecond
+    profiles: [data-science]
+defaults:
+  openshellSaw:
+    networkPolicy:
+      enabled: true
+      clusterNetworkCIDRs: ["10.128.0.0/14"]
+      serviceNetworkCIDRs: ["172.30.0.0/16"]
+    cleanupApi:
+      serviceIP: "172.30.0.1"
+      endpoints:
+        - ip: "192.0.2.10"
+          port: 6443

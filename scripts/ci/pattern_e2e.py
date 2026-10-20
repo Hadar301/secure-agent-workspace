@@ -1,0 +1,740 @@
+#!/usr/bin/env python3
+"""Run the approved Pattern E2E sequence on one fresh OpenShift cluster."""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import ssl
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+LOCK_NAME = "saw-pattern-e2e"
+NAMESPACE = "openshell-agents"
+USERS = ("ciowner", "cisecond")
+PATTERN_NAMESPACES = (
+    "external-secrets", "external-secrets-operator", "openshift-cnv",
+    "openshell-agents", "saw-keycloak", "vault", "vp-gitops",
+    "patterns-operator", "saw-ciowner", "saw-cisecond",
+)
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class E2EError(Exception):
+    pass
+
+
+class Runner:
+    def __init__(self) -> None:
+        self.sha = self.required("CI_HEAD_SHA")
+        if not SHA.fullmatch(self.sha):
+            raise E2EError("CI_HEAD_SHA must be a full commit SHA")
+        self.run_id = self.required("GITHUB_RUN_ID")
+        self.run_url = self.required("CI_RUN_URL")
+        self.repo = self.required("GITHUB_REPOSITORY")
+        self.branch = self.required("CI_TARGET_BRANCH")
+        self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
+        self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
+        self.artifacts.mkdir(parents=True, exist_ok=True)
+        self.report: dict[str, Any] = {
+            "source_sha": self.sha, "repository": self.repo, "run_id": self.run_id,
+            "run_url": self.run_url, "started_at": now(), "stages": [],
+            "image_digests": {}, "cleanup_verified": False,
+        }
+        self.home: Path | None = None
+        self.env = dict(os.environ)
+        for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY",
+                    "CI_WEB_SEARCH_KEY"):
+            self.env.pop(key, None)
+        self.locked = False
+        self.install_attempted = False
+        self.build_attempted = False
+        self.cancelled = False
+        self.baseline_namespaces: set[str] = set()
+        self.sensitive = [value for key, value in os.environ.items()
+                          if key.startswith("CI_") and
+                          any(term in key for term in ("KEY", "PASSWORD", "TOKEN", "B64")) and value]
+
+    @staticmethod
+    def required(key: str) -> str:
+        value = os.environ.get(key, "")
+        if not value:
+            raise E2EError(f"{key} is required")
+        return value
+
+    def redact(self, text: str) -> str:
+        for value in self.sensitive:
+            text = text.replace(value, "[redacted]")
+        return text
+
+    def call(self, args: list[str], *, timeout: int = 120,
+             input_text: str | None = None, allow_failure: bool = False,
+             env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        try:
+            completed = subprocess.run(
+                args, cwd=ROOT, env=env or self.env, input=input_text,
+                text=True, capture_output=True, timeout=timeout, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise E2EError(f"{args[0]} failed: {exc.__class__.__name__}") from exc
+        if completed.returncode and not allow_failure:
+            detail = self.redact((completed.stderr or completed.stdout).strip())[-700:]
+            raise E2EError(f"{args[0]} {args[1] if len(args) > 1 else ''} "
+                           f"failed ({completed.returncode}): {detail}")
+        return completed
+
+    def oc_json(self, *args: str) -> dict[str, Any]:
+        output = self.call(["oc", *args, "-o", "json"]).stdout
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise E2EError(f"oc {args[0]} returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise E2EError(f"oc {args[0]} returned no JSON object")
+        return data
+
+    def stage(self, name: str, action) -> None:
+        print(f"{now()} {name}: started", flush=True)
+        entry = {"name": name, "started_at": now(), "result": "failed"}
+        self.report["stages"].append(entry)
+        self.save_report()
+        try:
+            action()
+        except Exception as exc:
+            entry["error"] = self.redact(str(exc))
+            raise
+        else:
+            entry["result"] = "passed"
+        finally:
+            entry["finished_at"] = now()
+            self.save_report()
+            print(f"{now()} {name}: {entry['result']}", flush=True)
+
+    def save_report(self) -> None:
+        path = self.artifacts / "results.json"
+        path.write_text(json.dumps(self.report, indent=2) + "\n", encoding="utf-8")
+
+    def setup_files(self) -> None:
+        for name in ("oc", "helm", "podman", "uv", "openshell", "jq", "curl",
+                     "openssl", "git", "make"):
+            if shutil.which(name) is None:
+                raise E2EError(f"required tool {name} is unavailable")
+        bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+        api_version = bom["bom"]["spec"]["openshell"]["cli"]["version"].split("-", 1)[0]
+        version = self.call(["openshell", "--version"]).stdout.strip()
+        if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
+            raise E2EError("OpenShell CLI version does not match the installer BOM")
+        if self.required("CI_PROVIDER") != "build":
+            raise E2EError("CI_PROVIDER must be build for the data-science profile")
+        provider_profile = yaml.safe_load((ROOT / "charts/saw-bom/profiles/data-science/"
+                                           "default/providers.yaml").read_text())
+        expected_model = next(item["model"] for item in
+                              provider_profile["spec"]["providers"]
+                              if item.get("nemoclawProvider") == "build")
+        if self.required("CI_MODEL") != expected_model:
+            raise E2EError("CI_MODEL must match the data-science profile model")
+        secret_home = Path(tempfile.mkdtemp(prefix="saw-ci-", dir=os.environ.get("RUNNER_TEMP")))
+        secret_home.chmod(0o700)
+        self.home = secret_home
+        self.env["HOME"] = str(secret_home)
+        self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
+        self.env["SSH_KEY_PATH"] = str(secret_home / "ssh/sandbox-ssh")
+        self.env["VALUES_SECRET"] = str(secret_home / "values-secret-secure-agent-workspace.yaml")
+        self.env["TARGET_BRANCH"] = self.branch
+        self.env["TARGET_ORIGIN"] = "origin"
+        self.env["BUILD_NS"] = NAMESPACE
+        self.env["NS"] = NAMESPACE
+        self.env["PUSH_IMAGE_REPO"] = ""
+        kubeconfig = base64.b64decode(self.required("CI_KUBECONFIG_B64"), validate=True)
+        ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
+        self.private_file(".kube/config", kubeconfig)
+        self.private_file("cluster-ca.pem", ca)
+        # Route TLS uses this CA. Keep the system trust store for public hosts.
+        self.env["OIDC_CA_BUNDLE"] = str(secret_home / "cluster-ca.pem")
+        self.env["TEST_SECOND_TOKEN_DIR"] = str(secret_home / "second-oidc")
+        self.env["TEST_ACTIVE_SAW_NAME"] = USERS[0]
+        self.env["TEST_ACTIVE_SAW_NS"] = f"saw-{USERS[0]}"
+        self.private_file("inference-key", self.required("CI_INFERENCE_KEY").encode())
+        self.private_file("web-search-key", self.required("CI_WEB_SEARCH_KEY").encode())
+        for user in USERS:
+            password = "aA9!" + secrets.token_urlsafe(32)
+            self.sensitive.append(password)
+            self.private_file(f"{user}-password", password.encode())
+        # The Pattern utility container reads this file from HOME. It holds
+        # paths to private files; no secret value enters the repository.
+        values = {
+            "version": "2.0", "backingStore": "vault",
+            "secrets": [
+                {"name": "ssh", "fields": [
+                    {"name": "private_key", "path": str(secret_home / "ssh/sandbox-ssh")},
+                    {"name": "public_key", "path": str(secret_home / "ssh/sandbox-ssh.pub")}]},
+                {"name": "inference", "fields": [
+                    {"name": "provider", "value": self.required("CI_PROVIDER")},
+                    {"name": "model", "value": self.required("CI_MODEL")},
+                    {"name": "api_key", "path": str(secret_home / "inference-key")}]},
+                {"name": "web-search", "fields": [
+                    {"name": "provider", "value": "brave"},
+                    {"name": "api_key", "path": str(secret_home / "web-search-key")}]},
+                {"name": "keycloak-users", "fields": [
+                    {"name": user, "path": str(secret_home / f"{user}-password")}
+                    for user in USERS]},
+            ],
+        }
+        self.private_file("values-secret-secure-agent-workspace.yaml",
+                          yaml.safe_dump(values, sort_keys=False).encode())
+        self.call(["make", "ssh-key-generate"], timeout=30)
+
+    def private_file(self, relative: str, content: bytes) -> None:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        target = self.home / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target.write_bytes(content)
+        target.chmod(0o600)
+
+    def cluster_identity(self) -> None:
+        expected_api = self.required("CI_CLUSTER_API")
+        expected_uid = self.required("CI_CLUSTER_UID")
+        actual_api = self.call(["oc", "whoami", "--show-server"]).stdout.strip()
+        if actual_api != expected_api:
+            raise E2EError("cluster API does not match CI_CLUSTER_API")
+        actual_uid = self.oc_json("get", "namespace", "kube-system")["metadata"]["uid"]
+        if actual_uid != expected_uid:
+            raise E2EError("cluster UID does not match CI_CLUSTER_UID")
+        namespace_doc = {"apiVersion": "v1", "kind": "Namespace",
+                         "metadata": {"name": self.lock_ns,
+                                      "labels": {"openshell.pattern/ci-lock": "true"}}}
+        self.call(["oc", "apply", "-f", "-"], input_text=json.dumps(namespace_doc))
+        namespace = self.oc_json("get", "namespace", self.lock_ns)
+        if namespace["metadata"]["name"] != self.lock_ns:
+            raise E2EError("CI lock namespace is unavailable")
+
+    def acquire_lock(self) -> None:
+        document = {
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": LOCK_NAME, "namespace": self.lock_ns,
+                         "annotations": {
+                             "saw.redhat.com/repository": self.repo,
+                             "saw.redhat.com/pr": self.required("CI_PR_NUMBER"),
+                             "saw.redhat.com/sha": self.sha,
+                             "saw.redhat.com/run-id": self.run_id,
+                             "saw.redhat.com/run-url": self.run_url,
+                             "saw.redhat.com/created-at": now()}},
+            "data": {"state": "active"},
+        }
+        created = self.call(["oc", "create", "-f", "-"],
+                            input_text=json.dumps(document), allow_failure=True)
+        if created.returncode:
+            existing = self.call(["oc", "get", "configmap", LOCK_NAME, "-n", self.lock_ns,
+                                  "-o", "json"], allow_failure=True)
+            if existing.returncode:
+                raise E2EError("cannot acquire or inspect cluster lock")
+            lock = json.loads(existing.stdout)
+            run_url = lock.get("metadata", {}).get("annotations", {}).get(
+                "saw.redhat.com/run-url", "unknown run")
+            raise E2EError(f"cluster is busy: {run_url}")
+        self.locked = True
+
+    def release_lock(self) -> None:
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        annotations = lock.get("metadata", {}).get("annotations", {})
+        if (annotations.get("saw.redhat.com/run-id") != self.run_id or
+                annotations.get("saw.redhat.com/sha") != self.sha):
+            raise E2EError("cluster lock owner changed; manual recovery is required")
+        self.call(["oc", "delete", "configmap", LOCK_NAME, "-n", self.lock_ns,
+                   "--wait=true"], timeout=90)
+        self.locked = False
+
+    def preflight(self) -> None:
+        self.cluster_identity()
+        self.acquire_lock()
+        self.baseline_namespaces = {
+            item["metadata"]["name"] for item in self.oc_json("get", "namespaces")["items"]
+        }
+        # This run requires a fresh cluster. Do not remove existing resources.
+        resources = (
+            ("patterns.gitops.hybrid-cloud-patterns.io", None),
+            ("virtualmachines.kubevirt.io", None),
+            ("builds.build.openshift.io", None),
+        )
+        for kind, namespace in resources:
+            command = ["oc", "get", kind, "-A", "-o", "json"]
+            if namespace:
+                command[3:3] = ["-n", namespace]
+            output = self.call(command, allow_failure=True)
+            if output.returncode:
+                # A missing CRD is valid on a fresh cluster. An access error is not.
+                if "the server doesn't have a resource type" in output.stderr:
+                    continue
+                raise E2EError(f"cannot inspect existing {kind}: "
+                               + self.redact(output.stderr.strip())[-300:])
+            if json.loads(output.stdout).get("items"):
+                raise E2EError(f"fresh cluster preflight found existing {kind}")
+        for namespace in (NAMESPACE, "saw-keycloak", *[f"saw-{u}" for u in USERS]):
+            if namespace in self.baseline_namespaces:
+                raise E2EError(f"fresh cluster preflight found namespace {namespace}")
+        storage = self.oc_json("get", "storageclass")
+        if not any((item.get("metadata", {}).get("annotations") or {}).get(
+                "storageclass.kubernetes.io/is-default-class") == "true"
+                for item in storage.get("items", [])):
+            raise E2EError("no default StorageClass is available")
+        nodes = self.oc_json("get", "nodes")
+        if not any(self.node_has_capacity(item) for item in nodes.get("items", [])):
+            raise E2EError("no Ready node has at least 4 CPU and 8 GiB memory")
+
+    @staticmethod
+    def node_has_capacity(node: dict[str, Any]) -> bool:
+        if node.get("spec", {}).get("unschedulable"):
+            return False
+        status = node.get("status", {})
+        ready = any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                    for condition in status.get("conditions", []))
+        alloc = status.get("allocatable") or {}
+        cpu = str(alloc.get("cpu", "0"))
+        memory = str(alloc.get("memory", "0"))
+        cores = float(cpu[:-1]) / 1000 if cpu.endswith("m") else float(cpu)
+        if memory.endswith("Ki"):
+            gib = float(memory[:-2]) / (1024 * 1024)
+        elif memory.endswith("Mi"):
+            gib = float(memory[:-2]) / 1024
+        elif memory.endswith("Gi"):
+            gib = float(memory[:-2])
+        else:
+            gib = float(memory) / (1024 ** 3)
+        return ready and cores >= 4 and gib >= 8
+
+    def build(self) -> None:
+        self.build_attempted = True
+        for target in ("sandbox-build", "cli-build", "gateway-build-podman",
+                       "governance-interceptor-build"):
+            print(f"{now()} build {target}", flush=True)
+            self.call(["make", target], timeout=7200)
+        names = ("nemoclaw-discovery-runtime", "nemoclaw-sandbox", "nemoclaw-cli",
+                 "openshell-gateway", "governance-interceptor")
+        for name in names:
+            builds = self.oc_json("get", "builds", "-n", NAMESPACE,
+                                  "-l", f"buildconfig={name}")
+            entries = builds.get("items") or []
+            if not entries:
+                raise E2EError(f"{name} has no build")
+            latest = sorted(entries, key=lambda b: b["metadata"]["creationTimestamp"])[-1]
+            if latest.get("status", {}).get("phase") != "Complete":
+                raise E2EError(f"{name} build did not finish successfully")
+            digest = latest.get("status", {}).get("output", {}).get("to", {}).get("imageDigest", "")
+            if not DIGEST.fullmatch(digest):
+                raise E2EError(f"{name} build has no output digest")
+            self.report["image_digests"][name] = digest
+        self.save_report()
+
+    def topology(self) -> dict[str, Any]:
+        # The established topology helper checks the API Service and ready
+        # EndpointSlice backends. It prints only public network data.
+        output = self.call(["uv", "run", "--locked", "scripts/network-topology.py",
+                            "print-json"], timeout=60).stdout
+        return json.loads(output)
+
+    def install_options(self, topology: dict[str, Any]) -> str:
+        digests = self.report["image_digests"]
+        registry = f"image-registry.openshift-image-registry.svc:5000/{NAMESPACE}"
+        parameters: list[tuple[str, str]] = [
+            ("global.ci.governanceImage", f"{registry}/governance-interceptor@{digests['governance-interceptor']}"),
+            ("defaults.imageOverrides.cuda-sandbox", f"{registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}"),
+            ("defaults.openshellSaw.bom.spec.nemoclaw.cliImage",
+             f"{registry}/nemoclaw-cli@{digests['nemoclaw-cli']}"),
+            ("defaults.openshellSaw.source.registryURL",
+             f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"),
+            ("defaults.openshellSaw.networkPolicy.enabled", "true"),
+            ("defaults.openshellSaw.cleanupApi.serviceIP", topology["cleanupApi"]["serviceIP"]),
+        ]
+        for key in ("clusterNetworkCIDRs", "serviceNetworkCIDRs"):
+            for index, cidr in enumerate(topology["networkPolicy"][key]):
+                parameters.append((f"defaults.openshellSaw.networkPolicy.{key}[{index}]", cidr))
+        for index, endpoint in enumerate(topology["cleanupApi"]["endpoints"]):
+            parameters.extend((
+                (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].ip", endpoint["ip"]),
+                (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].port",
+                 str(endpoint["port"])),
+            ))
+        # These arguments contain only public network data and image digests.
+        # The Pattern install chart stores them in spec.extraParameters.
+        options = ["--set", "global.extraValueFiles[0]=/values-ci.yaml"]
+        for index, (name, value) in enumerate(parameters):
+            if not re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value):
+                raise E2EError(f"invalid runtime override for {name}")
+            options.extend(("--set-string", f"main.extraParameters[{index}].name={name}"))
+            options.extend(("--set-string", f"main.extraParameters[{index}].value={value}"))
+        return " ".join(options)
+
+    def install(self) -> None:
+        topology = self.topology()
+        self.env["EXTRA_HELM_OPTS"] = self.install_options(topology)
+        self.install_attempted = True
+        self.call(["./pattern.sh", "make", "install"], timeout=7200)
+
+    def wait_for(self, label: str, predicate, *, seconds: int, interval: int = 20) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(interval)
+        raise E2EError(f"timed out waiting for {label}")
+
+    def check_argo(self) -> None:
+        def ready() -> bool:
+            response = self.call(["oc", "get", "applications.argoproj.io", "-n", "vp-gitops",
+                                  "-o", "json"], allow_failure=True)
+            if response.returncode:
+                return False
+            items = json.loads(response.stdout).get("items") or []
+            selected = [item for item in items if self.repo.split("/", 1)[-1] in
+                        json.dumps(item.get("spec", {}).get("source", {})) +
+                        json.dumps(item.get("spec", {}).get("sources", []))]
+            if len(selected) < 6:
+                return False
+            for item in selected:
+                status = item.get("status") or {}
+                revisions = [status.get("sync", {}).get("revision")]
+                revisions.extend(status.get("sync", {}).get("revisions") or [])
+                if (self.sha not in revisions or
+                        status.get("sync", {}).get("status") != "Synced" or
+                        status.get("health", {}).get("status") != "Healthy"):
+                    return False
+            return True
+        self.wait_for("Argo applications at the tested SHA", ready, seconds=5400)
+
+    def verify_install(self) -> None:
+        self.check_argo()
+        self.install_virtctl()
+        for user in USERS:
+            namespace = f"saw-{user}"
+            def vm_ready() -> bool:
+                response = self.call(["oc", "get", "vm", user, "-n", namespace,
+                                      "-o", "json"], allow_failure=True)
+                if response.returncode:
+                    return False
+                vm = json.loads(response.stdout)
+                return vm.get("status", {}).get("printableStatus") == "Running"
+            self.wait_for(f"{user} VM", vm_ready, seconds=3600)
+            # The in-guest status check is an existing Make interface.
+            def installer_ready() -> bool:
+                output = self.call(["make", "saw-status", f"OPENSHELL_SAW_NAME={user}"],
+                                   timeout=90, allow_failure=True)
+                if output.returncode:
+                    return False
+                try:
+                    status = json.loads(output.stdout)
+                except json.JSONDecodeError:
+                    return False
+                phases = (status.get("install", {}).get("phase"),
+                          status.get("apply", {}).get("phase"))
+                if "Failed" in phases:
+                    raise E2EError(f"{user} installer phase failed")
+                return phases == ("Done", "Done")
+            self.wait_for(f"{user} installer phases", installer_ready, seconds=3600)
+        self.verify_images()
+
+    def install_virtctl(self) -> None:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        def download_link() -> str | None:
+            result = self.call(["oc", "get", "consoleclidownloads.console.openshift.io",
+                                "-o", "json"], allow_failure=True)
+            if result.returncode:
+                return None
+            for item in json.loads(result.stdout).get("items") or []:
+                for link in item.get("spec", {}).get("links") or []:
+                    label = str(link.get("text", "")).lower()
+                    if "virtctl" in label and "linux" in label and "x86_64" in label:
+                        return link.get("href")
+            return None
+        self.wait_for("virtctl client download", lambda: bool(download_link()), seconds=2400)
+        url = download_link()
+        if not url or not url.startswith("https://"):
+            raise E2EError("virtctl download URL is invalid")
+        context = ssl.create_default_context(cafile=str(self.home / "cluster-ca.pem"))
+        with urllib.request.urlopen(url, context=context, timeout=60) as response:
+            payload = response.read(100_000_001)
+        if len(payload) > 100_000_000:
+            raise E2EError("virtctl download exceeds 100 MB")
+        if payload.startswith(b"\x1f\x8b"):
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+                members = [member for member in archive.getmembers()
+                           if member.isfile() and Path(member.name).name == "virtctl"]
+                if len(members) != 1:
+                    raise E2EError("virtctl archive has no unique binary")
+                source = archive.extractfile(members[0])
+                if source is None:
+                    raise E2EError("virtctl archive cannot be read")
+                payload = source.read()
+        if not payload.startswith(b"\x7fELF"):
+            raise E2EError("virtctl download is not a Linux binary")
+        binary = self.home / "bin/virtctl"
+        binary.parent.mkdir(mode=0o700)
+        binary.write_bytes(payload)
+        binary.chmod(0o700)
+        self.env["PATH"] = str(binary.parent) + os.pathsep + self.env["PATH"]
+        self.call(["virtctl", "version", "--client"], timeout=20)
+
+    def verify_images(self) -> None:
+        registry = f"image-registry.openshift-image-registry.svc:5000/{NAMESPACE}"
+        digests = self.report["image_digests"]
+        deployment = self.oc_json("get", "deployment", "governance-interceptor",
+                                  "-n", NAMESPACE)
+        actual = deployment["spec"]["template"]["spec"]["containers"][0]["image"]
+        if actual != f"{registry}/governance-interceptor@{digests['governance-interceptor']}":
+            raise E2EError("governance deployment does not use the new build digest")
+        for user in USERS:
+            namespace = f"saw-{user}"
+            config = self.oc_json("get", "configmap", f"{user}-installer", "-n", namespace)
+            bom = yaml.safe_load(config["data"]["installer-bom.yaml"])
+            cli_image = bom["spec"]["nemoclaw"]["cliImage"]
+            if cli_image != f"{registry}/nemoclaw-cli@{digests['nemoclaw-cli']}":
+                raise E2EError(f"{user} BOM does not use the new CLI digest")
+            profiles = self.oc_json("get", "configmap", "saw-bom-profiles", "-n", namespace)
+            payload = "\n".join(profiles.get("data", {}).values())
+            if f"{registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}" not in payload:
+                raise E2EError(f"{user} profile does not use the new sandbox digest")
+            volumes = self.oc_json("get", "datavolume", "-n", namespace)
+            expected = f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"
+            if not any((item.get("spec", {}).get("source", {}).get("registry") or {}).get("url") ==
+                       expected for item in volumes.get("items", [])):
+                raise E2EError(f"{user} VM disk does not use the new gateway digest")
+
+    def oidc_login(self, user: str, gateway: str, token_dir: Path) -> dict[str, Any]:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        host = self.call(["scripts/keycloak-host.sh", "saw-keycloak"]).stdout.strip()
+        issuer = f"https://{host}/realms/openshell"
+        context = ssl.create_default_context(cafile=str(self.home / "cluster-ca.pem"))
+        with urllib.request.urlopen(issuer + "/.well-known/openid-configuration",
+                                    context=context, timeout=15) as response:
+            discovery = json.load(response)
+        password = (self.home / f"{user}-password").read_text(encoding="utf-8")
+        request = urllib.request.Request(
+            discovery["token_endpoint"],
+            data=urllib.parse.urlencode({
+                "grant_type": "password", "client_id": "openshell-cli",
+                "username": user, "password": password, "scope": "openid email profile",
+            }).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(request, context=context, timeout=20) as response:
+            token = json.load(response)
+        if not token.get("access_token") or not token.get("expires_in"):
+            raise E2EError(f"{user} authentication returned no usable token")
+        token_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        file = token_dir / "token.json"
+        file.write_text(json.dumps(token), encoding="utf-8")
+        file.chmod(0o600)
+        # OpenShell 0.1.2 stores this bundle under the gateway directory.
+        bundle = {
+            "access_token": token["access_token"],
+            "refresh_token": token.get("refresh_token"),
+            "expires_at": int(time.time()) + int(token["expires_in"]),
+            "issuer": issuer, "client_id": "openshell-cli",
+        }
+        gateway_dir = self.home / ".config/openshell/gateways" / gateway
+        gateway_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cache = gateway_dir / "oidc_token.json"
+        cache.write_text(json.dumps(bundle), encoding="utf-8")
+        cache.chmod(0o600)
+        return token
+
+    def live_behavior(self) -> None:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        owner = USERS[0]
+        self.call(["make", "saw-configure", f"OPENSHELL_SAW_NAME={owner}"], timeout=120)
+        owner_token = self.oidc_login(owner, owner, self.home / "owner-oidc")
+        self.oidc_login(USERS[1], owner, self.home / "second-oidc")
+        self.env["TEST_OWNER_SUBJECT"] = self.jwt_subject(owner_token["access_token"])
+        listing = self.call(["openshell", "--gateway", owner, "sandbox", "list",
+                             "--output", "json"], timeout=45).stdout
+        if "notebook" not in listing:
+            raise E2EError("owner cannot list the notebook sandbox")
+        self.call(["openshell", "--gateway", owner, "sandbox", "exec", "-n",
+                   "notebook", "--no-tty", "--", "sh", "-c",
+                   "test -d /sandbox && printf ready"], timeout=90)
+        denial = self.call(["scripts/check-second-user-denied.sh"], timeout=30)
+        if json.loads(denial.stdout).get("status_code") != 403:
+            raise E2EError("second-user denial did not return 403")
+        inference_script = (
+            "fetch('https://integrate.api.nvidia.com/v1/chat/completions',"
+            "{method:'POST',headers:{'content-type':'application/json',"
+            "authorization:'Bearer '+process.env.NVIDIA_API_KEY},"
+            "body:JSON.stringify({model:" + json.dumps(self.required("CI_MODEL")) + ",messages:"
+            "[{role:'user',content:'Reply with OK'}],max_tokens:8})})"
+            ".then(async r=>{if(!r.ok)process.exit(2);"
+            "let j=await r.json();if(!j.choices?.length)process.exit(3);"
+            "process.stdout.write('accepted')}).catch(()=>process.exit(4))"
+        )
+        self.call(["openshell", "--gateway", owner, "sandbox", "exec", "-n",
+                   "notebook", "--no-tty", "--", "node", "-e", inference_script],
+                  timeout=120)
+        isolation_script = (
+            "fetch('https://example.org',{signal:AbortSignal.timeout(8000)})"
+            ".then(()=>process.exit(5)).catch(()=>process.stdout.write('blocked'))"
+        )
+        self.call(["openshell", "--gateway", owner, "sandbox", "exec", "-n",
+                   "notebook", "--no-tty", "--", "node", "-e", isolation_script],
+                  timeout=45)
+
+    @staticmethod
+    def jwt_subject(token: str) -> str:
+        try:
+            payload = token.split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            return claims["sub"]
+        except (IndexError, KeyError, ValueError) as exc:
+            raise E2EError("owner token has no subject") from exc
+
+    def diagnostics(self) -> None:
+        # Only resource status is captured. No Secret or ConfigMap data enters
+        # the artifact. A failed diagnostic does not hide the primary failure.
+        snapshot: dict[str, Any] = {"captured_at": now()}
+        for name, args in (
+            ("applications", ["oc", "get", "applications.argoproj.io",
+                              "-n", "vp-gitops", "-o", "json"]),
+            ("virtualmachines", ["oc", "get", "vm", "-A", "-o", "json"]),
+            ("builds", ["oc", "get", "builds", "-A", "-o", "json"]),
+        ):
+            response = self.call(args, timeout=45, allow_failure=True)
+            if response.returncode:
+                snapshot[name] = {"error": self.redact(response.stderr.strip())[-200:]}
+                continue
+            items = json.loads(response.stdout).get("items") or []
+            snapshot[name] = [
+                {"name": item.get("metadata", {}).get("name"),
+                 "namespace": item.get("metadata", {}).get("namespace"),
+                 "status": item.get("status", {}).get("phase") or
+                           item.get("status", {}).get("printableStatus") or
+                           item.get("status", {}).get("sync", {}).get("status")}
+                for item in items
+            ]
+        (self.artifacts / "diagnostics.json").write_text(
+            json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+
+    def cleanup(self) -> None:
+        if self.install_attempted:
+            self.call(["./pattern.sh", "make", "pattern-uninstall"], timeout=5400)
+            self.call(["./pattern.sh", "make", "pattern-uninstall"], timeout=5400)
+        if self.build_attempted:
+            # These names were absent at preflight. Check for remaining VMs
+            # before removing the namespaces that the run created.
+            for namespace in (NAMESPACE, "saw-keycloak", *[f"saw-{u}" for u in USERS]):
+                exists = self.call(["oc", "get", "namespace", namespace, "-o", "name"],
+                                   allow_failure=True)
+                if exists.returncode:
+                    continue
+                vms = self.call(["oc", "get", "vm", "-n", namespace, "-o", "json"],
+                                allow_failure=True)
+                if vms.returncode == 0 and json.loads(vms.stdout).get("items"):
+                    raise E2EError(f"cleanup left a VM in {namespace}")
+                self.call(["oc", "delete", "namespace", namespace, "--wait=true",
+                           "--timeout=20m"], timeout=1300)
+        for namespace in (NAMESPACE, "saw-keycloak", *[f"saw-{u}" for u in USERS]):
+            response = self.call(["oc", "get", "namespace", namespace, "-o", "name"],
+                                 allow_failure=True)
+            if response.returncode == 0:
+                raise E2EError(f"cleanup left namespace {namespace}")
+        namespaces = {item["metadata"]["name"]
+                      for item in self.oc_json("get", "namespaces")["items"]}
+        new_pattern_namespaces = (namespaces - self.baseline_namespaces) & set(PATTERN_NAMESPACES)
+        if new_pattern_namespaces:
+            raise E2EError("cleanup left Pattern namespaces: "
+                           + ", ".join(sorted(new_pattern_namespaces)))
+        patterns = self.call(["oc", "get", "patterns.gitops.hybrid-cloud-patterns.io",
+                              "-A", "-o", "json"], allow_failure=True)
+        if patterns.returncode == 0 and json.loads(patterns.stdout).get("items"):
+            raise E2EError("cleanup left a Pattern resource")
+        if patterns.returncode and "the server doesn't have a resource type" not in patterns.stderr:
+            raise E2EError("cannot verify Pattern resource cleanup")
+        applications = self.call(["oc", "get", "applications.argoproj.io", "-A", "-o", "json"],
+                                 allow_failure=True)
+        if applications.returncode == 0:
+            remaining = [item for item in json.loads(applications.stdout).get("items", [])
+                         if self.repo.split("/", 1)[-1] in
+                         json.dumps(item.get("spec", {}).get("source", {}))]
+            if remaining:
+                raise E2EError("cleanup left repository Argo applications")
+        elif "the server doesn't have a resource type" not in applications.stderr:
+            raise E2EError("cannot verify Argo application cleanup")
+        self.report["cleanup_verified"] = True
+        self.save_report()
+        self.release_lock()
+
+    def finish(self) -> None:
+        if self.home is not None:
+            shutil.rmtree(self.home)
+            self.home = None
+        self.report["finished_at"] = now()
+        self.save_report()
+
+    def run(self) -> int:
+        failure: str | None = None
+        try:
+            self.stage("prepare-files", self.setup_files)
+            self.stage("cluster-preflight-and-lock", self.preflight)
+            self.stage("build-and-record-digests", self.build)
+            self.stage("pattern-install", self.install)
+            self.stage("deployment-readiness-and-digest-checks", self.verify_install)
+            self.stage("live-behavior", self.live_behavior)
+        except BaseException as exc:
+            failure = self.redact(str(exc)) or "runner cancelled"
+            self.report["failure"] = failure
+        finally:
+            if self.locked:
+                try:
+                    self.diagnostics()
+                except Exception as exc:
+                    self.report["diagnostics_error"] = self.redact(str(exc))
+                try:
+                    self.stage("uninstall-and-cleanup", self.cleanup)
+                except Exception as exc:
+                    self.report["cleanup_error"] = self.redact(str(exc))
+                    failure = failure or "cleanup failed"
+            self.finish()
+        if failure:
+            print(f"Pattern E2E failed: {failure}", file=sys.stderr)
+            return 1
+        return 0
+
+
+def main() -> int:
+    try:
+        runner = Runner()
+    except E2EError as exc:
+        print(f"Pattern E2E setup failed: {exc}", file=sys.stderr)
+        return 1
+    def cancelled(_signal, _frame):
+        runner.cancelled = True
+        raise KeyboardInterrupt("runner cancelled")
+    signal.signal(signal.SIGINT, cancelled)
+    signal.signal(signal.SIGTERM, cancelled)
+    return runner.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

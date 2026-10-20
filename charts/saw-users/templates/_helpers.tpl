@@ -218,6 +218,11 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $profiles = $user.profiles -}}
 {{- end -}}
 {{- $bomValues := dict "profiles" $profiles -}}
+{{- $imageOverrides := deepCopy ($root.Values.defaults.imageOverrides | default dict) -}}
+{{- range $name, $image := ($user.imageOverrides | default dict) -}}
+{{- $_ := set $imageOverrides $name $image -}}
+{{- end -}}
+{{- $_ := set $bomValues "imageOverrides" $imageOverrides -}}
 {{- if $user.harnessEnabled -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
 {{- end -}}

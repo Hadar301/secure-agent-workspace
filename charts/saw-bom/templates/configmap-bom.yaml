@@ -4,10 +4,15 @@
 {{- range $profile := .Values.profiles }}
 {{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
 {{- range $path, $_ := $files }}
-{{- if and (hasSuffix "sandbox.yaml" $path) (not $.Values.harnessEnabled) }}
+{{- if hasSuffix "sandbox.yaml" $path }}
 {{- $doc := $.Files.Get $path | fromYaml }}
 {{- range $sb := (($doc.spec).sandboxes | default list) }}
+{{- with (index $.Values.imageOverrides $sb.name) }}
+{{- $_ := set $sb "image" . }}
+{{- end }}
+{{- if not $.Values.harnessEnabled }}
 {{- $_ := unset $sb "harnessRef" }}
+{{- end }}
 {{- end }}
 {{- $_ := set $profileFiles $path (toYaml $doc) }}
 {{- else }}
