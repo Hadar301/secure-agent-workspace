@@ -95,7 +95,7 @@ if [[ -t 0 && -t 1 ]]; then
     PODMAN_TTY_ARGS=(-it)
 fi
 
-podman run "${PODMAN_TTY_ARGS[@]}" --rm --pull=newer \
+podman run ${PODMAN_TTY_ARGS[@]+"${PODMAN_TTY_ARGS[@]}"} --rm --pull=newer \
     --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
