@@ -23,7 +23,7 @@ runs:
     - uses: actions/download-artifact@v4
       with:
         path: ${{ runner.temp }}/digests
-        pattern: digests-${{ inputs.image_name }}-*
+        pattern: digests-${{ inputs.image_name }}-linux-*
         merge-multiple: true
 
     - uses: docker/setup-buildx-action@v3

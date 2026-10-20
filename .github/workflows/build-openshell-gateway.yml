@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
       - .github/actions/verify-public-image/**
       - .github/workflows/build-openshell-gateway.yml
       - image-builder-charts/helm/openshell-gateway-image/**
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
       - .github/actions/verify-public-image/**
       - .github/workflows/build-openshell-gateway.yml
       - image-builder-charts/helm/openshell-gateway-image/**
@@ -460,4 +462,19 @@ jobs:
           dockerfile: image-builder-charts/helm/openshell-gateway-image/Dockerfile
           platform: ${{ matrix.platform }}
           cache_scope: openshell-gateway-${{ matrix.container_runtime }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image_name: [openshell-gateway, openshell-gateway-docker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: ${{ matrix.image_name }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}

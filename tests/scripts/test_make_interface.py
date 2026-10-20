@@ -469,7 +469,7 @@ def test_platform_builds_keep_the_repository_source_label():
 
 
 @pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
-                                  "build-governance-interceptor.yml"])
+                                  "build-governance-interceptor.yml", "build-openshell-gateway.yml"])
 def test_platform_builds_report_independently_and_merge_needs_both(name):
     text = (ROOT / ".github/workflows" / name).read_text()
     workflow = yaml.safe_load(text)
@@ -478,6 +478,21 @@ def test_platform_builds_report_independently_and_merge_needs_both(name):
     assert {e["platform"] for e in build["strategy"]["matrix"]["include"]} == {"linux/amd64", "linux/arm64"}
     assert merge["needs"] == "build"
     assert text.count(".github/actions/merge-image/**") == 2
+
+
+def test_merge_downloads_only_its_own_image_digests():
+    import fnmatch
+    merge = yaml.safe_load((ROOT / ".github/actions/merge-image/action.yml").read_text())
+    build = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    pattern = next(s for s in merge["runs"]["steps"]
+                   if s.get("uses", "").startswith("actions/download-artifact"))["with"]["pattern"]
+    upload = next(s for s in build["runs"]["steps"]
+                  if s.get("uses", "").startswith("actions/upload-artifact"))["with"]["name"]
+    assert upload == "digests-${{ inputs.image_name }}-${{ steps.plat.outputs.suffix }}"
+    own = pattern.replace("${{ inputs.image_name }}", "openshell-gateway")
+    assert fnmatch.fnmatchcase("digests-openshell-gateway-linux-arm64", own)
+    # The docker disk shares the prefix; its digests must not join the podman tag.
+    assert not fnmatch.fnmatchcase("digests-openshell-gateway-docker-linux-arm64", own)
 
 
 @pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
