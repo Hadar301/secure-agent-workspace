@@ -132,6 +132,29 @@ def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     assert runner.locked
 
 
+def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeypatch):
+    runner.baseline_namespaces = {"vp-gitops"}
+    namespaces = {"vp-gitops", "patterns-operator"}
+    deleted = []
+
+    def fake_call(args, **_kwargs):
+        if args[:3] == ["oc", "delete", "namespace"]:
+            deleted.append(args[3])
+            namespaces.remove(args[3])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if args[:3] == ["oc", "get", "namespace"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="NotFound")
+        return SimpleNamespace(returncode=0, stdout='{"items": []}', stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: {"items": [
+        {"metadata": {"name": name}} for name in namespaces]})
+    monkeypatch.setattr(runner, "release_lock", lambda: None)
+    runner.cleanup()
+    assert deleted == ["patterns-operator"]
+    assert runner.report["cleanup_verified"] is True
+
+
 def test_changed_pr_sha_is_rejected(monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
     monkeypatch.setenv("CI_PR_NUMBER", "42")

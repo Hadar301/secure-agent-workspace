@@ -718,10 +718,6 @@ class Runner:
                 raise E2EError(f"cleanup left namespace {namespace}")
         namespaces = {item["metadata"]["name"]
                       for item in self.oc_json("get", "namespaces")["items"]}
-        new_pattern_namespaces = (namespaces - self.baseline_namespaces) & set(PATTERN_NAMESPACES)
-        if new_pattern_namespaces:
-            raise E2EError("cleanup left Pattern namespaces: "
-                           + ", ".join(sorted(new_pattern_namespaces)))
         patterns = self.call(["oc", "get", "patterns.gitops.hybrid-cloud-patterns.io",
                               "-A", "-o", "json"], allow_failure=True)
         if patterns.returncode == 0 and json.loads(patterns.stdout).get("items"):
@@ -738,6 +734,19 @@ class Runner:
                 raise E2EError("cleanup left repository Argo applications")
         elif "the server doesn't have a resource type" not in applications.stderr:
             raise E2EError("cannot verify Argo application cleanup")
+        # The framework removes the Pattern and its applications but can leave
+        # its operator and Argo CD namespaces. Remove only namespaces absent
+        # at preflight, after confirming that no managed resources remain.
+        for namespace in ("patterns-operator", "vp-gitops"):
+            if namespace in namespaces and namespace not in self.baseline_namespaces:
+                self.call(["oc", "delete", "namespace", namespace, "--wait=true",
+                           "--timeout=20m"], timeout=1300)
+        namespaces = {item["metadata"]["name"]
+                      for item in self.oc_json("get", "namespaces")["items"]}
+        new_pattern_namespaces = (namespaces - self.baseline_namespaces) & set(PATTERN_NAMESPACES)
+        if new_pattern_namespaces:
+            raise E2EError("cleanup left Pattern namespaces: "
+                           + ", ".join(sorted(new_pattern_namespaces)))
         self.report["cleanup_verified"] = True
         self.save_report()
         self.release_lock()
