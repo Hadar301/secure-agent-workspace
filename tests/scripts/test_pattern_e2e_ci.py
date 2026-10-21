@@ -133,6 +133,29 @@ def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch
     assert "build terminal status" in str(error.value)
 
 
+def test_timed_out_command_has_retryable_error(runner, monkeypatch):
+    def timeout(args, **kwargs):
+        raise pattern_e2e.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(pattern_e2e.subprocess, "run", timeout)
+    with pytest.raises(pattern_e2e.E2ECommandTimeout, match="make timed out"):
+        runner.call(["make", "saw-status"], timeout=90, allow_failure=True)
+
+
+def test_wait_for_retries_a_timed_out_status_check(runner):
+    attempts = 0
+
+    def ready():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise pattern_e2e.E2ECommandTimeout("make timed out")
+        return True
+
+    runner.wait_for("installer status", ready, seconds=1, interval=0)
+    assert attempts == 2
+
+
 def test_install_patches_pattern_api_port_for_operator(runner, monkeypatch):
     topology = {"cleanupApi": {"serviceIP": "172.30.0.1", "endpoints": [
         {"ip": "192.0.2.10", "port": 6443}]}, "networkPolicy": {

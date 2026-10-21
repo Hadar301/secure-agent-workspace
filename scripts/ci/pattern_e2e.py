@@ -51,6 +51,10 @@ class E2EError(Exception):
     pass
 
 
+class E2ECommandTimeout(E2EError):
+    """A command in a readiness poll timed out and can be retried."""
+
+
 class Runner:
     def __init__(self) -> None:
         self.sha = self.required("CI_HEAD_SHA")
@@ -103,8 +107,10 @@ class Runner:
                 args, cwd=ROOT, env=env or self.env, input=input_text,
                 text=True, capture_output=True, timeout=timeout, check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise E2EError(f"{args[0]} failed: {exc.__class__.__name__}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise E2ECommandTimeout(f"{args[0]} timed out") from exc
+        except OSError as exc:
+            raise E2EError(f"{args[0]} failed: OSError") from exc
         if completed.returncode and not allow_failure:
             output = "\n".join(part for part in (completed.stdout.strip()[-1400:],
                                                   completed.stderr.strip()[-500:]) if part)
@@ -502,8 +508,11 @@ class Runner:
     def wait_for(self, label: str, predicate, *, seconds: int, interval: int = 20) -> None:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if predicate():
-                return
+            try:
+                if predicate():
+                    return
+            except E2ECommandTimeout:
+                pass
             time.sleep(interval)
         raise E2EError(f"timed out waiting for {label}")
 
