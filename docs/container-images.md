@@ -15,11 +15,19 @@ those deployment overrides local when preparing changes for upstream.
 | Image | CI tags | Consumers |
 | --- | --- | --- |
 | `openshell-gateway` | `latest`, `sha-<commit>` | Podman VM disk, `make images-mirror`, golden image import |
-| `openshell-gateway-docker` | `latest`, `sha-<commit>` | Docker VM disk, `make gateway-build-docker` |
+| `openshell-gateway-docker` | `latest`, `sha-<commit>` | x86_64-only Docker VM disk, `make gateway-build-docker` |
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
 | `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
+
+`openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox` and `governance-interceptor` tags are
+multi-architecture indexes (`linux/amd64`, `linux/arm64`): each architecture
+builds natively and pushes by digest, and the merge job joins the digests with
+`.github/actions/merge-image`. `make images-mirror` on an arm64 cluster gets
+the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
+`openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
+ARM clusters use the default Podman runtime.
 
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies

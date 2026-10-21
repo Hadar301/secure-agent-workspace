@@ -78,7 +78,8 @@ def chart_args(chart: Path) -> list[str]:
     if name == "openshell-keycloak":
         return ["-f", str(ROOT / "tests/fixtures/deployment-validation-keycloak.yaml")]
     if name == "nemoclaw-imagestream":
-        return ["--set-string", "source.discoveryImage="
+        return ["--set-string", "build.targetArch=amd64",
+                "--set-string", "source.discoveryImage="
                 "image-registry.openshift-image-registry.svc:5000/"
                 "openshell-agents/nemoclaw-discovery-runtime@sha256:" + "0" * 64]
     if name == "openshell-gateway-image":

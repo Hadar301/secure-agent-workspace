@@ -77,6 +77,8 @@ jobs:
           python3 charts/openshell-saw/files/installer/apply_bom.py check-bundle \
             "harness-bundles/${{ matrix.bundle }}"
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to ghcr.io
@@ -93,6 +95,7 @@ jobs:
         with:
           context: harness-bundles/${{ matrix.bundle }}
           file: harness-bundles/Containerfile
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
           tags: |
             ${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.version }}

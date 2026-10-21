@@ -52,13 +52,7 @@ if [[ "${PREREQS_MODE:-pattern}" == pattern ]]; then
     --values-file "${SAW_USERS_VALUES_FILE:-${script_dir}/../overrides/saw-users.yaml}"
 fi
 
-storage="$(oc get storageclass -o json)"
-if ! jq -e '.items | any(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true")' \
-    <<<"${storage}" >/dev/null; then
-  echo "Error: no default StorageClass is available for the VM disk." >&2
-  exit 1
-fi
-echo "Default StorageClass: available"
+"${script_dir}/storage-class-check.sh" --check-only
 
 nodes="$(oc get nodes -o json)"
 if ! jq -e '.items | any((.spec.unschedulable != true) and
