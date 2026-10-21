@@ -290,6 +290,15 @@ metadata:
   {{- end }}
 spec:
   project: {{ $root.Values.argo.project }}
+  {{- if eq .path "charts/openshell-saw" }}
+  # KubeMacPool changes this timestamp even on admission dry-runs. With
+  # ServerSideDiff it otherwise makes every healthy VM permanently OutOfSync.
+  ignoreDifferences:
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /metadata/annotations/kubemacpool.io~1transaction-timestamp
+  {{- end }}
   destination:
     name: {{ $root.Values.argo.destinationName }}
     namespace: {{ printf "saw-%s" $user.name }}
