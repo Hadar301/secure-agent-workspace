@@ -534,7 +534,16 @@ esac
     (bin_dir / "node").write_text("#!/bin/sh\necho s3cret\n")
     for f in ("openclaw", "node"):
         (bin_dir / f).chmod(0o755)
+    # The gateway runs under a keep-alive supervisor written into OPENCLAW_HOME.
+    # Point that at a writable dir, run the supervisor in the foreground for a
+    # single gateway start (drop the backgrounding and the retry sleep), and make
+    # its log tail exit instead of following forever.
+    home = tmp_path / "home"; home.mkdir(exist_ok=True)
+    script = script.replace("/sandbox", str(home))
     script = script.replace("nohup ", "")
+    script = script.replace(" >/dev/null 2>&1 &", "")
+    script = script.replace("tail -n 0 -f", "tail -n 0")
+    script = script.replace("\n  sleep 2\n", "\n  exit 0\n")
     # The test runner's PID 1 stderr is not the sandbox's podman log fd.
     script = script.replace("/proc/1/fd/2", shlex.quote(str(tmp_path / "gateway.log")))
     subprocess.run(["sh", "-c", script], check=True, timeout=30,
@@ -577,7 +586,7 @@ def test_the_cli_password_survives_config_set(ab):
     assert write > last_set
     assert lines[write].startswith('SAW_GATEWAY_SECRET="$secret" node -e')
     assert "gateway.auth.password" not in config_sets(script)
-    assert 'OPENCLAW_GATEWAY_PASSWORD="$secret" nohup openclaw gateway run' in script
+    assert 'OPENCLAW_GATEWAY_PASSWORD="$secret" nohup sh "$SUP"' in script
 
 
 def test_the_password_writer_keeps_the_rest_of_the_config(ab, tmp_path):
@@ -604,7 +613,7 @@ def test_other_sandboxes_keep_token_auth(ab):
         assert json.loads(sets["gateway.auth.mode"]) == "token"
         assert "gateway.auth.trustedProxy" not in sets
         assert "openclaw config unset gateway.auth.trustedProxy" in script
-        assert 'OPENCLAW_GATEWAY_TOKEN="$secret" nohup openclaw gateway run' in script
+        assert 'OPENCLAW_GATEWAY_TOKEN="$secret" nohup sh "$SUP"' in script
 
 
 def test_the_gateway_secret_is_kept_and_stays_in_the_sandbox(ab):

@@ -876,7 +876,7 @@ def test_a_stdio_server_gets_its_key_only_through_the_provider(ab, fake_env, con
     assert "brave" in notebook(fake_env)["providers"]
     scripts = [c[-1] for c in fake_env.openshell_calls()
                if c[:2] == ["sandbox", "exec"] and c[3] == "notebook"]
-    gateway_run = next(s for s in scripts if "nohup openclaw gateway run" in s)
+    gateway_run = next(s for s in scripts if "saw-gateway-supervise.sh" in s)
     assert gateway_run.count("export ") == 1, "only the gateway token is exported"
     # The server is re-declared in openclaw.json with ${VAR} references only:
     # OpenClaw fills in the placeholder there, never a key.
@@ -920,9 +920,9 @@ def test_the_gateway_secret_is_never_rotated_by_the_installer(ab, fake_env, conf
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
-    restart_script = next(s for s in scripts if "nohup openclaw gateway run" in s)
+    restart_script = next(s for s in scripts if "saw-gateway-supervise.sh" in s)
     assert 'openclaw config set gateway.auth.token "\\"$secret\\""' in restart_script
-    assert not any("gateway.auth.token" in s and "nohup openclaw gateway run" not in s
+    assert not any("gateway.auth.token" in s and "saw-gateway-supervise.sh" not in s
                    for s in scripts)
 
 
@@ -956,6 +956,12 @@ class FakeGateway:
         # The real sandbox's PID 1 owns the podman log fd. A test runner's
         # /proc/1/fd/2 may be a closed fd or a pipe that keeps this shell
         # waiting for the fake gateway's 60-second lifetime.
+        # The gateway runs under a supervisor script written into OPENCLAW_HOME;
+        # redirect /sandbox to a writable dir so that write (and the launch) works,
+        # and make the log tail exit instead of following forever.
+        home = self.bin.parent / "home"; home.mkdir(exist_ok=True)
+        script = script.replace("/sandbox", str(home))
+        script = script.replace("tail -n 0 -f", "tail -n 0")
         script = script.replace("/proc/1/fd/2", shlex.quote(str(self.log)))
         result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
         time.sleep(1.5)
@@ -994,7 +1000,7 @@ def test_every_openclaw_sandbox_ends_up_with_a_gateway(
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     script = next(c[-1] for c in fake_env.openshell_calls()
                   if c[:2] == ["sandbox", "exec"] and c[3] == sandbox
-                  and "nohup openclaw gateway run" in c[-1])
+                  and "saw-gateway-supervise.sh" in c[-1])
     assert gateway.run(script) == 0, "the script's shell must not kill itself"
     assert len(gateway.started()) == 1
 

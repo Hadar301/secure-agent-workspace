@@ -192,7 +192,7 @@ copy_to_clipboard() {  # $1 text
 }
 
 password() {
-  local user="${1:-}" pw
+  local user="${1:-}" pw where
   [[ -n "${user}" ]] || { echo "usage: $0 password USER" >&2; exit 2; }
   pw="$(current_password "${user}")"
   if [[ -z "${pw}" ]]; then
@@ -200,11 +200,18 @@ password() {
     echo "script?). Give them a new one: make keycloak-reset-password KC_USER=${user}" >&2
     exit 1
   fi
+  if [[ -n "$(password_of "${user}" "${USERS_SECRET}")" ]]; then
+    where="${USERS_SECRET}"
+  else
+    where="${SECRET}"
+  fi
+  # Copy to the clipboard when a tool is available; never print the password
+  # (it would land in terminal scrollback and CI logs). Without a clipboard,
+  # fall back to naming the Secret that holds it.
   if copy_to_clipboard "${pw}"; then
     echo "Password for ${user} has been copied to the clipboard."
   else
-    echo "${user}: no clipboard tool found; printing the password instead:" >&2
-    printf '%s\n' "${pw}"
+    echo "${user}: password is in Secret ${where}, key ${user}, namespace ${NS}."
   fi
 }
 
