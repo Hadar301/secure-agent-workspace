@@ -2489,6 +2489,13 @@ _GATEWAY_PIDS_SH = (
     'case "$c" in *"openclaw gateway run"*|openclaw-gateway*) echo "${d#/proc/}";; esac; '
     'done; }')
 
+# sup_pids(): the gateway supervisors (saw-gateway-supervise.sh), found the
+# same way as gateway_pids but matched by the supervisor's script path. The
+# supervisor runs as `sh <path>` (not `sh -c`), so the transient config shell
+# that writes and launches it is still skipped.
+_SUP_PIDS_SH = _GATEWAY_PIDS_SH.replace("gateway_pids()", "sup_pids()").replace(
+    '*"openclaw gateway run"*|openclaw-gateway*', "*saw-gateway-supervise.sh*")
+
 
 class HarnessVolume:
     """A sandbox's podman named volume holding its harness bundle tree
@@ -4366,10 +4373,14 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
     next to the config): a restart cuts live UI and CLI sessions."""
     q = shlex.quote
     users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
-    # The hook duplicates each audit line to gateway stderr. Send that
-    # stderr to the workload's PID 1 so podman logs keeps an outside copy.
-    run = ("nohup openclaw gateway run --allow-unconfigured "
-           "--bind lan --port 18789 >> /proc/1/fd/2 2>&1 &")
+    # The gateway is supervised by a small keep-alive script written into the
+    # sandbox (saw-gateway-supervise.sh): it relaunches the gateway if it
+    # exits, so a crash no longer 502s the *-ui route until a manual restart.
+    # The gateway logs to a file, not /proc/1/fd/2 directly: a broken PID 1
+    # stderr pipe used to take the gateway down with it. A disposable tail in
+    # the supervisor mirrors that file to PID 1 so podman logs still keeps an
+    # outside copy; if that pipe breaks, only the tail dies, never the gateway.
+    run = 'nohup sh "$SUP" >/dev/null 2>&1 &'
     token_auth = [
         # JSON-quoted: `config set` parses values as JSON5, and a bare hex
         # secret of digits only would become a number.
@@ -4446,8 +4457,35 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
         ]
     lines += [
         _GATEWAY_PIDS_SH,
-        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(gateway_pids)" ] || '
+        _SUP_PIDS_SH,
+        "SAW_STATE=${OPENCLAW_HOME:-/sandbox}/.openclaw/state",
+        "SUP=$SAW_STATE/saw-gateway-supervise.sh",
+        'mkdir -p "$SAW_STATE" 2>/dev/null || true',
+        "cat > \"$SUP\" <<'SAWSUP'",
+        "#!/bin/sh",
+        "# SAW: keep the OpenClaw control-UI gateway (:18789) alive; relaunch it",
+        "# if it exits. Output goes to a file so a broken PID 1 stderr pipe can",
+        "# never take the gateway down; a disposable tail mirrors it to PID 1.",
+        "log=${OPENCLAW_HOME:-/sandbox}/.openclaw/state/openclaw-gateway.log",
+        'mkdir -p "${OPENCLAW_HOME:-/sandbox}/.openclaw/state" 2>/dev/null || true',
+        'cleanup() { kill "$mpid" 2>/dev/null; exit 0; }',
+        "trap cleanup INT TERM",
+        '( tail -n 0 -f "$log" >> /proc/1/fd/2 2>/dev/null ) & mpid=$!',
+        "while :; do",
+        '  openclaw gateway run --allow-unconfigured --bind lan --port 18789 >> "$log" 2>&1',
+        '  echo "saw: openclaw-gateway exited ($?); relaunching in 2s" >> "$log"',
+        "  sleep 2",
+        "done",
+        "SAWSUP",
+        'chmod +x "$SUP" 2>/dev/null || true',
+        # Restart into the supervised gateway when none is supervised yet (first
+        # start, or an old unsupervised gateway from before this), on a harness
+        # refill, or when the settings changed. Killing the supervisor (TERM)
+        # stops it relaunching and reaps its tail; its live gateway child is
+        # orphaned, so kill that too.
+        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(sup_pids)" ] || '
         f'[ "$(cat {fp_file} 2>/dev/null)" != {fingerprint} ]; then',
+        '  for p in $(sup_pids); do kill "$p" 2>/dev/null; done',
         '  for p in $(gateway_pids); do kill "$p" 2>/dev/null; done',
         "  sleep 1",
         *([f'  OPENCLAW_GATEWAY_TOKEN="$secret" {run}'] if users is None else [
