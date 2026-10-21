@@ -151,7 +151,7 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert step["command"] == ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)",
                                "$(params.timeout)"]
     assert [r["name"] for r in task["spec"]["results"]] == ["user"]
-    env = {e["name"]: e["value"] for e in step["env"]}
+    env = {e["name"]: e.get("value") for e in step["env"]}
     # Review (#57): no switch to trust the form's owner instead of the token.
     assert "VERIFY_TOKEN" not in env
     values = yaml.safe_load((CHART / "values.yaml").read_text())
