@@ -6,7 +6,8 @@
 #                          overrides/saw-users.yaml) that is not in the realm
 #                          yet, with a generated password; users that exist
 #                          are left alone. Passwords stay in Secret $USERS_SECRET.
-#   password USER          Show which Secret holds USER's password.
+#   password [--show] USER Copy USER's password to the clipboard and name its
+#                          Secret; --show prints the value (never printed otherwise).
 #   reset-password USER    Give USER a new generated password in the Secret.
 #   resolve-subject USER   Return the exact enabled user's Keycloak subject.
 #   show                   List users that have stored passwords.
@@ -178,9 +179,31 @@ show() {
   fi
 }
 
+# Copy text to the clipboard with whatever tool the OS provides; returns
+# non-zero when none is available (e.g. CI) so callers can fall back.
+copy_to_clipboard() {  # $1 text
+  local -a tool
+  if command -v pbcopy >/dev/null 2>&1; then tool=(pbcopy)
+  elif command -v wl-copy >/dev/null 2>&1; then tool=(wl-copy)
+  elif command -v xclip >/dev/null 2>&1; then tool=(xclip -selection clipboard)
+  elif command -v xsel >/dev/null 2>&1; then tool=(xsel --clipboard --input)
+  elif command -v clip.exe >/dev/null 2>&1; then tool=(clip.exe)
+  else return 1; fi
+  printf '%s' "$1" | "${tool[@]}" >/dev/null 2>&1
+}
+
 password() {
-  local user="${1:-}" pw
-  [[ -n "${user}" ]] || { echo "usage: $0 password USER" >&2; exit 2; }
+  local show=0 user=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --show) show=1 ;;
+      -*) echo "usage: $0 password [--show] USER" >&2; exit 2 ;;
+      *) user="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "${user}" ]] || { echo "usage: $0 password [--show] USER" >&2; exit 2; }
+  local pw where
   pw="$(current_password "${user}")"
   if [[ -z "${pw}" ]]; then
     echo "No password for ${user} in Secrets ${SECRET} or ${USERS_SECRET} in ${NS} (set outside this" >&2
@@ -188,9 +211,21 @@ password() {
     exit 1
   fi
   if [[ -n "$(password_of "${user}" "${USERS_SECRET}")" ]]; then
-    echo "${user}: password is in Secret ${USERS_SECRET}, key ${user}, namespace ${NS}."
+    where="${USERS_SECRET}"
   else
-    echo "${user}: password is in Secret ${SECRET}, key ${user}, namespace ${NS}."
+    where="${SECRET}"
+  fi
+  # Never print the password by default: it would land in terminal scrollback
+  # and CI logs. --show opts in. Otherwise copy it to the clipboard when a tool
+  # is available, and always name the Secret that holds it.
+  if [[ "${show}" = 1 ]]; then
+    printf '%s\n' "${pw}"
+    return 0
+  fi
+  if copy_to_clipboard "${pw}"; then
+    echo "${user}: password copied to the clipboard (Secret ${where}, key ${user}, namespace ${NS})."
+  else
+    echo "${user}: password is in Secret ${where}, key ${user}, namespace ${NS}."
   fi
 }
 
@@ -421,7 +456,7 @@ case "${1:-}" in
   show) show ;;
   harden) harden ;;
   add-users) add_users "${2:-}" ;;
-  password) password "${2:-}" ;;
+  password) password "${@:2}" ;;
   reset-password) reset_password "${2:-}" ;;
   resolve-subject) resolve_subject "${2:-}" ;;
   *) echo "usage: $0 add-users [FILE]|password USER|reset-password USER|show|ensure|harden" >&2; exit 2 ;;

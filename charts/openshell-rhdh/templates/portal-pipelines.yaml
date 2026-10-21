@@ -38,6 +38,10 @@ spec:
     - name: run
       image: {{ .Values.portal.image }}
       command: ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)", "$(params.timeout)"]
+      # Tekton's admission webhook adds computeResources: {} to every step;
+      # declare it so a client-side diff matches without needing ServerSideDiff
+      # enabled on the Argo CD controller (off by default on a fresh install).
+      computeResources: {}
       volumeMounts:
         - name: scripts
           mountPath: /opt/saw
@@ -58,7 +62,9 @@ spec:
         - name: ARGO_NAMESPACE
           value: {{ include "openshell-rhdh.argoNamespace" . }}
         - name: PORTAL_ADMINS
-          value: {{ .Values.portal.admins | default list | join "," | quote }}
+          {{- with (.Values.portal.admins | default list | join ",") }}
+          value: {{ . | quote }}
+          {{- end }}
         - name: VAULT_ADDR
           value: {{ .Values.vault.addr }}
         - name: VAULT_SKIP_VERIFY
