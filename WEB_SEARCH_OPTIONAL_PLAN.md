@@ -212,3 +212,13 @@ Make web search optional in the GitOps deploy
    Its ApplicationSet renders saw-users with SAW_USERS_VALUES and no global.webSearch, so portal
    workspaces keep web search on, which is consistent. Making the field optional is a separate change.
  - Attaching brave to the notebook sandbox (see "Web search in the default sandbox") is unrelated.
+Implementation adjustment from live validation (October 21, 2026)
+
+The deployed clustergroup 0.9.58 chart uses `printf "%s"` on the Pattern
+operator's unquoted `extraParametersNested` boolean. A Pattern CR containing
+value: "false" therefore becomes `%!s(bool=false)` on the saw-users Application.
+Keep the requested Pattern CR value and helper semantics. Add a final saw-users
+Application override in values-prod.yaml, templated from the correctly typed
+root `global.webSearch.enabled` with `forceString: true`. Clustergroup's final
+overrides use tpl/toString, which preserves false. Cover this handoff with an
+offline Helm bridge regression and verify the generated parameters live.

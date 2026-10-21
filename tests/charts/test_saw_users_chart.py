@@ -412,6 +412,48 @@ def test_web_search_off_validates_without_a_web_search_secret(tmp_path):
     assert "2 credential(s)" in result.stdout
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pattern_override_preserves_the_boolean_install_knob(tmp_path, enabled):
+    """Reproduce clustergroup 0.9's parameter handoff offline.
+
+    The operator writes extraParametersNested values as unquoted YAML; the
+    chart uses printf %s on those booleans, then applies the app's overrides
+    with tpl/toString. The last parameter of a given name wins in Argo/Helm.
+    """
+    bridge = tmp_path / "clustergroup-bridge"
+    (bridge / "templates").mkdir(parents=True)
+    (bridge / "Chart.yaml").write_text("apiVersion: v2\nname: bridge\nversion: 0.0.0\n")
+    (bridge / "templates" / "parameters.yaml").write_text('''parameters:
+{{- range $name, $value := .Values.extraParametersNested }}
+  - name: {{ $name }}
+    value: {{ printf "%s" $value | quote }}
+{{- end }}
+{{- range (index .Values.clusterGroup.applications "saw-users").overrides }}
+  - name: {{ .name }}
+    value: {{ tpl (toString .value) $ | quote }}
+    forceString: {{ .forceString | default false }}
+{{- end }}
+''')
+    flags = tmp_path / "flags.yaml"
+    flags.write_text(yaml.safe_dump({
+        "global": {"webSearch": {"enabled": enabled}},
+        "extraParametersNested": {"global.webSearch.enabled": enabled},
+    }))
+    result = helm("template", "bridge", str(bridge),
+                  "-f", str(ROOT / "values-global.yaml"),
+                  "-f", str(ROOT / "values-prod.yaml"), "-f", str(flags))
+    assert result.returncode == 0, result.stderr
+    parameters = [p for p in yaml.safe_load(result.stdout)["parameters"]
+                  if p["name"] == "global.webSearch.enabled"]
+    assert parameters[0]["value"] == f"%!s(bool={str(enabled).lower()})"
+    assert parameters[-1] == {"name": "global.webSearch.enabled",
+                               "value": str(enabled).lower(), "forceString": True}
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"webSearch": {"enabled": parameters[-1]["value"]}},
+    }))
+    assert ("web-search" in helm_values(app(docs, "saw-alice-secrets"))["secrets"]) == enabled
+
+
 def test_web_search_on_without_its_secret_reproduces_the_installer_failure(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE]))
     result, _ = validate_rendered_user(tmp_path, docs, {
