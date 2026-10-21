@@ -214,7 +214,8 @@ make ssh-key-generate
 # template; edit it to add your inference and web-search keys. The Validated
 # Patterns framework reads ~/values-secret-secure-agent-workspace.yaml before ~/values-secret.yaml,
 # so the pattern-named file wins when both exist.
-# The default profile needs an NVIDIA key and a Brave Search key:
+# The default profile needs an NVIDIA key; the Brave Search key is optional
+# when web search is off (omit its whole entry from the secrets file):
 #   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
@@ -234,6 +235,9 @@ make check-oidc-ca
 # pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
 #   export TARGET_BRANCH=main TARGET_ORIGIN=origin
 ./pattern.sh make install
+# Without a Brave Search key, use this instead:
+# ./pattern.sh make install WEB_SEARCH_ENABLED=false
+# A user's webSearch.enabled in overrides/saw-users.yaml overrides the global switch.
 
 # 7. Authenticate and configure the CLI
 make login                    # Opens the browser for Keycloak sign-in
@@ -305,14 +309,15 @@ make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
 #     Keys come from files so they stay out of the shell history.
-#     The default data-science profile also creates a Brave Search provider,
-#     so it needs WEB_SEARCH_API_KEY; without it the in-VM apply fails with
-#     "credential for provider 'brave' in workspace 'default' not found".
+#     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
+#     web-search Secret), saw-create disables the Brave Search provider.
 #     The target asks "Press Enter to set owner to '<you>', ..."; press Enter.
 #     To create a VM for someone else, pass OWNER=<name> OWNER_SUBJECT=<keycloak-user-id>.
-read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# Optional, to enable web search:
+# read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# export WEB_SEARCH_API_KEY
 read -r API_KEY < "$HOME/.nvidia-api-key"
-export WEB_SEARCH_API_KEY API_KEY
+export API_KEY
 make saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3.5-lightning-30b-a3b

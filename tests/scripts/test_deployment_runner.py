@@ -87,6 +87,14 @@ def test_make_exported_empty_name_does_not_set_wrong_namespace(runner_env):
         "quickstart-prereqs-check saw-review-01 review-01"
 
 
+def test_web_search_key_is_optional(runner_env):
+    env, evidence = runner_env
+    env.pop("WEB_SEARCH_API_KEY")
+    result = run_runner(env)
+    assert result.returncode == 17  # Reached prereqs rather than failing preflight.
+    assert "config.web-search\t0\toff" in evidence.read_text()
+
+
 def test_status_progress_output_cannot_pass_as_json(runner_env):
     env, evidence = runner_env
     env["RUNNER_STOP_AT"] = "status"
