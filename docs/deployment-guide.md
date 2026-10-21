@@ -562,12 +562,17 @@ verifies the response. The runner sets `TEST_ACTIVE_SAW_NAME` and
 `TEST_ACTIVE_SAW_NS` for each manual or pattern SAW. It also passes the
 owner's `OIDC_TOKEN_DIR` and `TEST_SECOND_TOKEN_DIR`. The inference check
 must return a JSON object such as `{"result":"accepted","status_code":200}`.
-The owner check must return `{"result":"allowed","status_code":200}`.
-The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` and requires a
-403 response from the active SAW gateway. An override must return
+The owner check must return `{"result":"allowed","status_code":200}` for
+HTTP, or `{"result":"allowed","protocol":"grpc","grpc_code":0}` for gRPC.
+The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` to call the
+gateway's `ListSandboxes` gRPC API in the default workspace. It requires
+gRPC `PERMISSION_DENIED` (7) and returns
+`{"result":"denied","protocol":"grpc","grpc_code":7}`. This requires curl
+with HTTP/2 support. A request to the gateway root is not an access check:
+it returns 404 for both users. An HTTP check override must return
 `{"result":"denied","status_code":403}`.
 Return a nonzero exit code when a request fails. Do not print tokens or
-response bodies. The runner records the status code and a SHA-256 hash of
+response bodies. The runner records the protocol, status code, and a SHA-256 hash of
 the output. These checks are required; a typed confirmation cannot replace
 them.
 

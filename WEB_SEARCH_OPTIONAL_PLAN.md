@@ -236,3 +236,25 @@ Review and execution checkpoint (October 21, 2026)
 - Initial pre-fix web-search ExternalSecrets remained after switching off
   because the per-user applications do not prune. Removing them explicitly
   cleared that stale input; this is the documented transition cleanup.
+
+Further live validation adjustments (October 21, 2026)
+
+- KubeMacPool's admission webhook refreshes its VM transaction timestamp on
+  every Argo dry-run. Ignore that one generated annotation for per-user VM
+  Applications. Render Tekton's admitted empty computeResources and omit an
+  empty PORTAL_ADMINS value so the portal Task also stays Synced. All cluster
+  Applications and the Argo healthcheck passed after these changes; the 81
+  affected chart tests passed.
+- The negative control reproduced SecretSyncedError and a FailedMount for
+  the missing web-search Secret, then its isolated resources were removed.
+- The pinned OpenShell gateway authenticates its gRPC API; GET / returns
+  404 for both identities. Probe ListSandboxes in the default workspace and
+  record actual gRPC codes in the acceptance runner. Normal PKCE tokens
+  produced OK (0) for Alice and PERMISSION_DENIED (7) for Bob, using both
+  grpcio and curl HTTP/2. The access-check and runner regressions pass (27
+  tests). This prevents an unrelated root-route 404 from invalidating the
+  required live access check.
+- E1 and E6 VMs are Running and the real mounted Alice installer validation
+  resolved only two inference credentials. Installer apply completion and
+  the remaining E2-E4/E7 checks are still pending; no acceptance pass is
+  claimed yet.

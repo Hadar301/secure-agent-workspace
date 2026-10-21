@@ -452,9 +452,10 @@ The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
 `TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
-`WEB_SEARCH_API_KEY`, `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
+`TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
 and owner access checks described in the deployment guide. The repo supplies
-the second-user denial check by default. Then run
+the second-user denial check by default. Set `WEB_SEARCH_API_KEY` to test
+web search on; leave it unset to test off. Then run
 `make test-deployment`. It tests manual setup and
 the pattern install, uninstall, and reinstall cycle. It records timestamps,
 the commit, the cluster context, and exit codes in a local evidence file.

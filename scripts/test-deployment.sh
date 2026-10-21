@@ -150,16 +150,23 @@ run_check() {
     exit "${rc}"
   fi
   if ! jq -e --arg expected "${expected}" \
-      '.result == $expected and (.status_code | type == "number") and
-       (if $expected == "denied" then .status_code == 403
-        else .status_code >= 200 and .status_code < 300 end)' \
+      '.result == $expected and
+       (if .protocol == "grpc" then
+          (.grpc_code | type == "number") and
+          .grpc_code == (if $expected == "denied" then 7 else 0 end)
+        elif (.protocol // "http") == "http" then
+          (.status_code | type == "number") and
+          (if $expected == "denied" then .status_code == 403
+           else .status_code >= 200 and .status_code < 300 end)
+        else false end)' \
       "${check_file}" >/dev/null; then
     record "${label}" 1 "invalid request result;output_sha256=${digest}"
     echo "Error: ${label} did not report the required request result." >&2
     exit 1
   fi
-  status="$(jq -r '.status_code' "${check_file}")"
-  record "${label}" 0 "result=${expected};status_code=${status};output_sha256=${digest}"
+  status="$(jq -r 'if .protocol == "grpc" then "protocol=grpc;grpc_code=\(.grpc_code)"
+                   else "protocol=http;status_code=\(.status_code)" end' "${check_file}")"
+  record "${label}" 0 "result=${expected};${status};output_sha256=${digest}"
 }
 cleanup_on_exit() {
   local rc=$?
