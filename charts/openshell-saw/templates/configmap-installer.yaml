@@ -14,9 +14,22 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- $registry := .Values.registry | default dict }}
 {{- $registryHost := $registry.host | default "" }}
 {{- $registryCa := $registry.caBundle | default "" }}
+{{- $registryCaBase64 := $registry.caBundleBase64 | default "" }}
 {{- $registrySecret := $registry.authSecret | default "" }}
+{{- if and $registryCa $registryCaBase64 }}
+{{- fail "set only one of registry.caBundle and registry.caBundleBase64" }}
+{{- end }}
+{{- if $registryCaBase64 }}
+{{- if not (regexMatch "^[A-Za-z0-9+/]+={0,2}$" $registryCaBase64) }}
+{{- fail "registry.caBundleBase64 must contain base64-encoded PEM" }}
+{{- end }}
+{{- $registryCa = b64dec $registryCaBase64 }}
+{{- if not (contains "-----BEGIN CERTIFICATE-----" $registryCa) }}
+{{- fail "registry.caBundleBase64 must encode PEM certificate(s)" }}
+{{- end }}
+{{- end }}
 {{- if contains "PRIVATE KEY-----" $registryCa }}
-{{- fail "registry.caBundle contains a private key: give only the registry CA certificate" }}
+{{- fail "registry CA contains a private key: give only the registry CA certificate" }}
 {{- end }}
 {{- if and (or $registryCa $registrySecret) (not $registryHost) }}
 {{- fail "registry.host is required when registry.caBundle or registry.authSecret is set" }}

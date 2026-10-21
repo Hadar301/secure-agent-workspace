@@ -407,9 +407,16 @@ class Runner:
         self.private_file(values_path.name, yaml.safe_dump(values, sort_keys=False).encode())
 
     def install_options(self, topology: dict[str, Any]) -> str:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
         digests = self.report["image_digests"]
         registry = f"image-registry.openshift-image-registry.svc:5000/{NAMESPACE}"
         guest_registry = f"{REGISTRY_HOST}/{NAMESPACE}"
+        try:
+            registry_ca = base64.b64encode(
+                (self.home / "cluster-service-ca.crt").read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise E2EError("cluster registry CA is unavailable") from exc
         parameters: list[tuple[str, str]] = [
             ("global.ci.governanceImage", f"{registry}/governance-interceptor@{digests['governance-interceptor']}"),
             ("defaults.imageOverrides.cuda-sandbox", f"{guest_registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}"),
@@ -418,6 +425,7 @@ class Runner:
             ("defaults.openshellSaw.source.registryURL",
              f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"),
             ("defaults.openshellSaw.registry.host", REGISTRY_HOST),
+            ("defaults.openshellSaw.registry.caBundleBase64", registry_ca),
             ("defaults.openshellSaw.registry.authSecret", "registry-pull"),
             ("defaults.openshellSaw.networkPolicy.enabled", "true"),
             ("defaults.openshellSaw.cleanupApi.serviceIP", topology["cleanupApi"]["serviceIP"]),
@@ -431,17 +439,15 @@ class Runner:
                 (f"defaults.openshellSaw.cleanupApi.endpoints[{index}].port",
                  str(endpoint["port"])),
             ))
-        # These arguments contain only public network data and image digests.
+        # These arguments contain public network data, image digests, and the
+        # public service CA in base64 so no multiline value enters the Pattern.
         # The Pattern install chart stores them in spec.extraParameters.
         options = ["--set", "global.extraValueFiles[0]=/values-ci.yaml"]
         for index, (name, value) in enumerate(parameters):
-            if not re.fullmatch(r"[A-Za-z0-9./:@_\[\]-]+", value):
+            if not re.fullmatch(r"[A-Za-z0-9./:@_+=\[\]-]+", value):
                 raise E2EError(f"invalid runtime override for {name}")
             options.extend(("--set-string", f"main.extraParameters[{index}].name={name}"))
             options.extend(("--set-string", f"main.extraParameters[{index}].value={value}"))
-        ca_index = len(parameters)
-        options.extend(("--set-string", f"main.extraParameters[{ca_index}].name=defaults.openshellSaw.registry.caBundle"))
-        options.extend(("--set-file", f"main.extraParameters[{ca_index}].value=/pattern-home/cluster-service-ca.crt"))
         return " ".join(options)
 
     def quote_pattern_api_ports(self, topology: dict[str, Any]) -> bool:

@@ -203,6 +203,9 @@ oidc:
 registry:
   host: ""
   caBundle: ""
+  # Use this field when the PEM must pass through a Pattern extra parameter.
+  # The chart decodes it before writing the installer config.
+  caBundleBase64: ""
   authSecret: ""
 
 # Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's

@@ -5,6 +5,7 @@ charts: the rendered installer ConfigMap and profile ConfigMap are laid out
 as the VM would mount them, and the shipped installer validates them.
 """
 
+import base64
 import importlib.util
 import json
 import re
@@ -102,6 +103,16 @@ def test_registry_config_mounts_pull_secret_without_exposing_token():
     assert "registry-pull" in config["secrets"]
     assert "REGISTRY_AUTH_FILE=/home/cloud-user/.config/openshell/registry-auth.json" in \
         written(cloud_config(docs), "/etc/openshell/gateway.env")
+
+
+def test_registry_ca_bundle_base64_decodes_for_installer():
+    host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    encoded = base64.b64encode(pem.encode()).decode("ascii")
+    docs = render("--set-string", f"registry.host={host}",
+                  "--set-string", f"registry.caBundleBase64={encoded}")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["registry"] == {"host": host, "caBundle": pem, "authSecret": ""}
 
 
 @pytest.fixture(scope="module")

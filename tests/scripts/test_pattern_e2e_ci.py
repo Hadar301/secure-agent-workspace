@@ -1,5 +1,6 @@
 """Failure paths for the manual cluster workflow."""
 
+import base64
 import json
 import sys
 from pathlib import Path
@@ -182,11 +183,15 @@ def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     assert runner.report["image_digests"]["governance-interceptor"] == digest
 
 
-def test_install_options_use_guest_registry_and_public_ca_file(runner):
+def test_install_options_use_guest_registry_and_base64_public_ca(runner, tmp_path):
     digest = "sha256:" + "a" * 64
     runner.report["image_digests"] = {name: digest for name in (
         "nemoclaw-sandbox", "nemoclaw-cli", "openshell-gateway",
         "governance-interceptor")}
+    runner.home = tmp_path / "home"
+    runner.home.mkdir()
+    pem = b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    (runner.home / "cluster-service-ca.crt").write_bytes(pem)
     topology = {"cleanupApi": {"serviceIP": "172.30.0.1", "endpoints": [
         {"ip": "192.0.2.10", "port": 6443}]}, "networkPolicy": {
         "clusterNetworkCIDRs": ["10.128.0.0/14"],
@@ -195,8 +200,10 @@ def test_install_options_use_guest_registry_and_public_ca_file(runner):
     assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-cli@{digest}" in options
     assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-sandbox@{digest}" in options
     assert "defaults.openshellSaw.registry.authSecret" in options
-    assert "--set-file main.extraParameters[" in options
-    assert "/pattern-home/cluster-service-ca.crt" in options
+    assert "defaults.openshellSaw.registry.caBundleBase64" in options
+    assert base64.b64encode(pem).decode("ascii") in options
+    assert "--set-file" not in options
+    assert "/pattern-home/cluster-service-ca.crt" not in options
 
 
 def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
