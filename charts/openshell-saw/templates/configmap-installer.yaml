@@ -80,6 +80,15 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-installer
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # This ConfigMap's data is ~300 KiB. When Argo CD client-side-applies it,
+    # it writes a last-applied-configuration annotation that exceeds the 256 KiB
+    # metadata limit and the sync fails. On OpenShift GitOps on OCP 5.0 the Argo
+    # controller does not apply server-side (managedFields come back empty), so
+    # the per-resource ServerSideApply=true sync-option hits the same path and
+    # does not help; Replace the object (a full PUT, no last-applied annotation)
+    # instead. On clusters where SSA works, ServerSideApply=true is preferable.
+    argocd.argoproj.io/sync-options: Replace=true
 data:
   installer-bom.yaml: |
 {{ toYaml .Values.bom | indent 4 }}
