@@ -466,8 +466,9 @@ The existing Python CLI has a smaller command set than Make.
 | Ollama (local) | `ollama` | `llama3` |
 | Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
 
-The NVIDIA `data-science` profile also defines optional OpenAI and Anthropic
-providers. To add either to the existing notebook with Option A:
+The `data-science` profile defaults to NVIDIA
+`nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
+disabled by default. To add either to the existing notebook with Option A:
 
 1. Set its `enabled: true` in
    `charts/saw-bom/profiles/data-science/default/providers.yaml`.
@@ -478,16 +479,9 @@ providers. To add either to the existing notebook with Option A:
    `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
    entries. Each uses `provider`, `model`, and `api_key`; the API Secret's
    `model` overrides the profile's model. Official APIs need no URL.
-4. Run `python scripts/saw-profile-catalog.py`, commit the profile and generated
-   catalog changes to your deployed branch, then follow Option A to load the
-   secrets. Restart an existing VM with `make saw-restart OPENSHELL_SAW_NAME=<owner>`.
 
-Official APIs use native OpenClaw onboarding and their normal model catalog.
-OpenAI API-key chats use the OpenClaw runtime so no Codex plugin is needed.
-The sandbox still receives placeholder keys; OpenShell injects real keys for
-allowed API requests. Use the notebook's authenticated chat Route and switch
-models in its picker. The `cuda-dev` workspace continues to use NVIDIA only.
-Private vLLM/Ollama endpoints keep the custom setup described below.
+Select the provider's model in the notebook chat's model picker. These optional
+providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
