@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -19,6 +20,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +31,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_NAME = "saw-pattern-e2e"
 NAMESPACE = "openshell-agents"
+REGISTRY_PULLER = "saw-ci-registry-puller"
+REGISTRY_HOST = "image-registry.openshift-image-registry.svc.cluster.local:5000"
 USERS = ("ciowner", "cisecond")
 PATTERN_NAMESPACES = (
     "external-secrets", "external-secrets-operator", "openshift-cnv",
@@ -175,6 +179,11 @@ class Runner:
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
         self.private_file("cluster-ca.pem", ca)
+        service_ca = self.oc_json("get", "configmap", "openshift-service-ca.crt",
+                                  "-n", "openshift-service-ca")["data"]["service-ca.crt"]
+        if "BEGIN CERTIFICATE" not in service_ca or "PRIVATE KEY" in service_ca:
+            raise E2EError("cluster registry service CA is invalid")
+        self.private_file("cluster-service-ca.crt", service_ca.encode())
         # Route TLS uses this CA. Keep the system trust store for public hosts.
         self.env["OIDC_CA_BUNDLE"] = str(secret_home / "cluster-ca.pem")
         self.env["TEST_SECOND_TOKEN_DIR"] = str(secret_home / "second-oidc")
@@ -378,16 +387,38 @@ class Runner:
                             "print-json"], timeout=60).stdout
         return json.loads(output)
 
+    def prepare_registry_pull(self) -> None:
+        """Give the VMs a short-lived token for the built images only."""
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        self.call(["oc", "create", "serviceaccount", REGISTRY_PULLER, "-n", NAMESPACE])
+        self.call(["oc", "adm", "policy", "add-role-to-user", "registry-viewer",
+                   "-z", REGISTRY_PULLER, "-n", NAMESPACE])
+        token = self.call(["oc", "create", "token", REGISTRY_PULLER, "-n", NAMESPACE,
+                           "--duration=4h"]).stdout.strip()
+        if not token or any(char.isspace() for char in token):
+            raise E2EError("registry pull service account returned no valid token")
+        self.sensitive.append(token)
+        self.private_file("registry-pull-token", token.encode())
+        values_path = self.home / "values-secret-secure-agent-workspace.yaml"
+        values = yaml.safe_load(values_path.read_text(encoding="utf-8"))
+        values["secrets"].append({"name": "registry-pull", "fields": [
+            {"name": "token", "path": str(self.home / "registry-pull-token")}]})
+        self.private_file(values_path.name, yaml.safe_dump(values, sort_keys=False).encode())
+
     def install_options(self, topology: dict[str, Any]) -> str:
         digests = self.report["image_digests"]
         registry = f"image-registry.openshift-image-registry.svc:5000/{NAMESPACE}"
+        guest_registry = f"{REGISTRY_HOST}/{NAMESPACE}"
         parameters: list[tuple[str, str]] = [
             ("global.ci.governanceImage", f"{registry}/governance-interceptor@{digests['governance-interceptor']}"),
-            ("defaults.imageOverrides.cuda-sandbox", f"{registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}"),
+            ("defaults.imageOverrides.cuda-sandbox", f"{guest_registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}"),
             ("defaults.openshellSaw.bom.spec.nemoclaw.cliImage",
-             f"{registry}/nemoclaw-cli@{digests['nemoclaw-cli']}"),
+             f"{guest_registry}/nemoclaw-cli@{digests['nemoclaw-cli']}"),
             ("defaults.openshellSaw.source.registryURL",
              f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"),
+            ("defaults.openshellSaw.registry.host", REGISTRY_HOST),
+            ("defaults.openshellSaw.registry.authSecret", "registry-pull"),
             ("defaults.openshellSaw.networkPolicy.enabled", "true"),
             ("defaults.openshellSaw.cleanupApi.serviceIP", topology["cleanupApi"]["serviceIP"]),
         ]
@@ -408,6 +439,9 @@ class Runner:
                 raise E2EError(f"invalid runtime override for {name}")
             options.extend(("--set-string", f"main.extraParameters[{index}].name={name}"))
             options.extend(("--set-string", f"main.extraParameters[{index}].value={value}"))
+        ca_index = len(parameters)
+        options.extend(("--set-string", f"main.extraParameters[{ca_index}].name=defaults.openshellSaw.registry.caBundle"))
+        options.extend(("--set-file", f"main.extraParameters[{ca_index}].value=/pattern-home/cluster-service-ca.crt"))
         return " ".join(options)
 
     def quote_pattern_api_ports(self, topology: dict[str, Any]) -> bool:
@@ -479,16 +513,41 @@ class Runner:
                         json.dumps(item.get("spec", {}).get("sources", []))]
             if len(selected) < 6:
                 return False
-            for item in selected:
-                status = item.get("status") or {}
-                revisions = [status.get("sync", {}).get("revision")]
-                revisions.extend(status.get("sync", {}).get("revisions") or [])
-                if (self.sha not in revisions or
-                        status.get("sync", {}).get("status") != "Synced" or
-                        status.get("health", {}).get("status") != "Healthy"):
-                    return False
-            return True
+            applications = {item.get("metadata", {}).get("name"): item for item in items}
+            return all(self.application_ready(item, applications) for item in selected)
         self.wait_for("Argo applications at the tested SHA", ready, seconds=5400)
+
+    def application_ready(self, item: dict[str, Any],
+                          applications: dict[str, dict[str, Any]]) -> bool:
+        status = item.get("status") or {}
+        sync = status.get("sync") or {}
+        revisions = [sync.get("revision")]
+        revisions.extend(sync.get("revisions") or [])
+        if self.sha not in revisions or status.get("health", {}).get("status") != "Healthy":
+            return False
+        if sync.get("status") == "Synced":
+            return True
+
+        # The saw-users app owns child Application resources. Argo can keep
+        # this parent OutOfSync while those children reconcile their own
+        # specs. Accept that state only when every drifted resource is a child
+        # Application and each child is healthy and synced at this SHA.
+        resources = status.get("resources") or []
+        drifted = [resource for resource in resources if resource.get("status") == "OutOfSync"]
+        if not drifted or any(resource.get("kind") != "Application" for resource in drifted):
+            return False
+        for resource in drifted:
+            child = applications.get(resource.get("name"))
+            if child is None:
+                return False
+            child_status = child.get("status") or {}
+            child_sync = child_status.get("sync") or {}
+            child_revisions = [child_sync.get("revision")]
+            child_revisions.extend(child_sync.get("revisions") or [])
+            if (self.sha not in child_revisions or child_sync.get("status") != "Synced" or
+                    child_status.get("health", {}).get("status") != "Healthy"):
+                return False
+        return True
 
     def verify_install(self) -> None:
         self.check_argo()
@@ -521,9 +580,17 @@ class Runner:
             self.wait_for(f"{user} installer phases", installer_ready, seconds=3600)
         self.verify_images()
 
+    def cluster_tls_context(self) -> ssl.SSLContext:
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=str(self.home / "cluster-ca.pem"))
+        return context
+
     def install_virtctl(self) -> None:
         if self.home is None:
             raise E2EError("private HOME is not ready")
+        system, architecture, archive_format = self.virtctl_download_target()
         def download_link() -> str | None:
             result = self.call(["oc", "get", "consoleclidownloads.console.openshift.io",
                                 "-o", "json"], allow_failure=True)
@@ -532,19 +599,21 @@ class Runner:
             for item in json.loads(result.stdout).get("items") or []:
                 for link in item.get("spec", {}).get("links") or []:
                     label = str(link.get("text", "")).lower()
-                    if "virtctl" in label and "linux" in label and "x86_64" in label:
+                    if ("virtctl" in label and system in label and architecture in label):
                         return link.get("href")
             return None
         self.wait_for("virtctl client download", lambda: bool(download_link()), seconds=2400)
         url = download_link()
         if not url or not url.startswith("https://"):
             raise E2EError("virtctl download URL is invalid")
-        context = ssl.create_default_context(cafile=str(self.home / "cluster-ca.pem"))
+        context = self.cluster_tls_context()
         with urllib.request.urlopen(url, context=context, timeout=60) as response:
             payload = response.read(100_000_001)
         if len(payload) > 100_000_000:
             raise E2EError("virtctl download exceeds 100 MB")
-        if payload.startswith(b"\x1f\x8b"):
+        if archive_format == "tar.gz":
+            if not payload.startswith(b"\x1f\x8b"):
+                raise E2EError("virtctl download is not a gzip archive")
             with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
                 members = [member for member in archive.getmembers()
                            if member.isfile() and Path(member.name).name == "virtctl"]
@@ -554,17 +623,43 @@ class Runner:
                 if source is None:
                     raise E2EError("virtctl archive cannot be read")
                 payload = source.read()
-        if not payload.startswith(b"\x7fELF"):
+        else:
+            try:
+                with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                    members = [member for member in archive.infolist()
+                               if not member.is_dir() and Path(member.filename).name == "virtctl"]
+                    if len(members) != 1:
+                        raise E2EError("virtctl archive has no unique binary")
+                    payload = archive.read(members[0])
+            except zipfile.BadZipFile as exc:
+                raise E2EError("virtctl download is not a ZIP archive") from exc
+        if system == "linux" and not payload.startswith(b"\x7fELF"):
             raise E2EError("virtctl download is not a Linux binary")
+        if system == "mac" and payload[:4] not in {
+                b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
+            raise E2EError("virtctl download is not a Mac binary")
         binary = self.home / "bin/virtctl"
-        binary.parent.mkdir(mode=0o700)
+        binary.parent.mkdir(mode=0o700, exist_ok=True)
         binary.write_bytes(payload)
         binary.chmod(0o700)
         self.env["PATH"] = str(binary.parent) + os.pathsep + self.env["PATH"]
         self.call(["virtctl", "version", "--client"], timeout=20)
 
+    @staticmethod
+    def virtctl_download_target() -> tuple[str, str, str]:
+        system = {"Linux": "linux", "Darwin": "mac"}.get(platform.system())
+        architecture = {
+            "x86_64": "x86_64", "amd64": "x86_64",
+            "arm64": "arm 64", "aarch64": "arm 64", "s390x": "ibm z",
+        }.get(platform.machine().lower())
+        if system is None or architecture is None:
+            raise E2EError("virtctl download is not available for this platform")
+        return system, architecture, "tar.gz" if system == "linux" else "zip"
+
     def verify_images(self) -> None:
         registry = f"image-registry.openshift-image-registry.svc:5000/{NAMESPACE}"
+        guest_registry = f"{REGISTRY_HOST}/{NAMESPACE}"
         digests = self.report["image_digests"]
         deployment = self.oc_json("get", "deployment", "governance-interceptor",
                                   "-n", NAMESPACE)
@@ -576,11 +671,11 @@ class Runner:
             config = self.oc_json("get", "configmap", f"{user}-installer", "-n", namespace)
             bom = yaml.safe_load(config["data"]["installer-bom.yaml"])
             cli_image = bom["spec"]["nemoclaw"]["cliImage"]
-            if cli_image != f"{registry}/nemoclaw-cli@{digests['nemoclaw-cli']}":
+            if cli_image != f"{guest_registry}/nemoclaw-cli@{digests['nemoclaw-cli']}":
                 raise E2EError(f"{user} BOM does not use the new CLI digest")
             profiles = self.oc_json("get", "configmap", "saw-bom-profiles", "-n", namespace)
             payload = "\n".join(profiles.get("data", {}).values())
-            if f"{registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}" not in payload:
+            if f"{guest_registry}/nemoclaw-sandbox@{digests['nemoclaw-sandbox']}" not in payload:
                 raise E2EError(f"{user} profile does not use the new sandbox digest")
             volumes = self.oc_json("get", "datavolume", "-n", namespace)
             expected = f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"
@@ -593,7 +688,7 @@ class Runner:
             raise E2EError("private HOME is not ready")
         host = self.call(["scripts/keycloak-host.sh", "saw-keycloak"]).stdout.strip()
         issuer = f"https://{host}/realms/openshell"
-        context = ssl.create_default_context(cafile=str(self.home / "cluster-ca.pem"))
+        context = self.cluster_tls_context()
         with urllib.request.urlopen(issuer + "/.well-known/openid-configuration",
                                     context=context, timeout=15) as response:
             discovery = json.load(response)
@@ -773,6 +868,7 @@ class Runner:
             self.stage("prepare-files", self.setup_files)
             self.stage("cluster-preflight-and-lock", self.preflight)
             self.stage("build-and-record-digests", self.build)
+            self.stage("prepare-registry-pull", self.prepare_registry_pull)
             self.stage("pattern-install", self.install)
             self.stage("deployment-readiness-and-digest-checks", self.verify_install)
             self.stage("live-behavior", self.live_behavior)

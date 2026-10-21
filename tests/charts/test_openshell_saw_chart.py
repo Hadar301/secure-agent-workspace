@@ -92,6 +92,18 @@ def installer_data(docs, name="saw-test"):
     return docs[("ConfigMap", f"{name}-installer")]["data"]
 
 
+def test_registry_config_mounts_pull_secret_without_exposing_token():
+    host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+    docs = render("--set-string", f"registry.host={host}",
+                  "--set-string", "registry.authSecret=registry-pull")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["registry"] == {"host": host, "caBundle": "",
+                                  "authSecret": "registry-pull"}
+    assert "registry-pull" in config["secrets"]
+    assert "REGISTRY_AUTH_FILE=/home/cloud-user/.config/openshell/registry-auth.json" in \
+        written(cloud_config(docs), "/etc/openshell/gateway.env")
+
+
 @pytest.fixture(scope="module")
 def ab():
     spec = importlib.util.spec_from_file_location(

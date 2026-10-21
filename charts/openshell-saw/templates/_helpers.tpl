@@ -257,6 +257,9 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- with include "openshell-sandbox.caBundleSecret" . -}}
   {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
 {{- end -}}
+{{- with .Values.registry.authSecret -}}
+  {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
+{{- end -}}
 {{- toJson $names -}}
 {{- end }}
 
@@ -292,6 +295,9 @@ OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml
 # The in-VM installer authenticates with the local mTLS client
 # certificate. End users authenticate with OIDC bearer tokens.
 OPENSHELL_ENABLE_MTLS_AUTH=true
+{{- if .Values.registry.authSecret }}
+REGISTRY_AUTH_FILE=/home/cloud-user/.config/openshell/registry-auth.json
+{{- end }}
 {{- if $routeHost }}
 OPENSHELL_ROUTE_FQDN={{ $routeHost }}
 {{- end }}

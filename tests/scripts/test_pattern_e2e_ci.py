@@ -27,6 +27,58 @@ def runner(monkeypatch, tmp_path):
     return pattern_e2e.Runner()
 
 
+def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
+    child = {
+        "metadata": {"name": "saw-ciowner"},
+        "status": {"sync": {"status": "Synced", "revision": runner.sha},
+                   "health": {"status": "Healthy"}},
+    }
+    parent = {
+        "metadata": {"name": "saw-users"},
+        "status": {"sync": {"status": "OutOfSync", "revision": runner.sha},
+                   "health": {"status": "Healthy"},
+                   "resources": [{"kind": "Application", "name": "saw-ciowner",
+                                  "status": "OutOfSync"}]},
+    }
+    assert runner.application_ready(parent, {"saw-ciowner": child})
+
+
+def test_parent_argo_drift_fails_when_child_is_not_at_tested_sha(runner):
+    child = {
+        "metadata": {"name": "saw-ciowner"},
+        "status": {"sync": {"status": "Synced", "revision": "b" * 40},
+                   "health": {"status": "Healthy"}},
+    }
+    parent = {
+        "metadata": {"name": "saw-users"},
+        "status": {"sync": {"status": "OutOfSync", "revision": runner.sha},
+                   "health": {"status": "Healthy"},
+                   "resources": [{"kind": "Application", "name": "saw-ciowner",
+                                  "status": "OutOfSync"}]},
+    }
+    assert not runner.application_ready(parent, {"saw-ciowner": child})
+
+
+def test_parent_argo_drift_does_not_ignore_non_application_resources(runner):
+    parent = {
+        "status": {"sync": {"status": "OutOfSync", "revision": runner.sha},
+                   "health": {"status": "Healthy"},
+                   "resources": [{"kind": "Deployment", "name": "unexpected",
+                                  "status": "OutOfSync"}]},
+    }
+    assert not runner.application_ready(parent, {})
+
+
+@pytest.mark.parametrize(("system", "machine", "expected"), [
+    ("Linux", "x86_64", ("linux", "x86_64", "tar.gz")),
+    ("Darwin", "arm64", ("mac", "arm 64", "zip")),
+])
+def test_virtctl_download_target_matches_host(runner, monkeypatch, system, machine, expected):
+    monkeypatch.setattr(pattern_e2e.platform, "system", lambda: system)
+    monkeypatch.setattr(pattern_e2e.platform, "machine", lambda: machine)
+    assert runner.virtctl_download_target() == expected
+
+
 def test_busy_lock_reports_owner_without_replacing_it(runner, monkeypatch):
     calls = []
 
@@ -128,6 +180,23 @@ def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     runner.build()
     assert waited == ["governance-interceptor build terminal phase"]
     assert runner.report["image_digests"]["governance-interceptor"] == digest
+
+
+def test_install_options_use_guest_registry_and_public_ca_file(runner):
+    digest = "sha256:" + "a" * 64
+    runner.report["image_digests"] = {name: digest for name in (
+        "nemoclaw-sandbox", "nemoclaw-cli", "openshell-gateway",
+        "governance-interceptor")}
+    topology = {"cleanupApi": {"serviceIP": "172.30.0.1", "endpoints": [
+        {"ip": "192.0.2.10", "port": 6443}]}, "networkPolicy": {
+        "clusterNetworkCIDRs": ["10.128.0.0/14"],
+        "serviceNetworkCIDRs": ["172.30.0.0/16"]}}
+    options = runner.install_options(topology)
+    assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-cli@{digest}" in options
+    assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-sandbox@{digest}" in options
+    assert "defaults.openshellSaw.registry.authSecret" in options
+    assert "--set-file main.extraParameters[" in options
+    assert "/pattern-home/cluster-service-ca.crt" in options
 
 
 def test_cleanup_failure_cannot_report_success(runner, monkeypatch):

@@ -11,6 +11,16 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if contains "PRIVATE KEY-----" (.Values.oidc.caBundle | default "") }}
 {{- fail "oidc.caBundle contains a private key: give only the CA certificate(s), e.g. the ca-bundle.crt of default-ingress-cert, never a TLS Secret" }}
 {{- end }}
+{{- $registry := .Values.registry | default dict }}
+{{- $registryHost := $registry.host | default "" }}
+{{- $registryCa := $registry.caBundle | default "" }}
+{{- $registrySecret := $registry.authSecret | default "" }}
+{{- if contains "PRIVATE KEY-----" $registryCa }}
+{{- fail "registry.caBundle contains a private key: give only the registry CA certificate" }}
+{{- end }}
+{{- if and (or $registryCa $registrySecret) (not $registryHost) }}
+{{- fail "registry.host is required when registry.caBundle or registry.authSecret is set" }}
+{{- end }}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
 {{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
 {{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
@@ -45,6 +55,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "oidcIssuer" $oidcIssuer
       "caBundle" (.Values.oidc.caBundle | default "")
       "caBundleSecret" (include "openshell-sandbox.caBundleSecret" .)
+      "registry" (dict "host" $registryHost "caBundle" $registryCa "authSecret" $registrySecret)
       "routeHost" (include "openshell-sandbox.routeHost" .)
       "sandboxDashboardRoute" $sandboxRoute
       "dashboard" (dict

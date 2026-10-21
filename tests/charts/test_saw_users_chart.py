@@ -173,6 +173,23 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
 
 
+def test_registry_pull_secret_uses_shared_vault_entry(tmp_path):
+    extra = {"defaults": {"openshellSaw": {"registry": {
+        "host": "image-registry.openshift-image-registry.svc.cluster.local:5000",
+        "authSecret": "registry-pull"}}}}
+    docs = docs_from(render_file(tmp_path, [ALICE], extra))
+    values = helm_values(app(docs, "saw-alice-secrets"))
+    assert values["registryPullSecret"] == "registry-pull"
+    result = helm("template", "secrets", str(ROOT / "charts/pattern-secrets"),
+                  "--set-string", "registryPullSecret=registry-pull",
+                  "--set-string", "sshVaultPrefix=secret/data/hub")
+    secret_docs = docs_from(result)
+    registry = next(doc for doc in secret_docs if doc["kind"] == "ExternalSecret"
+                    and doc["metadata"]["name"] == "registry-pull")
+    assert registry["spec"]["data"][0]["remoteRef"] == {
+        "key": "secret/data/hub/registry-pull", "property": "token"}
+
+
 def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {
         "global": {"governance": {"engine": "apf"}}}))

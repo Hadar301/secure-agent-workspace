@@ -253,6 +253,40 @@ def test_a_bundle_without_a_ca_is_refused(ab, certs, trust_env):
         ab.trust_issuer_ca(_ca_shell(ab, []), PEM, home)
 
 
+def test_registry_ca_and_auth_are_scoped_to_one_host(ab, certs, tmp_path, monkeypatch):
+    host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+    monkeypatch.setattr(ab, "REGISTRY_CERTS_DIR", tmp_path / "containers" / "certs.d")
+    secret = tmp_path / "secrets" / "registry-pull"
+    secret.mkdir(parents=True)
+    token = "private-test-token"
+    (secret / "token").write_text(token)
+    home = tmp_path / "home"
+    cfg = {"registry": {"host": host, "caBundle": certs["ca"],
+                        "authSecret": "registry-pull"}}
+    shell = ab.Shell()
+    assert ab.configure_registry_access(shell, cfg, secret.parent, home, is_ca=lambda _: True)
+    assert (ab.REGISTRY_CERTS_DIR / host / ab.REGISTRY_CA_NAME).read_text() == certs["ca"] + "\n"
+    auth_file = ab.registry_auth_path(home)
+    assert auth_file.stat().st_mode & 0o777 == 0o600
+    auth = json.loads(auth_file.read_text())
+    assert list(auth["auths"]) == [host]
+    assert shell.env["REGISTRY_AUTH_FILE"] == str(auth_file)
+    assert token in shell._secrets
+    assert ab.configure_registry_access(shell, cfg, secret.parent, home, is_ca=lambda _: True) is False
+
+
+def test_registry_rejects_private_key_and_missing_token(ab, certs, tmp_path, monkeypatch):
+    monkeypatch.setattr(ab, "REGISTRY_CERTS_DIR", tmp_path / "certs.d")
+    cfg = {"registry": {"host": "registry.example:5000", "caBundle": certs["key"],
+                        "authSecret": "registry-pull"}}
+    with pytest.raises(ab.InstallerError, match="private key"):
+        ab.configure_registry_access(ab.Shell(), cfg, tmp_path / "secrets", tmp_path / "home")
+    cfg["registry"]["caBundle"] = certs["ca"]
+    with pytest.raises(ab.InstallerError, match="not mounted"):
+        ab.configure_registry_access(ab.Shell(), cfg, tmp_path / "secrets", tmp_path / "home",
+                                     is_ca=lambda _: True)
+
+
 def test_the_ca_bundle_comes_from_config_or_the_cluster_ca_secret(ab, tmp_path):
     """caBundle wins; else caBundleSecret's ca-bundle.crt (the cluster's
     ingress CA, mounted like a provider Secret); else nothing."""

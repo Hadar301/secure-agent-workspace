@@ -236,10 +236,17 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- define "saw-users.vaultPrefix" -}}
 {{- $user := .user -}}
 {{- $root := .root -}}
-{{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
+{{- $saw := deepCopy ($root.Values.defaults.openshellSaw | default dict) -}}
+{{- $saw = mergeOverwrite $saw (deepCopy ($user.values | default dict)) -}}
+{{- $registry := index $saw "registry" | default dict -}}
+{{- $values := dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
       "secrets" (include "saw-users.secretNames" . | fromJsonArray)
-      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- if $registry.authSecret -}}
+{{- $_ := set $values "registryPullSecret" $registry.authSecret -}}
+{{- end -}}
+{{- toYaml $values -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}
