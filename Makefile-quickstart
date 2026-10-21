@@ -299,9 +299,9 @@ KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCL
 keycloak-add-users: ## Create missing Keycloak users and store passwords in a Secret (USERS_FILE=...)
 	@$(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
 
-keycloak-password: ## Show the Secret location for one user (KC_USER=alice)
+keycloak-password: ## Copy a user's password to the clipboard / name its Secret (KC_USER=alice; SHOW=1 prints it)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
-	@$(SCRIPTS_DIR)/keycloak-users.sh password "$(KC_USER)"
+	@$(SCRIPTS_DIR)/keycloak-users.sh password $(if $(SHOW),--show) "$(KC_USER)"
 
 keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=alice)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi

@@ -4468,6 +4468,7 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
         "# never take the gateway down; a disposable tail mirrors it to PID 1.",
         "log=${OPENCLAW_HOME:-/sandbox}/.openclaw/state/openclaw-gateway.log",
         'mkdir -p "${OPENCLAW_HOME:-/sandbox}/.openclaw/state" 2>/dev/null || true',
+        ': >> "$log" 2>/dev/null || true',
         'cleanup() { kill "$mpid" 2>/dev/null; exit 0; }',
         "trap cleanup INT TERM",
         '( tail -n 0 -f "$log" >> /proc/1/fd/2 2>/dev/null ) & mpid=$!',
@@ -4478,6 +4479,7 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
         "done",
         "SAWSUP",
         'chmod +x "$SUP" 2>/dev/null || true',
+        '[ -s "$SUP" ] || echo "saw: WARNING could not write $SUP; the control-UI gateway is not supervised" >> /proc/1/fd/2 2>/dev/null',
         # Restart into the supervised gateway when none is supervised yet (first
         # start, or an old unsupervised gateway from before this), on a harness
         # refill, or when the settings changed. Killing the supervisor (TERM)
