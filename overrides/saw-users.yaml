@@ -1,3 +1,4 @@
-# Add real account names here after creating them with keycloak-add-users.
-# Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
-users: []
+# Temporary users for the web-fix e2e run on cluster-tq2qp.
+users:
+  - name: alice
+  - name: bob
