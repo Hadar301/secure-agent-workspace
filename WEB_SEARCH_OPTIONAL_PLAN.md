@@ -222,3 +222,17 @@ Application override in values-prod.yaml, templated from the correctly typed
 root `global.webSearch.enabled` with `forceString: true`. Clustergroup's final
 overrides use tpl/toString, which preserves false. Cover this handoff with an
 offline Helm bridge regression and verify the generated parameters live.
+
+Review and execution checkpoint (October 21, 2026)
+
+- Draft upstream PR: https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/131
+- Working branch: web-fix, created from main.
+- Temporary live users are published separately on web-fix-e2e; the PR keeps
+  the shipped users: [] default. Continue live installs with
+  TARGET_BRANCH=web-fix-e2e TARGET_ORIGIN=origin on cluster-tq2qp.
+- Full local suite: 1342 passed, 3 skipped; lint and catalog checks passed.
+- The real clustergroup forwarding fix is visible in the cluster: per-user
+  secrets lists contain only inference and BOM webSearch.enabled is false.
+- Initial pre-fix web-search ExternalSecrets remained after switching off
+  because the per-user applications do not prune. Removing them explicitly
+  cleared that stale input; this is the documented transition cleanup.
