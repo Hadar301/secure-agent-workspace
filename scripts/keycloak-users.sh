@@ -178,6 +178,19 @@ show() {
   fi
 }
 
+# Copy text to the clipboard with whatever tool the OS provides; returns
+# non-zero when none is available (e.g. CI) so callers can fall back.
+copy_to_clipboard() {  # $1 text
+  local -a tool
+  if command -v pbcopy >/dev/null 2>&1; then tool=(pbcopy)
+  elif command -v wl-copy >/dev/null 2>&1; then tool=(wl-copy)
+  elif command -v xclip >/dev/null 2>&1; then tool=(xclip -selection clipboard)
+  elif command -v xsel >/dev/null 2>&1; then tool=(xsel --clipboard --input)
+  elif command -v clip.exe >/dev/null 2>&1; then tool=(clip.exe)
+  else return 1; fi
+  printf '%s' "$1" | "${tool[@]}" >/dev/null 2>&1
+}
+
 password() {
   local user="${1:-}" pw
   [[ -n "${user}" ]] || { echo "usage: $0 password USER" >&2; exit 2; }
@@ -187,10 +200,11 @@ password() {
     echo "script?). Give them a new one: make keycloak-reset-password KC_USER=${user}" >&2
     exit 1
   fi
-  if [[ -n "$(password_of "${user}" "${USERS_SECRET}")" ]]; then
-    echo "${user}: password is in Secret ${USERS_SECRET}, key ${user}, namespace ${NS}."
+  if copy_to_clipboard "${pw}"; then
+    echo "Password for ${user} has been copied to the clipboard."
   else
-    echo "${user}: password is in Secret ${SECRET}, key ${user}, namespace ${NS}."
+    echo "${user}: no clipboard tool found; printing the password instead:" >&2
+    printf '%s\n' "${pw}"
   fi
 }
 
