@@ -1,0 +1,33 @@
+# OpenShell 0.1.x removed inference routing (inference.local): a sandbox
+# calls the endpoint itself. This profile allows api.anthropic.com only. An
+# Anthropic-compatible server on another host (vLLM, Ollama) needs its own
+# profile that names that host; the credential is never sent elsewhere.
+id: anthropic
+display_name: Anthropic
+description: Anthropic inference API
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: Anthropic API key
+    env_vars: [ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  # OpenClaw's node: /usr/bin/node-<major> in the Hummingbird image
+  # (/usr/bin/node links to it; the real path is what is matched),
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

@@ -310,7 +310,7 @@ read -r API_KEY < "$HOME/.nvidia-api-key"
 export WEB_SEARCH_API_KEY API_KEY
 make saw-create \
   PROVIDER=build \
-  MODEL=nvidia/nemotron-3-super-120b-a12b
+  MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
@@ -465,6 +465,29 @@ The existing Python CLI has a smaller command set than Make.
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
 | Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+
+The NVIDIA `data-science` profile also defines optional OpenAI and Anthropic
+providers. To add either to the existing notebook with Option A:
+
+1. Set its `enabled: true` in
+   `charts/saw-bom/profiles/data-science/default/providers.yaml`.
+2. Add its name (`openai` or `anthropic`) to `notebook.providers` in the same
+   directory's `sandbox.yaml`. The first provider supplies the default model;
+   keep `nvidia` first to retain the NVIDIA default.
+3. Add its separate `inference-openai` or `inference-anthropic` entry from
+   `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
+   entries. Each uses `provider`, `model`, and `api_key`; the API Secret's
+   `model` overrides the profile's model. Official APIs need no URL.
+4. Run `python scripts/saw-profile-catalog.py`, commit the profile and generated
+   catalog changes to your deployed branch, then follow Option A to load the
+   secrets. Restart an existing VM with `make saw-restart OPENSHELL_SAW_NAME=<owner>`.
+
+Official APIs use native OpenClaw onboarding and their normal model catalog.
+OpenAI API-key chats use the OpenClaw runtime so no Codex plugin is needed.
+The sandbox still receives placeholder keys; OpenShell injects real keys for
+allowed API requests. Use the notebook's authenticated chat Route and switch
+models in its picker. The `cuda-dev` workspace continues to use NVIDIA only.
+Private vLLM/Ollama endpoints keep the custom setup described below.
 
 #### Custom inference provider
 
