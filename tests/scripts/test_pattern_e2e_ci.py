@@ -314,7 +314,7 @@ def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     monkeypatch.setattr(runner, "preflight", lambda: None)
     monkeypatch.setattr(runner, "build", lambda: None)
     monkeypatch.setattr(runner, "install", lambda: None)
-    monkeypatch.setattr(runner, "verify_install", lambda: None)
+    monkeypatch.setattr(runner, "verify_deployment_smoke", lambda: None)
     monkeypatch.setattr(runner, "live_behavior", lambda: None)
     monkeypatch.setattr(runner, "diagnostics", lambda: None)
     monkeypatch.setattr(runner, "cleanup", lambda: (_ for _ in ()).throw(
@@ -323,6 +323,36 @@ def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     assert runner.report["cleanup_verified"] is False
     assert "cleanup_error" in runner.report
     assert runner.locked
+
+
+def test_smoke_scope_does_not_run_guest_or_live_checks(runner, monkeypatch):
+    stages = []
+    monkeypatch.setattr(runner, "stage", lambda name, _action: stages.append(name))
+    assert runner.run() == 0
+    assert "deployment-smoke" in stages
+    assert "guest-installer" not in stages
+    assert "live-behavior" not in stages
+    assert runner.report["test_scope"] == "smoke"
+
+
+def test_full_scope_keeps_guest_and_live_checks(runner, monkeypatch):
+    runner.test_scope = "full"
+    stages = []
+    monkeypatch.setattr(runner, "stage", lambda name, _action: stages.append(name))
+    assert runner.run() == 0
+    assert stages[-3:] == ["deployment-smoke", "guest-installer", "live-behavior"]
+
+
+def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
+    monkeypatch.setattr(runner, "install_virtctl", lambda: None)
+    monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0, stdout=json.dumps({
+                            "install": {"phase": "Done"},
+                            "apply": {"phase": "Failed"}})))
+    monkeypatch.setattr(runner, "wait_for", lambda _label, predicate, **_kwargs:
+                        predicate())
+    with pytest.raises(pattern_e2e.E2EError, match="ciowner apply phase failed"):
+        runner.verify_guest_install()
 
 
 def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeypatch):
@@ -391,4 +421,4 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
     assert output.read_text() == f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
     assert any(method == "POST" and path.endswith("/git/refs") for method, path, _ in calls)
     assert any(method == "POST" and path.endswith("/statuses/" + sha)
-               and payload["context"] == "Pattern E2E" for method, path, payload in calls)
+               and payload["context"] == "Pattern cluster smoke" for method, path, payload in calls)

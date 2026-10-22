@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted GitHub control for a manual Pattern E2E run."""
+"""Trusted GitHub control for a manual Pattern cluster smoke run."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def api(method: str, path: str, payload: dict | None = None) -> Any:
 
 def status(repo: str, sha: str, state: str, description: str) -> None:
     api("POST", f"/repos/{repo}/statuses/{sha}", {
-        "state": state, "context": "Pattern E2E", "description": description[:140],
+        "state": state, "context": "Pattern cluster smoke", "description": description[:140],
         "target_url": os.environ["CI_RUN_URL"],
     })
 
@@ -49,7 +49,7 @@ def prepare() -> None:
     if pr["state"] != "open" or pr["head"]["sha"] != sha:
         raise RuntimeError("PR is closed or its head SHA changed")
     if pr["head"]["repo"]["full_name"] != repo:
-        raise RuntimeError("Pattern E2E needs a reviewed branch in this repository")
+        raise RuntimeError("Pattern cluster smoke needs a reviewed branch in this repository")
     reviews = api("GET", f"/repos/{repo}/pulls/{number}/reviews?per_page=100")
     latest_review: dict[str, dict] = {}
     for review in reviews:
@@ -73,7 +73,7 @@ def prepare() -> None:
     branch = f"ci/pattern-e2e/{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     api("POST", f"/repos/{repo}/git/refs", {"ref": "refs/heads/" + branch, "sha": sha})
     try:
-        status(repo, sha, "pending", "Cluster test is running")
+        status(repo, sha, "pending", "Cluster smoke test is running")
     except RuntimeError:
         api("DELETE", f"/repos/{repo}/git/refs/heads/{branch}")
         raise
@@ -98,13 +98,13 @@ def finish() -> None:
             raise
     if SHA.fullmatch(sha):
         state = "success" if outcome == "success" else "failure"
-        status(repo, sha, state, "Cluster test passed" if state == "success"
-               else "Cluster test failed or did not finish")
+        status(repo, sha, state, "Cluster smoke test passed" if state == "success"
+               else "Cluster smoke test failed or did not finish")
 
 
 if __name__ == "__main__":
     try:
         {"prepare": prepare, "finish": finish}[sys.argv[1]]()
     except (KeyError, ValueError, RuntimeError, urllib.error.URLError) as error:
-        print(f"Pattern E2E control failed: {error}", file=sys.stderr)
+        print(f"Pattern cluster smoke control failed: {error}", file=sys.stderr)
         raise SystemExit(1)

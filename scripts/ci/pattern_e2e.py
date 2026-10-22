@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the approved Pattern E2E sequence on one fresh OpenShift cluster."""
+"""Run Pattern smoke or full checks on one fresh OpenShift cluster."""
 
 from __future__ import annotations
 
@@ -64,12 +64,16 @@ class Runner:
         self.run_url = self.required("CI_RUN_URL")
         self.repo = self.required("GITHUB_REPOSITORY")
         self.branch = self.required("CI_TARGET_BRANCH")
+        self.test_scope = os.environ.get("CI_TEST_SCOPE", "smoke")
+        if self.test_scope not in {"smoke", "full"}:
+            raise E2EError("CI_TEST_SCOPE must be smoke or full")
         self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
         self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.report: dict[str, Any] = {
             "source_sha": self.sha, "repository": self.repo, "run_id": self.run_id,
-            "run_url": self.run_url, "started_at": now(), "stages": [],
+            "run_url": self.run_url, "started_at": now(), "test_scope": self.test_scope,
+            "stages": [],
             "image_digests": {}, "cleanup_verified": False,
         }
         self.home: Path | None = None
@@ -593,9 +597,8 @@ class Runner:
                 return False
         return True
 
-    def verify_install(self) -> None:
+    def verify_deployment_smoke(self) -> None:
         self.check_argo()
-        self.install_virtctl()
         for user in USERS:
             namespace = f"saw-{user}"
             def vm_ready() -> bool:
@@ -606,6 +609,11 @@ class Runner:
                 vm = json.loads(response.stdout)
                 return vm.get("status", {}).get("printableStatus") == "Running"
             self.wait_for(f"{user} VM", vm_ready, seconds=3600)
+        self.verify_images()
+
+    def verify_guest_install(self) -> None:
+        self.install_virtctl()
+        for user in USERS:
             # The in-guest status check is an existing Make interface.
             def installer_ready() -> bool:
                 output = self.call(["make", "saw-status", f"OPENSHELL_SAW_NAME={user}"],
@@ -618,11 +626,11 @@ class Runner:
                     return False
                 phases = (status.get("install", {}).get("phase"),
                           status.get("apply", {}).get("phase"))
-                if "Failed" in phases:
-                    raise E2EError(f"{user} installer phase failed")
+                for step, phase in zip(("install", "apply"), phases):
+                    if phase == "Failed":
+                        raise E2EError(f"{user} {step} phase failed")
                 return phases == ("Done", "Done")
             self.wait_for(f"{user} installer phases", installer_ready, seconds=3600)
-        self.verify_images()
 
     def cluster_tls_context(self) -> ssl.SSLContext:
         if self.home is None:
@@ -914,8 +922,10 @@ class Runner:
             self.stage("build-and-record-digests", self.build)
             self.stage("prepare-registry-pull", self.prepare_registry_pull)
             self.stage("pattern-install", self.install)
-            self.stage("deployment-readiness-and-digest-checks", self.verify_install)
-            self.stage("live-behavior", self.live_behavior)
+            self.stage("deployment-smoke", self.verify_deployment_smoke)
+            if self.test_scope == "full":
+                self.stage("guest-installer", self.verify_guest_install)
+                self.stage("live-behavior", self.live_behavior)
         except BaseException as exc:
             failure = self.redact(str(exc)) or "runner cancelled"
             self.report["failure"] = failure
@@ -932,7 +942,7 @@ class Runner:
                     failure = failure or "cleanup failed"
             self.finish()
         if failure:
-            print(f"Pattern E2E failed: {failure}", file=sys.stderr)
+            print(f"Pattern {self.test_scope} failed: {failure}", file=sys.stderr)
             return 1
         return 0
 
@@ -941,7 +951,7 @@ def main() -> int:
     try:
         runner = Runner()
     except E2EError as exc:
-        print(f"Pattern E2E setup failed: {exc}", file=sys.stderr)
+        print(f"Pattern test setup failed: {exc}", file=sys.stderr)
         return 1
     def cancelled(_signal, _frame):
         runner.cancelled = True
