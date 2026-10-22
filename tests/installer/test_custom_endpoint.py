@@ -1,7 +1,8 @@
-"""A custom OpenAI-compatible endpoint (vLLM, Ollama, ...) through OpenShell's
-OpenShell 0.1.x: an `openai` provider with OPENAI_BASE_URL, and OpenClaw
-onboarded against that endpoint itself (no inference routes, no
-https://inference.local)."""
+"""A custom OpenAI-compatible endpoint (vLLM, Ollama, ...) on OpenShell 0.1.x:
+an `openai` provider holds only the key; the endpoint and the model are the
+sandbox's `inference:` settings (protocol openai, baseUrl and model from the
+Secret), and OpenClaw is onboarded against that endpoint itself (no
+inference routes, no https://inference.local)."""
 
 import shlex
 import pytest
@@ -26,12 +27,22 @@ def profiles(ab):
     return ab.parse_profiles(profile_files("custom-inference"))
 
 
+def notebook(profiles):
+    return next(s for s in profiles[0].workspaces[0].sandboxes if s.name == "notebook")
+
+
 def test_profile_is_valid_and_reads_url_and_model_from_the_secret(ab, profiles, custom_secrets):
     ab.validate_profiles(profiles)
     creds = ab.resolve_credentials(profiles, custom_secrets)
     custom = next(p for p in profiles[0].workspaces[0].providers if p.name == "custom")
-    assert (custom.type, custom.base_url, custom.model) == ("openai", URL, MODEL)
+    # The provider is only the credential...
+    assert (custom.type, custom.base_url, custom.model) == ("openai", "", "")
     assert creds["default"]["custom"] == "sk-CUSTOM-TEST-KEY"
+    # ...the endpoint and model are the sandbox's (the URL normalised).
+    sb = notebook(profiles)
+    assert sb.inference_values == {"providerRef": "custom", "protocol": "openai",
+                                   "baseUrl": URL, "model": MODEL, "timeoutSeconds": 300}
+    assert (ab.sandbox_endpoint(sb, custom), ab.sandbox_model(sb, custom)) == (URL, MODEL)
 
 
 def test_apply_creates_an_openai_provider_and_onboards_on_its_endpoint(
@@ -39,9 +50,10 @@ def test_apply_creates_an_openai_provider_and_onboards_on_its_endpoint(
     creds = ab.resolve_credentials(profiles, custom_secrets)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     state = fake_env.openshell_state()
+    # No provider --config (not part of OpenShell 0.1.2's provider CLI).
     assert state["providers"]["default/custom"] == {
-        "type": "openai", "credential": "OPENAI_API_KEY=sk-CUSTOM-TEST-KEY",
-        "config": [f"OPENAI_BASE_URL={URL}"]}
+        "type": "openai", "credential": "OPENAI_API_KEY=sk-CUSTOM-TEST-KEY"}
+    assert "env" not in state["sandboxes"]["default/notebook"]     # inference is not env
     assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
     # The key only ever travels in the environment.
     assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
@@ -57,9 +69,15 @@ def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secre
     (custom_secrets / "inference" / "url").write_text("http://ollama.models.svc:11434/v1\n")
     profiles2 = ab.parse_profiles(profile_files("custom-inference"))
     creds = ab.resolve_credentials(profiles2, custom_secrets)
+    before = len(fake_env.openshell_calls())
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles2)
-    assert fake_env.openshell_state()["providers"]["default/custom"]["config"] == [
-        "OPENAI_BASE_URL=http://ollama.models.svc:11434/v1"]
+    calls = fake_env.openshell_calls()[before:]
+    # The sandbox exists already: the agent is onboarded again on the new
+    # endpoint (inference is agent configuration, not the sandbox's env, so
+    # no recreation is needed).
+    assert "sandbox delete" not in [" ".join(c[:2]) for c in calls]
+    onboard = next(" ".join(c) for c in calls if "openclaw onboard " in " ".join(c))
+    assert "--custom-base-url http://ollama.models.svc:11434/v1 " in onboard
 
 
 @pytest.mark.parametrize("url", ["ftp://host/v1", "https://user:pw@host/v1", "https://host/v1?key=x",
@@ -89,9 +107,12 @@ def test_the_secret_names_the_openshell_provider_type(ab, profiles, custom_secre
 
 
 def test_base_url_only_for_types_the_router_supports(ab):
+    """The provider-level baseUrlSecretKey (still accepted) only for types
+    that take a base URL."""
     files = profile_files("custom-inference")
     key = next(k for k in files if k.endswith("providers.yaml"))
-    files[key] = files[key].replace("type: openai", "type: gemini")
+    files[key] = files[key].replace("type: openai", "type: gemini").replace(
+        "credentialSecretKey: api_key", "credentialSecretKey: api_key\n      baseUrlSecretKey: url", 1)
     with pytest.raises(ab.InstallerError, match="does not take a base URL"):
         ab.validate_profiles(ab.parse_profiles(files))
 

@@ -40,16 +40,23 @@ def fail(message, code=1):
     sys.exit(code)
 
 
-def credential():
-    """Like the real CLI: `--credential NAME` reads $NAME, `NAME=value` is literal."""
-    spec = opt("--credential")
-    if spec is None:
-        return None
+def _resolve_credential(spec):
     if "=" in spec:
         return spec
     if spec not in os.environ:
         fail(f"Error: environment variable {spec} is not set")
     return f"{spec}={os.environ[spec]}"
+
+
+def credential():
+    """Like the real CLI: `--credential NAME` reads $NAME, `NAME=value` is literal."""
+    spec = opt("--credential")
+    return None if spec is None else _resolve_credential(spec)
+
+
+def all_credentials():
+    """Every `--credential` given (a provider may carry several)."""
+    return [_resolve_credential(args[i + 1]) for i, a in enumerate(args) if a == "--credential"]
 
 
 if "--" in args:
@@ -195,6 +202,8 @@ elif op == "provider create":
     if key in state["providers"]:
         fail(f"Error: provider {opt('--name')} already exists")
     state["providers"][key] = {"type": opt("--type"), "credential": credential()}
+    if len(all_credentials()) > 1:
+        state["providers"][key]["credentials"] = all_credentials()
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
@@ -203,6 +212,8 @@ elif op == "provider update":
     if key not in state["providers"]:
         fail("Error: provider not found")
     state["providers"][key]["credential"] = credential()
+    if len(all_credentials()) > 1:
+        state["providers"][key]["credentials"] = all_credentials()
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
@@ -290,9 +301,31 @@ elif op == "sandbox create":
     if missing:
         fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
+    envs = [head[i + 1] for i, a in enumerate(head) if a == "--env"]
+    if envs:
+        state["sandboxes"][key]["env"] = envs
     remember_labels("sandbox", ws, opt("--name"))
     if opt("--driver-config-json"):
         state["sandboxes"][key]["driverConfig"] = json.loads(opt("--driver-config-json"))
+elif op == "sandbox download":
+    # `sandbox download <sb> <remote> <local>`: the preserve archive. The
+    # fake sandbox's "files" are a dict kept in its state; the archive is
+    # that dict as JSON, so a restore can put it back.
+    key = f"{ws}/{head[2]}"
+    sb = state["sandboxes"].get(key)
+    if not sb:
+        fail(f"Error: sandbox '{head[2]}' not found")
+    remote, local = head[3], head[4]
+    if remote not in sb.get("archives", {}):
+        fail(f"Error: {remote}: no such file")
+    Path(local).write_text(json.dumps(sb["archives"][remote]))
+elif op == "sandbox upload":
+    key = f"{ws}/{head[2]}"
+    sb = state["sandboxes"].get(key)
+    if not sb:
+        fail(f"Error: sandbox '{head[2]}' not found")
+    local, remote = head[3], head[4]
+    sb.setdefault("archives", {})[remote] = json.loads(Path(local).read_text())
 elif op == "sandbox delete":
     key = f"{ws}/{head[2]}"
     delay = state.get("deleteDelay", 0)
@@ -301,6 +334,24 @@ elif op == "sandbox delete":
     else:
         state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    script = args[-1] if args[-3:-1] == ["sh", "-c"] else ""
+    if "tar -cf " in script and "exit 3" in script:
+        # preserve_sandbox: archive /sandbox (the fake's "files") to the path.
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        if (state_dir / "preserve-fail").exists():
+            fail("tar: /sandbox: Cannot open", 2)
+        archive = script.split("tar -cf ", 1)[1].split()[0]
+        sb.setdefault("archives", {})[archive] = dict(sb.get("files", {}))
+        save()
+        sys.exit(0)
+    if "tar -xf " in script and script.startswith("cd /sandbox"):
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        archive = script.split("tar -xf ", 1)[1].split()[0]
+        if archive not in sb.get("archives", {}):
+            fail(f"tar: {archive}: Cannot open: No such file or directory", 2)
+        sb.setdefault("files", {}).update(sb["archives"].pop(archive))
+        save()
+        sys.exit(0)
     if args[-2:] in (["id", "-u"], ["id", "-g"]):
         print("1000")
         save()
