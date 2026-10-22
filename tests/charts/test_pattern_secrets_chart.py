@@ -79,3 +79,17 @@ def test_the_cluster_ca_comes_from_the_shared_prefix(tmp_path):
     (es,) = [d for d in yaml.safe_load_all(out) if d and d["metadata"]["name"] == "saw-ingress-ca"]
     assert es["spec"]["data"] == [{"secretKey": "ca-bundle.crt", "remoteRef": {
         "key": "secret/data/hub/cluster-ingress-ca", "property": "ca-bundle.crt"}}]
+
+
+def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
+    values = tmp_path / "providers.yaml"
+    values.write_text(yaml.safe_dump({
+        "vaultPrefix": "secret/data/hub/saw-alice", "sshVaultPrefix": "secret/data/hub",
+        "secrets": ["inference", "web-search", "inference-openai", "inference-anthropic"]}))
+    assert keys("-f", str(values)) == {
+        "inference": {"secret/data/hub/saw-alice/inference"},
+        "web-search": {"secret/data/hub/saw-alice/web-search"},
+        "inference-openai": {"secret/data/hub/saw-alice/inference-openai"},
+        "inference-anthropic": {"secret/data/hub/saw-alice/inference-anthropic"},
+        "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
+        "openshell-aap-ssh": {"secret/data/hub/ssh"}}

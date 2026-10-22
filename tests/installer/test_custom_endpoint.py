@@ -101,7 +101,7 @@ def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_di
     profiles = ab.parse_profiles(shipped_profile_files)
     ab.resolve_credentials(profiles, secrets_dir)
     nvidia = next(p for p in profiles[0].workspaces[0].providers if p.name == "nvidia")
-    assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3-super-120b-a12b")
+    assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3.5-lightning-30b-a3b")
 
 
 def test_without_an_openai_profile_the_agent_is_not_onboarded_with_another_provider(

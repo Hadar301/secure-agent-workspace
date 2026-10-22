@@ -536,7 +536,7 @@ export TEST_SECOND_TOKEN_DIR=<second-user-token-directory>
 export TARGET_BRANCH=<pushed-test-branch>
 export TARGET_ORIGIN=origin
 export PROVIDER=build
-export MODEL=nvidia/nemotron-3-super-120b-a12b
+export MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
 read -r WEB_SEARCH_API_KEY < "$HOME/.web-search-api-key"

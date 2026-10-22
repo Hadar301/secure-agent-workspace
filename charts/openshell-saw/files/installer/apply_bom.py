@@ -139,6 +139,8 @@ NATIVE_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
 }
 
+OPENCLAW_AUTH_CHOICES = {"openai": "openai-api-key", "anthropic": "apiKey"}
+
 
 class InstallerError(Exception):
     """A failure with a message that is safe to log and show in status."""
@@ -3561,7 +3563,7 @@ class ProfileApplier:
         # No /sandbox chown: OpenShell 0.1.x runs the workload without
         # capabilities (root in the container cannot even read /sandbox) and
         # already gives /sandbox to the image's user.
-        model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
+        model = sb.model or provider.model or "nvidia/nemotron-3.5-lightning-30b-a3b"
         oc_env = OPENCLAW_EXEC_ENV
         # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
         # own endpoint with the placeholder key this exec receives in the
@@ -3570,7 +3572,9 @@ class ProfileApplier:
         # placeholder is read inside the sandbox (\$), never by the installer.
         base_url = provider.base_url or NATIVE_BASE_URLS.get(provider.type, "")
         key_var = PROVIDER_CRED_MAP.get(provider.type, "")
-        if not base_url or not key_var:
+        auth_choice = (OPENCLAW_AUTH_CHOICES.get(provider.type)
+                       if not (provider.base_url or provider.base_url_secret_key) else None)
+        if (not base_url and not auth_choice) or not key_var:
             log(f"WARN: no native endpoint known for provider type '{provider.type}'; "
                 f"set baseUrl on provider '{provider.name}'. Skipping OpenClaw onboarding")
             # No openclaw.json yet, so the plugin entry is not enabled. The
@@ -3579,15 +3583,28 @@ class ProfileApplier:
             # The sandbox still has to stay Ready after the installer exits.
             self.install_keepalive(ws, sb)
             return
-        # key_var is a constant (PROVIDER_CRED_MAP); everything that comes from
-        # the profile or a Secret is quoted for the sandbox's shell.
+        if any(p.enabled and p.name in sb.providers and p.type == "openai"
+               and not (p.base_url or p.base_url_secret_key) for p in ws.providers):
+            # API-key chats use OpenClaw without the optional Codex plugin.
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config set 'agents.defaults.models.openai/*.agentRuntime' "
+                     + shlex.quote(json.dumps({"id": "openclaw"})), check=False)
+        if auth_choice:
+            # Native onboarding keeps an old custom endpoint unless it is removed.
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config unset models.providers.{provider.type}",
+                     check=False)
+            auth_args = f"--auth-choice {auth_choice}"
+            key_env = ""
+        else:
+            auth_args = ("--auth-choice custom-api-key "
+                         f"--custom-base-url {shlex.quote(base_url)} "
+                         f"--custom-provider-id {shlex.quote(provider.type)} "
+                         f"--custom-model-id {shlex.quote(model)} --custom-compatibility openai")
+            key_env = f'CUSTOM_API_KEY="${key_var}" '
         onboarded = self.cli(*exec_cmd, "sh", "-c",
-                 f"{oc_env} CUSTOM_API_KEY=\"${key_var}\" openclaw onboard --non-interactive "
-                 "--accept-risk --mode local --auth-choice custom-api-key "
-                 f"--custom-base-url {shlex.quote(base_url)} "
-                 f"--custom-provider-id {shlex.quote(provider.type)} "
-                 f"--custom-model-id {shlex.quote(model)} "
-                 "--custom-compatibility openai --skip-channels --skip-health", check=False)
+                 f"{oc_env} {key_env}openclaw onboard --non-interactive "
+                 f"--accept-risk --mode local {auth_args} --skip-channels --skip-health", check=False)
         # Re-onboarding an existing sandbox with a different provider or model
         # (e.g. after switching to a custom endpoint) makes OpenClaw save the
         # new credential but keep the old connection; activate the new one.
@@ -3597,6 +3614,10 @@ class ProfileApplier:
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
+        if auth_choice:
+            model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw models set {shlex.quote(model_id)}", check=False)
         self.configure_harness(ws, sb, exec_cmd, oc_env)
         # Before the gateway process starts, so this boot loads the hook.
         # openclaw_gateway_script restarts only on a harness refill, when none
