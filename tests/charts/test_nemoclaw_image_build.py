@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -174,11 +175,13 @@ def test_discovery_runtime_keeps_vulnerability_and_integrity_checks():
     assert "skipping npm audit" not in script
 
 
-def test_nemoclaw_pins_match_across_builds():
+def test_nemoclaw_sources_and_base_image_are_pinned():
     sandbox = yaml.safe_load((CHART / "values.yaml").read_text())
     cli = yaml.safe_load((CLI_CHART / "values.yaml").read_text())
-    assert sandbox["source"]["git"]["ref"]
-    assert sandbox["source"]["git"] == cli["source"]["git"]
+    assert sandbox["source"]["git"]["uri"] == cli["source"]["git"]["uri"]
+    # The sandbox uses a later commit with the Debian curl package fix.
+    for chart in (sandbox, cli):
+        assert re.fullmatch(r"[0-9a-f]{40}", chart["source"]["git"]["ref"])
     version = cli["build"]["nemoclawVersion"]
     assert version
     assert sandbox["build"]["baseImage"] == f"ghcr.io/nvidia/nemoclaw/sandbox-base:v{version}"

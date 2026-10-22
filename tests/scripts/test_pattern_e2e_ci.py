@@ -315,6 +315,7 @@ def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     monkeypatch.setattr(runner, "build", lambda: None)
     monkeypatch.setattr(runner, "install", lambda: None)
     monkeypatch.setattr(runner, "verify_deployment_smoke", lambda: None)
+    monkeypatch.setattr(runner, "verify_guest_install", lambda: None)
     monkeypatch.setattr(runner, "live_behavior", lambda: None)
     monkeypatch.setattr(runner, "diagnostics", lambda: None)
     monkeypatch.setattr(runner, "cleanup", lambda: (_ for _ in ()).throw(
@@ -325,22 +326,12 @@ def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
     assert runner.locked
 
 
-def test_smoke_scope_does_not_run_guest_or_live_checks(runner, monkeypatch):
+def test_e2e_runs_guest_and_live_checks(runner, monkeypatch):
     stages = []
     monkeypatch.setattr(runner, "stage", lambda name, _action: stages.append(name))
     assert runner.run() == 0
-    assert "deployment-smoke" in stages
-    assert "guest-installer" not in stages
-    assert "live-behavior" not in stages
-    assert runner.report["test_scope"] == "smoke"
-
-
-def test_full_scope_keeps_guest_and_live_checks(runner, monkeypatch):
-    runner.test_scope = "full"
-    stages = []
-    monkeypatch.setattr(runner, "stage", lambda name, _action: stages.append(name))
-    assert runner.run() == 0
-    assert stages[-3:] == ["deployment-smoke", "guest-installer", "live-behavior"]
+    assert stages[-3:] == ["deployment-readiness-and-digest-checks",
+                           "guest-installer", "live-behavior"]
 
 
 def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
@@ -421,4 +412,4 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
     assert output.read_text() == f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
     assert any(method == "POST" and path.endswith("/git/refs") for method, path, _ in calls)
     assert any(method == "POST" and path.endswith("/statuses/" + sha)
-               and payload["context"] == "Pattern cluster smoke" for method, path, payload in calls)
+               and payload["context"] == "Pattern E2E" for method, path, payload in calls)

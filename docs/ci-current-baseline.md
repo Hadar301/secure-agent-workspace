@@ -1,66 +1,65 @@
 # CI baseline and follow-up work
 
-Status on 2026-10-22. This file describes the checks in this branch. It does
-not claim that a GitHub Actions cluster run has passed.
+Status on 2026-10-22. This file records the checks and the last cluster trial.
+It does not claim that a full E2E run has passed.
 
 ## Checks in this branch
 
 `Deployment validation` runs on pull requests and pushes to `main`. It checks
-rendered Helm resources, schemas, referenced dependencies, and version
+rendered Helm resources, schemas, external dependencies, and version
 consistency. It does not deploy the Pattern.
 
-`Pattern cluster smoke` is a manual workflow for a reviewed pull request. It
-uses one fresh cluster and a cluster lock. It builds the five images, records
-their digests, installs the Pattern, checks repository Argo applications at the
-tested commit, waits for both VMs to run, checks that deployed resources refer
-to the new image digests, and uninstalls the Pattern. Failed cleanup fails the
-check and retains the lock. A maintainer supplies credentials through the
-`pattern-e2e` GitHub environment. The workflow must first be on the default
-branch before it can be started from GitHub Actions.
+`Pattern E2E` is a manual workflow for a reviewed pull request. It uses one
+fresh cluster and a cluster lock. It builds the five images, records their
+digests, installs the Pattern, checks Argo health and tested revision, waits
+for both VMs, checks image digest references, requires both guest installer
+phases to finish, and tests live behavior. Live checks include two-user
+authentication, sandbox listing and command execution, a real NVIDIA
+inference request, access denial, and network isolation. The runner then
+uninstalls the Pattern twice. Failed cleanup fails the check and retains the
+lock. The workflow must be on the default branch before GitHub Actions can
+start it.
 
-The local `make test-pattern-e2e` target still runs guest installer and live
-behavior checks after the smoke checks. It is for diagnosis and is not the
-published `Pattern cluster smoke` status.
+The local cluster run reads the existing NVIDIA key from `local-docs/.env`.
+The key does not enter Git or test artifacts. The two CI users use the
+`ci-nvidia` profile, which needs only that key. The normal data science
+profile and its Brave support stay available.
 
 ## Evidence from the cluster trials
 
 The 2026-10-22 trial at commit `aa859296386bc5ef05f1ce50aa9decf6969b71d5`
-completed all five builds and the Pattern install. Argo applications reached
-the tested revision and both VMs ran. The trial stopped in the later guest
-readiness check because `ciowner` reported a failed `install` or `apply` phase.
-The report did not record which phase failed. No live behavior checks ran.
-The image digest check was after the guest check, so that trial did not reach
-it. The first automated uninstall timed out while waiting for a VM instance
-to disappear. A later manual uninstall and resource check completed. This
-branch extends that wait from 120 to 600 seconds, but a new cluster trial must
-verify the change.
+completed all five builds and Pattern install. Argo applications reached the
+tested revision and both VMs ran. The trial stopped in the guest readiness
+check because `ciowner` reported a failed `install` or `apply` phase. The
+report did not record which phase failed. The image digest and live behavior
+checks did not run. The first automated uninstall timed out while waiting
+for a VM instance to disappear. A later manual uninstall and resource check
+completed. This branch names the failed guest phase and extends the VM
+shutdown wait from 120 to 600 seconds. A new run must verify both changes.
 
 ## Gaps for a later task
 
-1. Diagnose the `ciowner` guest failure. Capture the phase name and a safe
-   error category without publishing credentials. Require both guest phases
-   to finish for full deployment acceptance.
-2. Restore the full live checks as a CI gate: two-user authentication, sandbox
-   listing and command execution, inference, access denial, and network
-   isolation. These checks did not run in the last trial.
-3. Run the new smoke workflow on a fresh cluster. Confirm image digests and
-   automated cleanup, including a second uninstall. If cleanup still fails,
-   fix it before reporting smoke acceptance.
-4. Test two simultaneous manual runs and confirm that the lock rejects the
+1. Add Brave web search coverage when its API key is available. Extend the
+   CI profile and its live checks; the normal data science profile already
+   supports Brave.
+2. Add the optional OpenAI and Anthropic provider checks when their keys are
+   available. The current E2E run tests NVIDIA inference.
+3. Test two simultaneous manual runs and confirm that the lock rejects the
    second run without changing the cluster.
-5. Add the manual workflow to the default branch. Set branch protection only
-   after the related check has passed at the required commit. Do not label
-   this smoke status as full end-to-end deployment validation.
-6. Provide a default StorageClass for each fresh cluster run, or add an
-   explicit per-VM class setting. The current runner stops at preflight if
-   the cluster has no default class.
+4. Set up the GitHub environment and add the workflow to the default branch.
+   Require the E2E status for merge only after a complete run passes at the
+   required commit.
+5. Provide a default StorageClass for each fresh cluster run, or add an
+   explicit per-VM class setting. The runner stops at preflight if the
+   cluster has no default class.
 
 ## PR description text
 
-This PR adds automatic deployment validation and a manual Pattern cluster
-smoke check. The smoke check covers builds, Pattern install, Argo revision and
-health, running VMs, image digest references, and cleanup. It does not certify
-guest installer completion or live application behavior. The last cluster
-trial passed builds and Pattern install, then found a guest phase failure.
-Automated cleanup also timed out once; a later manual cleanup succeeded. The
-new smoke path and longer VM shutdown wait still need a fresh cluster run.
+This PR adds automatic deployment validation and a manual full Pattern E2E
+check. The E2E check covers builds, Pattern install, Argo health and revision,
+running VMs, image digest references, guest installer completion, live NVIDIA
+inference and access checks, network isolation, and cleanup. Brave web search
+and other optional providers are deferred until their API keys are available.
+The last cluster trial reached a guest installer phase failure and an
+automated cleanup timeout. A complete E2E run must pass before this check is
+required for merge.

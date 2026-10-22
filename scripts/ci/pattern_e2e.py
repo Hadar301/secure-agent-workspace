@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Pattern smoke or full checks on one fresh OpenShift cluster."""
+"""Run Pattern deployment and live E2E checks on one fresh OpenShift cluster."""
 
 from __future__ import annotations
 
@@ -64,22 +64,17 @@ class Runner:
         self.run_url = self.required("CI_RUN_URL")
         self.repo = self.required("GITHUB_REPOSITORY")
         self.branch = self.required("CI_TARGET_BRANCH")
-        self.test_scope = os.environ.get("CI_TEST_SCOPE", "smoke")
-        if self.test_scope not in {"smoke", "full"}:
-            raise E2EError("CI_TEST_SCOPE must be smoke or full")
         self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
         self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.report: dict[str, Any] = {
             "source_sha": self.sha, "repository": self.repo, "run_id": self.run_id,
-            "run_url": self.run_url, "started_at": now(), "test_scope": self.test_scope,
-            "stages": [],
+            "run_url": self.run_url, "started_at": now(), "stages": [],
             "image_digests": {}, "cleanup_verified": False,
         }
         self.home: Path | None = None
         self.env = dict(os.environ)
-        for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY",
-                    "CI_WEB_SEARCH_KEY"):
+        for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY"):
             self.env.pop(key, None)
         self.locked = False
         self.lock_namespace_created = False
@@ -174,14 +169,14 @@ class Runner:
         if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
             raise E2EError("OpenShell CLI version does not match the installer BOM")
         if self.required("CI_PROVIDER") != "build":
-            raise E2EError("CI_PROVIDER must be build for the data-science profile")
-        provider_profile = yaml.safe_load((ROOT / "charts/saw-bom/profiles/data-science/"
+            raise E2EError("CI_PROVIDER must be build for the CI profile")
+        provider_profile = yaml.safe_load((ROOT / "charts/saw-bom/profiles/ci-nvidia/"
                                            "default/providers.yaml").read_text())
         expected_model = next(item["model"] for item in
                               provider_profile["spec"]["providers"]
                               if item.get("nemoclawProvider") == "build")
         if self.required("CI_MODEL") != expected_model:
-            raise E2EError("CI_MODEL must match the data-science profile model")
+            raise E2EError("CI_MODEL must match the CI profile model")
         secret_home = Path(tempfile.mkdtemp(prefix="saw-ci-", dir=os.environ.get("RUNNER_TEMP")))
         secret_home.chmod(0o700)
         self.home = secret_home
@@ -209,7 +204,6 @@ class Runner:
         self.env["TEST_ACTIVE_SAW_NAME"] = USERS[0]
         self.env["TEST_ACTIVE_SAW_NS"] = f"saw-{USERS[0]}"
         self.private_file("inference-key", self.required("CI_INFERENCE_KEY").encode())
-        self.private_file("web-search-key", self.required("CI_WEB_SEARCH_KEY").encode())
         for user in USERS:
             password = "aA9!" + secrets.token_urlsafe(32)
             self.sensitive.append(password)
@@ -226,9 +220,6 @@ class Runner:
                     {"name": "provider", "value": self.required("CI_PROVIDER")},
                     {"name": "model", "value": self.required("CI_MODEL")},
                     {"name": "api_key", "path": str(secret_home / "inference-key")}]},
-                {"name": "web-search", "fields": [
-                    {"name": "provider", "value": "brave"},
-                    {"name": "api_key", "path": str(secret_home / "web-search-key")}]},
                 {"name": "keycloak-users", "fields": [
                     {"name": user, "path": str(secret_home / f"{user}-password")}
                     for user in USERS]},
@@ -922,10 +913,9 @@ class Runner:
             self.stage("build-and-record-digests", self.build)
             self.stage("prepare-registry-pull", self.prepare_registry_pull)
             self.stage("pattern-install", self.install)
-            self.stage("deployment-smoke", self.verify_deployment_smoke)
-            if self.test_scope == "full":
-                self.stage("guest-installer", self.verify_guest_install)
-                self.stage("live-behavior", self.live_behavior)
+            self.stage("deployment-readiness-and-digest-checks", self.verify_deployment_smoke)
+            self.stage("guest-installer", self.verify_guest_install)
+            self.stage("live-behavior", self.live_behavior)
         except BaseException as exc:
             failure = self.redact(str(exc)) or "runner cancelled"
             self.report["failure"] = failure
@@ -942,7 +932,7 @@ class Runner:
                     failure = failure or "cleanup failed"
             self.finish()
         if failure:
-            print(f"Pattern {self.test_scope} failed: {failure}", file=sys.stderr)
+            print(f"Pattern E2E failed: {failure}", file=sys.stderr)
             return 1
         return 0
 
@@ -951,7 +941,7 @@ def main() -> int:
     try:
         runner = Runner()
     except E2EError as exc:
-        print(f"Pattern test setup failed: {exc}", file=sys.stderr)
+        print(f"Pattern E2E setup failed: {exc}", file=sys.stderr)
         return 1
     def cancelled(_signal, _frame):
         runner.cancelled = True

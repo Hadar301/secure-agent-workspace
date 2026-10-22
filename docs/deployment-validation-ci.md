@@ -5,11 +5,11 @@ It renders all application and image builder charts, checks schemas, checks
 external dependencies, and checks the OpenShell BOM version. The report is
 `deployment-validation.json`.
 
-`Pattern cluster smoke` is a manual workflow. Start it from the default branch with
+`Pattern E2E` is a manual workflow. Start it from the default branch with
 the PR number and its full current head SHA. The control job checks the PR,
 the SHA, and the automatic check before it creates a temporary Git branch.
 The execution job has cluster credentials and read-only Git access. A final
-control job removes the branch and sets the `Pattern cluster smoke` commit status.
+control job removes the branch and sets the `Pattern E2E` commit status.
 
 ## GitHub environment
 
@@ -20,11 +20,10 @@ Create an environment named `pattern-e2e`. Add these values:
 | `CI_KUBECONFIG_B64` | secret | Base64 of a cluster-admin kubeconfig |
 | `CI_CA_B64` | secret | Base64 of the PEM CA bundle for application routes and downloads |
 | `CI_INFERENCE_KEY` | secret | NVIDIA inference API key |
-| `CI_WEB_SEARCH_KEY` | secret | Brave Search API key |
 | `CI_CLUSTER_API` | variable | Exact `oc whoami --show-server` URL |
 | `CI_CLUSTER_UID` | variable | UID of the `kube-system` namespace |
 | `CI_PROVIDER` | variable | `build` |
-| `CI_MODEL` | variable | `nvidia/nemotron-3-super-120b-a12b` |
+| `CI_MODEL` | variable | Model in `charts/saw-bom/profiles/data-science/default/providers.yaml` |
 
 The runner needs access to the cluster API, application routes, internal
 registry, GitHub, the OpenShift client mirror, and public package registries.
@@ -33,6 +32,9 @@ runner checks this before it starts builds and does not change the cluster
 default.
 The kubeconfig and CA stay in a private temporary home. The workflow uploads
 only structured results and resource status. It does not upload credentials.
+The runner requires the NVIDIA key for a real inference request. The two CI
+users use the `ci-nvidia` profile, which needs only that key. Normal users
+can still use the data science profile with Brave web search.
 
 The cluster runner creates `saw-ci-lock` outside Pattern ownership. It creates
 the `saw-pattern-e2e` ConfigMap there with an atomic create call. The lock
@@ -42,11 +44,12 @@ An administrator must inspect the cluster and remove the lock before another
 run. Do not use an age limit to release it. Every other workflow that changes
 this test cluster must honor this lock.
 
-Use a fresh cluster for each run. The smoke test builds the sandbox, CLI,
+Use a fresh cluster for each run. The E2E test builds the sandbox, CLI,
 Podman gateway, and governance interceptor images. It installs two ordinary
 users, checks Argo application health and revision, waits for both VMs to run,
-checks the built image digest references, and uninstalls the Pattern twice.
-It does not check the guest installer phases or live application behavior.
+checks the built image digest references, requires both guest installer phases
+to finish, tests two-user access, makes a real NVIDIA inference request,
+checks network isolation, and uninstalls the Pattern twice.
 The NemoClaw sandbox image is built and checked in the deployed profile; the
 `cuda-sandbox` remains disabled in this first scope. See
 `docs/ci-current-baseline.md` for the last trial and follow-up work.
@@ -54,11 +57,10 @@ The NemoClaw sandbox image is built and checked in the deployed profile; the
 ## Rollout
 
 Merge the manual workflow into the default branch before the first GitHub
-Actions run. Add environment values, then run one cluster smoke test. Start
+Actions run. Add environment values, then run one full E2E test. Start
 two manual runs together to verify that only one gets the lock. Require the
-smoke status for merge only after a complete smoke run passes. The full guest
-and live behavior test needs separate acceptance work. A new PR commit needs
-a new manual `Pattern cluster smoke` result. No nightly run is configured.
+E2E status for merge only after a complete run passes. A new PR commit needs
+a new manual `Pattern E2E` result. No nightly run is configured.
 
 ## Local checks and schema sources
 

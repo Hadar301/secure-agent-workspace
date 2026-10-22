@@ -2,10 +2,10 @@
 pruneOnRemove: true
 users:
   - name: ciowner
-    profiles: [data-science]
+    profiles: [ci-nvidia]
     pruneOnRemove: true
   - name: cisecond
-    profiles: [data-science]
+    profiles: [ci-nvidia]
     pruneOnRemove: true
 defaults:
   openshellSaw:

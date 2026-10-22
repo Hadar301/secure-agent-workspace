@@ -1,5 +1,51 @@
 {
   "profiles": {
+    "ci-nvidia": {
+      "description": "CI workspace with NVIDIA inference",
+      "secrets": {
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "nvidia",
+          "providers": [
+            "nvidia"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "CI workspace with NVIDIA inference",
+          "enabled": true,
+          "name": "default",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "notebook",
+              "type": "openclaw",
+              "uiRoute": true
+            },
+            {
+              "enabled": false,
+              "name": "cuda-sandbox",
+              "type": "nemoclaw",
+              "uiRoute": false
+            },
+            {
+              "enabled": false,
+              "name": "toolbox",
+              "type": "generic",
+              "uiRoute": false
+            }
+          ]
+        }
+      ]
+    },
     "custom-inference": {
       "description": "Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)",
       "secrets": {

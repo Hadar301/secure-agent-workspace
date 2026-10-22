@@ -447,6 +447,16 @@ def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
     assert vm["sandboxUi"] == []
 
 
+def test_ci_nvidia_profile_uses_only_the_available_key(tmp_path):
+    user = {"name": "ciowner", "profiles": ["ci-nvidia"]}
+    docs = docs_from(render_file(tmp_path, [user]))
+    assert helm_values(app(docs, "saw-ciowner-secrets"))["secrets"] == ["inference"]
+    vm = helm_values(app(docs, "saw-ciowner"))
+    assert vm["inference"]["secretName"] == "inference"
+    assert vm["additionalProviderSecrets"] == []
+    assert helm_values(app(docs, "saw-ciowner-bom"))["profiles"] == ["ci-nvidia"]
+
+
 def test_namespace_labels_are_added(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {"namespaceLabels": {"saw.redhat.com/portal": "true"}}))
     [ns] = [d for d in docs if d["kind"] == "Namespace"]

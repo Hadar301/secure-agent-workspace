@@ -1,4 +1,4 @@
-name: Pattern cluster smoke
+name: Pattern E2E
 
 on:
   workflow_dispatch:
@@ -76,7 +76,7 @@ jobs:
             openshell-checksums-sha256.txt | sha256sum -c -
           tar -xzf openshell-x86_64-unknown-linux-musl.tar.gz openshell
           sudo install -m 0755 openshell /usr/local/bin/openshell
-      - name: Run Pattern cluster smoke
+      - name: Run Pattern E2E
         env:
           CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
           CI_PR_NUMBER: ${{ inputs.pr_number }}
@@ -89,12 +89,11 @@ jobs:
           CI_PROVIDER: ${{ vars.CI_PROVIDER }}
           CI_MODEL: ${{ vars.CI_MODEL }}
           CI_INFERENCE_KEY: ${{ secrets.CI_INFERENCE_KEY }}
-          CI_WEB_SEARCH_KEY: ${{ secrets.CI_WEB_SEARCH_KEY }}
-        run: make test-pattern-smoke
+        run: make test-pattern-e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pattern-cluster-smoke-results
+          name: pattern-e2e-results
           path: pattern-e2e-results/
           if-no-files-found: warn
 

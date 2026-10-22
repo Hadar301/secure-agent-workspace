@@ -26,14 +26,21 @@ spec:
       profile:
         title: Profile
         type: string
-        enum: [custom-inference, data-science]
-        enumNames: ['custom-inference: Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM,
-            Ollama, ...)', 'data-science: Data science workspace with NVIDIA inference and web search;
-            CUDA development workspace with NVIDIA inference']
+        enum: [ci-nvidia, custom-inference, data-science]
+        enumNames: ['ci-nvidia: CI workspace with NVIDIA inference', 'custom-inference: Agent workspace
+            backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)', 'data-science: Data science
+            workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference']
         default: data-science
     dependencies:
       profile:
         oneOf:
+        - properties:
+            profile: {const: ci-nvidia}
+            uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
+                signed in with Keycloak, for you only: notebook (default)'}
+            inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider nvidia)}
+          required: [inference__api_key]
         - properties:
             profile: {const: custom-inference}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
