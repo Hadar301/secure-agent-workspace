@@ -37,6 +37,15 @@ for a VM instance to disappear. A later manual uninstall and resource check
 completed. This branch names the failed guest phase and extends the VM
 shutdown wait from 120 to 600 seconds. A new run must verify both changes.
 
+The next local trial at commit `6a64ffccf2bbfc0536b1857897def7aabc3c6fa6`
+completed all five builds. Pattern install stopped before creating a Pattern
+resource because the local Podman connection was hidden by the runner's
+private `HOME`. Automated cleanup hit the same local error. Manual cleanup
+removed the build namespace and lock, and restored the prior StorageClass
+setting. The local launcher now preserves Podman's config directory, and the
+runner checks Podman before it starts builds. This change still needs a full
+cluster run.
+
 ## Gaps for a later task
 
 1. Add Brave web search coverage when its API key is available. Extend the

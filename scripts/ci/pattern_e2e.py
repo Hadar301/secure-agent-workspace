@@ -163,6 +163,8 @@ class Runner:
                      "openssl", "git", "make"):
             if shutil.which(name) is None:
                 raise E2EError(f"required tool {name} is unavailable")
+        # Check the container runtime before spending time on cluster builds.
+        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
         bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
         api_version = bom["bom"]["spec"]["openshell"]["cli"]["version"].split("-", 1)[0]
         version = self.call(["openshell", "--version"]).stdout.strip()
