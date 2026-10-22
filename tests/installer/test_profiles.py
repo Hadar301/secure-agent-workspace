@@ -18,7 +18,7 @@ def test_shipped_profile_parses(ab, shipped_profile_files):
     workspaces = ws_by_name(profiles)
     assert set(workspaces) == {"default", "cuda-dev"}
     default = workspaces["default"]
-    assert [(p.name, p.type, p.credential_secret) for p in default.providers] == [
+    assert [(p.name, p.type, p.credential_secret) for p in default.providers if p.enabled] == [
         ("nvidia", "nvidia", "inference"), ("brave", "brave", "web-search")]
     assert default.providers[0].nemoclaw_provider == "build"
     notebook = next(s for s in default.sandboxes if s.name == "notebook")

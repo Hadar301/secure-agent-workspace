@@ -504,6 +504,7 @@ DEFAULT_EGRESS_HOSTS = [
     "integrate.api.nvidia.com",
     "api.search.brave.com",
     "api.openai.com",
+    "api.anthropic.com",
     "api.tavily.com",
     "registry.npmjs.org",
     "github.com",
@@ -1043,7 +1044,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
+    assert set(ab.provider_profiles(tmp_path)) == {"anthropic", "brave", "nvidia", "openai"}
 
 
 def test_create_script_passes_the_keycloak_it_finds():
@@ -1060,6 +1061,8 @@ def test_secret_template_matches_the_default_profile():
     for f in (ROOT / "charts/saw-bom/profiles/data-science").glob("*/providers.yaml"):
         providers += yaml.safe_load(f.read_text())["spec"]["providers"]
     for p in providers:
+        if not p.get("enabled", True):
+            continue
         fields = secrets[p["credentialSecret"]]
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")

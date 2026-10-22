@@ -457,6 +457,22 @@ delete`, and `provider profile delete` exist. `workspace create` and
   already run on them, so the installer units are never written. Recreate
   the VM (delete the VM and its `-root` DataVolume) after upgrading the chart.
 
+## Official API providers
+
+The `data-science` profile uses NVIDIA
+`nvidia/nemotron-3.5-lightning-30b-a3b` by default. Its `default/notebook`
+sandbox can also attach the optional `openai` and `anthropic` providers;
+both are disabled until enabled in the profile and listed in the sandbox's
+`providers`. They read separate `inference-openai` and `inference-anthropic`
+Secrets. Each Secret contains `provider`, `model`, and `api_key`; official
+APIs need no `url`. See the [provider setup steps](../README.md#supported-inference-providers).
+
+OpenClaw uses the built-in model catalog for these official APIs. A provider
+with `baseUrl` or `baseUrlSecretKey` instead uses custom endpoint onboarding.
+OpenAI API-key chats use the OpenClaw runtime. In both cases, the sandbox
+receives placeholder keys and OpenShell substitutes the real credentials
+only for allowed requests.
+
 ## Custom inference
 
 A self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...) is an `openai`

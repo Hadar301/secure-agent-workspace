@@ -315,7 +315,7 @@ read -r API_KEY < "$HOME/.nvidia-api-key"
 export WEB_SEARCH_API_KEY API_KEY
 make saw-create \
   PROVIDER=build \
-  MODEL=nvidia/nemotron-3-super-120b-a12b
+  MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
@@ -470,6 +470,23 @@ The existing Python CLI has a smaller command set than Make.
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
 | Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+
+The `data-science` profile defaults to NVIDIA
+`nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
+disabled by default. To add either to the existing notebook with Option A:
+
+1. Set its `enabled: true` in
+   `charts/saw-bom/profiles/data-science/default/providers.yaml`.
+2. Add its name (`openai` or `anthropic`) to `notebook.providers` in the same
+   directory's `sandbox.yaml`. The first provider supplies the default model;
+   keep `nvidia` first to retain the NVIDIA default.
+3. Add its separate `inference-openai` or `inference-anthropic` entry from
+   `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
+   entries. Each uses `provider`, `model`, and `api_key`; the API Secret's
+   `model` overrides the profile's model. Official APIs need no URL.
+
+Select the provider's model in the notebook chat's model picker. These optional
+providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
