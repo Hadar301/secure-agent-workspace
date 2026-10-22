@@ -133,13 +133,22 @@ def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch
     assert "build terminal status" in str(error.value)
 
 
-def test_timed_out_command_has_retryable_error(runner, monkeypatch):
+def test_timed_out_command_keeps_redacted_partial_output(runner, monkeypatch):
+    runner.sensitive.append("private-token")
+
     def timeout(args, **kwargs):
-        raise pattern_e2e.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        raise pattern_e2e.subprocess.TimeoutExpired(
+            args[0], kwargs["timeout"], output=b"partial private-token", stderr=b"ssh wait"
+        )
 
     monkeypatch.setattr(pattern_e2e.subprocess, "run", timeout)
-    with pytest.raises(pattern_e2e.E2ECommandTimeout, match="make timed out"):
+    with pytest.raises(pattern_e2e.E2ECommandTimeout) as error:
         runner.call(["make", "saw-status"], timeout=90, allow_failure=True)
+    message = str(error.value)
+    assert "make saw-status timed out after 90s" in message
+    assert "partial [redacted]" in message
+    assert "ssh wait" in message
+    assert "private-token" not in message
 
 
 def test_wait_for_retries_a_timed_out_status_check(runner):

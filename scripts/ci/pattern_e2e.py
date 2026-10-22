@@ -108,7 +108,16 @@ class Runner:
                 text=True, capture_output=True, timeout=timeout, check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise E2ECommandTimeout(f"{args[0]} timed out") from exc
+            partial_output = "\n".join(
+                part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part
+                for part in (exc.stdout, exc.stderr) if part
+            )
+            detail = self.redact(partial_output.strip()[-500:])
+            command = " ".join(str(part) for part in args[:2])
+            message = f"{command} timed out after {timeout}s"
+            if detail:
+                message = f"{message}: {detail}"
+            raise E2ECommandTimeout(message) from exc
         except OSError as exc:
             raise E2EError(f"{args[0]} failed: OSError") from exc
         if completed.returncode and not allow_failure:
@@ -762,7 +771,7 @@ class Runner:
         if self.home is None:
             raise E2EError("private HOME is not ready")
         owner = USERS[0]
-        self.call(["make", "saw-configure", f"OPENSHELL_SAW_NAME={owner}"], timeout=120)
+        self.call(["make", "saw-configure", f"OPENSHELL_SAW_NAME={owner}"], timeout=180)
         owner_token = self.oidc_login(owner, owner, self.home / "owner-oidc")
         self.oidc_login(USERS[1], owner, self.home / "second-oidc")
         self.env["TEST_OWNER_SUBJECT"] = self.jwt_subject(owner_token["access_token"])
