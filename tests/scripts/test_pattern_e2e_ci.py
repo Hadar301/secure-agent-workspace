@@ -179,6 +179,76 @@ def test_install_patches_pattern_api_port_for_operator(runner, monkeypatch):
                          "/spec/extraParameters/0/value", "value": '"6443"'}
 
 
+def test_pattern_api_port_patch_retries_when_webhook_has_no_endpoints(runner, monkeypatch):
+    topology = {"cleanupApi": {"endpoints": [{"ip": "192.0.2.10", "port": 6443}]}}
+    patch_attempts = 0
+
+    def fake_call(args, **_kwargs):
+        nonlocal patch_attempts
+        if args[1] == "get":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"spec": {
+                "extraParameters": [{"name":
+                    "defaults.openshellSaw.cleanupApi.endpoints[0].port",
+                    "value": "6443"}]}}), stderr="")
+        patch_attempts += 1
+        if patch_attempts == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=("failed calling webhook: no endpoints available for service "
+                        "patterns-operator-controller-manager-service"),
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    assert not runner.quote_pattern_api_ports(topology)
+    assert runner.quote_pattern_api_ports(topology)
+    assert patch_attempts == 2
+
+
+def test_install_checks_pattern_ports_after_make_finishes(runner, monkeypatch):
+    topology = {"cleanupApi": {"endpoints": []}}
+    monkeypatch.setattr(runner, "topology", lambda: topology)
+    monkeypatch.setattr(runner, "install_options", lambda _topology: "options")
+
+    class CompletedFuture:
+        @staticmethod
+        def done():
+            return True
+
+        @staticmethod
+        def result():
+            return None
+
+    class CompletedPool:
+        def __enter__(self):
+            return self
+
+        @staticmethod
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def submit(*_args, **_kwargs):
+            return CompletedFuture()
+
+    monkeypatch.setattr(pattern_e2e, "ThreadPoolExecutor",
+                        lambda max_workers: CompletedPool())
+    quoted = iter((False, True))
+    monkeypatch.setattr(runner, "quote_pattern_api_ports",
+                        lambda _topology: next(quoted))
+    waits = []
+
+    def fake_wait_for(label, predicate, *, seconds, interval):
+        waits.append((label, seconds, interval))
+        assert not predicate()
+        assert predicate()
+
+    monkeypatch.setattr(runner, "wait_for", fake_wait_for)
+    runner.install()
+    assert waits == [("Pattern API ports to be quoted", 600, 10)]
+
+
 def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     digest = "sha256:" + "a" * 64
     waited = []

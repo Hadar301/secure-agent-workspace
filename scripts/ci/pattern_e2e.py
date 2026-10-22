@@ -487,23 +487,43 @@ class Runner:
         if patches:
             # The Pattern operator renders plain numeric values as
             # %!s(float64=6443) in child Argo CD Helm parameters.
-            self.call(["oc", "patch", "pattern", "secure-agent-workspace",
-                       "-n", "patterns-operator", "--type=json", "-p",
-                       json.dumps(patches)])
+            try:
+                response = self.call(["oc", "patch", "pattern", "secure-agent-workspace",
+                                      "-n", "patterns-operator", "--type=json", "-p",
+                                      json.dumps(patches)], allow_failure=True)
+            except E2ECommandTimeout:
+                return False
+            if response.returncode:
+                webhook_unavailable = (
+                    "failed calling webhook" in response.stderr and
+                    "no endpoints available for service" in response.stderr
+                )
+                if webhook_unavailable:
+                    return False
+                raise E2EError("cannot patch Pattern API ports")
         return True
 
     def install(self) -> None:
         topology = self.topology()
         self.env["EXTRA_HELM_OPTS"] = self.install_options(topology)
         self.install_attempted = True
+        ports_quoted = False
         with ThreadPoolExecutor(max_workers=1) as pool:
             install = pool.submit(self.call, ["./pattern.sh", "make", "install"],
                                   timeout=7200)
             while not install.done():
                 if self.quote_pattern_api_ports(topology):
+                    ports_quoted = True
                     break
                 time.sleep(10)
             install.result()
+        if not ports_quoted:
+            self.wait_for(
+                "Pattern API ports to be quoted",
+                lambda: self.quote_pattern_api_ports(topology),
+                seconds=600,
+                interval=10,
+            )
 
     def wait_for(self, label: str, predicate, *, seconds: int, interval: int = 20) -> None:
         deadline = time.monotonic() + seconds
