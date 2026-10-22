@@ -575,11 +575,54 @@ at most 8 KiB.
   environment at `sandbox create` (no update; `exec --env` is per command),
   so the installer keeps the env's digest in the sandbox's
   `saw.redhat.com/env` label and, when the profile's env differs
-  (a changed, added or removed variable), archives `/sandbox` (minus the
-  installer's own mounts), deletes the sandbox, creates it again with the
-  new env and restores the files. Open sessions end; files outside
-  `/sandbox` are not kept. Inference changes need no recreation: the agent
-  is onboarded again.
+  (a changed, added or removed variable), recreates it, carrying `/sandbox`
+  over. Open sessions end; files outside `/sandbox` are not kept. Inference
+  changes need no recreation: the agent is onboarded again.
+
+  The files are never put at risk: `/sandbox` is archived and checksummed
+  in the sandbox, downloaded to `<state dir>/sandbox-archives/` and
+  verified; if any of that fails the apply fails and the sandbox is left as
+  it was. Only the installer's own mounts are left out of the archive, each
+  by its exact path (`harness/`, `.saw/trusted/`, `.saw/audit/`), never by
+  name, so a user's `project/harness/` is kept. Only then is the pending
+  restore recorded (`<state dir>/sandbox-migrations.json`, with the env
+  labels of the sandbox it came from and of its replacement) and the
+  sandbox deleted. After the new sandbox is created the archive is
+  uploaded, verified, unpacked and compared against the archive
+  (`tar -df`); a failure fails the apply and the record stays, so the next
+  apply finishes the restore. Every `sandbox create` stamps a random
+  `saw.redhat.com/instance` label, and the record names the original's and
+  the replacement's instance: the restore goes only into the sandbox with
+  the replacement's instance, never by env (a desired env can be rolled
+  back, which would make an empty replacement look like the original). If
+  the original is still running on the next apply (the delete failed, or
+  the installer stopped before it), it may hold newer work than the
+  archive, so it is archived again (the old archive replaced only once the
+  new one verified) and the delete retried; nothing is ever restored over
+  it. Identity is decided strictly, from the two strong signals only: the
+  instance label this installer stamps at create and the gateway's own id
+  when the CLI prints one. Every signal known on both sides is compared
+  and any that differs is a veto (matching instance labels never hide a
+  conflicting gateway id); a match needs an agreeing strong signal. An env
+  label never establishes identity. A running sandbox that is neither the
+  original nor the replacement, or whose labels cannot be read while a
+  restore is pending, fails the apply (the error names the archive and the
+  record); the installer never guesses with a user's files, and never
+  reports success while a restore is pending. A sandbox from before the
+  instance label, on a CLI that prints no id, therefore cannot be
+  recovered automatically after a failed delete: the apply says so and
+  what to do. A pending recreation's replacement is created with the env
+  the profile wants now and restored once; there is no intermediate
+  sandbox, and a successful apply always ends with the current env. A
+  sandbox that reports an error is given time to recover before any of
+  this is decided, so a recovering replacement still gets its restore. The
+  record and the archive are removed in exactly one place: after the
+  restored files verify.
+- **`inference.timeoutSeconds`** is OpenClaw's per-provider HTTP request
+  timeout (`models.providers.<provider type>.timeoutSeconds`); it is unset
+  again when the field is removed (OpenClaw's onboarding keeps an existing
+  provider's settings). NemoClaw's own onboarding has no such setting; the
+  OpenClaw gateway it runs gets it.
 
 ### Credentials by name
 

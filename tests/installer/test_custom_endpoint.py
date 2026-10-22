@@ -54,6 +54,9 @@ def test_apply_creates_an_openai_provider_and_onboards_on_its_endpoint(
     assert state["providers"]["default/custom"] == {
         "type": "openai", "credential": "OPENAI_API_KEY=sk-CUSTOM-TEST-KEY"}
     assert "env" not in state["sandboxes"]["default/notebook"]     # inference is not env
+    # The shipped profile's timeoutSeconds: 300 reaches OpenClaw's provider config.
+    assert state["sandboxes"]["default/notebook"]["openclawConfig"][
+        "models.providers.openai.timeoutSeconds"] == 300
     assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
     # The key only ever travels in the environment.
     assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
