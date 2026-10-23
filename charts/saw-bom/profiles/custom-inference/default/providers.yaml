@@ -4,17 +4,15 @@ metadata:
   profile: custom-inference
 spec:
   providers:
-    # OpenShell's `openai` provider type for an OpenAI-compatible server. A
-    # provider only holds the credential: the sandbox gets a placeholder key
-    # and the proxy adds the real one for the profile's endpoints. The
-    # endpoint and the model are workload settings, in the sandbox's `env:`
-    # (sandbox.yaml), as OpenShell documents.
-    - name: custom
-      type: openai
+    # The deployment's own provider profile for its OpenAI-compatible server
+    # (overrides/governance-profiles/custom-inference.yaml): it names the
+    # host the key may reach. A provider only holds the credential; the
+    # endpoint, model and timeout are the sandbox's `inference:` settings
+    # (sandbox.yaml), read from the same `inference` Secret.
+    - name: custom-inference
+      type: custom-inference
       credentialSecret: inference
       credentialSecretKey: api_key
-      # Self-hosted models can take longer than OpenShell's 60 s default.
-      inferenceTimeout: 300
     - name: brave
       type: brave
       credentialSecret: web-search

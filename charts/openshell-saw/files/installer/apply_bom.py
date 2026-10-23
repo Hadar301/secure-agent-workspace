@@ -1450,6 +1450,20 @@ def agent_mounts_planned(profiles):
                for _profile, ws in enabled_workspaces(profiles) for sb in ws.sandboxes)
 
 
+def governance_enabled(toml_path):
+    """Whether gateway.toml takes provider profiles from the governance
+    interceptor (openshell.gateway.provider_profile_sources has an
+    interceptor entry). False when the file is unreadable: the shipped
+    profiles are then the only catalog the installer can rely on."""
+    try:
+        gateway = tomllib.loads(Path(toml_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return False
+    sources = gateway.get("openshell", {}).get("gateway", {}).get("provider_profile_sources")
+    return any(isinstance(src, dict) and src.get("type") == "interceptor"
+               for src in (sources or []))
+
+
 def check_driver_config_allowed(toml_path):
     """Agent trust volumes require caller driver config before any mutation."""
     try:
@@ -1499,8 +1513,14 @@ def validate_harness(profiles, bundles):
     return revisions
 
 
-def validate_profiles(profiles, known_profiles=()):
-    """Catch mistakes before anything touches the gateway."""
+def validate_profiles(profiles, known_profiles=(), governed=False):
+    """Catch mistakes before anything touches the gateway.
+
+    governed: the gateway takes its provider profiles from the governance
+    interceptor, which may serve profiles the installer does not ship
+    (overrides/governance-profiles). A type that is neither built-in nor
+    shipped is then checked against the live catalog at apply time
+    (ProfileApplier.adopt_governed_profiles) instead of refused here."""
     errors = []
     seen = {}
     for profile, ws in enabled_workspaces(profiles):
@@ -1537,10 +1557,25 @@ def validate_profiles(profiles, known_profiles=()):
                         or p.base_url or p.inference_timeout):
                     errors.append(f"{where}: keyless provider '{p.name}' cannot be combined "
                                   "with model/inference settings")
+            if governed and p.name != p.type:
+                # OpenShell 0.1.2's governance interceptor validates a new
+                # sandbox's providers by comparing each provider *name* with
+                # the vended profile ids (examples/governance-interceptor,
+                # providers_are_managed): a provider named differently from
+                # its type is refused at sandbox create with "sandbox
+                # providers may only use vended provider profiles". Found
+                # live; refuse it here, with the reason, instead.
+                errors.append(f"{where}: provider '{p.name}' must be named after its type "
+                              f"'{p.type}' (the governance interceptor checks sandbox providers "
+                              "by profile id, so name and type must match)")
             if (not p.credential_free and p.type not in PROVIDER_CRED_MAP
                     and p.type not in known_profiles):
-                errors.append(f"{where}: provider '{p.name}' has unsupported type '{p.type}' "
-                              "(no built-in type and no shipped provider profile)")
+                if not governed:
+                    errors.append(f"{where}: provider '{p.name}' has unsupported type '{p.type}' "
+                                  "(no built-in type and no shipped provider profile)")
+                elif not NAME_RE.match(p.type or "") or len(p.type) > OPENSHELL_NAME_LIMIT:
+                    errors.append(f"{where}: provider '{p.name}' type must be a DNS label of at "
+                                  f"most {OPENSHELL_NAME_LIMIT} characters (a governance profile id)")
             if not p.credential_secret and not p.credential_free:
                 errors.append(f"{where}: provider '{p.name}' has no credentialSecret")
             elif p.credential_secret and not SECRET_NAME_RE.match(p.credential_secret):
@@ -3332,6 +3367,35 @@ class ProfileApplier:
         if errors:
             raise InstallerError("invalid profiles:\n  - " + "\n  - ".join(errors))
 
+    def adopt_governed_profiles(self, ws):
+        """Provider types the installer neither knows built-in nor ships must
+        be profiles the gateway's governance catalog serves (a deployment's
+        own, from overrides/governance-profiles). Their catalog records become
+        the profile docs, so the credential env var and credential names come
+        from the governed profile exactly as from a shipped one. A type the
+        catalog does not serve is an error here, before anything is created:
+        skipping it would leave a sandbox whose `inference.providerRef` names
+        a provider that does not exist."""
+        for prov in ws.providers:
+            if (not prov.enabled or prov.credential_free or prov.type in PROVIDER_CRED_MAP
+                    or prov.type in self.provider_profiles):
+                continue
+            self.governance_catalog(ws)
+            record = (self.catalog_details.get(ws.name) or {}).get(prov.type)
+            if not record:
+                raise InstallerError(
+                    f"provider '{prov.name}' in workspace '{ws.name}' has type '{prov.type}', "
+                    "which is neither a built-in type, a shipped provider profile, nor a profile "
+                    "the gateway's governance catalog serves; add the profile under "
+                    "overrides/governance-profiles (see docs/custom-inference.md) or fix the type")
+            self.provider_profiles[prov.type] = yaml.safe_dump(record, sort_keys=False)
+            if not credential_env_name(prov.type, self.provider_profiles):
+                raise InstallerError(
+                    f"provider '{prov.name}': governance profile '{prov.type}' declares no "
+                    "credential env var (credentials[].env_vars), so no key can be passed to it")
+            log(f"Provider '{prov.name}': type '{prov.type}' is a governance-catalog profile "
+                f"(credential via {credential_env_name(prov.type, self.provider_profiles)})")
+
     def apply_provider(self, ws, provider):
         """Create the provider; if it exists, push the current key to it.
 
@@ -4616,6 +4680,7 @@ class ProfileApplier:
             self.profile_name = profile.name
             banner(f"Profile {profile.name} / workspace {ws.name}")
             self.apply_workspace(ws)
+            self.adopt_governed_profiles(ws)
             for provider in ws.providers:
                 if provider.enabled:
                     self.apply_provider(ws, provider)
@@ -5885,7 +5950,8 @@ class Inputs:
             cfg["ownerSubject"] = subject
         profile_files, harness_files, index = read_profile_files(self.profiles)
         profiles = parse_profiles(profile_files)
-        validate_profiles(profiles, set(provider_profiles(self.installer)))
+        validate_profiles(profiles, set(provider_profiles(self.installer)),
+                          governed=governance_enabled(self.installer / "gateway.toml"))
         check_profiles_against_bom(profiles, bom)
         creds = resolve_credentials(profiles, self.secrets)
         bundles = parse_harness_files(harness_files)

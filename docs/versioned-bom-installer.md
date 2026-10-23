@@ -664,6 +664,18 @@ credential under several names inside the sandbox (for example `GITHUB_TOKEN`
 and `GH_TOKEN`); the installer passes the value through the first, and the
 gateway exposes all of them.
 
+A type that is neither built in nor shipped is a deployment's own profile
+(`overrides/governance-profiles/<id>.yaml`, served by the governance
+interceptor). With governance on, load-time validation lets such a type
+through (it must be a DNS label) and `adopt_governed_profiles` resolves it
+against the gateway's live catalog before any provider is created: the
+served profile becomes the profile doc, so the credential env var and the
+named credentials come from it exactly as from a shipped file. A type the
+catalog does not serve fails the apply, naming the directory; nothing is
+created. With governance off the shipped profiles are the whole catalog and
+such a type is refused at load. A sandbox `inference:` on such a provider
+must state `protocol`.
+
 ## Moving to a new OpenShell release series (0.0.x -> 0.1.x)
 
 OpenShell 0.1.0 cannot upgrade 0.0.x state in place. When `install` replaces

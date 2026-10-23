@@ -24,9 +24,9 @@
               "title": "Model"
             }
           ],
-          "provider": "openai",
+          "provider": "custom-inference",
           "providers": [
-            "openai"
+            "custom-inference"
           ]
         },
         "web-search": {

@@ -37,7 +37,7 @@ spec:
         - properties:
             profile: {const: custom-inference}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
-                in Vault for your workspace only (provider openai)}
+                in Vault for your workspace only (provider custom-inference)}
             inference__url: {title: 'inference: Endpoint base URL (OpenAI-compatible, ending in /v1)',
               type: string, pattern: '^https?://'}
             inference__model: {title: 'inference: Model', type: string}
