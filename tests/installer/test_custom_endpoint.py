@@ -121,11 +121,15 @@ def test_base_url_only_for_types_the_router_supports(ab):
 
 
 def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_dir):
-    """No url/model keys in the Secret: providers keep their profile model."""
+    """No url/model keys in the Secret: the sandbox keeps its profile model;
+    the provider carries credentials only."""
     profiles = ab.parse_profiles(shipped_profile_files)
     ab.resolve_credentials(profiles, secrets_dir)
-    nvidia = next(p for p in profiles[0].workspaces[0].providers if p.name == "nvidia")
-    assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3.5-lightning-30b-a3b")
+    ws = next(w for w in profiles[0].workspaces if w.name == "default")
+    nvidia = next(p for p in ws.providers if p.name == "nvidia")
+    assert (nvidia.base_url, nvidia.model) == ("", "")
+    notebook = next(s for s in ws.sandboxes if s.name == "notebook")
+    assert ab.sandbox_model(notebook, nvidia) == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_without_an_openai_profile_the_agent_is_not_onboarded_with_another_provider(

@@ -119,6 +119,17 @@ PROVIDER_CRED_MAP = {
     "tavily": "TAVILY_API_KEY",
 }
 
+# NemoClaw names the NVIDIA API Catalog `build`, OpenShell's profile for it
+# is `nvidia`. The BOM uses OpenShell's name; the installer translates for
+# `nemoclaw onboard`. `nemoclawProvider` on a provider overrides this.
+NEMOCLAW_PROVIDER_MAP = {
+    "nvidia": "build",
+}
+
+
+def nemoclaw_provider(provider):
+    return provider.nemoclaw_provider or NEMOCLAW_PROVIDER_MAP.get(provider.type, provider.type)
+
 
 def profile_credential_envs(profile_text):
     """The first env var of each credential a provider profile declares, in
@@ -1500,6 +1511,7 @@ def validate_profiles(profiles, known_profiles=()):
             errors.append(f"{where}: workspace '{ws.name}' is also defined by profile {seen[ws.name]}")
         seen[ws.name] = profile.name
         provider_names = [p.name for p in ws.providers if p.enabled]
+        provider_types = {p.name: p.type for p in ws.providers if p.enabled}
         if len(provider_names) != len(set(provider_names)):
             errors.append(f"{where}: duplicate provider names")
         for p in ws.providers:
@@ -1581,7 +1593,7 @@ def validate_profiles(profiles, known_profiles=()):
                 errors.append(f"{where}: {s.type} sandbox '{s.name}' needs at least one provider")
             if s.inference:
                 errors += [f"{where}: sandbox '{s.name}' {p}"
-                           for p in sandbox_inference_problems(s, provider_names)]
+                           for p in sandbox_inference_problems(s, provider_types)]
             if not isinstance(s.env, dict):
                 errors.append(f"{where}: sandbox '{s.name}' env must be a mapping of NAME to "
                               "{value} or {secret, secretKey}")
@@ -1614,7 +1626,7 @@ def check_provider_type(provider, configured):
     for. Refuse to hand, say, a Gemini key to an NVIDIA provider."""
     if not configured:
         return
-    valid = {v for v in (provider.type, provider.nemoclaw_provider) if v}
+    valid = {provider.type, nemoclaw_provider(provider)}
     if configured not in valid:
         raise InstallerError(
             f"provider '{provider.name}' expects a {' or '.join(sorted(valid))} "
@@ -1889,9 +1901,18 @@ def resolve_input(src, secrets_dir, what):
     return ""
 
 
-def sandbox_inference_problems(sb, provider_names):
-    """What is wrong with a sandbox's `inference:` block ([] when fine)."""
+def inference_protocol(spec, provider_type):
+    """The protocol an `inference:` block uses: its own `protocol`, else the
+    one the provider's type implies ("" when neither says)."""
+    return spec.get("protocol") or PROVIDER_PROTOCOLS.get(provider_type or "", "")
+
+
+def sandbox_inference_problems(sb, provider_types):
+    """What is wrong with a sandbox's `inference:` block ([] when fine).
+    `provider_types` maps the workspace's enabled provider names to their
+    types."""
     spec = sb.inference
+    provider_names = provider_types
     if not isinstance(spec, dict):
         return ["inference must be a mapping"]
     out = []
@@ -1905,8 +1926,12 @@ def sandbox_inference_problems(sb, provider_names):
         out.append(f"inference providerRef '{ref}' is not an enabled provider in this workspace")
     elif ref not in sb.providers:
         out.append(f"inference providerRef '{ref}' is not in the sandbox's providers")
-    if spec.get("protocol") not in INFERENCE_PROTOCOLS:
+    protocol = inference_protocol(spec, provider_types.get(ref or ""))
+    if "protocol" in spec and spec["protocol"] not in INFERENCE_PROTOCOLS:
         out.append(f"inference protocol must be one of {', '.join(sorted(INFERENCE_PROTOCOLS))}")
+    elif not protocol and ref in provider_names:
+        out.append(f"inference needs protocol ({' | '.join(sorted(INFERENCE_PROTOCOLS))}): "
+                   f"provider type '{provider_types[ref]}' does not imply one")
     if "model" not in spec:
         out.append("inference needs model")
     for key in ("baseUrl", "model"):
@@ -1923,7 +1948,9 @@ def resolve_sandbox_inference(ws, sb, secrets_dir):
     (validated, "" = the protocol's native API), model, timeoutSeconds."""
     spec = sb.inference
     where = f"sandbox '{sb.name}' in workspace '{ws.name}'"
-    out = {"providerRef": spec["providerRef"], "protocol": spec["protocol"]}
+    provider = next((p for p in ws.providers if p.enabled and p.name == spec["providerRef"]), None)
+    out = {"providerRef": spec["providerRef"],
+           "protocol": inference_protocol(spec, provider.type if provider else "")}
     out["model"] = resolve_input(spec["model"], secrets_dir, f"{where}: inference model")
     if not out["model"]:
         raise InstallerError(f"{where}: inference model is empty")
@@ -4052,7 +4079,7 @@ class ProfileApplier:
         if not self.sh.dry_run:
             mgmt_path.write_text(json.dumps(mgmt), encoding="utf-8")
         credential = self.creds[ws.name][provider.name]
-        nc_provider = provider.nemoclaw_provider or provider.type
+        nc_provider = nemoclaw_provider(provider)
         env = {
             "NEMOCLAW_GATEWAY_MANAGEMENT": str(mgmt_path),
             "NEMOCLAW_GATEWAY_PORT": str(GATEWAY_PORT),
@@ -4191,12 +4218,15 @@ class ProfileApplier:
         # (models.providers.<id>.timeoutSeconds; the custom provider's id is
         # the --custom-provider-id above, a native one's its type).
         # Set when given, unset otherwise: OpenClaw's onboarding keeps an
-        # existing provider's settings, so a removed value would stay.
+        # existing provider's settings, so a removed value would stay. The
+        # unset is conditional: `config unset` of an absent path logs an
+        # error (found live).
         timeout = (sb.inference_values or {}).get("timeoutSeconds", 0)
         key = f"models.providers.{shlex.quote(provider.type)}.timeoutSeconds"
         self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} openclaw config set {key} {int(timeout)}" if timeout
-                 else f"{oc_env} openclaw config unset {key}", check=False)
+                 else f"{oc_env} openclaw config get {key} >/dev/null 2>&1 && "
+                      f"{oc_env} openclaw config unset {key} || true", check=False)
         self.configure_harness(ws, sb, exec_cmd, oc_env)
         # Before the gateway process starts, so this boot loads the hook.
         # openclaw_gateway_script restarts only on a harness refill, when none

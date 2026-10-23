@@ -6,8 +6,8 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
 
 - The installer creates an `openai` provider with the key (passed via the
   environment) and attaches it to the sandbox. The endpoint and the model
-  are the sandbox's `inference:` settings (`protocol: openai`, `baseUrl`,
-  `model`), which the agent is onboarded with.
+  are the sandbox's `inference:` settings (`baseUrl`, `model`; the OpenAI
+  protocol is implied by the `openai` provider type), which the agent is onboarded with.
 - OpenClaw is onboarded against the endpoint's own URL, with the placeholder
   key the sandbox holds in `OPENAI_API_KEY`. The sandbox proxy replaces the
   placeholder with the real key only on requests to an endpoint of the

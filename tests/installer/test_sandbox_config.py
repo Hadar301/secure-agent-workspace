@@ -96,7 +96,7 @@ def test_model_comes_from_inference_then_the_legacy_fields(ab, tmp_path):
 
 
 def test_the_model_reaches_nemoclaw(ab, fake_env, config, tmp_path):
-    nvidia = ab.Provider(name="nvidia", type="nvidia", nemoclaw_provider="build",
+    nvidia = ab.Provider(name="nvidia", type="nvidia",
                          credential_secret="inference", credential_secret_key="api_key")
     _, _, profiles = _one(ab, "nemoclaw", nvidia, inference={
         "providerRef": "nvidia", "protocol": "openai", "model": "nvidia/m"})
@@ -234,3 +234,22 @@ def test_the_plan_keeps_sandbox_config_and_named_credentials(ab, tmp_path):
     assert ws.sandboxes[0].env_values == {"A": "1"}
     assert ws.sandboxes[0].inference_values["model"] == "m"
     assert ws.providers[0].credential_values == {"api_key": "k-1", "app_secret": "s-2"}
+
+
+def test_protocol_is_implied_by_a_known_provider_type(ab):
+    nvidia = ab.Provider(name="nvidia", type="nvidia", credential_secret="inference")
+    sb = ab.Sandbox(name="nb", type="openclaw", providers=["nvidia"],
+                    inference={"providerRef": "nvidia", "model": "m"})
+    assert ab.sandbox_inference_problems(sb, {"nvidia": "nvidia"}) == []
+    assert ab.inference_protocol(sb.inference, "nvidia") == "openai"
+    assert ab.inference_protocol(sb.inference, "anthropic") == "anthropic"
+    assert ab.inference_protocol({"protocol": "anthropic"}, "nvidia") == "anthropic"
+
+
+def test_protocol_is_required_for_a_profile_type_the_installer_does_not_know(ab):
+    sb = ab.Sandbox(name="nb", type="openclaw", providers=["vllm"],
+                    inference={"providerRef": "vllm", "model": "m"})
+    problems = ab.sandbox_inference_problems(sb, {"vllm": "vllm-prod"})
+    assert any("needs protocol" in p and "vllm-prod" in p for p in problems)
+    sb.inference["protocol"] = "openai"
+    assert ab.sandbox_inference_problems(sb, {"vllm": "vllm-prod"}) == []

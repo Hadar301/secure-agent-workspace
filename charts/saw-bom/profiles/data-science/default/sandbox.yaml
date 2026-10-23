@@ -25,7 +25,6 @@ spec:
       # form pre-fills it; each sandbox has its own field).
       inference:
         providerRef: nvidia
-        protocol: openai
         model:
           secretKeyRef:
             name: inference

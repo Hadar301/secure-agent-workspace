@@ -1043,7 +1043,7 @@ def test_secret_template_matches_the_default_profile():
         fields = secrets[p["credentialSecret"]]
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
-        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+        assert configured in (p["type"], {"nvidia": "build"}.get(p["type"])), (p["name"], configured)
 
 
 def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):

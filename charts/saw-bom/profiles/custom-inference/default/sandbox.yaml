@@ -17,7 +17,6 @@ spec:
       # name the endpoint's host (docs/custom-inference.md).
       inference:
         providerRef: custom
-        protocol: openai
         baseUrl:
           secretKeyRef:
             name: inference

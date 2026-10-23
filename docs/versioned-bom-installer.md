@@ -528,7 +528,8 @@ sandboxes:
     providers: [internal-llm, github]
     inference:
       providerRef: internal-llm       # the provider whose credential the agent uses
-      protocol: openai                # openai | anthropic: how the agent talks
+      protocol: openai                # optional: openai | anthropic; implied by
+                                      # the provider's type when that is a known one
       baseUrl:                        # optional; the endpoint
         secretKeyRef: {name: inference, key: url}
       model:
@@ -539,16 +540,22 @@ sandboxes:
 - `providerRef` names one of the sandbox's own providers; the installer never
   guesses the inference provider from the attachment order or a
   provider-level model.
-- `protocol` is how the agent speaks, independent of the provider's profile.
-  A governed profile for another host (`vllm-prod`, say) works with
-  `protocol: openai`; the profile decides which hosts the key may reach.
+- `protocol` is how the agent speaks (OpenAI chat completions or Anthropic
+  Messages). The provider's type implies it for the built-in types
+  (`nvidia`, `openai`, `codex` → `openai`; `anthropic`, `claude-code` →
+  `anthropic`), so it is usually left out. A governed profile of your own
+  for another host (`vllm-prod`, say) has no implied protocol: set
+  `protocol: openai` there. The profile decides which hosts the key may
+  reach; the protocol decides how the agent talks to them.
 - Without `baseUrl`, the agent uses the provider type's own API (NVIDIA's
   for `nvidia`), else the protocol's official one (`api.openai.com`,
   `api.anthropic.com`). An official API (`openai`, `anthropic` providers) is
   onboarded natively in OpenClaw; any other endpoint as a custom one. A
   `baseUrl` is validated (http(s), no localhost, no credentials, query or
   fragment) and never echoed.
-- NemoClaw sandboxes get the model as `NEMOCLAW_MODEL`.
+- NemoClaw sandboxes get the model as `NEMOCLAW_MODEL`. The provider name
+  NemoClaw expects is derived from the provider `type` (`nvidia` → `build`;
+  others pass through); `nemoclawProvider` on a provider overrides it.
 - Without an `inference:` block the older fields apply: the sandbox `model`,
   the provider's `model`/`modelSecretKey`/`baseUrlSecretKey`.
 
