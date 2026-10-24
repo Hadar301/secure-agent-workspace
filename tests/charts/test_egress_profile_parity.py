@@ -93,14 +93,18 @@ def test_allowlist_has_no_unexplained_reverse_drift():
         "document why they are needed in ALLOW_EXCEPTIONS: " + ", ".join(sorted(unexplained)))
 
 
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_COPIES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["anthropic.yaml", "brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml"]
-    for path in copies:
-        twin = PROFILES / path.name
-        assert path.read_text() == twin.read_text(), (
-            f"copy charts/governance-policy/profiles/{path.name} to "
-            f"charts/openshell-saw/files/provider-profiles/{path.name}")
+def test_installer_profile_copies_mirror_governance_policy():
+    """The installer ships every governance profile (the gateway's catalog
+    with governance off), as exact copies kept by scripts/saw-profile-catalog.py
+    (`make catalog`; the pre-commit hook and the Profile catalog workflow run
+    it). A hand-maintained subset left github and web-search out (found in
+    review)."""
+    copies = {p.name: p.read_text() for p in SAW_COPIES.glob("*.yaml")}
+    shipped = {p.name: p.read_text() for p in PROFILES.glob("*.yaml")}
+    assert set(copies) == set(shipped), "run `make catalog`"
+    for name, text in shipped.items():
+        assert copies[name] == text, f"run `make catalog` ({name} differs)"
+    assert not (SAW_COPIES / "examples").exists()
 
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")

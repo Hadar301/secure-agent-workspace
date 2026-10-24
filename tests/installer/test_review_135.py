@@ -55,11 +55,13 @@ def test_an_existing_sandbox_is_held_to_the_env_rules_too(ab, fake_env, config, 
     before = len(fake_env.openshell_calls())
     with pytest.raises(ab.InstallerError, match="credential variable of provider 'gh'"):
         ab.ProfileApplier(ab.Shell(), config, creds, provider_profile_docs=docs).apply(profiles)
-    # Refused before anything touched the gateway.
-    assert fake_env.openshell_calls()[before:] == []
+    # Refused before anything on the gateway changed: only the local gateway
+    # entry (CLI configuration) and a read came first.
+    later = [" ".join(c[:2]) for c in fake_env.openshell_calls()[before:]]
+    assert set(later) <= {"gateway remove", "gateway add", "gateway select", "workspace list"}, later
 
 
-def test_a_named_credential_must_exist_in_the_profile(ab, config, tmp_path):
+def test_a_named_credential_must_exist_in_the_profile(ab, fake_env, config, tmp_path):
     github = ab.Provider(name="gh", type="github", credential_secret="gh",
                          credentials_spec={"token": {"secretKey": "token"}})   # profile: api_token
     profiles = _profiles(ab, ab.Sandbox(name="tools", type="generic", providers=["gh"]), github)
@@ -69,6 +71,10 @@ def test_a_named_credential_must_exist_in_the_profile(ab, config, tmp_path):
                                                 "profile declares \\(api_token\\)"):
         ab.ProfileApplier(ab.Shell(), config, creds,
                           provider_profile_docs={"github": GH_PROFILE}).apply(profiles)
+    # Refused before anything on the gateway changed (the local gateway
+    # entry is registered first; that is CLI configuration, not the gateway).
+    calls = [" ".join(c[:2]) for c in fake_env.openshell_calls()]
+    assert not any(c in ("workspace create", "provider create", "sandbox create") for c in calls)
 
 
 # --- 2. env updates recreate the sandbox, keeping /sandbox -----------------------------
@@ -231,47 +237,94 @@ def test_an_interrupted_recreation_is_finished_on_the_next_apply(ab, fake_env, c
 
 def test_the_backup_excludes_only_the_installers_mounts(ab, tmp_path):
     """Review (52df5b54, P1): a bare --exclude=harness also drops a user's
-    project/harness/. Run the real archive command against a /sandbox tree.
-    The sandbox images carry GNU tar (--anchored); so must this test."""
+    project/harness/. Run the real archive and restore commands against a
+    /sandbox tree. The sandbox images carry GNU tar; so must this test.
+
+    Found live: restoring a directory entry onto the installer's `./.saw`
+    (root-owned mount directory) failed with "Cannot utime", so the archive
+    holds files and symlinks only, prunes `./.saw` whole, and the restore
+    leaves existing directories alone."""
+    import os
     import subprocess
     tar = subprocess.run(["tar", "--version"], capture_output=True, text=True)
     if "GNU tar" not in tar.stdout:
-        pytest.skip("needs GNU tar (--anchored); the sandbox images have it")
+        pytest.skip("needs GNU tar; the sandbox images have it")
     nvidia = ab.Provider(name="nvidia", type="nvidia", credential_secret="inference")
     sb = ab.Sandbox(name="notebook", type="openclaw", providers=["nvidia"],
                     harness_ref={"name": "ds-default"})
     ws = ab.Workspace(name="default", providers=[nvidia], sandboxes=[sb])
     applier = ab.ProfileApplier(ab.Shell(), {"mtlsGateway": "g"}, {})
-    # Capture the exact `sh -c` script the installer runs in the sandbox.
+    # Capture the exact `sh -c` scripts the installer runs in the sandbox.
     captured = []
 
     class Captured(Exception):
         pass
 
     def capture(*args, **kwargs):
+        if args[:2] == ("sandbox", "upload") or "rm" in args:   # restore: cleanup + upload succeed
+            return ab.Result(0, "", "")
         captured.append(args[-1])
         raise Captured()
     applier.cli = capture
     with pytest.raises(Captured):
         applier.preserve_sandbox(ws, sb)
     script = captured[0]
-    assert "--anchored" in script and "--exclude=harness" not in script
+    assert "-path ./.saw -prune" in script and "-path ./harness -prune" in script
+    assert "-path ./.saw/trusted -prune" in script and "-exclude=harness" not in script
 
     root = tmp_path / "sandbox"
     for rel in ("harness/bundle.yaml", ".saw/trusted/gate.mjs", ".saw/audit/log.jsonl",
-                "project/harness/test.py", "project/.saw/notes.md", "notes.md"):
+                "project/harness/test.py", "project/.saw/notes.md", "notes.md",
+                ".openclaw/state/openclaw.sqlite", "empty-dir/.keep"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(rel)
-    archive = tmp_path / "preserve.tar"
+    os.symlink("notes.md", root / "link.md")
+    (root / "truly-empty").mkdir()                 # review: empty directories come back
+    (root / "private").mkdir(); (root / "private").chmod(0o700)   # ... with their permissions
+    (root / "private" / "k").write_text("k")
+    # The archive lives inside /sandbox (download/upload only serve the
+    # working directory -- found live) and must not contain itself; a
+    # leftover from an interrupted run is replaced, not nested.
+    archive = root / ".saw-preserve.tar.gz"
+    archive.write_text("stale")
+    assert ab.ProfileApplier.PRESERVE_ARCHIVE == "/sandbox/.saw-preserve.tar.gz"
     run = script.replace("cd /sandbox", f"cd {root}").replace(
-        "/tmp/saw-sandbox-preserve.tar", str(archive))
-    subprocess.run(["sh", "-c", run], check=True, capture_output=True)
-    names = subprocess.run(["tar", "-tf", str(archive)], check=True, capture_output=True,
+        "/sandbox/.saw-preserve.tar.gz", str(archive))
+    digest = subprocess.run(["sh", "-c", run], check=True, capture_output=True,
+                            text=True).stdout.split()[-1]
+    names = subprocess.run(["tar", "-tzf", str(archive)], check=True, capture_output=True,
                            text=True).stdout.split()
-    kept = {n.lstrip("./") for n in names if not n.endswith("/")}
+    kept = {n[2:] if n.startswith("./") else n for n in names}
     assert "project/harness/test.py" in kept and "project/.saw/notes.md" in kept
-    assert "notes.md" in kept
-    assert not any(n.startswith(("harness/", ".saw/trusted", ".saw/audit")) for n in kept)
+    assert {"notes.md", "link.md", ".openclaw/state/openclaw.sqlite", "empty-dir/.keep",
+            "truly-empty/", "private/"} <= kept
+    assert ".saw-preserve.tar.gz" not in kept
+    assert not any(n.startswith(("harness/", ".saw/", ".saw-preserve")) for n in kept)
+    assert names.count("./project/harness/test.py") == 1, "--no-recursion: nothing twice"
+
+    # Restore into a fresh sandbox whose `.saw` the installer owns and whose
+    # `.openclaw` already exists: both are left alone, files come back.
+    fresh = tmp_path / "fresh"
+    (fresh / ".saw" / "trusted").mkdir(parents=True)
+    (fresh / ".saw").chmod(0o555)
+    (fresh / ".openclaw" / "state").mkdir(parents=True)
+    (fresh / ".saw-preserve.tar.gz").write_bytes(archive.read_bytes())
+    captured.clear()
+    with pytest.raises(Captured):
+        applier.restore_sandbox(ws, sb, {"archive": str(archive), "sha256": digest})
+    restore = captured[0]
+    assert "--no-overwrite-dir" in restore and "tar -dzf" in restore and "grep -v '/$'" in restore
+    run = restore.replace("cd /sandbox", f"cd {fresh}").replace(
+        "/sandbox/.saw-preserve.tar.gz", str(fresh / ".saw-preserve.tar.gz"))
+    done = subprocess.run(["sh", "-c", run], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert (fresh / "project/harness/test.py").read_text() == "project/harness/test.py"
+    assert (fresh / "link.md").is_symlink() and (fresh / "notes.md").read_text() == "notes.md"
+    assert not (fresh / ".saw-preserve.tar.gz").exists()
+    assert not (fresh / "harness").exists() and not (fresh / ".saw" / "audit").exists()
+    assert (fresh / "truly-empty").is_dir()
+    assert (fresh / "private").stat().st_mode & 0o777 == 0o700
+    assert (fresh / ".saw").stat().st_mode & 0o777 == 0o555       # left alone
 
 
 def test_a_surviving_original_is_never_overwritten_by_its_old_snapshot(
@@ -738,3 +791,88 @@ def test_the_shipped_form_fields_match_the_profiles():
     assert {"model", "cuda_model"} <= set(ds)
     assert ds["model"]["title"] != ds["cuda_model"]["title"]
     assert not ds["model"]["required"] and ds["model"]["default"].startswith("nvidia/")
+
+
+def test_the_preserve_archive_is_inside_the_sandbox_working_directory(ab, fake_env, config, tmp_path):
+    """Found live: `openshell sandbox download` refuses a source outside
+    the sandbox's working directory (/tmp/... was refused before any data
+    moved), so an env change could never carry /sandbox over. The fake now
+    enforces the same rule; the archive and its checksum file live under
+    /sandbox and the archive excludes itself (see the real-tar test)."""
+    assert ab.ProfileApplier.PRESERVE_ARCHIVE.startswith("/sandbox/")
+    assert ab.ProfileApplier.PRESERVE_SUM.startswith("/sandbox/")
+    _, sandbox, profiles = _env_sandbox(ab, {"A": {"value": "1"}})
+    _secret(tmp_path, "inference", api_key="k")
+    _apply(ab, config, tmp_path, profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/chat"]["files"] = {"notes.md": "x"}
+    fake_env.set_openshell_state(state)
+    sandbox.env = {"A": {"value": "2"}}
+    _apply(ab, config, tmp_path, profiles)
+    after = fake_env.openshell_state()["sandboxes"]["default/chat"]
+    assert after["files"].get("notes.md") == "x" and after["env"] == ["A=2"]
+    calls = [" ".join(c) for c in fake_env.openshell_calls()]
+    assert any("sandbox download chat /sandbox/.saw-preserve.tar.gz" in c for c in calls)
+    assert any("sandbox upload chat " in c and c.endswith("/sandbox/.saw-preserve.tar.gz") for c in calls)
+
+
+# --- review round 8: Secret-sourced env masked; governed profiles seen by preflight ---------
+
+def test_env_never_carries_a_secret_value(ab, fake_env, config, tmp_path):
+    """Review (P1, twice): first the resolved Secret value was logged, then
+    it was masked but still in `sandbox create`'s argv, readable by every
+    process in the sandbox. Sandbox env is literals only now; a secretKeyRef
+    there is refused before anything runs."""
+    _, sandbox, profiles = _env_sandbox(ab, {"HF_TOKEN": {"secretKeyRef": {"name": "hf", "key": "token"}},
+                                            "PLAIN": {"value": "visible"}})
+    _secret(tmp_path, "inference", api_key="k")
+    _secret(tmp_path, "hf", token="hf-SECRET-VALUE-1234")
+    with pytest.raises(ab.InstallerError, match="HF_TOKEN.*belongs on a provider"):
+        ab.validate_profiles(profiles)
+    assert fake_env.openshell_calls() == []
+
+
+def test_the_local_gateway_is_selected_before_the_catalog_is_read(ab, fake_env, config, tmp_path):
+    """Found in review: adopt_governed_profiles read the catalog before
+    register_gateway, i.e. through whichever gateway the CLI had selected."""
+    record = {"id": "vllm-prod", "category": "inference",
+              "credentials": [{"name": "api_key", "env_vars": ["VLLM_API_KEY"]}],
+              "endpoints": [{"host": "vllm.models.svc", "port": 8000}]}
+    fake_env.set_catalog({"brave": ["api.search.brave.com"], "vllm-prod": record})
+    provider = ab.Provider(name="vllm-prod", type="vllm-prod", credential_secret="inference")
+    sandbox = ab.Sandbox(name="chat", type="openclaw", providers=["vllm-prod"],
+                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m"})
+    profiles = _profiles(ab, sandbox, provider)
+    _secret(tmp_path, "inference", api_key="k")
+    _apply(ab, config, tmp_path, profiles)
+    calls = [" ".join(c[:3]) for c in fake_env.openshell_calls()]
+    assert calls.index("gateway select " + config["mtlsGateway"]) < calls.index("provider list-profiles -o")
+
+
+def test_preflight_sees_governed_profiles(ab, fake_env, config, tmp_path):
+    """Found in review: preflight ran before adopt_governed_profiles, so a
+    governance-only profile's named credentials were "none shipped" and its
+    credential variable was not checked against the sandbox env."""
+    record = {"id": "vllm-prod", "category": "inference", "inference_capable": True,
+              "credentials": [{"name": "api_key", "env_vars": ["VLLM_API_KEY"]}],
+              "endpoints": [{"host": "vllm.models.svc", "port": 8000}]}
+    fake_env.set_catalog({"brave": ["api.search.brave.com"], "vllm-prod": record})
+    provider = ab.Provider(name="vllm-prod", type="vllm-prod", credential_secret="inference",
+                           credentials_spec={"api_key": {"secretKey": "api_key"}})
+    sandbox = ab.Sandbox(name="chat", type="openclaw", providers=["vllm-prod"],
+                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m"},
+                         env={"VLLM_API_KEY": {"value": "shadow"}})
+    profiles = _profiles(ab, sandbox, provider)
+    _secret(tmp_path, "inference", api_key="k")
+    creds = ab.resolve_credentials(profiles, tmp_path)
+    # The named credential is accepted (the governed profile declares it) and
+    # the env collision is the error, before anything is created.
+    before = len([c for c in fake_env.openshell_calls() if c[:2] in (["provider", "create"], ["sandbox", "create"])])
+    with pytest.raises(ab.InstallerError, match="credential variable of provider 'vllm-prod'"):
+        ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    calls = [c for c in fake_env.openshell_calls() if c[:2] in (["provider", "create"], ["sandbox", "create"])]
+    assert len(calls) == before
+    sandbox.env = {}
+    creds = ab.resolve_credentials(profiles, tmp_path)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    assert fake_env.openshell_state()["providers"]["default/vllm-prod"]["credential"] == "VLLM_API_KEY=k"

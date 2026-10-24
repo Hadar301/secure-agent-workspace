@@ -1,9 +1,12 @@
 """A sandbox's `inference:` (how the agent reaches its model) and `env:` (its
 ordinary environment), and a provider's named `credentials:`.
 
-A value is a literal or `{secretKeyRef: {name, key}, default?, required?,
-title?}`. The env is fixed at `sandbox create` (changing it recreates the
-sandbox, see test_review_135); inference is agent configuration.
+An inference value is a literal or `{secretKeyRef: {name, key}, default?,
+required?, title?}`; an env value is a literal only (a Secret value would
+travel in `sandbox create --env`'s argv and be readable by every process in
+the sandbox: it belongs on a provider). The env is fixed at `sandbox create`
+(changing it recreates the sandbox, see test_review_135); inference is agent
+configuration.
 """
 import json
 
@@ -38,9 +41,10 @@ def _one(ab, sandbox_type="openclaw", provider=None, **sb):
     ("1BAD", {"value": "1"}, "not a valid variable name"),
     ("X", {"value": "a\nb"}, "single line"),
     ("X", {"value": True}, "must be a string"),
-    ("X", {"value": "1", "secretKeyRef": {"name": "s", "key": "k"}}, "exactly one of value or secretKeyRef"),
-    ("X", {"secretKeyRef": {"key": "k"}}, "secretKeyRef.name must be a valid Secret name"),
-    ("X", {"secretKeyRef": {"name": "s", "key": "k", "extra": 1}}, "takes only name and key"),
+    ("X", {"value": "1", "secretKeyRef": {"name": "s", "key": "k"}}, "must be a literal"),
+    ("X", {"secretKeyRef": {"name": "s", "key": "k"}}, "belongs on a provider, not in sandbox env"),
+    ("X", {"value": "1", "default": "2"}, "must be a literal"),
+    ("X", {}, "needs \\{value"),
     ("X", {"value": "1", "titel": "typo"}, "unknown keys titel"),
 ])
 def test_bad_env_entries_are_rejected(ab, name, src, problem):
@@ -49,23 +53,20 @@ def test_bad_env_entries_are_rejected(ab, name, src, problem):
         ab.validate_profiles(profiles)
 
 
-def test_literals_secret_refs_and_defaults_resolve(ab, tmp_path):
-    _, sb, profiles = _one(ab, env={
-        "HF_HUB_OFFLINE": {"value": "1"},
-        "PROJECT": {"secretKeyRef": {"name": "inference", "key": "project"}},
-        "REGION": {"secretKeyRef": {"name": "inference", "key": "region"}, "default": "eu"},
-    })
+def test_literals_resolve_as_given(ab, tmp_path):
+    _, sb, profiles = _one(ab, env={"HF_HUB_OFFLINE": {"value": "1"}, "N": {"value": 3}})
     ab.validate_profiles(profiles)
-    _secret(tmp_path, "inference", api_key="k", project="p-1\n")
-    ab.resolve_credentials(profiles, tmp_path)
-    assert sb.env_values == {"HF_HUB_OFFLINE": "1", "PROJECT": "p-1", "REGION": "eu"}
-
-
-def test_a_missing_env_value_names_the_secret_not_a_value(ab, tmp_path):
-    _, _, profiles = _one(ab, env={"PROJECT": {"secretKeyRef": {"name": "inference", "key": "project"}}})
     _secret(tmp_path, "inference", api_key="k")
-    with pytest.raises(ab.InstallerError, match="Secret 'inference' key 'project'"):
-        ab.resolve_credentials(profiles, tmp_path)
+    ab.resolve_credentials(profiles, tmp_path)
+    assert sb.env_values == {"HF_HUB_OFFLINE": "1", "N": "3"}
+
+
+def test_a_secret_value_in_env_is_refused_at_validation(ab, tmp_path):
+    """Review (P1): a Secret value would be in `sandbox create --env`'s argv
+    and readable by every process in the sandbox. It belongs on a provider."""
+    _, _, profiles = _one(ab, env={"PROJECT": {"secretKeyRef": {"name": "inference", "key": "project"}}})
+    with pytest.raises(ab.InstallerError, match="belongs on a provider"):
+        ab.validate_profiles(profiles)
 
 
 def test_the_env_is_set_at_create_and_labelled(ab, fake_env, config, tmp_path):

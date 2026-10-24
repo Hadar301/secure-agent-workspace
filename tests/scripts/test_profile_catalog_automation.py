@@ -27,10 +27,17 @@ def outputs():
 
 def test_list_names_every_generated_file():
     listed = outputs()
-    assert len(listed) == 6
+    # The six catalog/form files, plus the installer's mirror of every
+    # shipped governance profile.
+    mirrored = [p for p in listed if p.startswith("charts/openshell-saw/files/provider-profiles/")]
+    shipped = sorted(p.name for p in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"))
+    # ... plus the mirror directory itself (so a removed mirror is staged too).
+    assert len(listed) == 6 + len(shipped) + 1
+    assert sorted(p.rsplit("/", 1)[1] for p in mirrored) == shipped
+    assert "charts/openshell-saw/files/provider-profiles" in listed
     assert "charts/openshell-rhdh/files/create-workspace.yaml" in listed
     assert "charts/saw-users/files/profile-catalog.json" in listed
-    assert all((ROOT / p).is_file() for p in listed)
+    assert all((ROOT / p).is_file() or (ROOT / p).is_dir() for p in listed)
 
 
 @pytest.fixture
@@ -39,9 +46,13 @@ def scratch(tmp_path):
     PATH whose python/python3 are this interpreter (it has PyYAML)."""
     repo = tmp_path / "repo"
     for rel in ["scripts/saw-profile-catalog.py", ".githooks/pre-commit", *outputs()]:
+        if (ROOT / rel).is_dir():          # the mirror directory is listed as an owned path
+            continue
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / rel, repo / rel)
     shutil.copytree(ROOT / "charts" / "saw-bom" / "profiles", repo / "charts" / "saw-bom" / "profiles")
+    shutil.copytree(ROOT / "charts" / "governance-policy" / "profiles",
+                    repo / "charts" / "governance-policy" / "profiles")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("python", "python3"):
@@ -133,8 +144,9 @@ def test_the_workflow_hands_a_fork_a_patch_instead(scratch):
     assert "::error::The profile catalog is stale" in result.stdout
     patch = (repo / "profile-catalog.patch").read_text()
     assert "demo-new" in patch
-    # The patch applies on a clean tree.
-    git("checkout", "-q", "--", ".")
+    # The patch applies on a clean tree (the step staged the files to diff
+    # them; put the tree back as it was before the generator ran).
+    git("reset", "-q", "--hard")
     assert git("apply", "--check", "profile-catalog.patch", check=False).returncode == 0
 
 
@@ -154,3 +166,42 @@ def test_the_workflow_runs_on_profile_changes_without_pull_request_target():
 
 def test_the_hook_is_executable():
     assert os.access(HOOK, os.X_OK)
+
+
+def test_the_workflow_and_hook_see_an_added_and_a_removed_governance_profile(scratch, tmp_path):
+    """Review: `git diff` misses an untracked (new) mirror file, and --list
+    left out mirrors the generator removes, so adding or dropping a
+    governance profile could report "up to date" with the installer mirror
+    out of step. Both stage the generator's owned paths with `git add -A`."""
+    repo, env, git = scratch
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    git("remote", "add", "origin", str(origin))
+    git("checkout", "-q", "-b", "feat")
+    gov = repo / "charts" / "governance-policy" / "profiles"
+    (gov / "acme-llm.yaml").write_text("id: acme-llm\ncategory: inference\nendpoints: []\n")
+    (gov / "gemini.yaml").unlink()
+    git("add", "-A")
+    git("commit", "-q", "-m", "swap a governance profile", "--no-verify")   # mirror not regenerated
+    subprocess.run([sys.executable, "scripts/saw-profile-catalog.py"], cwd=repo, env=env, check=True)
+    listed = subprocess.run([sys.executable, "scripts/saw-profile-catalog.py", "--list"],
+                            cwd=repo, env=env, capture_output=True, text=True, check=True).stdout.split()
+    assert "charts/openshell-saw/files/provider-profiles/acme-llm.yaml" in listed
+    assert "charts/openshell-saw/files/provider-profiles" in listed   # the directory: removals too
+
+    result = run_step(repo, env, same_repo=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "up to date" not in result.stdout
+    tree = subprocess.run(["git", "--git-dir", str(origin), "ls-tree", "--name-only", "feat",
+                           "charts/openshell-saw/files/provider-profiles/"],
+                          capture_output=True, text=True, check=True).stdout.split()
+    assert "charts/openshell-saw/files/provider-profiles/acme-llm.yaml" in tree
+    assert "charts/openshell-saw/files/provider-profiles/gemini.yaml" not in tree
+
+    # The hook does the same on a commit that touches a governance profile.
+    git("config", "core.hooksPath", ".githooks")
+    (gov / "acme-llm.yaml").write_text("id: acme-llm\ncategory: inference\nendpoints: [{host: llm.acme, port: 443}]\n")
+    git("add", "charts/governance-policy/profiles/acme-llm.yaml")
+    git("commit", "-q", "-m", "edit acme-llm")
+    shown = git("show", "--stat", "--format=", "HEAD").stdout
+    assert "provider-profiles/acme-llm.yaml" in shown

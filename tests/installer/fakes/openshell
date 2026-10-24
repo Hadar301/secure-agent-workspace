@@ -322,6 +322,10 @@ elif op == "sandbox download":
     if not sb:
         fail(f"Error: sandbox '{head[2]}' not found")
     remote, local = head[3], head[4]
+    # Like the gateway (0.1.2): only paths inside the working directory
+    # (/sandbox) are served; anything else is refused before any transfer.
+    if not remote.startswith("/sandbox/"):
+        fail(f"Error: download source {remote!r} escapes the sandbox working directory")
     if remote not in sb.get("archives", {}):
         fail(f"Error: {remote}: no such file")
     Path(local).write_text(json.dumps(sb["archives"][remote]))
@@ -330,7 +334,16 @@ elif op == "sandbox upload":
     sb = state["sandboxes"].get(key)
     if not sb:
         fail(f"Error: sandbox '{head[2]}' not found")
-    local, remote = head[3], head[4]
+    # Like the gateway (0.1.2): uploads are filtered by .gitignore rules
+    # unless --no-git-ignore is given, and a filtered-out file stops the
+    # upload ("upload stopped. Use --no-git-ignore ..."). An archive the
+    # installer wrote is always filtered here, as it was live.
+    if "--no-git-ignore" not in args:
+        fail(f"Error: .gitignore filtering excluded {head[-2]}; upload stopped.\n"
+             "Use --no-git-ignore to upload intentionally without filtering")
+    local, remote = head[-2], head[-1]
+    if not remote.startswith("/sandbox/"):
+        fail(f"Error: upload destination {remote!r} escapes the sandbox working directory")
     sb.setdefault("archives", {})[remote] = json.loads(Path(local).read_text())
 elif op == "sandbox delete":
     key = f"{ws}/{head[2]}"
@@ -348,23 +361,23 @@ elif op == "sandbox exec":
         import hashlib
         return hashlib.sha256(json.dumps(content).encode()).hexdigest()
 
-    if "tar -cf " in script and "sha256sum" in script:
+    if "tar -czf " in script and "sha256sum" in script:
         # preserve_sandbox: archive /sandbox (the fake's "files"), print its checksum.
         sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
         if (state_dir / "preserve-fail").exists():
             fail("tar: /sandbox: Cannot open", 2)
-        archive = script.split("tar -cf ", 1)[1].split()[0]
+        archive = script.split("tar -czf ", 1)[1].split()[0]
         content = dict(sb.get("files", {}))
         sb.setdefault("archives", {})[archive] = content
         print(archive_digest(content))
         save()
         sys.exit(0)
-    if "tar -xf " in script and "sha256sum" in script:
+    if "tar -xzf " in script and "sha256sum" in script:
         # restore_sandbox: verify the uploaded archive, unpack, verify, remove.
         sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
         if (state_dir / "restore-fail").exists():
             fail("tar: short read", 2)
-        archive = script.split("tar -xf ", 1)[1].split()[0]
+        archive = script.split("tar -xzf ", 1)[1].split()[0]
         if archive not in sb.get("archives", {}):
             fail(f"tar: {archive}: Cannot open: No such file or directory", 2)
         expected = re.search(r"= '?([0-9a-f]{64})'? \]", script)
@@ -460,6 +473,12 @@ elif op == "sandbox exec":
         names = re.search(r"for v in (.*?); do", script).group(1).split()
         have = sb.get("trustEnv", names)
         print("\n".join(n for n in names if n in have))
+        save()
+        sys.exit(0)
+    if script.startswith("cat /sandbox/.openclaw/saw-mcp-servers.json"):
+        # The installer's read of its MCP record (`cat FILE 2>/dev/null || true`):
+        # empty, and no error, before the first record.
+        print(sb.get("sawMcpState", ""))
         save()
         sys.exit(0)
     if "saw-mcp-servers.json" in script:

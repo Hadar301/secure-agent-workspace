@@ -642,11 +642,12 @@ class Sandbox:
     model: str = ""
     harness_ref: dict = field(default_factory=dict)
     # `env:` -- the workload's environment (`sandbox create --env`; changing
-    # it recreates the sandbox). {NAME: {value} | {secretKeyRef: {name, key},
-    # default?, title?}}; env_values is it resolved. Never for credentials
-    # (the agent can read these): those stay on providers.
+    # it recreates the sandbox). {NAME: {value, title?}}: literals only, so
+    # env_values (below) is derived, never a resolved copy that could go
+    # stale (found in CI: freshly parsed profiles compared an empty copy
+    # with the sandbox's env label and recreated it). Never for credentials
+    # (the agent, and argv, can read these): those stay on providers.
     env: dict = field(default_factory=dict)
-    env_values: dict = field(default_factory=dict)
     # `inference:` -- how the agent reaches its model: {providerRef, protocol,
     # baseUrl?, model, timeoutSeconds?}. Each of baseUrl/model/timeoutSeconds
     # is a literal or an input ({secretKeyRef: {name, key}, default?,
@@ -654,6 +655,15 @@ class Sandbox:
     # agent from it (by protocol, so any profile-backed provider type works).
     inference: dict = field(default_factory=dict)
     inference_values: dict = field(default_factory=dict)
+
+    @property
+    def env_values(self):
+        """NAME -> value for the sandbox's env (literal entries; anything
+        else is refused by validation)."""
+        if not isinstance(self.env, dict):
+            return {}
+        return {str(name): str(src["value"]) for name, src in sorted(self.env.items())
+                if isinstance(src, dict) and "value" in src}
 
 
 @dataclass
@@ -1724,9 +1734,7 @@ def resolve_credentials(profiles, secrets_dir):
             if not sb.enabled:
                 continue
             # Always set (a re-resolve after the profile changed must not
-            # keep an earlier value).
-            sb.env_values = (resolve_sandbox_env(ws, sb, secrets_dir)
-                             if isinstance(sb.env, dict) and sb.env else {})
+            # keep an earlier value). env needs no resolving: literals only.
             sb.inference_values = (resolve_sandbox_inference(ws, sb, secrets_dir)
                                    if sb.inference else {})
     return creds
@@ -1754,7 +1762,7 @@ ENV_VALUE_LIMIT = 8192
 #   secretKeyRef: {name: <Secret>, key: <key>}
 # with an optional default (used when the key is absent), required (defaults
 # to "no default given") and title (the RHDH form's label).
-SANDBOX_ENV_KEYS = {"value", "secretKeyRef", "default", "title"}
+SANDBOX_ENV_KEYS = {"value", "title"}
 INPUT_KEYS = {"secretKeyRef", "default", "required", "title"}
 
 
@@ -1814,50 +1822,24 @@ def sandbox_env_problems(name, src):
     elif name in set(BASE_URL_CONFIG_KEYS.values()) or name in ("MODEL", "OPENCLAW_MODEL",
                                                                "NEMOCLAW_MODEL"):
         out.append("is an inference setting; set it in the sandbox's inference: block")
-    if not isinstance(src, dict) or ("value" in src) == ("secretKeyRef" in src):
-        return out + ["needs exactly one of value or secretKeyRef"]
+    if isinstance(src, dict) and ("secretKeyRef" in src or "default" in src):
+        # A value from a Secret would travel in `sandbox create --env`'s argv
+        # and be readable by every process in the sandbox (review, P1):
+        # secrets go on a provider, whose profile the gateway injects.
+        return out + ["must be a literal ({value: ...}); a value from a Secret belongs on a "
+                      "provider, not in sandbox env (the agent and argv could read it)"]
+    if not isinstance(src, dict) or "value" not in src:
+        return out + ["needs {value: ...}"]
     unknown = sorted(set(src) - SANDBOX_ENV_KEYS)
     if unknown:
         out.append(f"has unknown keys {', '.join(unknown)}")
-    if "secretKeyRef" in src:
-        out += secret_ref_problems(src)
-    for field_name in ("value", "default"):
-        if field_name not in src:
-            continue
-        if isinstance(src[field_name], bool) or not isinstance(src[field_name], (str, int, float)):
-            out.append(f"{field_name} must be a string (quote it)")
-            continue
+    if isinstance(src["value"], bool) or not isinstance(src["value"], (str, int, float)):
+        out.append("value must be a string (quote it)")
+    else:
         try:
-            check_env_value(str(src[field_name]))
+            check_env_value(str(src["value"]))
         except ValueError as exc:
-            out.append(f"{field_name}: {exc}")
-    return out
-
-
-def resolve_sandbox_env(ws, sb, secrets_dir):
-    """A sandbox's env resolved to NAME -> value: literals as given, secretKey
-    from /run/saw/secrets/<secret>/<key>, else its default."""
-    out = {}
-    for name in sorted(sb.env):
-        src = sb.env[name]
-        if "value" in src:
-            value = str(src["value"])
-        else:
-            sname, skey = secret_ref(src)
-            value = read_secret_value(Path(secrets_dir) / sname, skey)
-            if not value:
-                if "default" not in src:
-                    raise InstallerError(
-                        f"sandbox '{sb.name}' in workspace '{ws.name}': env '{name}' not found: "
-                        f"Secret '{sname}' key '{skey}'. List the Secret in "
-                        "openshell-saw additionalProviderSecrets and make sure it exists.")
-                value = str(src["default"])
-        try:
-            check_env_value(value)
-        except ValueError as exc:
-            raise InstallerError(f"sandbox '{sb.name}' in workspace '{ws.name}': "
-                                 f"env '{name}': {exc}") from None
-        out[name] = value
+            out.append(f"value: {exc}")
     return out
 
 
@@ -3367,7 +3349,7 @@ class ProfileApplier:
         if errors:
             raise InstallerError("invalid profiles:\n  - " + "\n  - ".join(errors))
 
-    def adopt_governed_profiles(self, ws):
+    def adopt_governed_profiles(self, ws, catalog_ws=None):
         """Provider types the installer neither knows built-in nor ships must
         be profiles the gateway's governance catalog serves (a deployment's
         own, from overrides/governance-profiles). Their catalog records become
@@ -3375,13 +3357,18 @@ class ProfileApplier:
         from the governed profile exactly as from a shipped one. A type the
         catalog does not serve is an error here, before anything is created:
         skipping it would leave a sandbox whose `inference.providerRef` names
-        a provider that does not exist."""
+        a provider that does not exist.
+
+        catalog_ws: the workspace whose catalog to read (the interceptor's
+        catalog is gateway-wide; before the workspaces exist, preflight reads
+        it through the default workspace)."""
+        catalog_ws = catalog_ws or ws
         for prov in ws.providers:
             if (not prov.enabled or prov.credential_free or prov.type in PROVIDER_CRED_MAP
                     or prov.type in self.provider_profiles):
                 continue
-            self.governance_catalog(ws)
-            record = (self.catalog_details.get(ws.name) or {}).get(prov.type)
+            self.governance_catalog(catalog_ws)
+            record = (self.catalog_details.get(catalog_ws.name) or {}).get(prov.type)
             if not record:
                 raise InstallerError(
                     f"provider '{prov.name}' in workspace '{ws.name}' has type '{prov.type}', "
@@ -4089,7 +4076,10 @@ class ProfileApplier:
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
-        # The workload's environment, for every process in the sandbox.
+        # The workload's environment, for every process in the sandbox:
+        # literals from the profile (never Secret values: `--env` puts them
+        # in argv and every sandbox process could read them; a Secret value
+        # goes on a provider).
         args += env_flags(sb.env_values)
         if sandbox_mounts(ws, sb):
             args += ["--driver-config-json", sandbox_mounts_json(ws, sb)]
@@ -4325,8 +4315,11 @@ class ProfileApplier:
                      check=False)
         for key in HARNESS_CONFIG_KEYS:
             if key not in desired:
-                self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config unset {key}",
-                         check=False)
+                # Conditional: `config unset` of an absent path logs an
+                # error on every apply (found live).
+                self.cli(*exec_cmd, "sh", "-c",
+                         f"{oc_env} openclaw config get {key} >/dev/null 2>&1 && "
+                         f"{oc_env} openclaw config unset {key} || true", check=False)
         # OpenClaw 2026.9.x keeps a plugin found on plugins.load.paths
         # disabled until it is enabled with capability consent, and a
         # restrictive plugins.allow (NemoClaw ships one) blocks it outright;
@@ -4356,7 +4349,9 @@ class ProfileApplier:
             trust_env = tuple(var for var in MCP_TRUST_ENV if var in have)
         desired = harness_mcp_servers(info, trust_env)
         state = json.dumps(desired, sort_keys=True)
-        seen = self.cli(*exec_cmd, "cat", SAW_MCP_STATE, check=False, quiet=True)
+        # Absent on a sandbox's first apply: not an error worth logging.
+        seen = self.cli(*exec_cmd, "sh", "-c", f"cat {SAW_MCP_STATE} 2>/dev/null || true",
+                        check=False, quiet=True)
         try:
             previous = json.loads(seen.out) if seen.ok and seen.out.strip() else {}
         except ValueError:
@@ -4673,8 +4668,20 @@ class ProfileApplier:
         if not any(True for _ in enabled_workspaces(profiles)):
             raise InstallerError(
                 "profile ConfigMap is missing or empty; refusing to change the gateway")
-        self.preflight(profiles)
+        # The local mTLS gateway entry first: everything below, the catalog
+        # read included, must talk to this VM's gateway (found in review: a
+        # fresh VM has no selected gateway, a reused one may select another).
+        # register_gateway only writes the CLI's local gateway entry.
         self.register_gateway()
+        # Governance-only provider types are resolved before preflight, so
+        # the credential checks there see those profiles too (found in
+        # review: preflight ran first and called their credentials "none
+        # shipped"). The catalog is gateway-wide; read through the default
+        # workspace, which exists before any profile workspace does.
+        default_ws = Workspace(name="default")
+        for _, ws in enabled_workspaces(profiles):
+            self.adopt_governed_profiles(ws, catalog_ws=default_ws)
+        self.preflight(profiles)
         self.reconcile_owner_memberships()
         for profile, ws in enabled_workspaces(profiles):
             self.profile_name = profile.name
@@ -4793,8 +4800,14 @@ class ProfileApplier:
     # verified, so an interrupted or failed restore is finished on a later
     # apply and the old sandbox is only ever deleted once its files are
     # safely out.
-    PRESERVE_ARCHIVE = "/tmp/saw-sandbox-preserve.tar"
-    PRESERVE_SUM = "/tmp/saw-sandbox-preserve.sha256"
+    # Inside /sandbox: `sandbox download`/`upload` only serve paths within the
+    # sandbox's working directory (a path outside it, /tmp say, is refused
+    # before any data moves -- found live). The archive excludes itself.
+    # gzip: OpenClaw's state (sqlite, caches) made a 92 MB archive live,
+    # and the sandbox SSH proxy broke the upload more than once at that
+    # size; compressed it is a fraction of that.
+    PRESERVE_ARCHIVE = "/sandbox/.saw-preserve.tar.gz"
+    PRESERVE_SUM = "/sandbox/.saw-preserve.sha256"
 
     def migration_key(self, ws, sb):
         return f"{ws.name}/{sb.name}"
@@ -4814,14 +4827,21 @@ class ProfileApplier:
         installer's mounts), checksum them in the sandbox, download the
         archive and verify it. Returns {"archive", "sha256"}; raises when
         anything fails: the caller must not delete the sandbox then."""
-        # Only the installer's own mounts are left out, each anchored to its
-        # exact path under /sandbox (`./harness`, `./.saw/trusted`, ...): a
-        # bare --exclude=harness would also drop a user's project/harness/.
-        # The archive itself (in /tmp) is outside the tree.
-        excludes = " ".join(
-            f"--anchored --exclude={shlex.quote('./' + m['target'][len('/sandbox/'):])}"
-            for m in sandbox_mounts(ws, sb) if m["target"].startswith("/sandbox/"))
-        script = (f"cd /sandbox || exit 3; tar -cf {self.PRESERVE_ARCHIVE} {excludes} . && "
+        # Everything under /sandbox except the installer's own paths: the
+        # mounts (`./harness`, `./.saw/trusted`, ...) and `./.saw` itself,
+        # each pruned at its exact path (a bare `harness` would also drop a
+        # user's project/harness/). Directories are archived too (empty ones
+        # and their permissions come back), listed by find with
+        # --no-recursion so nothing is added twice; `./.saw` is pruned
+        # because restoring its entry onto the root-owned mount directory
+        # failed ("Cannot utime", found live). The archive excludes itself.
+        pruned = {"./.saw", *("./" + m["target"][len("/sandbox/"):]
+                             for m in sandbox_mounts(ws, sb) if m["target"].startswith("/sandbox/"))}
+        prune = " ".join(f"-path {shlex.quote(p)} -prune -o" for p in sorted(pruned))
+        own = shlex.quote("./" + Path(self.PRESERVE_ARCHIVE).name)
+        script = (f"cd /sandbox || exit 3; rm -f {self.PRESERVE_ARCHIVE}; "
+                  f"find . {prune} ! -path . ! -path {own} -print0 | "
+                  f"tar -czf {self.PRESERVE_ARCHIVE} --null --no-recursion -T - && "
                   f"sha256sum {self.PRESERVE_ARCHIVE} | cut -d' ' -f1")
         packed = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
                           "sh", "-c", script, check=False)
@@ -4830,7 +4850,7 @@ class ProfileApplier:
             raise InstallerError(
                 f"could not archive /sandbox of '{sb.name}' (exit {packed.rc}); the sandbox is "
                 "left as it is. Fix the sandbox (or set its env back) and apply again")
-        local = self.archive_dir() / f"{ws.name}-{sb.name}-{int(time.time())}.tar"
+        local = self.archive_dir() / f"{ws.name}-{sb.name}-{int(time.time())}.tar.gz"
         got = self.cli("sandbox", "download", sb.name, *ws_args(ws.name),
                        self.PRESERVE_ARCHIVE, str(local), check=False)
         if self.sh.dry_run:
@@ -4851,16 +4871,29 @@ class ProfileApplier:
         local = Path(record["archive"])
         if not self.sh.dry_run and not local.is_file():
             raise InstallerError(f"the archive to restore into '{sb.name}' is missing: {local}")
-        put = self.cli("sandbox", "upload", sb.name, *ws_args(ws.name), str(local),
-                       self.PRESERVE_ARCHIVE, check=False)
+        # A leftover archive from an earlier attempt (a restore that failed
+        # after the upload) makes the next upload fail ("failed to add
+        # .saw-preserve.tar to tar archive", found live): remove it first.
+        self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                 "rm", "-f", self.PRESERVE_ARCHIVE, check=False, quiet=True)
+        # --no-git-ignore: `sandbox upload` filters by .gitignore rules by
+        # default and stops when the file is filtered (found live: the
+        # archive was refused and the restore never ran).
+        put = self.cli("sandbox", "upload", sb.name, *ws_args(ws.name), "--no-git-ignore",
+                       str(local), self.PRESERVE_ARCHIVE, check=False)
         if not put.ok:
             raise InstallerError(f"could not upload the archive into '{sb.name}'; the restore "
                                  "is retried on the next apply")
         q = shlex.quote
         script = (f"[ \"$(sha256sum {self.PRESERVE_ARCHIVE} | cut -d' ' -f1)\" = "
                   f"{q(record['sha256'])} ] || exit 4; cd /sandbox || exit 3; "
-                  f"tar -xf {self.PRESERVE_ARCHIVE} && tar -df {self.PRESERVE_ARCHIVE} && "
-                  f"rm -f {self.PRESERVE_ARCHIVE}")
+                  # --no-overwrite-dir: an existing directory (the image's
+                  # .openclaw, say) keeps its metadata; a new one gets the
+                  # archived mode. The diff covers the non-directory members:
+                  # directory mtimes drift as soon as anything is written.
+                  f"tar -xzf {self.PRESERVE_ARCHIVE} --no-overwrite-dir && "
+                  f"tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
+                  f"tar -dzf {self.PRESERVE_ARCHIVE} -T - && rm -f {self.PRESERVE_ARCHIVE}")
         done = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
                         "sh", "-c", script, check=False)
         if not done.ok:
