@@ -68,6 +68,23 @@ own pruneOnRemove, else the chart-wide default. "true" or "".
 {{- end -}}
 
 {{/*
+Web search: the user's webSearch.enabled, else global.webSearch.enabled,
+else on. Pattern extraParameters may supply the string "false". "true" or "".
+*/}}
+{{- define "saw-users.webSearch" -}}
+{{- $enabled := true -}}
+{{- $global := .root.Values.global.webSearch | default dict -}}
+{{- $user := .user.webSearch | default dict -}}
+{{- if hasKey $global "enabled" -}}
+{{- $enabled = $global.enabled -}}
+{{- end -}}
+{{- if hasKey $user "enabled" -}}
+{{- $enabled = $user.enabled -}}
+{{- end -}}
+{{- if ne (toString $enabled) "false" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 openshell-saw values: chart defaults, then this user's owner, then the
 user's `values` on top. Nested maps merge; the user's keys win.
 */}}
@@ -207,6 +224,9 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- /* No profile in the catalog: keep the Secrets every SAW used to get. */ -}}
 {{- range .root.Values.defaults.secrets -}}{{- $_ := set $names . true -}}{{- end -}}
 {{- end -}}
+{{- if not (include "saw-users.webSearch" .) -}}
+{{- $_ := unset $names "web-search" -}}
+{{- end -}}
 {{- toJson (keys $names | sortAlpha) -}}
 {{- end -}}
 
@@ -225,6 +245,9 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $_ := set $bomValues "imageOverrides" $imageOverrides -}}
 {{- if $user.harnessEnabled -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
+{{- end -}}
+{{- if not (include "saw-users.webSearch" .) -}}
+{{- $_ := set $bomValues "webSearch" (dict "enabled" false) -}}
 {{- end -}}
 {{- toYaml $bomValues -}}
 {{- end -}}
