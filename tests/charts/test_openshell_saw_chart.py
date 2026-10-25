@@ -1044,7 +1044,8 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"anthropic", "brave", "nvidia", "openai"}
+    shipped = {p.stem for p in (ROOT / "charts/governance-policy/profiles").glob("*.yaml")}
+    assert set(ab.provider_profiles(tmp_path)) == shipped
 
 
 def test_create_script_passes_the_keycloak_it_finds():
@@ -1066,7 +1067,7 @@ def test_secret_template_matches_the_default_profile():
         fields = secrets[p["credentialSecret"]]
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
-        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+        assert configured in (p["type"], {"nvidia": "build"}.get(p["type"])), (p["name"], configured)
 
 
 def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
@@ -1086,7 +1087,7 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     for key, value in cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "openai", "model": "m",
+    for secret, data in {"inference": {"api_key": "k1", "provider": "custom-inference", "model": "m",
                                        "url": "https://vllm.models.svc:8443/v1"},
                          "web-search": {"api_key": "k2"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
