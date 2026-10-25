@@ -87,6 +87,10 @@ class Runner:
         self.home: Path | None = None
         self.openshell_env: dict[str, str] | None = None
         self.env = dict(os.environ)
+        # Podman needs the host connection config after HOME moves to a
+        # private directory for the run.
+        self.env["XDG_CONFIG_HOME"] = (
+            os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
         for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY"):
             self.env.pop(key, None)
         self.locked = False

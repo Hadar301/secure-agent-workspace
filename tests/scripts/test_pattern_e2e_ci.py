@@ -46,6 +46,15 @@ def test_openshell_uses_private_config_without_changing_podman_env(runner, monke
     assert captured_envs[1]["XDG_CONFIG_HOME"] == "/host/podman-config"
 
 
+def test_runner_keeps_podman_config_when_home_is_private(runner, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", "/host-home")
+    configured = pattern_e2e.Runner()
+    configured.env["HOME"] = "/private/ci-home"
+
+    assert configured.env["XDG_CONFIG_HOME"] == "/host-home/.config"
+
+
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
     child = {
         "metadata": {"name": "saw-ciowner"},
