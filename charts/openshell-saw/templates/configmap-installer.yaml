@@ -97,7 +97,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
           "issuer" (.Values.harness.cosign.issuer | default "https://token.actions.githubusercontent.com")
           "cacheTtlSeconds" (.Values.harness.cosign.cacheTtlSeconds)))
       "prune" (dict "mode" $pruneMode "sandboxes" (.Values.prune.sandboxes | default false))
-      "secrets" (concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact)
+      "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray)
       "sandboxUi" (include "openshell-sandbox.sandboxUi" . | fromJsonArray)
       "sandboxUiProxy" (dict
           "targetPort" (int .Values.sandboxUiProxy.targetPort)

@@ -94,3 +94,20 @@ def test_gitops_ca_hook_has_a_bounded_failure():
                 and d["metadata"]["name"] == "saw-credential-proxy-ca-hook")
     assert hook["spec"]["restartPolicy"] == "Never"
     assert hook["spec"]["activeDeadlineSeconds"] == 120
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_public_issuer_ca_stays_in_the_guest_mount_list():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
+                  "--set", "oidc.clusterCaSecret=saw-ingress-ca",
+                  "--set-json", 'credentialProxy.secrets=[{"name":"inference","key":"api_key","providers":["build"]},{"name":"saw-ingress-ca","key":"api_key","providers":["openai"]}]')
+    installer = next(d for d in docs if d["kind"] == "ConfigMap"
+                     and d["metadata"]["name"] == "saw-test-installer")
+    config = json.loads(installer["data"]["config.json"])
+    assert config["secrets"] == ["inference", "web-search", "saw-ingress-ca"]
+    assert config["caBundleSecret"] == "saw-ingress-ca"
+    assert [b["name"] for b in config["credentialProxy"]["secrets"]] == ["inference"]
+    proxy = next(d for d in docs if d["kind"] == "ConfigMap"
+                 and d["metadata"]["name"] == "saw-test-credential-proxy-config")
+    assert [b["secret"] for b in json.loads(proxy["data"]["config.json"])["bindings"]] == ["inference"]
