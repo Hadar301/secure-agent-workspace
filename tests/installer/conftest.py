@@ -160,6 +160,9 @@ def fake_env(tmp_path, monkeypatch):
                        check=True, capture_output=True)
     (ca_dir / "client-ca.pem").write_bytes((ca_dir / "ca.crt").read_bytes())
     (ca_dir / "pki-generation").write_text("1\n")
+    (ca_dir / "jwt").mkdir()
+    for name in ("signing.pem", "public.pem", "kid"):
+        (ca_dir / "jwt" / name).write_text("test-jwt-" + name)
     ca_key.unlink()
     runtime = tmp_path / "runtime"
     runtime.mkdir()

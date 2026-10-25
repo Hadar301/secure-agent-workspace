@@ -355,6 +355,11 @@ user_role = {{ .Values.oidc.userRole | quote }}
 allow_unauthenticated_users = false
 {{- end }}
 
+[openshell.gateway.gateway_jwt]
+signing_key_path = "/home/cloud-user/.local/state/openshell/tls/jwt/signing.pem"
+public_key_path = "/home/cloud-user/.local/state/openshell/tls/jwt/public.pem"
+kid_path = "/home/cloud-user/.local/state/openshell/tls/jwt/kid"
+
 [openshell.drivers.podman]
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}

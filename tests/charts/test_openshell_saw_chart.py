@@ -389,6 +389,12 @@ def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     assert toml["openshell"]["drivers"]["podman"]["supervisor_image"] == \
         values["bom"]["spec"]["openshell"]["supervisor"]["image"]
     assert "oidc" not in toml["openshell"].get("gateway", {})   # no issuer configured
+    jwt = toml["openshell"]["gateway"]["gateway_jwt"]
+    assert jwt == {
+        "signing_key_path": "/home/cloud-user/.local/state/openshell/tls/jwt/signing.pem",
+        "public_key_path": "/home/cloud-user/.local/state/openshell/tls/jwt/public.pem",
+        "kid_path": "/home/cloud-user/.local/state/openshell/tls/jwt/kid",
+    }
 
 
 def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):

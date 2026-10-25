@@ -2989,7 +2989,8 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
         changed = True
     required_tls = ("ca.crt", "server/tls.crt", "server/tls.key",
                     "client/tls.crt", "client/tls.key", "relay/tls.crt",
-                    "relay/tls.key", "client-ca.pem")
+                    "relay/tls.key", "client-ca.pem", "jwt/signing.pem",
+                    "jwt/public.pem", "jwt/kid")
     rotate = ((tls / "ca.key").exists() or
               (tls.exists() and
                (any(not (tls / part).is_file() for part in required_tls) or

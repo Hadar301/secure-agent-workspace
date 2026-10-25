@@ -26,6 +26,9 @@ args = sys.argv[1:]
 assert args[0] == "generate-certs"
 out = Path(args[args.index("--output-dir") + 1])
 sans = [args[i + 1] for i, arg in enumerate(args) if arg == "--server-san"]
+(out / "jwt").mkdir()
+for name in ("signing.pem", "public.pem", "kid"):
+    (out / "jwt" / name).write_text("test-jwt-" + name)
 subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
                 "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(out / "ca.key"),
                 "-out", str(out / "ca.crt"), "-subj", "/CN=test-ca", "-days", "30"],
@@ -53,6 +56,10 @@ for part in ("server", "client"):
     assert not list(home.rglob("ca.key"))
     assert (tls / "client-ca.pem").read_bytes() == (tls / "ca.crt").read_bytes()
     assert (tls / "relay/tls.key").is_file()
+    for name in ("signing.pem", "public.pem", "kid"):
+        assert (tls / "jwt" / name).read_text() == "test-jwt-" + name
+    assert (tls / "jwt/signing.pem").stat().st_mode & 0o777 == 0o600
+    assert (tls / "jwt").stat().st_mode & 0o777 == 0o700
     subject = subprocess.run(["openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253",
                               "-in", str(tls / "relay/tls.crt")], capture_output=True, text=True,
                              check=True).stdout
@@ -62,6 +69,10 @@ for part in ("server", "client"):
     subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
     assert (tls / "ca.crt").read_bytes() == before
     assert (tls / "client-ca.pem").read_bytes() == before
+    # Missing launch credentials must be repaired even with the same generation.
+    (tls / "jwt/kid").unlink()
+    subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
+    assert (tls / "jwt/kid").read_text() == "test-jwt-kid"
     (config / "pki-generation").write_text("2\n")
     subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
     assert (tls / "pki-generation").read_text() == "2\n"

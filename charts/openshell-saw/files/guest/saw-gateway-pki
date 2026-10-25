@@ -23,6 +23,8 @@ complete() {
      -s "${final}/server/tls.key" && -s "${final}/client/tls.crt" &&
      -s "${final}/client/tls.key" && -s "${final}/relay/tls.crt" &&
      -s "${final}/relay/tls.key" &&
+     -s "${final}/jwt/signing.pem" && -s "${final}/jwt/public.pem" &&
+     -s "${final}/jwt/kid" &&
      "$(cat "${final}/pki-generation" 2>/dev/null)" == "${generation}" ]]
 }
 if complete; then
@@ -48,7 +50,9 @@ done < "${config_dir}/server-sans"
 "${gateway_bin}" generate-certs "${args[@]}"
 [[ -s "${work}/ca.key" && -s "${work}/ca.crt" &&
    -s "${work}/server/tls.crt" && -s "${work}/server/tls.key" &&
-   -s "${work}/client/tls.crt" && -s "${work}/client/tls.key" ]] || {
+   -s "${work}/client/tls.crt" && -s "${work}/client/tls.key" &&
+   -s "${work}/jwt/signing.pem" && -s "${work}/jwt/public.pem" &&
+   -s "${work}/jwt/kid" ]] || {
   echo "saw-gateway-pki: generate-certs produced incomplete TLS material" >&2; exit 1;
 }
 
@@ -68,9 +72,12 @@ for part in server client relay; do
   cp "${work}/${part}/tls.crt" "${stage}/${part}/tls.crt"
   cp "${work}/${part}/tls.key" "${stage}/${part}/tls.key"
 done
+# rhaiv.6 requires this separate Ed25519 bundle for sandbox launch tokens.
+# It cannot sign client certificates or grant platform-admin mTLS authority.
+cp -r "${work}/jwt" "${stage}/jwt"
 printf '%s\n' "${generation}" > "${stage}/pki-generation"
-chmod 0700 "${stage}" "${stage}/server" "${stage}/client" "${stage}/relay"
-chmod 0600 "${stage}"/{server,client,relay}/tls.key
+chmod 0700 "${stage}" "${stage}/server" "${stage}/client" "${stage}/relay" "${stage}/jwt"
+chmod 0600 "${stage}"/{server,client,relay}/tls.key "${stage}/jwt/signing.pem"
 if [[ -d "${final}" ]]; then rm -rf "${final}"; fi
 mv "${stage}" "${final}"
 stage=""
