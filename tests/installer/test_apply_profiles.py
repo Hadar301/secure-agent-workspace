@@ -205,7 +205,8 @@ def test_gateway_unreachable_fails_before_any_change(ab, fake_env, config, profi
 
 
 
-@pytest.mark.parametrize("failure", ["connection was not ready", "TLS handshake: UnknownIssuer"])
+@pytest.mark.parametrize("failure", ["connection was not ready", "TLS handshake: UnknownIssuer",
+                                     "received fatal alert: UnknownCA"])
 def test_first_admin_rpc_waits_for_the_client_ca_reload(ab, config, monkeypatch, failure):
     applier = ab.ProfileApplier(ab.Shell(), config, {})
     attempts, sleeps, relays = [], [], []
