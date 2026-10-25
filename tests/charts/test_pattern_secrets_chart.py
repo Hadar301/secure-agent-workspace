@@ -41,6 +41,21 @@ def test_inference_only_renders_no_web_search_external_secret():
     assert "web-search-meta" not in got
 
 
+def test_metadata_fields_are_configurable_and_never_require_provider():
+    out = subprocess.run([HELM, "template", "x", str(CHART),
+                          "--set", "metaKeys.inference={provider,model,cuda_model}"],
+                         capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    for doc in docs:
+        if not doc["metadata"]["name"].endswith("-meta"):
+            continue
+        data = doc["spec"]["target"]["template"]["data"]
+        assert "api_key" not in data
+        assert data["provider"] == '{{ index . "provider" | default "" }}'
+    meta = next(d for d in docs if d["metadata"]["name"] == "inference-meta")
+    assert "cuda_model" in meta["spec"]["target"]["template"]["data"]
+
+
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
     values = tmp_path / "v.yaml"
     values.write_text(yaml.safe_dump({"vaultPrefix": "secret/data/hub/saw-bob",

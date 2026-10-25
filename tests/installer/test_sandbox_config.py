@@ -11,6 +11,7 @@ configuration.
 import json
 
 import pytest
+from conftest import marker, proxy_for, resolve
 
 REF = {"secretKeyRef": {"name": "inference", "key": "model"}}
 
@@ -19,7 +20,8 @@ def _secret(dirpath, name, **keys):
     base = dirpath / name
     base.mkdir(parents=True, exist_ok=True)
     for key, value in keys.items():
-        (base / key).write_text(value)
+        if key not in {"api_key", "token", "key", "secret"}:
+            (base / key).write_text(value)
 
 
 def _one(ab, sandbox_type="openclaw", provider=None, **sb):
@@ -57,7 +59,7 @@ def test_literals_resolve_as_given(ab, tmp_path):
     _, sb, profiles = _one(ab, env={"HF_HUB_OFFLINE": {"value": "1"}, "N": {"value": 3}})
     ab.validate_profiles(profiles)
     _secret(tmp_path, "inference", api_key="k")
-    ab.resolve_credentials(profiles, tmp_path)
+    resolve(ab, profiles, tmp_path)
     assert sb.env_values == {"HF_HUB_OFFLINE": "1", "N": "3"}
 
 
@@ -72,7 +74,7 @@ def test_a_secret_value_in_env_is_refused_at_validation(ab, tmp_path):
 def test_the_env_is_set_at_create_and_labelled(ab, fake_env, config, tmp_path):
     _, _, profiles = _one(ab, env={"HF_HUB_OFFLINE": {"value": "1"}, "B": {"value": "2"}})
     _secret(tmp_path, "inference", api_key="k")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     state = fake_env.openshell_state()
     assert state["sandboxes"]["default/chat"]["env"] == ["B=2", "HF_HUB_OFFLINE=1"]
@@ -92,7 +94,7 @@ def test_model_comes_from_inference_then_the_legacy_fields(ab, tmp_path):
     assert ab.sandbox_model(sb, provider, "builtin") == "builtin"
     sb.inference = {"providerRef": "inference", "protocol": "openai", "model": REF}
     _secret(tmp_path, "inference", api_key="k", model="from-secret")
-    ab.resolve_credentials(profiles, tmp_path)
+    resolve(ab, profiles, tmp_path)
     assert ab.sandbox_model(sb, provider, "builtin") == "from-secret"
 
 
@@ -102,7 +104,7 @@ def test_the_model_reaches_nemoclaw(ab, fake_env, config, tmp_path):
     _, _, profiles = _one(ab, "nemoclaw", nvidia, inference={
         "providerRef": "nvidia", "protocol": "openai", "model": "nvidia/m"})
     _secret(tmp_path, "inference", api_key="nvapi-x")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     assert fake_env.other_calls("nemoclaw")[0]["model"] == "nvidia/m"
 
@@ -119,7 +121,7 @@ def test_without_a_base_url_the_provider_types_own_api_is_used(ab, fake_env, con
     _, _, profiles = _one(ab, provider=nvidia, inference={
         "providerRef": "nvidia", "protocol": "openai", "model": "nvidia/m"})
     _secret(tmp_path, "inference", api_key="nvapi-x")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     onboard = _onboard(fake_env)
     assert "--custom-base-url https://integrate.api.nvidia.com/v1 " in onboard
@@ -130,7 +132,7 @@ def test_an_official_api_without_a_base_url_onboards_natively(ab, fake_env, conf
     _, _, profiles = _one(ab, inference={"providerRef": "inference", "protocol": "openai",
                                          "model": "gpt-4o"})
     _secret(tmp_path, "inference", api_key="sk")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     assert "--auth-choice openai-api-key" in _onboard(fake_env)
 
@@ -142,7 +144,7 @@ def test_anthropic_protocol_on_a_custom_endpoint(ab, fake_env, config, tmp_path)
         "providerRef": "claude", "protocol": "anthropic",
         "baseUrl": "https://gateway.example/anthropic", "model": "claude-sonnet-4-6"})
     _secret(tmp_path, "inference", api_key="sk")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     onboard = _onboard(fake_env)
     assert "--custom-base-url https://gateway.example/anthropic " in onboard
@@ -155,7 +157,7 @@ def test_a_bad_inference_base_url_is_refused_without_echoing_it(ab, tmp_path):
                                              "secretKeyRef": {"name": "inference", "key": "url"}}})
     _secret(tmp_path, "inference", api_key="k", url="http://localhost:8000/v1")
     with pytest.raises(ab.InstallerError) as err:
-        ab.resolve_credentials(profiles, tmp_path)
+        resolve(ab, profiles, tmp_path)
     assert "base URL" in str(err.value) and "localhost:8000" not in str(err.value)
 
 
@@ -164,7 +166,7 @@ def test_timeout_must_be_a_non_negative_integer(ab, tmp_path):
                                          "model": "m", "timeoutSeconds": "soon"})
     _secret(tmp_path, "inference", api_key="k")
     with pytest.raises(ab.InstallerError, match="timeoutSeconds must be a non-negative integer"):
-        ab.resolve_credentials(profiles, tmp_path)
+        resolve(ab, profiles, tmp_path)
 
 
 # --- credentials by name ------------------------------------------------------------------
@@ -185,20 +187,23 @@ def test_named_credentials_bind_to_their_profile_env_vars(ab, fake_env, config, 
     _, profiles = _two_cred(ab, {"app_secret": {"secretKey": "secret"},   # order irrelevant
                                  "api_key": {"secretKey": "key"}})
     ab.validate_profiles(profiles, known_profiles={"twokey"})
-    _secret(tmp_path, "tk", key="k-1", secret="s-2")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    _secret(tmp_path, "tk", key="k-1", secret="s-2", url="https://keys.example.test/v1")
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds,
                       provider_profile_docs={"twokey": TWO_CRED_PROFILE}).apply(profiles)
     created = fake_env.openshell_state()["providers"]["default/tk"]
-    assert sorted(created["credentials"]) == ["TWOKEY_API_KEY=k-1", "TWOKEY_APP_SECRET=s-2"]
+    assert sorted(created["credentials"]) == ["TWOKEY_API_KEY=" + marker("tk", "key"),
+                                              "TWOKEY_APP_SECRET=" + marker("tk", "secret")]
     assert not any("s-2" in " ".join(c) for c in fake_env.openshell_calls())   # env only
 
 
-def test_a_missing_named_credential_is_an_error(ab, tmp_path):
+def test_a_missing_named_credential_binding_is_an_error(ab, tmp_path):
     _, profiles = _two_cred(ab, {"api_key": {"secretKey": "key"}, "app_secret": {"secretKey": "secret"}})
     _secret(tmp_path, "tk", key="k-1")
-    with pytest.raises(ab.InstallerError, match="credential 'app_secret' of provider 'tk' in workspace 'default' not found"):
-        ab.resolve_credentials(profiles, tmp_path)
+    proxy = proxy_for(ab, profiles)
+    proxy["secrets"] = [b for b in proxy["secrets"] if b["key"] != "secret"]
+    with pytest.raises(ab.InstallerError, match="credential 'app_secret'.*has no binding"):
+        ab.resolve_credentials(profiles, tmp_path, proxy)
 
 
 def test_credentials_and_credential_secret_key_are_exclusive(ab):
@@ -227,14 +232,16 @@ def test_the_plan_keeps_sandbox_config_and_named_credentials(ab, tmp_path):
     provider, profiles = _two_cred(ab, {"api_key": {"secretKey": "key"}, "app_secret": {"secretKey": "secret"}})
     sb = profiles[0].workspaces[0].sandboxes[0]
     sb.env = {"A": {"value": "1"}}
-    sb.inference = {"providerRef": "tk", "protocol": "openai", "model": "m"}
-    _secret(tmp_path, "tk", key="k-1", secret="s-2")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    sb.inference = {"providerRef": "tk", "protocol": "openai", "model": "m",
+                    "baseUrl": {"secretKeyRef": {"name": "tk", "key": "url"}}}
+    _secret(tmp_path, "tk", key="k-1", secret="s-2", url="https://keys.example.test/v1")
+    creds = resolve(ab, profiles, tmp_path)
     back = ab.profiles_from_plan(json.loads(json.dumps(ab.plan_for_user({}, profiles, creds, "d.sh"))))
     ws = back[0].workspaces[0]
     assert ws.sandboxes[0].env_values == {"A": "1"}
     assert ws.sandboxes[0].inference_values["model"] == "m"
-    assert ws.providers[0].credential_values == {"api_key": "k-1", "app_secret": "s-2"}
+    assert ws.providers[0].credential_values == {"api_key": marker("tk", "key"),
+                                               "app_secret": marker("tk", "secret")}
 
 
 def test_protocol_is_implied_by_a_known_provider_type(ab):

@@ -353,7 +353,7 @@ elif op == "sandbox download":
     sb = state["sandboxes"].get(key)
     if not sb:
         fail(f"Error: sandbox '{head[2]}' not found")
-    remote, local = head[3], head[4]
+    remote, local = head[-2], head[-1]
     # Like the gateway (0.1.2): only paths inside the working directory
     # (/sandbox) are served; anything else is refused before any transfer.
     if not remote.startswith("/sandbox/"):

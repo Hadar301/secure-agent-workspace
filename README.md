@@ -539,7 +539,7 @@ providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. OpenShell 0.1.x has no inference routing: the agent calls the endpoint itself with a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider's **profile** names. The pattern cannot know your host, so you add a profile for it: a plain OpenShell profile file in `overrides/governance-profiles/` (copy `charts/governance-policy/profiles/examples/custom-inference.yaml` and set its host), served to every gateway by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile uses it (`type: custom-inference`), reads the URL and model from the `inference` Secret, and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The key stays in the namespace credential proxy; the VM and sandbox use a nonsecret marker. A keyed endpoint must use HTTPS on port 443 with a publicly trusted certificate. The proxy binds the key to the host of `url` in the `inference` Secret. Add a governance profile under `overrides/governance-profiles/` for the same host, served by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile reads the URL and model through the sandbox's typed `inference:` block and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
 
 **Option A (Validated Pattern)** — four files in your fork, one Secret:
 
@@ -555,13 +555,13 @@ Then `git push`, `./pattern.sh make load-secrets`, wait for Argo CD (`governance
 ```bash
 make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
   PROVIDER=custom-inference MODEL=<served model> \
-  ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
-  API_KEY=<key>          # use API_KEY='' if the server needs no key
+  ENDPOINT_URL=https://<publicly-trusted-host>/v1 \
+  API_KEY=<key>
 ```
 
 Notes:
 
-- The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
+- The namespace credential proxy reaches keyed HTTPS endpoints; the VM reaches keyless HTTP endpoints. `ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1` is supported only with `API_KEY=''`. `localhost` and keyed HTTPS ports other than 443 are refused.
 - Governance must be on: the `custom-inference` profile reaches the gateway through the governance catalog. The installer refuses the apply, naming `overrides/governance-profiles`, until the profile is served.
 - Self-hosted models can be slow; the profile sets a 300-second inference timeout (`inference.timeoutSeconds`).
 

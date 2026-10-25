@@ -68,6 +68,22 @@ def helm_values(application):
     return yaml.safe_load(application["spec"]["source"]["helm"]["values"])
 
 
+def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{"name": "alice", "profiles": ["data-science"]}]))
+    values = helm_values(app(docs, "saw-alice-secrets"))
+    assert set(values["metaKeys"]["inference"]) == {"provider", "model", "cuda_model"}
+    assert all("api_key" not in keys for keys in values["metaKeys"].values())
+    path = tmp_path / "metadata-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    result = helm("template", "secrets", str(ROOT / "charts/pattern-secrets"), "-f", str(path))
+    rendered = docs_from(result)
+    meta = next(d for d in rendered if d["metadata"]["name"] == "inference-meta")
+    data = meta["spec"]["target"]["template"]["data"]
+    assert set(data) == {"provider", "model", "cuda_model"}
+    assert data["provider"] == '{{ index . "provider" | default "" }}'
+    assert data["cuda_model"] == '{{ index . "cuda_model" | default "" }}'
+
+
 def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     namespaces = {doc["metadata"]["name"]: doc for doc in by_kind(docs, "Namespace")}
@@ -137,12 +153,15 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
                                     "sshVaultPrefix": "secret/data/hub",
                                     "secrets": ["inference", "web-search"],
+                                    "metaKeys": {"inference": ["cuda_model", "model", "provider"],
+                                                 "web-search": ["provider"]},
                                     "clusterCaSecret": "saw-ingress-ca"}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
     assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
                            "sshVaultPrefix": "secret/data/hub",
                            "secrets": ["inference", "web-search"],
+                           "metaKeys": {},
                            "clusterCaSecret": "saw-ingress-ca"}
 
     bom = app(docs, "saw-alice-bom")

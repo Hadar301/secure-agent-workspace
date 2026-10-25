@@ -129,19 +129,31 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 		}
 		providerRaw, _ := os.ReadFile(filepath.Join(base, "provider"))
 		typ := strings.TrimSpace(string(providerRaw))
-		if typ == "" && len(b.Providers) == 1 {
-			typ = b.Providers[0]
+		types := b.Providers
+		if typ != "" {
+			permitted := false
+			for _, candidate := range b.Providers {
+				if candidate == typ {
+					permitted = true
+				}
+			}
+			if !permitted {
+				return p, nil, fmt.Errorf("Secret %s has no allowed provider type", b.Secret)
+			}
+			types = []string{typ}
 		}
-		permitted := false
-		for _, candidate := range b.Providers {
-			if candidate == typ {
-				permitted = true
+		// With no provider discriminator the cluster-owned binding permits
+		// every listed type; an explicit provider narrows that host set.
+		hosts := []string{}
+		seen := map[string]bool{}
+		for _, candidate := range types {
+			for _, host := range p.Profiles[candidate] {
+				if !seen[host] {
+					hosts = append(hosts, host)
+					seen[host] = true
+				}
 			}
 		}
-		if !permitted {
-			return p, nil, fmt.Errorf("Secret %s has no allowed provider type", b.Secret)
-		}
-		hosts := append([]string(nil), p.Profiles[typ]...)
 		urlRaw, _ := os.ReadFile(filepath.Join(base, "url"))
 		if custom := strings.TrimSpace(string(urlRaw)); custom != "" {
 			u, err := url.Parse(custom)

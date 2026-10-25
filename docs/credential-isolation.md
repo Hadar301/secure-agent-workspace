@@ -97,20 +97,48 @@ The local test suite cannot establish these runtime compatibility facts.
 
 Every provider Secret attached to an existing VM needs a metadata companion
 named `<secret>-meta`. It must contain only nonsecret keys such as `provider`,
-`model`, and `url`. The built-in `inference-meta` and `web-search-meta`
-ExternalSecrets and quickstart path create these. For a custom Secret in
-`additionalProviderSecrets`, create its companion and add its `{name,key,providers}`
+`model`, `cuda_model`, and `url`. The pattern-secrets ExternalSecrets and
+quickstart path create these. For a custom Secret in
+`additionalProviderSecrets`, add its `{name,key,providers}`
 binding to `credentialProxy.secrets`. The installer refuses a credential key
 file found on a VM input disk or a provider without a binding.
 
 An upgrade from the old layout rotates gateway PKI, removes persistent
 `saw-installer` admin material, updates provider credentials to markers, and
-recreates sandboxes whose egress wiring label changed. **Recreation wipes
-`/sandbox`**. Users must fetch the new gateway CA (`make saw-configure` or
+recreates sandboxes whose gateway CA changed. **Gateway-CA recreation wipes
+`/sandbox`**; a proxy-only wiring change preserves files through the archive/
+restore migration. Users must fetch the new gateway CA (`make saw-configure` or
 `scripts/extract-gateway-ca.sh`). Rotate every provider key that previously
 reached a VM; old copies on copy-on-write storage cannot be reliably scrubbed.
 Increasing `gatewayPki.generation` or changing the route host rotates the
 gateway PKI and causes the same sandbox recreation.
+
+## Typed provider config (#135)
+
+- Every named credential maps to a distinct `saw-cred.<secret>.<key>` marker
+  and requires its own `credentialProxy.secrets` binding. Any credential key
+  found on a VM input disk, including a named key or symlink, is refused.
+- `saw-users` derives `metaKeys` from every selected catalog field whose kind
+  is not `secret`, plus optional `provider`. The metadata projection therefore
+  retains fields such as `cuda_model` while excluding credential keys.
+  Quickstart likewise removes the keys listed in the Secret's bindings.
+- A shared Secret can omit `provider`. Its cluster-owned binding then permits
+  the union of the listed types' hosts, plus the Secret's HTTPS `url` host.
+  Setting `provider` narrows that union to the selected type's hosts.
+- Deployment-owned profiles are not yet in the proxy's shipped host map.
+  Their keyed sandbox endpoint must reference the credential Secret's `url`
+  key; the proxy binds only that URL's host. Keyed endpoints require HTTPS
+  port 443 and publicly trusted TLS. Other ports and service-CA trust remain
+  follow-up work. Plain HTTP bypasses key injection and sends a marker, so
+  it is suitable only for keyless endpoints.
+- `saw.redhat.com/egress-wiring` tracks the proxy URL/CA. Changes use #135's
+  archive/restore migration to preserve `/sandbox`, as environment changes do.
+  `saw.redhat.com/gateway-ca` separately tracks gateway trust: missing or
+  changed gateway trust requires recreation that wipes `/sandbox`, because
+  the old supervisor cannot connect to serve an archive.
+- OAuth2 refresh declared by the Slack/Gmail profiles is unsupported under
+  isolation until refresh runs in the namespace proxy. Do not configure
+  refresh credentials or refresh execution on the in-VM gateway.
 
 ## Rotation operations
 

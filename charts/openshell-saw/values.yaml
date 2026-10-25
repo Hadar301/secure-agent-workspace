@@ -168,7 +168,7 @@ credentialProxy:
   image: ""
   replicas: 1
   secrets:
-    - {name: inference, key: api_key, providers: [nvidia, build, openai, anthropic]}
+    - {name: inference, key: api_key, providers: [nvidia, build, openai, anthropic, custom-inference]}
     - {name: web-search, key: api_key, providers: [brave]}
 
 gatewayPki:

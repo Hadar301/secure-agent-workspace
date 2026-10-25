@@ -62,7 +62,7 @@ def test_provider_metadata_external_secrets_contain_no_key():
                   "secrets={inference,web-search,inference-openai,inference-anthropic}")
     names = {d["metadata"]["name"]: d for d in docs if d["kind"] == "ExternalSecret"}
     for name, keys in (("inference-meta", {"provider", "model", "url"}),
-                       ("web-search-meta", {"provider"}),
+                       ("web-search-meta", {"provider", "model", "url"}),
                        ("inference-openai-meta", {"provider", "model", "url"}),
                        ("inference-anthropic-meta", {"provider", "model", "url"})):
         assert name in names

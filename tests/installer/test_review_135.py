@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ROOT
+from conftest import marker, resolve
 
 GH_PROFILE = ("id: github\ncredentials:\n  - name: api_token\n"
               "    env_vars: [GITHUB_TOKEN, GH_TOKEN]\n")
@@ -28,7 +29,8 @@ def _secret(dirpath, name, **keys):
     base = dirpath / name
     base.mkdir(parents=True, exist_ok=True)
     for key, value in keys.items():
-        (base / key).write_text(value)
+        if key not in {"api_key", "token", "key", "secret"}:
+            (base / key).write_text(value)
 
 
 def _profiles(ab, sandbox, *providers):
@@ -44,14 +46,14 @@ def test_an_existing_sandbox_is_held_to_the_env_rules_too(ab, fake_env, config, 
     sandbox = ab.Sandbox(name="tools", type="generic", providers=["gh"])
     profiles = _profiles(ab, sandbox, github)
     _secret(tmp_path, "gh", token="ghp-x")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     docs = {"github": GH_PROFILE}
     ab.ProfileApplier(ab.Shell(), config, creds, provider_profile_docs=docs).apply(profiles)
     assert "default/tools" in fake_env.openshell_state()["sandboxes"]
 
     # The sandbox exists; a later apply adds GH_TOKEN to its env.
     sandbox.env = {"GH_TOKEN": {"value": "plain"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     before = len(fake_env.openshell_calls())
     with pytest.raises(ab.InstallerError, match="credential variable of provider 'gh'"):
         ab.ProfileApplier(ab.Shell(), config, creds, provider_profile_docs=docs).apply(profiles)
@@ -66,7 +68,7 @@ def test_a_named_credential_must_exist_in_the_profile(ab, fake_env, config, tmp_
                          credentials_spec={"token": {"secretKey": "token"}})   # profile: api_token
     profiles = _profiles(ab, ab.Sandbox(name="tools", type="generic", providers=["gh"]), github)
     _secret(tmp_path, "gh", token="ghp-x")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     with pytest.raises(ab.InstallerError, match="credential 'token' is not one the 'github' "
                                                 "profile declares \\(api_token\\)"):
         ab.ProfileApplier(ab.Shell(), config, creds,
@@ -87,7 +89,7 @@ def _env_sandbox(ab, env):
 
 
 def _apply(ab, config, tmp_path, profiles):
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
 
 
@@ -178,7 +180,7 @@ def test_a_failed_restore_fails_the_apply_and_is_retried(ab, fake_env, config, t
     _secret(tmp_path, "inference", api_key="k")
     ledger = tmp_path / "state" / "managed.json"
     cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(ledger)}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/chat"]["files"] = {"notes.md": "keep me"}
@@ -186,7 +188,7 @@ def test_a_failed_restore_fails_the_apply_and_is_retried(ab, fake_env, config, t
 
     (fake_env.state / "restore-fail").write_text("")
     sandbox.env = {"A": {"value": "2"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     with pytest.raises(ab.InstallerError, match="could not restore the files of 'chat'.*retried"):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     # The new sandbox exists with the new env, but the files are not there
@@ -216,14 +218,14 @@ def test_an_interrupted_recreation_is_finished_on_the_next_apply(ab, fake_env, c
     _secret(tmp_path, "inference", api_key="k")
     ledger = tmp_path / "state" / "managed.json"
     cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(ledger)}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
     applier.apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/chat"]["files"] = {"notes.md": "keep me"}
     fake_env.set_openshell_state(state)
     sandbox.env = {"A": {"value": "2"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ws = profiles[0].workspaces[0]
     applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
     applier.begin_migration(ws, sandbox, applier.sandbox_labels(ws, sandbox))    # ...then it dies
@@ -404,7 +406,7 @@ def test_a_surviving_original_is_never_overwritten_by_its_old_snapshot(
     _secret(tmp_path, "inference", api_key="k")
     ledger = tmp_path / "state" / "managed.json"
     cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(ledger)}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/chat"]["files"] = {"notes.md": "old"}
@@ -413,7 +415,7 @@ def test_a_surviving_original_is_never_overwritten_by_its_old_snapshot(
     # The recreation gets as far as recording the pending restore; the delete
     # never happens (simulated: deny it).
     sandbox.env = {"A": {"value": "2"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     fake_env.deny("sandbox delete")
     applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
     with pytest.raises(ab.InstallerError):
@@ -447,13 +449,13 @@ def test_removing_timeout_seconds_unsets_it(ab, fake_env, config, tmp_path):
         "model": "m", "timeoutSeconds": "300"})
     profiles = _profiles(ab, sandbox, vllm)
     _secret(tmp_path, "inference", api_key="k")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     cfg = fake_env.openshell_state()["sandboxes"]["default/chat"]["openclawConfig"]
     assert cfg["models.providers.openai.timeoutSeconds"] == 300
 
     del sandbox.inference["timeoutSeconds"]
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     cfg = fake_env.openshell_state()["sandboxes"]["default/chat"]["openclawConfig"]
     assert "models.providers.openai.timeoutSeconds" not in cfg
@@ -473,7 +475,7 @@ def _interrupted_recreation(ab, fake_env, config, tmp_path, new_env, native_id="
     _, sandbox, profiles = _env_sandbox(ab, {"A": {"value": "1"}})
     _secret(tmp_path, "inference", api_key="k")
     cfg = _ledger_cfg(config, tmp_path)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/chat"]["files"] = {"notes.md": "keep me"}
@@ -481,7 +483,7 @@ def _interrupted_recreation(ab, fake_env, config, tmp_path, new_env, native_id="
         state["sandboxes"]["default/chat"]["nativeId"] = native_id
     fake_env.set_openshell_state(state)
     sandbox.env = new_env
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
     ws = profiles[0].workspaces[0]
     applier.begin_migration(ws, sandbox, applier.sandbox_labels(ws, sandbox))
@@ -498,7 +500,7 @@ def test_rolling_the_env_back_during_recovery_keeps_the_files(ab, fake_env, conf
     sandbox, profiles, cfg, archive = _interrupted_recreation(
         ab, fake_env, config, tmp_path, {"A": {"value": "2"}})
     sandbox.env = {"A": {"value": "1"}}                              # rolled back
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     # One apply: the replacement is created with the env the profile wants
     # now (A=1) and the files restored into it -- no intermediate sandbox.
@@ -515,7 +517,7 @@ def test_changing_the_env_again_during_recovery_keeps_the_files(ab, fake_env, co
     sandbox, profiles, cfg, _ = _interrupted_recreation(
         ab, fake_env, config, tmp_path, {"A": {"value": "2"}})
     sandbox.env = {"A": {"value": "3"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     # Review (79411bca, P2): one apply ends with the files AND the current
     # env -- the installer service only restarts on failure, so a
@@ -530,7 +532,7 @@ def test_the_archive_outlives_every_failed_restore(ab, fake_env, config, tmp_pat
     sandbox, profiles, cfg, archive = _interrupted_recreation(
         ab, fake_env, config, tmp_path, {"A": {"value": "2"}})
     (fake_env.state / "restore-fail").write_text("")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     for _ in range(2):
         with pytest.raises(ab.InstallerError, match="retried"):
             ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -550,7 +552,7 @@ def test_a_sandbox_recovering_from_error_still_gets_its_restore(ab, fake_env, co
     sandbox, profiles, cfg, archive = _interrupted_recreation(
         ab, fake_env, config, tmp_path, {"A": {"value": "2"}})
     (fake_env.state / "restore-fail").write_text("")               # replacement created, restore fails
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     with pytest.raises(ab.InstallerError):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     (fake_env.state / "restore-fail").unlink()
@@ -576,7 +578,7 @@ def test_an_unresolvable_identity_fails_the_apply(ab, fake_env, config, tmp_path
     state["labels"]["sandbox/default/chat"] = ["saw.redhat.com/managed=true",
                                                "saw.redhat.com/env=zzzz", "saw.redhat.com/instance=other"]
     fake_env.set_openshell_state(state)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     for _ in range(2):
         with pytest.raises(ab.InstallerError, match="neither the sandbox it was taken from nor"):
             ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -624,7 +626,7 @@ def test_a_native_id_mismatch_vetoes_the_env_fallback(ab, fake_env, config, tmp_
     state["labels"]["sandbox/default/chat"] = ["saw.redhat.com/managed=true",
                                                "saw.redhat.com/env=" + ab.env_label({"A": "1"})]
     fake_env.set_openshell_state(state)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     before_calls = len(fake_env.openshell_calls())
     with pytest.raises(ab.InstallerError, match="neither the sandbox it was taken from nor"):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -634,7 +636,7 @@ def test_a_native_id_mismatch_vetoes_the_env_fallback(ab, fake_env, config, tmp_
     assert fake_env.openshell_state()["sandboxes"]["default/chat"]["files"] == {"theirs": "x"}
 
 
-def test_a_fully_unlabelled_legacy_sandbox_fails_clearly_after_a_failed_delete(
+def test_sandbox_without_identity_labels_fails_clearly_after_a_failed_delete(
         ab, fake_env, config, tmp_path, monkeypatch):
     """A sandbox from before the instance label, on a CLI with no native id,
     cannot be identified after a failed delete. The installer does not guess
@@ -644,15 +646,16 @@ def test_a_fully_unlabelled_legacy_sandbox_fails_clearly_after_a_failed_delete(
     _, sandbox, profiles = _env_sandbox(ab, {})
     _secret(tmp_path, "inference", api_key="k")
     cfg = _ledger_cfg(config, tmp_path)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
-    state["labels"]["sandbox/default/chat"] = ["saw.redhat.com/managed=true"]   # strip both labels
+    state["labels"]["sandbox/default/chat"] = [l for l in state["labels"]["sandbox/default/chat"]
+        if not l.startswith(("saw.redhat.com/env=", "saw.redhat.com/instance="))]
     state["sandboxes"]["default/chat"]["files"] = {"notes.md": "keep me"}
     fake_env.set_openshell_state(state)
 
     sandbox.env = {"A": {"value": "1"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     fake_env.deny("sandbox delete")
     with pytest.raises(ab.InstallerError):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -673,14 +676,15 @@ def test_a_legacy_sandbox_with_a_native_id_recovers(ab, fake_env, config, tmp_pa
     _, sandbox, profiles = _env_sandbox(ab, {})
     _secret(tmp_path, "inference", api_key="k")
     cfg = _ledger_cfg(config, tmp_path)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
-    state["labels"]["sandbox/default/chat"] = ["saw.redhat.com/managed=true"]
+    state["labels"]["sandbox/default/chat"] = [l for l in state["labels"]["sandbox/default/chat"]
+        if not l.startswith(("saw.redhat.com/env=", "saw.redhat.com/instance="))]
     state["sandboxes"]["default/chat"].update(files={"notes.md": "keep me"}, nativeId="gw-1")
     fake_env.set_openshell_state(state)
     sandbox.env = {"A": {"value": "1"}}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     fake_env.deny("sandbox delete")
     with pytest.raises(ab.InstallerError):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -708,7 +712,7 @@ def test_copied_instance_labels_with_another_gateway_id_are_not_the_original(
                                                "saw.redhat.com/env=" + ab.env_label({"A": "1"}),
                                                "saw.redhat.com/instance=" + rec["fromInstance"]]
     fake_env.set_openshell_state(state)
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     n = len(fake_env.openshell_calls())
     with pytest.raises(ab.InstallerError, match="neither the sandbox it was taken from nor"):
         ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
@@ -724,7 +728,7 @@ def test_unreadable_identity_with_a_pending_restore_fails_the_apply(ab, fake_env
     succeeding with the files unrestored."""
     sandbox, profiles, cfg, archive = _interrupted_recreation(
         ab, fake_env, config, tmp_path, {"A": {"value": "2"}})
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     # The replacement exists (created by a run that then failed to restore)...
     (fake_env.state / "restore-fail").write_text("")
     with pytest.raises(ab.InstallerError, match="retried"):
@@ -749,12 +753,12 @@ def test_a_custom_profile_type_onboards_through_the_inference_block(ab, fake_env
                        credential_secret_key="api_key")
     sandbox = ab.Sandbox(name="chat", type="openclaw", providers=["internal-llm"], inference={
         "providerRef": "internal-llm", "protocol": "openai",
-        "baseUrl": "https://vllm.models.example/v1", "model": "llama-3.1-8b",
+        "baseUrl": {"secretKeyRef": {"name": "vllm", "key": "url"}}, "model": "llama-3.1-8b",
         "timeoutSeconds": "300"})
     profiles = _profiles(ab, sandbox, vllm)
     ab.validate_profiles(profiles, known_profiles={"vllm-prod"})
-    _secret(tmp_path, "vllm", api_key="vk")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    _secret(tmp_path, "vllm", api_key="vk", url="https://vllm.models.example/v1")
+    creds = resolve(ab, profiles, tmp_path)
     assert sandbox.inference_values == {"providerRef": "internal-llm", "protocol": "openai",
                                         "baseUrl": "https://vllm.models.example/v1",
                                         "model": "llama-3.1-8b", "timeoutSeconds": 300}
@@ -762,7 +766,7 @@ def test_a_custom_profile_type_onboards_through_the_inference_block(ab, fake_env
                       provider_profile_docs={"vllm-prod": VLLM_PROFILE}).apply(profiles)
     state = fake_env.openshell_state()
     # The credential went through the profile's env var...
-    assert state["providers"]["default/internal-llm"]["credential"] == "VLLM_API_KEY=vk"
+    assert state["providers"]["default/internal-llm"]["credential"] == "VLLM_API_KEY=" + marker("vllm")
     # ...and the agent was onboarded against the endpoint, not skipped.
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "openclaw onboard " in c[-1])
@@ -787,7 +791,7 @@ def test_provider_ref_picks_the_inference_provider(ab, fake_env, config, tmp_pat
     profiles = _profiles(ab, sandbox, nvidia, openai)
     _secret(tmp_path, "inference", api_key="nv")
     _secret(tmp_path, "inference-openai", api_key="sk")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "openclaw onboard " in c[-1])
@@ -904,16 +908,22 @@ def test_the_local_gateway_is_selected_before_the_catalog_is_read(ab, fake_env, 
     register_gateway, i.e. through whichever gateway the CLI had selected."""
     record = {"id": "vllm-prod", "category": "inference",
               "credentials": [{"name": "api_key", "env_vars": ["VLLM_API_KEY"]}],
-              "endpoints": [{"host": "vllm.models.svc", "port": 8000}]}
+              "endpoints": [{"host": "vllm.models.example", "port": 443}]}
     fake_env.set_catalog({"brave": ["api.search.brave.com"], "vllm-prod": record})
     provider = ab.Provider(name="vllm-prod", type="vllm-prod", credential_secret="inference")
     sandbox = ab.Sandbox(name="chat", type="openclaw", providers=["vllm-prod"],
-                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m"})
+                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m",
+                                    "baseUrl": {"secretKeyRef": {"name": "inference", "key": "url"}}})
     profiles = _profiles(ab, sandbox, provider)
-    _secret(tmp_path, "inference", api_key="k")
+    _secret(tmp_path, "inference", api_key="k", url="https://vllm.models.example/v1")
     _apply(ab, config, tmp_path, profiles)
-    calls = [" ".join(c[:3]) for c in fake_env.openshell_calls()]
-    assert calls.index("gateway select " + config["mtlsGateway"]) < calls.index("provider list-profiles -o")
+    calls = fake_env.openshell_env_calls()
+    added = next(i for i, c in enumerate(calls)
+                 if c["args"][:2] == ["gateway", "add"] and config["mtlsGateway"] in c["args"])
+    catalog = next(i for i, c in enumerate(calls) if c["args"][:2] == ["provider", "list-profiles"])
+    assert added < catalog
+    assert calls[catalog]["xdg"] == config["adminConfigHome"]
+    assert calls[catalog]["gateway"] == config["mtlsGateway"]
 
 
 def test_preflight_sees_governed_profiles(ab, fake_env, config, tmp_path):
@@ -922,16 +932,17 @@ def test_preflight_sees_governed_profiles(ab, fake_env, config, tmp_path):
     credential variable was not checked against the sandbox env."""
     record = {"id": "vllm-prod", "category": "inference", "inference_capable": True,
               "credentials": [{"name": "api_key", "env_vars": ["VLLM_API_KEY"]}],
-              "endpoints": [{"host": "vllm.models.svc", "port": 8000}]}
+              "endpoints": [{"host": "vllm.models.example", "port": 443}]}
     fake_env.set_catalog({"brave": ["api.search.brave.com"], "vllm-prod": record})
     provider = ab.Provider(name="vllm-prod", type="vllm-prod", credential_secret="inference",
                            credentials_spec={"api_key": {"secretKey": "api_key"}})
     sandbox = ab.Sandbox(name="chat", type="openclaw", providers=["vllm-prod"],
-                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m"},
+                         inference={"providerRef": "vllm-prod", "protocol": "openai", "model": "m",
+                                    "baseUrl": {"secretKeyRef": {"name": "inference", "key": "url"}}},
                          env={"VLLM_API_KEY": {"value": "shadow"}})
     profiles = _profiles(ab, sandbox, provider)
-    _secret(tmp_path, "inference", api_key="k")
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    _secret(tmp_path, "inference", api_key="k", url="https://vllm.models.example/v1")
+    creds = resolve(ab, profiles, tmp_path)
     # The named credential is accepted (the governed profile declares it) and
     # the env collision is the error, before anything is created.
     before = len([c for c in fake_env.openshell_calls() if c[:2] in (["provider", "create"], ["sandbox", "create"])])
@@ -940,6 +951,6 @@ def test_preflight_sees_governed_profiles(ab, fake_env, config, tmp_path):
     calls = [c for c in fake_env.openshell_calls() if c[:2] in (["provider", "create"], ["sandbox", "create"])]
     assert len(calls) == before
     sandbox.env = {}
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
-    assert fake_env.openshell_state()["providers"]["default/vllm-prod"]["credential"] == "VLLM_API_KEY=k"
+    assert fake_env.openshell_state()["providers"]["default/vllm-prod"]["credential"] == "VLLM_API_KEY=" + marker("inference")

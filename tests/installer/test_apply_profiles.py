@@ -127,7 +127,7 @@ def test_changed_proxy_ca_recreates_sandboxes(ab, fake_env, config, profiles, cr
     make_applier(ab, changed, creds).apply(profiles)
     after = len([c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]])
     assert after == before + 2
-    assert "this wipes /sandbox" in capsys.readouterr().out
+    assert "its /sandbox files are carried over" in capsys.readouterr().out
 
 
 def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profiles, creds, monkeypatch):

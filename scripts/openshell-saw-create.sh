@@ -84,6 +84,10 @@ if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   echo "Error: python3 with PyYAML is required for network topology discovery." >&2
   exit 1
 fi
+proxy_bindings='[]'
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  proxy_bindings="$(python3 -c 'import json,sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print(json.dumps((d.get("credentialProxy") or {}).get("secrets") or []))' "${SAW_VALUES_FILE}")"
+fi
 additional_provider_secrets=()
 if [[ -n "${SAW_VALUES_FILE}" ]]; then
   mapfile -t additional_provider_secrets < <(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")
@@ -291,8 +295,10 @@ fi
 
 sync_provider_metadata() {
   local name="$1"
+  local creds
+  creds="$(jq -c --arg name "${name}" '[.[] | select(.name == $name) | .key] + ["api_key"] | unique' <<<"${proxy_bindings}")"
   oc get secret "${name}" -n "${DEPLOY_NS}" -o json |
-    jq --arg name "${name}-meta" '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key == "provider" or .key == "model" or .key == "url")))}' |
+    jq --argjson creds "${creds}" --arg name "${name}-meta" '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key as $k | $creds | index($k) | not)))}' |
     oc apply -f - >/dev/null
 }
 if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
@@ -402,12 +408,8 @@ if [[ "${dashboard_enabled}" == true ]]; then
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
 helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
-proxy_bindings='[]'
-if [[ -n "${SAW_VALUES_FILE}" ]]; then
-  proxy_bindings="$(python3 -c 'import json,sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print(json.dumps((d.get("credentialProxy") or {}).get("secrets") or []))' "${SAW_VALUES_FILE}")"
-fi
 if grep -qx 'secret/inference' <<<"${secret_names}"; then
-  proxy_bindings="$(jq -c 'if any(.[]; .name == "inference" and .key == "api_key") then . else . + [{name:"inference",key:"api_key",providers:["nvidia","build","openai","anthropic"]}] end' <<<"${proxy_bindings}")"
+  proxy_bindings="$(jq -c --arg provider "${PROVIDER}" 'if any(.[]; .name == "inference" and .key == "api_key") then . else . + [{name:"inference",key:"api_key",providers:(["nvidia","build","openai","anthropic","custom-inference",$provider] | map(select(length > 0)) | unique)}] end' <<<"${proxy_bindings}")"
 fi
 if grep -qx 'secret/web-search' <<<"${secret_names}"; then
   proxy_bindings="$(jq -c 'if any(.[]; .name == "web-search" and .key == "api_key") then . else . + [{name:"web-search",key:"api_key",providers:["brave"]}] end' <<<"${proxy_bindings}")"
@@ -415,6 +417,7 @@ fi
 for name in "${additional_provider_secrets[@]}"; do
   [[ -n "${name}" && "${name}" != web-search ]] || continue
   if grep -qx "secret/${name}" <<<"${secret_names}"; then
+    if jq -e --arg name "${name}" 'any(.[]; .name == $name)' <<<"${proxy_bindings}" >/dev/null; then continue; fi
     provider="$(oc get secret "${name}" -n "${DEPLOY_NS}" -o json | jq -er '.data.provider | @base64d | select(length > 0)')"
     proxy_bindings="$(jq -c --arg name "${name}" --arg provider "${provider}" 'if any(.[]; .name == $name) then . else . + [{name:$name,key:"api_key",providers:[$provider]}] end' <<<"${proxy_bindings}")"
   fi

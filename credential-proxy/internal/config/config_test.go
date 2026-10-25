@@ -3,8 +3,55 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func TestSharedSecretUsesAllowedTypesAndExplicitProviderNarrowsHosts(t *testing.T) {
+	root := t.TempDir()
+	secret := filepath.Join(root, "secrets", "inference")
+	if err := os.MkdirAll(secret, 0700); err != nil {
+		t.Fatal(err)
+	}
+	policy := filepath.Join(root, "config.json")
+	if err := os.WriteFile(policy, []byte(`{"markerPrefix":"saw-cred","allowHosts":["api.example.test","other.example.test","custom.example.test"],"profiles":{"nvidia":["api.example.test"],"build":["api.example.test"],"openai":["other.example.test"]},"bindings":[{"secret":"inference","key":"api_key","providers":["nvidia","build","openai","custom-inference"]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"api_key": "test-key", "url": "https://custom.example.test/v1"} {
+		if err := os.WriteFile(filepath.Join(secret, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := New(policy, filepath.Join(root, "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		provider string
+		hosts    []string
+	}{
+		{"", []string{"api.example.test", "other.example.test", "custom.example.test"}},
+		{"nvidia", []string{"api.example.test", "custom.example.test"}},
+		{"custom-inference", []string{"custom.example.test"}},
+	} {
+		if err := os.WriteFile(filepath.Join(secret, "provider"), []byte(tc.provider), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, bindings, err := store.Snapshot()
+		if err != nil || len(bindings) != 1 {
+			t.Fatalf("provider %q: %v", tc.provider, err)
+		}
+		if !reflect.DeepEqual(bindings[0].Hosts, tc.hosts) {
+			t.Fatalf("provider %q: hosts %v, want %v", tc.provider, bindings[0].Hosts, tc.hosts)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(secret, "provider"), []byte("unbound"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Snapshot(); err == nil {
+		t.Fatal("an explicit unbound provider must be refused")
+	}
+}
 
 func TestSnapshotFollowsSecretRotation(t *testing.T) {
 	root := t.TempDir()

@@ -33,6 +33,31 @@ TEST_PROXY = {"url": "http://proxy.test.svc.cluster.local:3128",
                   {"name": "web-search", "key": "api_key", "providers": ["brave"]}]}
 
 
+def proxy_for(ab, profiles):
+    """Bind every enabled keyed provider's Secret keys without VM key files."""
+    seen = {}
+    for profile in profiles:
+        for ws in profile.workspaces:
+            for p in ws.providers:
+                if not p.enabled or p.credential_free:
+                    continue
+                keys = ([e["secretKey"] for e in p.credentials_spec.values()]
+                        if p.credentials_spec else [p.credential_secret_key or "api_key"])
+                types = {p.type, ab.nemoclaw_provider(p)} - {""}
+                for key in keys:
+                    seen.setdefault((p.credential_secret, key), set()).update(types)
+    return {**TEST_PROXY, "secrets": [{"name": s, "key": k, "providers": sorted(t)}
+                                      for (s, k), t in sorted(seen.items())]}
+
+
+def resolve(ab, profiles, secrets_dir):
+    return ab.resolve_credentials(profiles, secrets_dir, proxy_for(ab, profiles))
+
+
+def marker(secret, key="api_key"):
+    return f"saw-cred.{secret}.{key}"
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location("apply_bom", SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -289,6 +314,10 @@ def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir, fake_e
     (installer / "installer-bom.yaml").write_text(yaml.safe_dump(bom))
     (installer / "config.json").write_text(json.dumps(config))
     (installer / "apply_bom.py").write_text(SCRIPT.read_text())
+    # Match the installer disk: typed endpoint validation uses this shipped
+    # host catalog to distinguish built-in and deployment-owned profiles.
+    for profile in (CHART / "files/provider-profiles").glob("*.yaml"):
+        (installer / f"provider-profile-{profile.name}").write_text(profile.read_text())
     for name in ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs"):
         (installer / name).write_text((SCRIPT.parent / name).read_text())
     for name in ("saw-gateway-pki", "openshell-gateway-pki.conf"):
