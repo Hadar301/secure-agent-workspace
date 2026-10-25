@@ -1,4 +1,7 @@
 # Governance policy data — provider profiles and sandbox policy.
-# To add a new provider, drop a YAML file in profiles/ and push.
-# The interceptor picks up changes automatically via file watcher.
+# profiles/*.yaml are the shipped catalog (vended as they are). A
+# deployment's own profiles (a custom inference host, say) go in
+# overrides/governance-profiles/ instead, served next to these by the
+# governance-extra-profiles application; profiles/examples/ holds templates
+# to copy there and is not vended. The interceptor reloads on change.
 enabled: true

@@ -1,0 +1,34 @@
+# This deployment's copy of charts/governance-policy/profiles/examples/
+# custom-inference.yaml: an OpenAI-compatible inference server of your own.
+# `host`/`port` name the server of the `url` in the inference Secret; the
+# credential is sent to that host only. The SAW-BOM `custom-inference`
+# profile uses it (provider `custom-inference`, type `custom-inference`).
+id: custom-inference
+display_name: Custom inference endpoint
+description: OpenAI-compatible inference server named by this deployment
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: API key of the custom inference endpoint
+    env_vars: [CUSTOM_INFERENCE_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: custom.inference.local     # the host of the `url` in the inference Secret
+    port: 443                        # its port (443 for https without one, 8000 for a vLLM Service)
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  # OpenClaw's node: /usr/bin/node-<major> in the Hummingbird image
+  # (/usr/bin/node links to it; the real path is what is matched),
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node
