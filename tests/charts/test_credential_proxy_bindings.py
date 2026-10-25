@@ -58,10 +58,39 @@ def test_proxy_image_requires_digest():
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_provider_metadata_external_secrets_contain_no_key():
-    docs = render(ROOT / "charts/pattern-secrets")
+    docs = render(ROOT / "charts/pattern-secrets", "--set",
+                  "secrets={inference,web-search,inference-openai,inference-anthropic}")
     names = {d["metadata"]["name"]: d for d in docs if d["kind"] == "ExternalSecret"}
     for name, keys in (("inference-meta", {"provider", "model", "url"}),
-                       ("web-search-meta", {"provider"})):
+                       ("web-search-meta", {"provider"}),
+                       ("inference-openai-meta", {"provider", "model", "url"}),
+                       ("inference-anthropic-meta", {"provider", "model", "url"})):
         assert name in names
         assert set(names[name]["spec"]["target"]["template"]["data"]) == keys
         assert "api_key" not in names[name]["spec"]["target"]["template"]["data"]
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_unattached_search_secret_has_no_proxy_binding_or_mount():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
+                  "--set-json", "additionalProviderSecrets=[]")
+    configmaps = {d["metadata"]["name"]: d for d in docs if d["kind"] == "ConfigMap"}
+    policy = json.loads(configmaps["saw-test-credential-proxy-config"]["data"]["config.json"])
+    assert [b["secret"] for b in policy["bindings"]] == ["inference"]
+    installer = json.loads(configmaps["saw-test-installer"]["data"]["config.json"])
+    assert [b["name"] for b in installer["credentialProxy"]["secrets"]] == ["inference"]
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    volumes = deployment["spec"]["template"]["spec"]["volumes"]
+    assert not any(v.get("secret", {}).get("secretName") == "web-search" for v in volumes)
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_gitops_ca_hook_has_a_bounded_failure():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
+                  "--set", "cleanupOnDelete=false")
+    hook = next(d for d in docs if d["kind"] == "Pod"
+                and d["metadata"]["name"] == "saw-credential-proxy-ca-hook")
+    assert hook["spec"]["restartPolicy"] == "Never"
+    assert hook["spec"]["activeDeadlineSeconds"] == 120

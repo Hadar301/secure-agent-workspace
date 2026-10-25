@@ -108,7 +108,7 @@ def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
         return render(*args)[("EgressFirewall", "default")]["spec"]["egress"]
     assert firewall_rules().count(api_rule) == 1
     assert api_rule in firewall_rules("--set", "networkPolicy.enabled=false")
-    assert api_rule not in firewall_rules("--set", "cleanupOnDelete=false")
+    assert api_rule in firewall_rules("--set", "cleanupOnDelete=false")
     fallback = firewall_rules("--set", "networkPolicy.enabled=false",
                               "--set-json", "cleanupApi.endpoints=[]")
     assert {"type": "Allow", "to": {"nodeSelector": {"matchLabels": {

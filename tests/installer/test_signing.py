@@ -10,7 +10,8 @@ import sys
 import pytest
 
 BUNDLE_FILES = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
-                "tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
+                "tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs",
+                "saw-gateway-pki", "openshell-gateway-pki.conf")
 
 
 def _write_bundle_files(directory):

@@ -134,7 +134,7 @@ fi
 # (PR #54 review, 3). Each file's hash is checked independently below, so a
 # boundary shift like that changes two lines and is caught. Must match
 # scripts/build-installer-manifest.py exactly (same file set, same line
-# format, including the three mandatory tool-gate files), or a genuine,
+# format, including the mandatory tool-gate and gateway PKI files), or a genuine,
 # unmodified installer fails enforce.
 manifest_text() {
   local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f hash
@@ -142,7 +142,7 @@ manifest_text() {
   for extra in "${dir}"/provider-profile-*.yaml; do
     files+=("$(basename "$extra")")
   done
-  for extra in tool-actions.yaml tool-gate.mjs tool-gate-plugin.mjs; do
+  for extra in tool-actions.yaml tool-gate.mjs tool-gate-plugin.mjs saw-gateway-pki openshell-gateway-pki.conf; do
     files+=("$extra")
   done
   mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
