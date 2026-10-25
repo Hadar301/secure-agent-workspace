@@ -3477,7 +3477,7 @@ class ProfileApplier:
                 break
             detail = (result.err + "\n" + result.out).lower()
             pending_reload = any(message in detail for message in (
-                "connection was not ready", "tls handshake", "unknownissuer", "unknownca"))
+                "transport error", "connection was not ready", "tls handshake", "unknownissuer", "unknownca"))
             if not pending_reload or time.monotonic() >= deadline:
                 raise InstallerError(
                     "the mTLS client cannot list workspaces; the installer needs the "
