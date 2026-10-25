@@ -73,6 +73,7 @@ class Runner:
             "image_digests": {}, "cleanup_verified": False,
         }
         self.home: Path | None = None
+        self.openshell_env: dict[str, str] | None = None
         self.env = dict(os.environ)
         for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY"):
             self.env.pop(key, None)
@@ -101,9 +102,12 @@ class Runner:
     def call(self, args: list[str], *, timeout: int = 120,
              input_text: str | None = None, allow_failure: bool = False,
              env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        command_env = env if env is not None else self.env
+        if env is None and args[0] == "openshell" and self.openshell_env is not None:
+            command_env = self.openshell_env
         try:
             completed = subprocess.run(
-                args, cwd=ROOT, env=env or self.env, input=input_text,
+                args, cwd=ROOT, env=command_env, input=input_text,
                 text=True, capture_output=True, timeout=timeout, check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -183,6 +187,8 @@ class Runner:
         secret_home.chmod(0o700)
         self.home = secret_home
         self.env["HOME"] = str(secret_home)
+        self.openshell_env = dict(self.env)
+        self.openshell_env["XDG_CONFIG_HOME"] = str(secret_home / ".config")
         self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
         self.env["SSH_KEY_PATH"] = str(secret_home / "ssh/sandbox-ssh")
         self.env["VALUES_SECRET"] = str(secret_home / "values-secret-secure-agent-workspace.yaml")
@@ -766,7 +772,56 @@ class Runner:
                        expected for item in volumes.get("items", [])):
                 raise E2EError(f"{user} VM disk does not use the new gateway digest")
 
-    def oidc_login(self, user: str, gateway: str, token_dir: Path) -> dict[str, Any]:
+    def configure_cli_gateway(self, user: str) -> None:
+        """Register the gateway without the CLI's interactive browser login."""
+        if self.home is None:
+            raise E2EError("private HOME is not ready")
+        namespace = f"saw-{user}"
+        route = self.oc_json("get", "route", f"{user}-gateway", "-n", namespace)
+        host = route.get("spec", {}).get("host")
+        if not isinstance(host, str) or not host:
+            raise E2EError(f"gateway route is missing for {user}")
+        keycloak_host = self.call(["scripts/keycloak-host.sh", "saw-keycloak"]).stdout.strip()
+        if not keycloak_host:
+            raise E2EError("Keycloak route is missing")
+        issuer = f"https://{keycloak_host}/realms/openshell"
+
+        gateway_dir = self.home / ".config/openshell/gateways" / user
+        ca_path = gateway_dir / "mtls/ca.crt"
+        extract_env = dict(
+            self.env, NS=namespace, VM_NAME=user,
+            SSH_KEY_PATH=str(self.home / "ssh/sandbox-ssh"),
+            OUT_FILE=str(ca_path),
+        )
+        self.call(["scripts/extract-gateway-ca.sh"], timeout=180, env=extract_env)
+        if not ca_path.is_file():
+            raise E2EError(f"gateway CA was not installed for {user}")
+        ca_data = ca_path.read_text(encoding="utf-8")
+        if "BEGIN CERTIFICATE" not in ca_data or "PRIVATE KEY" in ca_data:
+            raise E2EError(f"gateway CA is invalid for {user}")
+
+        metadata = {
+            "name": user,
+            "gateway_endpoint": f"https://{host}",
+            "is_remote": False,
+            "gateway_port": 0,
+            "auth_mode": "oidc",
+            "oidc_issuer": issuer,
+            "oidc_client_id": "openshell-cli",
+            "oidc_audience": "openshell-cli",
+            "oidc_scopes": "openid email profile",
+        }
+        metadata_path = gateway_dir / "metadata.json"
+        self.private_file(
+            str(metadata_path.relative_to(self.home)),
+            (json.dumps(metadata, indent=2) + "\n").encode(),
+        )
+        # `gateway add --oidc-issuer` always starts an interactive browser flow.
+        # CI has already obtained a token with this user's generated Keycloak password.
+        self.call(["openshell", "gateway", "select", user], timeout=30)
+
+    def oidc_login(self, user: str, gateway: str, token_dir: Path, *,
+                   persist_for_cli: bool = True) -> dict[str, Any]:
         if self.home is None:
             raise E2EError("private HOME is not ready")
         host = self.call(["scripts/keycloak-host.sh", "saw-keycloak"]).stdout.strip()
@@ -799,20 +854,22 @@ class Runner:
             "expires_at": int(time.time()) + int(token["expires_in"]),
             "issuer": issuer, "client_id": "openshell-cli",
         }
-        gateway_dir = self.home / ".config/openshell/gateways" / gateway
-        gateway_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        cache = gateway_dir / "oidc_token.json"
-        cache.write_text(json.dumps(bundle), encoding="utf-8")
-        cache.chmod(0o600)
+        if persist_for_cli:
+            gateway_dir = self.home / ".config/openshell/gateways" / gateway
+            gateway_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache = gateway_dir / "oidc_token.json"
+            cache.write_text(json.dumps(bundle), encoding="utf-8")
+            cache.chmod(0o600)
         return token
 
     def live_behavior(self) -> None:
         if self.home is None:
             raise E2EError("private HOME is not ready")
         owner = USERS[0]
-        self.call(["make", "saw-configure", f"OPENSHELL_SAW_NAME={owner}"], timeout=180)
+        self.configure_cli_gateway(owner)
         owner_token = self.oidc_login(owner, owner, self.home / "owner-oidc")
-        self.oidc_login(USERS[1], owner, self.home / "second-oidc")
+        self.oidc_login(USERS[1], owner, self.home / "second-oidc",
+                       persist_for_cli=False)
         self.env["TEST_OWNER_SUBJECT"] = self.jwt_subject(owner_token["access_token"])
         listing = self.call(["openshell", "--gateway", owner, "sandbox", "list",
                              "--output", "json"], timeout=45).stdout

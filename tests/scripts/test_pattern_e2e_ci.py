@@ -28,6 +28,24 @@ def runner(monkeypatch, tmp_path):
     return pattern_e2e.Runner()
 
 
+def test_openshell_uses_private_config_without_changing_podman_env(runner, monkeypatch):
+    runner.env["XDG_CONFIG_HOME"] = "/host/podman-config"
+    runner.openshell_env = dict(runner.env, XDG_CONFIG_HOME="/private/openshell-config")
+    captured_envs = []
+
+    def fake_run(_args, **kwargs):
+        captured_envs.append(kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pattern_e2e.subprocess, "run", fake_run)
+
+    runner.call(["openshell", "gateway", "select", "ciowner"])
+    runner.call(["podman", "info"])
+
+    assert captured_envs[0]["XDG_CONFIG_HOME"] == "/private/openshell-config"
+    assert captured_envs[1]["XDG_CONFIG_HOME"] == "/host/podman-config"
+
+
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
     child = {
         "metadata": {"name": "saw-ciowner"},
