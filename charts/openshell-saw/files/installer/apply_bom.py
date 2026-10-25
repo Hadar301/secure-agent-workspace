@@ -2983,6 +2983,11 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
     for path, (content, mode) in files.items():
         if write_if_changed(path, content, mode):
             changed = True
+    # The Podman driver relabels this public CA for its read-only bind mount.
+    # Rootless Podman cannot relabel a root-owned file under /etc on Fedora.
+    if write_if_changed(home / ".config/openshell/credential-proxy-ca.pem",
+                        proxy_pem, 0o644, owner):
+        changed = True
     legacy_dropin = home / SAN_DROPIN
     if legacy_dropin.exists():
         legacy_dropin.unlink()

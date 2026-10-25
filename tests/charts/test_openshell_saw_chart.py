@@ -388,6 +388,8 @@ def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert toml["openshell"]["drivers"]["podman"]["supervisor_image"] == \
         values["bom"]["spec"]["openshell"]["supervisor"]["image"]
+    assert toml["openshell"]["drivers"]["podman"]["proxy_ca_bundle"] == \
+        "/home/cloud-user/.config/openshell/credential-proxy-ca.pem"
     assert "oidc" not in toml["openshell"].get("gateway", {})   # no issuer configured
     jwt = toml["openshell"]["gateway"]["gateway_jwt"]
     assert jwt == {

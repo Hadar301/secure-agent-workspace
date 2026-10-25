@@ -371,7 +371,7 @@ sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 # attached, and no host path or image.
 allow_driver_config = true
 https_proxy = {{ printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace | quote }}
-proxy_ca_bundle = "/etc/openshell/credential-proxy-ca.pem"
+proxy_ca_bundle = "/home/cloud-user/.config/openshell/credential-proxy-ca.pem"
 proxy_connect_by_hostname = true
 {{- if .Values.governance.enabled }}
 

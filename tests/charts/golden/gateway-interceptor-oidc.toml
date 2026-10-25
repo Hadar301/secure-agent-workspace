@@ -35,7 +35,7 @@ sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e3
 # attached, and no host path or image.
 allow_driver_config = true
 https_proxy = "http://saw-test-credential-proxy.saw-alice.svc.cluster.local:3128"
-proxy_ca_bundle = "/etc/openshell/credential-proxy-ca.pem"
+proxy_ca_bundle = "/home/cloud-user/.config/openshell/credential-proxy-ca.pem"
 proxy_connect_by_hostname = true
 
 [[openshell.gateway.interceptors]]

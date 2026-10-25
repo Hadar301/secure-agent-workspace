@@ -289,6 +289,14 @@ def test_install_syncs_gateway_config_every_boot(world):
     assert "OPENSHELL_NEW=1" in (world.etc / "gateway.env").read_text()
 
 
+def test_proxy_ca_mount_source_belongs_to_the_runtime_user(world):
+    assert world.run("install").returncode == 0
+    source = world.home / ".config/openshell/credential-proxy-ca.pem"
+    assert source.read_bytes() == (world.inputs / "proxy-ca/ca.crt").read_bytes()
+    assert source.stat().st_uid == world.home.stat().st_uid
+    assert source.stat().st_mode & 0o777 == 0o644
+
+
 def test_route_host_updates_pki_inputs_and_rotates_old_certificate(world):
     config = json.loads((world.inputs / "installer" / "config.json").read_text())
     config["routeHost"] = "saw-test-gateway-ns.apps.example.com"
