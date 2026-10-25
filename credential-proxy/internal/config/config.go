@@ -124,7 +124,7 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 	for _, b := range p.Bindings {
 		base := filepath.Join(s.secretsDir, b.Secret)
 		value, err := os.ReadFile(filepath.Join(base, b.Key))
-		if err != nil || len(strings.TrimSpace(string(value))) == 0 {
+		if err != nil {
 			return p, nil, fmt.Errorf("Secret %s key %s is missing or empty", b.Secret, b.Key)
 		}
 		providerRaw, _ := os.ReadFile(filepath.Join(base, "provider"))
@@ -154,6 +154,7 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 				}
 			}
 		}
+		plainHTTP := false
 		urlRaw, _ := os.ReadFile(filepath.Join(base, "url"))
 		if custom := strings.TrimSpace(string(urlRaw)); custom != "" {
 			u, err := url.Parse(custom)
@@ -167,7 +168,17 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 					return p, nil, fmt.Errorf("Secret %s has an invalid HTTPS host or port", b.Secret)
 				}
 				hosts = append(hosts, strings.ToLower(u.Hostname()))
+			} else {
+				plainHTTP = true
 			}
+		}
+		// Keyless HTTP bypasses interception. It needs no resolved key and
+		// must not prevent the installer from starting the sandbox gateway.
+		if plainHTTP && (len(hosts) == 0 || strings.TrimSpace(string(value)) == "") {
+			continue
+		}
+		if strings.TrimSpace(string(value)) == "" {
+			return p, nil, fmt.Errorf("Secret %s key %s is missing or empty", b.Secret, b.Key)
 		}
 		if len(hosts) == 0 {
 			return p, nil, fmt.Errorf("Secret %s has no bound hosts", b.Secret)

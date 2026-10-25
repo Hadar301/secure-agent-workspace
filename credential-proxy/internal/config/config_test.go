@@ -105,6 +105,42 @@ func TestSnapshotFollowsSecretRotation(t *testing.T) {
 	}
 }
 
+func TestKeylessHTTPDoesNotRequireAnInterceptBinding(t *testing.T) {
+	root := t.TempDir()
+	secret := filepath.Join(root, "secrets", "inference")
+	if err := os.MkdirAll(secret, 0700); err != nil {
+		t.Fatal(err)
+	}
+	policy := filepath.Join(root, "config.json")
+	if err := os.WriteFile(policy, []byte(`{"markerPrefix":"saw-cred","allowHosts":["api.example.test"],"profiles":{},"bindings":[{"secret":"inference","key":"api_key","providers":["custom-inference"]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(policy, filepath.Join(root, "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", "unused-key"} {
+		if err := os.WriteFile(filepath.Join(secret, "api_key"), []byte(key), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, endpoint := range []string{"http://models.example.test:8000/v1", "https://models.example.test/v1"} {
+			if err := os.WriteFile(filepath.Join(secret, "url"), []byte(endpoint), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, bindings, err := store.Snapshot()
+			if endpoint[:5] == "http:" {
+				if err != nil || len(bindings) != 0 {
+					t.Fatalf("HTTP must stay ready without intercepting: %v %v", bindings, err)
+				}
+			} else if key == "" && err == nil {
+				t.Fatal("HTTPS still requires its bound key")
+			} else if key != "" && (err != nil || len(bindings) != 1) {
+				t.Fatalf("HTTPS must still bind its key: %v %v", bindings, err)
+			}
+		}
+	}
+}
+
 func TestWildcardIsOneLabel(t *testing.T) {
 	for _, tc := range []struct {
 		host string
