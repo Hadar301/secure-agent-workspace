@@ -133,6 +133,8 @@ gateway PKI and causes the same sandbox recreation.
   it is suitable only for keyless endpoints.
 - `saw.redhat.com/egress-wiring` tracks the proxy URL/CA. Changes use #135's
   archive/restore migration to preserve `/sandbox`, as environment changes do.
+  Restore preserves file contents and modes; file ownership follows the new
+  sandbox's runtime user because extraction runs without chown privileges.
   `saw.redhat.com/gateway-ca` separately tracks gateway trust: missing or
   changed gateway trust requires recreation that wipes `/sandbox`, because
   the old supervisor cannot connect to serve an archive.
