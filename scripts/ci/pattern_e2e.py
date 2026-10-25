@@ -157,11 +157,12 @@ class Runner:
             raise E2EError(f"oc {args[0]} returned no JSON object")
         return data
 
-    def stage(self, name: str, action) -> None:
+    def stage(self, name: str, action, *, persist: bool = True) -> None:
         print(f"{now()} {name}: started", flush=True)
         entry = {"name": name, "started_at": now(), "result": "failed"}
         self.report["stages"].append(entry)
-        self.save_report()
+        if persist:
+            self.save_report()
         try:
             action()
         except Exception as exc:
@@ -171,7 +172,8 @@ class Runner:
             entry["result"] = "passed"
         finally:
             entry["finished_at"] = now()
-            self.save_report()
+            if persist:
+                self.save_report()
             print(f"{now()} {name}: {entry['result']}", flush=True)
 
     def save_report(self) -> None:
@@ -1164,12 +1166,13 @@ class Runner:
         self.save_report()
         self.release_lock()
 
-    def finish(self) -> None:
+    def finish(self, *, save_report: bool = True) -> None:
         if self.home is not None:
             shutil.rmtree(self.home)
             self.home = None
         self.report["finished_at"] = now()
-        self.save_report()
+        if save_report:
+            self.save_report()
 
     def run(self) -> int:
         failure: str | None = None
@@ -1207,11 +1210,19 @@ class Runner:
 
     def recover_cleanup(self) -> int:
         failure: str | None = None
+        previous_report_exists = (self.artifacts / "results.json").is_file()
+        recovery_loaded = False
         try:
-            self.stage("cleanup-prerequisites", self.setup_recovery_files)
+            self.stage("cleanup-prerequisites", self.setup_recovery_files,
+                       persist=False)
             self.stage("cluster-identity", lambda: self.cluster_identity(
-                create_lock_namespace=False))
+                create_lock_namespace=False), persist=False)
+            initial_stages = self.report["stages"]
             self.load_recovery_state()
+            if self.report["stages"] is not initial_stages:
+                self.report["stages"].extend(initial_stages)
+            recovery_loaded = True
+            self.save_report()
             if self.locked:
                 try:
                     self.diagnostics()
@@ -1229,7 +1240,7 @@ class Runner:
                     self.report["cleanup_lock_error"] = self.redact(str(exc))
             else:
                 self.report["cleanup_verified"] = self.report.get("cleanup_verified", False)
-            self.finish()
+            self.finish(save_report=recovery_loaded or not previous_report_exists)
         if failure:
             print(f"Pattern E2E cleanup failed: {failure}", file=sys.stderr)
             return 1

@@ -593,6 +593,21 @@ def test_recovery_preserves_test_report_and_appends_cleanup_stage(monkeypatch, t
         "live-behavior", "recovery-cleanup"]
 
 
+def test_recovery_prerequisite_failure_keeps_test_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("CI_RECOVERY_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_ARTIFACT_DIR", str(tmp_path))
+    report_path = tmp_path / "results.json"
+    original = '{"run_id":"123","stages":[{"name":"live-behavior"}]}\n'
+    report_path.write_text(original, encoding="utf-8")
+    runner = pattern_e2e.Runner(recovery=True)
+    monkeypatch.setattr(runner, "setup_recovery_files", lambda: (_ for _ in ()).throw(
+        pattern_e2e.E2EError("Podman is unavailable")))
+
+    assert runner.recover_cleanup() == 1
+    assert report_path.read_text(encoding="utf-8") == original
+
+
 def test_recovery_refuses_a_different_run_id(runner, monkeypatch):
     monkeypatch.setenv("CI_RECOVERY_RUN_ID", "123")
     runner.recovery_run_id = "123"
