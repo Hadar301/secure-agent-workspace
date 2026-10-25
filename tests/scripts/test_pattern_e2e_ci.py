@@ -28,6 +28,18 @@ def runner(monkeypatch, tmp_path):
     return pattern_e2e.Runner()
 
 
+@pytest.mark.parametrize(("output", "expected"), [
+    ('{"result":"denied","protocol":"grpc","grpc_code":7}', True),
+    ('{"result":"denied","protocol":"grpc","grpc_code":"7"}', False),
+    ('{"result":"denied","protocol":"grpc","grpc_code":0}', False),
+    ('{"result":"allowed","protocol":"grpc","grpc_code":7}', False),
+    ('{"result":"denied","protocol":"http","status_code":403}', False),
+    ("not json", False),
+])
+def test_second_user_denial_requires_grpc_permission_denied(output, expected):
+    assert pattern_e2e.second_user_denial_passed(output) is expected
+
+
 def test_openshell_uses_private_config_without_changing_podman_env(runner, monkeypatch):
     runner.env["XDG_CONFIG_HOME"] = "/host/podman-config"
     runner.openshell_env = dict(runner.env, XDG_CONFIG_HOME="/private/openshell-config")
@@ -479,6 +491,103 @@ def test_e2e_runs_guest_and_live_checks(runner, monkeypatch):
                            "guest-installer", "live-behavior"]
 
 
+def test_install_phase_keeps_cluster_ready_for_live_checks(runner, monkeypatch, tmp_path):
+    install_runner = pattern_e2e.Runner(phase="install")
+    install_runner.locked = True
+    install_runner.home = tmp_path / "saw-ci-install"
+    install_runner.home.mkdir()
+    stages = []
+    lock_updates = []
+
+    for name in ("setup_files", "preflight", "build", "prepare_registry_pull",
+                 "install", "verify_deployment_smoke", "verify_guest_install"):
+        monkeypatch.setattr(install_runner, name, lambda: None)
+
+    def stage(name, action):
+        stages.append(name)
+        action()
+
+    monkeypatch.setattr(install_runner, "stage", stage)
+    monkeypatch.setattr(install_runner, "update_lock_data",
+                        lambda data: lock_updates.append(data))
+    monkeypatch.setattr(install_runner, "diagnostics", lambda: None)
+
+    assert install_runner.run() == 0
+    assert "live-behavior" not in stages
+    assert stages[-1] == "guest-installer"
+    assert lock_updates == [{"state": "live-pending", "test-outcome": "live-pending"}]
+    assert install_runner.home.is_dir()
+    assert install_runner.report["installation_ready"] is True
+
+
+def test_live_phase_runs_without_reinstalling(runner, monkeypatch, tmp_path):
+    runner.phase = "live"
+    runner.locked = True
+    runner.home = tmp_path / "saw-ci-123"
+    runner.home.mkdir()
+    stages = []
+    lock_updates = []
+    monkeypatch.setattr(runner, "load_install_result", lambda: None)
+
+    def stage(name, action):
+        stages.append(name)
+        action()
+
+    monkeypatch.setattr(runner, "stage", stage)
+    monkeypatch.setattr(runner, "live_behavior", lambda: None)
+    monkeypatch.setattr(runner, "update_lock_data",
+                        lambda data: lock_updates.append(data))
+
+    assert runner.run() == 0
+    assert stages == ["resume-installed-run", "live-behavior"]
+    assert lock_updates == [{"state": "live-pending", "test-outcome": "success",
+                             "live-outcome": "success"}]
+    assert runner.home.is_dir()
+
+
+def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, tmp_path):
+    private_home = tmp_path / "saw-ci-123"
+    private_home.mkdir()
+    (private_home / ".run-id").write_text("123\n")
+    required_files = (
+        ".kube/config", "cluster-ca.pem", "cluster-service-ca.crt",
+        "ssh/sandbox-ssh", "ssh/sandbox-ssh.pub", "ciowner-password",
+        "cisecond-password", "inference-key", "bin/virtctl",
+    )
+    for name in required_files:
+        file = private_home / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("private test value")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    previous = {
+        **runner.report,
+        "installation_ready": True,
+        "private_home": str(private_home),
+        "stages": [{"name": name, "result": "passed"} for name in (
+            "prepare-files", "cluster-preflight-and-lock", "build-and-record-digests",
+            "prepare-registry-pull", "pattern-install",
+            "deployment-readiness-and-digest-checks", "guest-installer")],
+    }
+    (runner.artifacts / "results.json").write_text(json.dumps(previous))
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/repository": runner.repo,
+        "saw.redhat.com/run-id": runner.run_id,
+        "saw.redhat.com/sha": runner.sha,
+        "saw.redhat.com/target-branch": runner.branch,
+    }}, "data": {"state": "live-pending", "baseline-namespaces": "[]",
+                 "build-attempted": "true", "install-attempted": "true"}}
+    monkeypatch.setattr(runner, "verify_target_ref", lambda: None)
+    monkeypatch.setattr(runner, "cluster_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+
+    runner.load_install_result()
+
+    assert runner.locked is True
+    assert runner.home == private_home
+    assert runner.env["KUBECONFIG"] == str(private_home / ".kube/config")
+    assert runner.report["phase"] == "live"
+
+
 def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
     monkeypatch.setattr(runner, "install_virtctl", lambda: None)
     monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs:
@@ -489,6 +598,27 @@ def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
                         predicate())
     with pytest.raises(pattern_e2e.E2EError, match="ciowner apply phase failed"):
         runner.verify_guest_install()
+
+
+def test_guest_status_uses_user_namespace_despite_outer_make_value(runner, monkeypatch):
+    runner.env["SAW_NS"] = "saw-"
+    calls = []
+    monkeypatch.setattr(runner, "install_virtctl", lambda: None)
+
+    def fake_call(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "install": {"phase": "Done"},
+            "apply": {"phase": "Done"}}))
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    monkeypatch.setattr(runner, "wait_for", lambda _label, predicate, **_kwargs:
+                        predicate())
+
+    runner.verify_guest_install()
+
+    assert [call[1]["env"]["SAW_NS"] for call in calls] == [
+        "saw-ciowner", "saw-cisecond"]
 
 
 def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeypatch):
@@ -631,7 +761,7 @@ def test_recovery_refuses_to_clean_without_saved_namespace_snapshot(
         "saw.redhat.com/repository": "example/repo",
         "saw.redhat.com/run-id": "123",
         "saw.redhat.com/sha": "b" * 40,
-    }}, "data": {"state": "cleanup-required"}}
+    }}, "data": {"state": "live-pending"}}
     monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
     with pytest.raises(pattern_e2e.E2EError, match="namespace snapshot"):
         runner.load_recovery_state()

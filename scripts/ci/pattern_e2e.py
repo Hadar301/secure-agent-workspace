@@ -55,8 +55,21 @@ class E2ECommandTimeout(E2EError):
     """A command in a readiness poll timed out and can be retried."""
 
 
+def second_user_denial_passed(output: str) -> bool:
+    """Check the gRPC PERMISSION_DENIED result from the denial probe."""
+    try:
+        result = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return (isinstance(result, dict) and result.get("result") == "denied" and
+            result.get("protocol") == "grpc" and result.get("grpc_code") == 7)
+
+
 class Runner:
-    def __init__(self, *, recovery: bool = False) -> None:
+    def __init__(self, *, recovery: bool = False, phase: str = "all") -> None:
+        if phase not in {"all", "install", "live"}:
+            raise E2EError("CI_E2E_PHASE must be all, install, or live")
+        self.phase = phase
         self.recovery = recovery
         if recovery:
             self.sha = ""
@@ -82,7 +95,7 @@ class Runner:
         self.report: dict[str, Any] = {
             "source_sha": self.sha, "repository": self.repo, "run_id": self.run_id,
             "run_url": self.run_url, "started_at": now(), "stages": [],
-            "image_digests": {}, "cleanup_verified": False,
+            "image_digests": {}, "cleanup_verified": False, "phase": phase,
         }
         self.home: Path | None = None
         self.openshell_env: dict[str, str] | None = None
@@ -205,6 +218,8 @@ class Runner:
         secret_home = Path(tempfile.mkdtemp(prefix="saw-ci-", dir=os.environ.get("RUNNER_TEMP")))
         secret_home.chmod(0o700)
         self.home = secret_home
+        self.private_file(".run-id", self.run_id.encode())
+        self.report["private_home"] = str(secret_home)
         self.env["HOME"] = str(secret_home)
         self.openshell_env = dict(self.env)
         self.openshell_env["XDG_CONFIG_HOME"] = str(secret_home / ".config")
@@ -263,6 +278,119 @@ class Runner:
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         target.write_bytes(content)
         target.chmod(0o600)
+
+    def private_home_from_report(self) -> Path:
+        raw_path = self.report.get("private_home")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise E2EError("install result has no private credential directory")
+        root = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()).resolve()
+        home = Path(raw_path).resolve()
+        if home.parent != root or not home.name.startswith("saw-ci-"):
+            raise E2EError("install result has an invalid private credential directory")
+        marker = home / ".run-id"
+        try:
+            owner = marker.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise E2EError("private credentials are missing; run install first") from exc
+        if owner != self.run_id:
+            raise E2EError("private credential directory belongs to a different run")
+        return home
+
+    def configure_live_environment(self) -> None:
+        self.home = self.private_home_from_report()
+        required_files = (
+            ".kube/config", "cluster-ca.pem", "cluster-service-ca.crt",
+            "ssh/sandbox-ssh", "ssh/sandbox-ssh.pub", "ciowner-password",
+            "cisecond-password", "inference-key", "bin/virtctl",
+        )
+        if any(not (self.home / name).is_file() for name in required_files):
+            raise E2EError("private credentials are incomplete; run install first")
+        self.env.update({
+            "HOME": str(self.home),
+            "KUBECONFIG": str(self.home / ".kube/config"),
+            "SSH_KEY_PATH": str(self.home / "ssh/sandbox-ssh"),
+            "VALUES_SECRET": str(self.home / "values-secret-secure-agent-workspace.yaml"),
+            "TARGET_BRANCH": self.branch,
+            "TARGET_ORIGIN": "origin",
+            "BUILD_NS": NAMESPACE,
+            "NS": NAMESPACE,
+            "PUSH_IMAGE_REPO": "",
+            "OIDC_CA_BUNDLE": str(self.home / "cluster-ca.pem"),
+            "TEST_SECOND_TOKEN_DIR": str(self.home / "second-oidc"),
+            "TEST_ACTIVE_SAW_NAME": USERS[0],
+            "TEST_ACTIVE_SAW_NS": f"saw-{USERS[0]}",
+            "PATH": str(self.home / "bin") + os.pathsep + self.env["PATH"],
+        })
+        self.openshell_env = dict(self.env, XDG_CONFIG_HOME=str(self.home / ".config"))
+        for name in ("ciowner-password", "cisecond-password", "inference-key"):
+            self.sensitive.append((self.home / name).read_text(encoding="utf-8"))
+
+    def load_install_result(self) -> None:
+        report_path = self.artifacts / "results.json"
+        try:
+            previous = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise E2EError("install result report is missing or invalid") from exc
+        if not isinstance(previous, dict):
+            raise E2EError("install result report is invalid")
+        if (previous.get("source_sha") != self.sha or
+                previous.get("repository") != self.repo or
+                previous.get("run_id") != self.run_id):
+            raise E2EError("install result belongs to a different run or source revision")
+        required_stages = (
+            "prepare-files", "cluster-preflight-and-lock", "build-and-record-digests",
+            "prepare-registry-pull", "pattern-install",
+            "deployment-readiness-and-digest-checks", "guest-installer",
+        )
+        passed = {stage.get("name") for stage in previous.get("stages", [])
+                  if isinstance(stage, dict) and stage.get("result") == "passed"}
+        if not previous.get("installation_ready") or not set(required_stages) <= passed:
+            raise E2EError("install did not complete; live checks cannot start")
+        self.report = previous
+        self.report.pop("failure", None)
+        self.report.pop("finished_at", None)
+        self.report["phase"] = "live"
+        self.report["test_outcome"] = "running"
+        self.configure_live_environment()
+        self.verify_target_ref()
+        self.cluster_identity(create_lock_namespace=False)
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        metadata = lock.get("metadata") or {}
+        annotations = metadata.get("annotations") or {}
+        data = lock.get("data") or {}
+        if (annotations.get("saw.redhat.com/repository") != self.repo or
+                annotations.get("saw.redhat.com/run-id") != self.run_id or
+                annotations.get("saw.redhat.com/sha") != self.sha or
+                annotations.get("saw.redhat.com/target-branch") != self.branch):
+            raise E2EError("cluster lock does not match the install result")
+        if data.get("state") != "live-pending":
+            raise E2EError("cluster is not waiting for live behavior checks")
+        try:
+            baseline = json.loads(data.get("baseline-namespaces", ""))
+        except json.JSONDecodeError as exc:
+            raise E2EError("cluster lock has no valid namespace snapshot") from exc
+        if not isinstance(baseline, list) or any(not isinstance(item, str) for item in baseline):
+            raise E2EError("cluster lock has no valid namespace snapshot")
+        self.baseline_namespaces = set(baseline)
+        self.build_attempted = data.get("build-attempted") == "true"
+        self.install_attempted = data.get("install-attempted") == "true"
+        self.lock_namespace_created = data.get("lock-namespace-created") == "true"
+        self.locked = True
+
+    def remove_run_private_home(self) -> None:
+        raw_path = self.report.get("private_home")
+        if not isinstance(raw_path, str) or not raw_path:
+            return
+        root = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()).resolve()
+        home = Path(raw_path).resolve()
+        if home.parent != root or not home.name.startswith("saw-ci-"):
+            raise E2EError("install result has an invalid private credential directory")
+        if not home.exists():
+            return
+        home = self.private_home_from_report()
+        shutil.rmtree(home)
+        if self.home == home:
+            self.home = None
 
     def cluster_identity(self, *, create_lock_namespace: bool = True) -> None:
         expected_api = self.required("CI_CLUSTER_API")
@@ -338,7 +466,8 @@ class Runner:
         if not SHA.fullmatch(owner_sha):
             raise E2EError("cluster lock has no valid source SHA; recovery stopped")
         if data.get("state") not in {
-                "active", "cleanup-in-progress", "cleanup-required", "cleanup-verified"}:
+                "active", "live-pending", "cleanup-in-progress",
+                "cleanup-required", "cleanup-verified"}:
             raise E2EError("cluster lock has an unknown state; recovery stopped")
         try:
             baseline = json.loads(data.get("baseline-namespaces", ""))
@@ -822,8 +951,13 @@ class Runner:
         for user in USERS:
             # The in-guest status check is an existing Make interface.
             def installer_ready() -> bool:
+                # The outer `make test-pattern-e2e` exports SAW_NS based on
+                # its empty OPENSHELL_SAW_NAME. Override it for this child
+                # Make process so it does not inspect the nonexistent `saw-`
+                # namespace inherited from the outer Make environment.
+                status_env = dict(self.env, SAW_NS=f"saw-{user}")
                 output = self.call(["make", "saw-status", f"OPENSHELL_SAW_NAME={user}"],
-                                   timeout=90, allow_failure=True)
+                                   timeout=90, allow_failure=True, env=status_env)
                 if output.returncode:
                     return False
                 try:
@@ -968,6 +1102,7 @@ class Runner:
         ca_data = ca_path.read_text(encoding="utf-8")
         if "BEGIN CERTIFICATE" not in ca_data or "PRIVATE KEY" in ca_data:
             raise E2EError(f"gateway CA is invalid for {user}")
+        self.env["TEST_GATEWAY_CA_BUNDLE"] = str(ca_path)
 
         metadata = {
             "name": user,
@@ -1048,8 +1183,8 @@ class Runner:
                    "notebook", "--no-tty", "--", "sh", "-c",
                    "test -d /sandbox && printf ready"], timeout=90)
         denial = self.call(["scripts/check-second-user-denied.sh"], timeout=30)
-        if json.loads(denial.stdout).get("status_code") != 403:
-            raise E2EError("second-user denial did not return 403")
+        if not second_user_denial_passed(denial.stdout):
+            raise E2EError("second-user access did not return gRPC PERMISSION_DENIED")
         inference_script = (
             "fetch('https://integrate.api.nvidia.com/v1/chat/completions',"
             "{method:'POST',headers:{'content-type':'application/json',"
@@ -1166,16 +1301,23 @@ class Runner:
         self.save_report()
         self.release_lock()
 
-    def finish(self, *, save_report: bool = True) -> None:
-        if self.home is not None:
+    def finish(self, *, save_report: bool = True, preserve_home: bool = False,
+               complete: bool = True) -> None:
+        if self.home is not None and not preserve_home:
             shutil.rmtree(self.home)
             self.home = None
-        self.report["finished_at"] = now()
+        if complete:
+            self.report["finished_at"] = now()
+        else:
+            self.report["installation_finished_at"] = now()
         if save_report:
             self.save_report()
 
     def run(self) -> int:
+        if self.phase == "live":
+            return self.run_live()
         failure: str | None = None
+        preserve_home = False
         try:
             self.stage("prepare-files", self.setup_files)
             self.stage("cluster-preflight-and-lock", self.preflight)
@@ -1184,27 +1326,91 @@ class Runner:
             self.stage("pattern-install", self.install)
             self.stage("deployment-readiness-and-digest-checks", self.verify_deployment_smoke)
             self.stage("guest-installer", self.verify_guest_install)
-            self.stage("live-behavior", self.live_behavior)
+            self.report["installation_ready"] = True
+            if self.phase == "install":
+                self.report["test_outcome"] = "live-pending"
+                preserve_home = True
+            else:
+                self.stage("live-behavior", self.live_behavior)
+                self.report["test_outcome"] = "success"
         except BaseException as exc:
             failure = self.redact(str(exc)) or "runner cancelled"
             self.report["failure"] = failure
+            self.report["test_outcome"] = "failure"
         finally:
             if self.locked:
+                if failure:
+                    try:
+                        self.diagnostics()
+                    except Exception as exc:
+                        self.report["diagnostics_error"] = self.redact(str(exc))
                 try:
-                    self.diagnostics()
-                except Exception as exc:
-                    self.report["diagnostics_error"] = self.redact(str(exc))
-                try:
-                    self.update_lock_data({
-                        "state": "cleanup-required",
-                        "test-outcome": "failure" if failure else "success",
-                    })
+                    if failure:
+                        self.update_lock_data({
+                            "state": "cleanup-required", "test-outcome": "failure",
+                        })
+                    elif preserve_home:
+                        self.update_lock_data({
+                            "state": "live-pending", "test-outcome": "live-pending",
+                        })
+                    else:
+                        self.update_lock_data({
+                            "state": "cleanup-required", "test-outcome": "success",
+                        })
                 except Exception as exc:
                     self.report["lock_state_error"] = self.redact(str(exc))
                     failure = failure or "could not mark the cluster for cleanup"
-            self.finish()
+                    preserve_home = False
+            self.finish(preserve_home=preserve_home, complete=not preserve_home)
         if failure:
             print(f"Pattern E2E failed: {failure}", file=sys.stderr)
+            return 1
+        return 0
+
+    def run_live(self) -> int:
+        failure: str | None = None
+        preserve_home = False
+        try:
+            self.load_install_result()
+            preserve_home = True
+            self.stage("resume-installed-run", lambda: None)
+            self.stage("live-behavior", self.live_behavior)
+            self.report["test_outcome"] = "success"
+            preserve_home = True
+        except BaseException as exc:
+            failure = self.redact(str(exc)) or "live checks cancelled"
+            self.report["failure"] = failure
+            self.report["test_outcome"] = "failure"
+            preserve_home = preserve_home or self.home is not None
+        finally:
+            if self.locked:
+                if failure:
+                    try:
+                        self.diagnostics()
+                    except Exception as exc:
+                        self.report["diagnostics_error"] = self.redact(str(exc))
+                    try:
+                        self.update_lock_data({
+                            "state": "live-pending", "test-outcome": "failure",
+                            "live-outcome": "failure",
+                        })
+                    except Exception as exc:
+                        self.report["lock_state_error"] = self.redact(str(exc))
+                        failure = failure or "could not preserve the installed run for live retry"
+                        preserve_home = self.home is not None
+                else:
+                    try:
+                        self.update_lock_data({
+                            "state": "live-pending", "test-outcome": "success",
+                            "live-outcome": "success",
+                        })
+                    except Exception as exc:
+                        self.report["lock_state_error"] = self.redact(str(exc))
+                        failure = "could not mark the cluster for cleanup"
+                        preserve_home = self.home is not None
+            self.finish(preserve_home=preserve_home)
+        if failure:
+            print(f"Pattern E2E live checks failed: {failure}", file=sys.stderr)
             return 1
         return 0
 
@@ -1229,6 +1435,8 @@ class Runner:
                 except Exception as exc:
                     self.report["diagnostics_error"] = self.redact(str(exc))
                 self.stage("recovery-cleanup", self.cleanup)
+                if self.report.get("cleanup_verified"):
+                    self.stage("private-credential-cleanup", self.remove_run_private_home)
         except BaseException as exc:
             failure = self.redact(str(exc)) or "cleanup recovery failed"
             self.report["cleanup_recovery_failure"] = failure
@@ -1249,10 +1457,10 @@ class Runner:
 
 def main() -> int:
     if sys.argv[1:]:
-        print("Usage: pattern_e2e.py", file=sys.stderr)
+        print("Usage: pattern_e2e.py (CI_E2E_PHASE=all|install|live)", file=sys.stderr)
         return 2
     try:
-        runner = Runner()
+        runner = Runner(phase=os.environ.get("CI_E2E_PHASE", "all"))
     except E2EError as exc:
         print(f"Pattern E2E setup failed: {exc}", file=sys.stderr)
         return 1

@@ -76,8 +76,8 @@ jobs:
             openshell-checksums-sha256.txt | sha256sum -c -
           tar -xzf openshell-x86_64-unknown-linux-musl.tar.gz openshell
           sudo install -m 0755 openshell /usr/local/bin/openshell
-      - name: Run Pattern E2E
-        id: e2e
+      - name: Install Pattern for E2E
+        id: install
         env:
           CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
           CI_PR_NUMBER: ${{ inputs.pr_number }}
@@ -90,9 +90,20 @@ jobs:
           CI_PROVIDER: ${{ vars.CI_PROVIDER }}
           CI_MODEL: ${{ vars.CI_MODEL }}
           CI_INFERENCE_KEY: ${{ secrets.CI_INFERENCE_KEY }}
-        run: make test-pattern-e2e
+        run: make test-pattern-e2e-install
+      - name: Run live behavior checks
+        id: live
+        env:
+          CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
+          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+          CI_MODEL: ${{ vars.CI_MODEL }}
+        run: make test-pattern-e2e-live
       - name: Clean Pattern E2E resources
-        if: always() && steps.e2e.outcome != 'skipped'
+        if: always() && steps.install.outcome != 'skipped'
         env:
           CI_RECOVERY_RUN_ID: ${{ github.run_id }}
           CI_KUBECONFIG_B64: ${{ secrets.CI_KUBECONFIG_B64 }}

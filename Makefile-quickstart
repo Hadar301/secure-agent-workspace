@@ -102,7 +102,7 @@ endif
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
-        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-cleanup test-harness-e2e lint \
+        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
@@ -523,6 +523,12 @@ test-dependencies: ## Validate rendered charts and deployment dependencies
 
 test-pattern-e2e: ## Run E2E checks on a fresh cluster; cleanup is separate
 	@uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-install: ## Build and install the E2E deployment; keep it ready for live checks
+	@CI_E2E_PHASE=install uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-live: ## Run live behavior checks on the installed E2E deployment
+	@CI_E2E_PHASE=live uv run --locked scripts/ci/pattern_e2e.py
 
 test-pattern-e2e-cleanup: ## Clean an E2E run when ready (set CI_RECOVERY_RUN_ID)
 	@uv run --locked scripts/ci/pattern_e2e_cleanup.py

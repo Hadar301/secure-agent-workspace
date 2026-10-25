@@ -255,8 +255,12 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
     docs = render("-f", str(path))
     vm = policies(docs)["saw-vm"]["spec"]
     [router_rule] = by_port(vm["ingress"], 17670)
-    assert router_rule["from"] == [{"namespaceSelector": {"matchLabels": {
-        "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}}]
+    assert router_rule["from"] == [
+        {"namespaceSelector": {"matchLabels": {
+            "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}},
+        {"namespaceSelector": {"matchLabels": {
+            "policy-group.network.openshift.io/host-network": ""}}},
+    ]
     ports = {p["port"] for p in router_rule["ports"]}
     service = docs[("Service", "saw-test-gateway")]["spec"]
     names = {p["name"]: p["port"] for p in service["ports"]}
