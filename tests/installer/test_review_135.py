@@ -323,7 +323,7 @@ def test_the_backup_excludes_only_the_installers_mounts(ab, tmp_path):
     with pytest.raises(Captured):
         applier.restore_sandbox(ws, sb, {"archive": str(archive), "sha256": digest})
     restore = captured[0]
-    assert "--no-overwrite-dir" in restore and "tar -dzf" in restore and "grep -v '/$'" in restore
+    assert "--skip-old-files" in restore and "tar -dzf" in restore and "grep -v '/$'" in restore
     run = restore.replace("cd /sandbox", f"cd {fresh}").replace(
         "/sandbox/.saw-preserve.tar.gz", str(fresh / ".saw-preserve.tar.gz")).replace(
         "/sandbox/.saw-preserve.sha256", str(fresh / ".saw-preserve.sha256"))

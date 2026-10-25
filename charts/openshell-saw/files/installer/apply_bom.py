@@ -5284,13 +5284,28 @@ class ProfileApplier:
             q = shlex.quote
             script = (f"[ \"$(sha256sum {self.PRESERVE_ARCHIVE} | cut -d' ' -f1)\" = "
                       f"{q(digest)} ] || exit 4; cd /sandbox || exit 3; "
-                      # --no-overwrite-dir: an existing directory (the image's
-                      # .openclaw, say) keeps its metadata; a new one gets the
-                      # archived mode. The diff covers the non-directory members:
-                      # directory mtimes drift as soon as anything is written.
-                      f"tar -xzf {self.PRESERVE_ARCHIVE} --same-permissions --no-same-owner --no-overwrite-dir && "
-                      f"tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
-                      f"tar -dzf {self.PRESERVE_ARCHIVE} -T - && "
+                      # CUDA images include root-owned, read-only image files.
+                      # Keep those in place, then verify them against the archive.
+                      # First restore missing entries without touching existing
+                      # directory metadata; then overwrite writable files in place
+                      # (their parent directory may belong to the image's root).
+                      "readonly=$(mktemp) || exit 1; trap 'rm -f \"$readonly\"' EXIT; "
+                      "find . ! -type d ! -writable -printf '%p\\n%P\\n' > \"$readonly\" || exit 1; "
+                      f"tar -xzf {self.PRESERVE_ARCHIVE} --skip-old-files "
+                      "--same-permissions --no-same-owner || exit 1; "
+                      f"LC_ALL=C tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
+                      f"tar -xzf {self.PRESERVE_ARCHIVE} --overwrite --no-recursion "
+                      "--same-permissions --no-same-owner --no-wildcards --anchored "
+                      "--exclude-from=\"$readonly\" -T - || exit 1; "
+                      # The archive is normalized to the sandbox user, but files
+                      # kept in place keep the image's owner. Verify contents,
+                      # links and modes, allowing only those ownership differences.
+                      f"diffs=$(LC_ALL=C tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
+                      f"LC_ALL=C tar -dzf {self.PRESERVE_ARCHIVE} --quoting-style=escape -T - 2>&1); "
+                      "rc=$?; if [ \"$rc\" -gt 1 ]; then printf '%s\\n' \"$diffs\"; exit 1; fi; "
+                      "unexpected=$(printf '%s\\n' \"$diffs\" | "
+                      "LC_ALL=C grep -v -E ': (Uid|Gid) differs$' | sed '/^$/d'); "
+                      "[ -z \"$unexpected\" ] || { printf '%s\\n' \"$unexpected\"; exit 1; }; "
                       # Commit before the CLI returns: a retry after installer
                       # death must not overwrite work done since the restore.
                       f"printf '%s' {q(record['sha256'])} > {self.PRESERVE_SUM} && "
