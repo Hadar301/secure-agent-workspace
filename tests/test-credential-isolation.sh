@@ -63,29 +63,10 @@ ssh_args=(-n "$SAW_NS" ssh "cloud-user@vm/$VM_NAME" --identity-file="$SSH_KEY_PA
   --local-ssh-opts=-oUserKnownHostsFile=/dev/null)
 vm_exec() { virtctl "${ssh_args[@]}" --command "$1"; }
 
-guest_code="$(cat <<'PY'
-import os, pathlib, subprocess, sys
+guest_code="$(cat "$ROOT/scripts/scan-guest-credentials.py"; cat <<'PY'
+import pathlib, subprocess, sys
 needle = sys.stdin.buffer.read()
-if not needle:
-    raise SystemExit('empty credential: cannot check')
-skip = {'/proc', '/sys', '/dev'}
-hits = []
-for root, dirs, files in os.walk('/', followlinks=False):
-    dirs[:] = [d for d in dirs if os.path.join(root, d) not in skip]
-    for name in files:
-        path = os.path.join(root, name)
-        if name == 'ca.key':
-            hits.append(path)
-        try:
-            with open(path, 'rb') as stream:
-                overlap = b''
-                while chunk := stream.read(1024 * 1024):
-                    if needle in overlap + chunk:
-                        hits.append(path)
-                        break
-                    overlap = chunk[-max(len(needle)-1, 0):]
-        except (OSError, ValueError):
-            pass
+hits = credential_hits(needle)
 if hits:
     print('FAIL: provider key or gateway CA key found in guest files:', *sorted(set(hits)), sep='\n', file=sys.stderr)
     raise SystemExit(1)
