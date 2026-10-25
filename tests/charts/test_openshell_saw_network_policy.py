@@ -214,7 +214,7 @@ def test_vm_egress_is_exact_and_cdi_import_has_minimum_peers():
     assert not by_port(egress, 8443)
     assert not by_port(egress, 8080)
     router = {"namespaceSelector": {"matchLabels": {
-        "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}}
+        "policy-group.network.openshift.io/ingress": ""}}}
     assert any(router == only_peer(r) for r in by_port(egress, 443) if "ipBlock" not in only_peer(r))
     cdi = ps["saw-cdi-import"]["spec"]
     assert cdi["ingress"] == [{"from": [{"namespaceSelector": {"matchLabels": {
@@ -261,7 +261,7 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
     [router_rule] = by_port(vm["ingress"], 17670)
     assert router_rule["from"] == [
         {"namespaceSelector": {"matchLabels": {
-            "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}},
+            "policy-group.network.openshift.io/ingress": ""}}},
         {"namespaceSelector": {"matchLabels": {
             "policy-group.network.openshift.io/host-network": ""}}},
     ]

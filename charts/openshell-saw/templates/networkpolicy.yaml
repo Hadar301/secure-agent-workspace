@@ -59,11 +59,12 @@ spec:
         - protocol: TCP
           port: 22
     {{- if $np.allow.ingressController }}
+    # Keep this namespace-only: a peer podSelector excludes host-networked
+    # routers on other nodes with OVN-Kubernetes.
     - from:
         - namespaceSelector:
             matchLabels:
               policy-group.network.openshift.io/ingress: ""
-          podSelector: {}
         # OVN also identifies host-network router traffic through this group.
         - namespaceSelector:
             matchLabels:

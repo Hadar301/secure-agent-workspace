@@ -590,7 +590,8 @@ and CDI. The caller controls the outside ports: CDI only gets import ports. */}}
   {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 5000))) -}}
 {{- end -}}
 {{- if $np.allow.ingressController -}}
-  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "policy-group.network.openshift.io/ingress" "")) "podSelector" (dict) -}}
+  {{/* Namespace-only also selects the ingress controller's host-network endpoints. */}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "policy-group.network.openshift.io/ingress" "")) -}}
   {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 443) (dict "protocol" "TCP" "port" 80))) -}}
 {{- end -}}
 {{- if gt (len $outsidePorts) 0 -}}

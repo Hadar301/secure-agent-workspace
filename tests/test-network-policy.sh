@@ -79,7 +79,7 @@ dns = next(r for r in vm['egress'] if {'protocol': 'UDP', 'port': 5353} in r.get
 assert {'protocol': 'TCP', 'port': 5353} in dns['ports']
 assert dns['to'][0]['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'] == 'openshift-dns'
 router = next(r for r in vm['ingress'] if r['from'][0]['namespaceSelector']['matchLabels'].get('policy-group.network.openshift.io/ingress') == '')
-assert router['from'][0]['podSelector'] == {}
+assert 'podSelector' not in router['from'][0], 'host-networked routers need a namespace-only peer'
 assert {p['port'] for p in router['ports']} == {17670, 18789, 8080}
 ssh = next(r for r in vm['ingress'] if {'protocol': 'TCP', 'port': 22} in r.get('ports', []))
 assert ssh['from'] == [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'openshift-cnv'}}, 'podSelector': {'matchLabels': {'kubevirt.io': 'virt-api'}}}]
