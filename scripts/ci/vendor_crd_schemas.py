@@ -37,7 +37,7 @@ def main() -> int:
             schema = validation_only(version["schema"]["openAPIV3Schema"])
             folder = destination / group
             folder.mkdir(parents=True, exist_ok=True)
-            target = folder / f"{kind}_{version['name']}.json"
+            target = folder / f"{kind.lower()}_{version['name']}.json"
             target.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
             print(target.relative_to(destination.parent.parent.parent))
     return 0

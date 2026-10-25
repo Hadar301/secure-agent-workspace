@@ -20,6 +20,17 @@ def test_vendored_schemas_have_no_upstream_sample_data():
         assert document == validation_only(document), path
 
 
+def test_vendored_crd_schema_names_match_kubeconform_lookup():
+    expected = (
+        ("rhdh.redhat.com", "backstage_v1alpha5.json"),
+        ("hco.kubevirt.io", "hyperconverged_v1beta1.json"),
+        ("tekton.dev", "pipeline_v1.json"),
+        ("tekton.dev", "task_v1.json"),
+    )
+    for group, filename in expected:
+        assert (dv.ROOT / "scripts/ci/schemas" / group / filename).is_file()
+
+
 def test_dependency_discovery_reports_source_and_value_path():
     refs = dv.collect_references()
     assert any(
