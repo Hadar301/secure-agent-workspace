@@ -102,7 +102,7 @@ endif
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
-        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-harness-e2e lint \
+        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-cleanup test-harness-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
@@ -505,8 +505,11 @@ test-deployment: ## Run the live OpenShift deployment test (read docs first)
 test-dependencies: ## Validate rendered charts and deployment dependencies
 	@uv run --locked scripts/ci/deployment_validation.py --report deployment-validation.json
 
-test-pattern-e2e: ## Run deployment and live checks on a fresh cluster
+test-pattern-e2e: ## Run E2E checks on a fresh cluster; cleanup is separate
 	@uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-cleanup: ## Clean an E2E run when ready (set CI_RECOVERY_RUN_ID)
+	@uv run --locked scripts/ci/pattern_e2e_cleanup.py
 
 lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \

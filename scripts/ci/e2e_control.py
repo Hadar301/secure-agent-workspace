@@ -87,7 +87,17 @@ def finish() -> None:
     sha = os.environ.get("CI_HEAD_SHA", "")
     branch = os.environ.get("CI_TARGET_BRANCH", "")
     outcome = os.environ.get("CI_E2E_OUTCOME", "failure")
-    if branch:
+    result_path = os.environ.get("CI_E2E_RESULTS_PATH", "pattern-e2e-results/results.json")
+    cleanup_verified = False
+    try:
+        with open(result_path, encoding="utf-8") as result_file:
+            cleanup_verified = json.load(result_file).get("cleanup_verified") is True
+    except FileNotFoundError:
+        print("E2E result artifact is missing; retaining the temporary source ref")
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        print(f"E2E cleanup state is invalid ({type(exc).__name__}); "
+              "retaining the temporary source ref")
+    if branch and cleanup_verified:
         if not re.fullmatch(r"ci/pattern-e2e/[0-9]+-[0-9]+", branch):
             raise RuntimeError("temporary branch name is invalid")
         try:
@@ -96,10 +106,13 @@ def finish() -> None:
             if SHA.fullmatch(sha):
                 status(repo, sha, "failure", "Temporary source ref cleanup failed")
             raise
+    elif branch:
+        print(f"Cluster cleanup is not verified; retaining {branch} for recovery")
     if SHA.fullmatch(sha):
-        state = "success" if outcome == "success" else "failure"
-        status(repo, sha, state, "Cluster test passed" if state == "success"
-               else "Cluster test failed or did not finish")
+        state = "success" if outcome == "success" and cleanup_verified else "failure"
+        description = ("Cluster test passed" if state == "success" else
+                       "Cluster test failed or cleanup is not verified")
+        status(repo, sha, state, description)
 
 
 if __name__ == "__main__":

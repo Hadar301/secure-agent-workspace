@@ -1282,6 +1282,16 @@ def test_the_imperative_jobs_run_playbooks_that_exist():
     assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
 
 
+def test_ingress_ca_job_waits_for_vault_initialization_without_logging_secret():
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    vault_task = next(task for task in play["tasks"]
+                      if task["name"] == "Read the Vault root token")
+
+    assert vault_task["until"] == "vaultkeys.resources | length > 0"
+    assert vault_task["retries"] * vault_task["delay"] <= 270
+    assert vault_task["no_log"] is True
+
+
 def test_the_installer_configmap_needs_server_side_apply(default_docs):
     """Found live: with client-side apply Argo CD copies an object into its
     last-applied-configuration annotation, which may hold at most 262144

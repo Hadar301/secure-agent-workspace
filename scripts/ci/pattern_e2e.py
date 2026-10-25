@@ -56,14 +56,26 @@ class E2ECommandTimeout(E2EError):
 
 
 class Runner:
-    def __init__(self) -> None:
-        self.sha = self.required("CI_HEAD_SHA")
-        if not SHA.fullmatch(self.sha):
-            raise E2EError("CI_HEAD_SHA must be a full commit SHA")
-        self.run_id = self.required("GITHUB_RUN_ID")
-        self.run_url = self.required("CI_RUN_URL")
-        self.repo = self.required("GITHUB_REPOSITORY")
-        self.branch = self.required("CI_TARGET_BRANCH")
+    def __init__(self, *, recovery: bool = False) -> None:
+        self.recovery = recovery
+        if recovery:
+            self.sha = ""
+            self.run_id = ""
+            self.run_url = ""
+            self.repo = self.required("GITHUB_REPOSITORY")
+            self.branch = ""
+            self.recovery_run_id = self.required("CI_RECOVERY_RUN_ID")
+            if not self.recovery_run_id.isdigit():
+                raise E2EError("CI_RECOVERY_RUN_ID must be a numeric run ID")
+        else:
+            self.sha = self.required("CI_HEAD_SHA")
+            if not SHA.fullmatch(self.sha):
+                raise E2EError("CI_HEAD_SHA must be a full commit SHA")
+            self.run_id = self.required("GITHUB_RUN_ID")
+            self.run_url = self.required("CI_RUN_URL")
+            self.repo = self.required("GITHUB_REPOSITORY")
+            self.branch = self.required("CI_TARGET_BRANCH")
+            self.recovery_run_id = ""
         self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
         self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
         self.artifacts.mkdir(parents=True, exist_ok=True)
@@ -167,6 +179,7 @@ class Runner:
                      "openssl", "git", "make"):
             if shutil.which(name) is None:
                 raise E2EError(f"required tool {name} is unavailable")
+        self.verify_target_ref()
         # Check the container runtime before spending time on cluster builds.
         self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
         bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
@@ -245,7 +258,7 @@ class Runner:
         target.write_bytes(content)
         target.chmod(0o600)
 
-    def cluster_identity(self) -> None:
+    def cluster_identity(self, *, create_lock_namespace: bool = True) -> None:
         expected_api = self.required("CI_CLUSTER_API")
         expected_uid = self.required("CI_CLUSTER_UID")
         actual_api = self.call(["oc", "whoami", "--show-server"]).stdout.strip()
@@ -256,16 +269,24 @@ class Runner:
             raise E2EError("cluster UID does not match CI_CLUSTER_UID")
         existing = self.call(["oc", "get", "namespace", self.lock_ns],
                              allow_failure=True)
-        if existing.returncode and "NotFound" not in existing.stderr:
-            raise E2EError("cannot inspect CI lock namespace")
-        self.lock_namespace_created = bool(existing.returncode)
-        namespace_doc = {"apiVersion": "v1", "kind": "Namespace",
-                         "metadata": {"name": self.lock_ns,
-                                      "labels": {"openshell.pattern/ci-lock": "true"}}}
-        self.call(["oc", "apply", "-f", "-"], input_text=json.dumps(namespace_doc))
+        if existing.returncode:
+            if not self.is_not_found(existing.stderr):
+                raise E2EError("cannot inspect CI lock namespace")
+            if not create_lock_namespace:
+                raise E2EError("CI lock namespace is missing; recovery stopped")
+            self.lock_namespace_created = True
+            namespace_doc = {"apiVersion": "v1", "kind": "Namespace",
+                             "metadata": {"name": self.lock_ns,
+                                          "labels": {"openshell.pattern/ci-lock": "true"}}}
+            self.call(["oc", "apply", "-f", "-"], input_text=json.dumps(namespace_doc))
+        else:
+            self.lock_namespace_created = False
         namespace = self.oc_json("get", "namespace", self.lock_ns)
         if namespace["metadata"]["name"] != self.lock_ns:
             raise E2EError("CI lock namespace is unavailable")
+        labels = namespace.get("metadata", {}).get("labels", {})
+        if labels.get("openshell.pattern/ci-lock") != "true":
+            raise E2EError("CI lock namespace is not marked for Pattern E2E")
 
     def acquire_lock(self) -> None:
         document = {
@@ -277,8 +298,12 @@ class Runner:
                              "saw.redhat.com/sha": self.sha,
                              "saw.redhat.com/run-id": self.run_id,
                              "saw.redhat.com/run-url": self.run_url,
+                             "saw.redhat.com/target-branch": self.branch,
                              "saw.redhat.com/created-at": now()}},
-            "data": {"state": "active"},
+            "data": {"state": "active", "baseline-namespaces": "",
+                     "build-attempted": "false", "install-attempted": "false",
+                     "cleanup-verified": "false",
+                     "lock-namespace-created": str(self.lock_namespace_created).lower()},
         }
         created = self.call(["oc", "create", "-f", "-"],
                             input_text=json.dumps(document), allow_failure=True)
@@ -292,6 +317,122 @@ class Runner:
                 "saw.redhat.com/run-url", "unknown run")
             raise E2EError(f"cluster is busy: {run_url}")
         self.locked = True
+
+    def load_recovery_state(self) -> None:
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        metadata = lock.get("metadata") or {}
+        annotations = metadata.get("annotations") or {}
+        data = lock.get("data") or {}
+        owner_id = annotations.get("saw.redhat.com/run-id", "")
+        if owner_id != self.recovery_run_id:
+            raise E2EError("CI_RECOVERY_RUN_ID does not match the active cluster lock")
+        if annotations.get("saw.redhat.com/repository") != self.repo:
+            raise E2EError("cluster lock belongs to a different repository")
+        owner_sha = annotations.get("saw.redhat.com/sha", "")
+        if not SHA.fullmatch(owner_sha):
+            raise E2EError("cluster lock has no valid source SHA; recovery stopped")
+        if data.get("state") not in {
+                "active", "cleanup-in-progress", "cleanup-required", "cleanup-verified"}:
+            raise E2EError("cluster lock has an unknown state; recovery stopped")
+        try:
+            baseline = json.loads(data.get("baseline-namespaces", ""))
+        except json.JSONDecodeError as exc:
+            raise E2EError("cluster lock has no valid namespace snapshot; recovery stopped") from exc
+        if (not isinstance(baseline, list) or
+                any(not isinstance(item, str) for item in baseline)):
+            raise E2EError("cluster lock has no valid namespace snapshot; recovery stopped")
+        self.sha = owner_sha
+        self.run_id = owner_id
+        self.run_url = annotations.get("saw.redhat.com/run-url", "unknown run")
+        self.branch = annotations.get("saw.redhat.com/target-branch", "")
+        self.env["TARGET_BRANCH"] = self.branch
+        self.baseline_namespaces = set(baseline)
+        self.build_attempted = data.get("build-attempted") == "true"
+        self.install_attempted = data.get("install-attempted") == "true"
+        if self.install_attempted and not self.valid_git_branch(self.branch):
+            raise E2EError("cluster lock has no valid source branch; recovery stopped")
+        self.lock_namespace_created = data.get("lock-namespace-created") == "true"
+        self.locked = True
+        self.report.update({
+            "source_sha": self.sha,
+            "repository": self.repo,
+            "run_id": self.run_id,
+            "run_url": self.run_url,
+            "recovery": True,
+            "recovery_started_at": now(),
+        })
+        report_path = self.artifacts / "results.json"
+        if report_path.is_file():
+            try:
+                previous = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self.report["previous_report_error"] = "could not read the test result report"
+            else:
+                if (isinstance(previous, dict) and previous.get("source_sha") == self.sha and
+                        previous.get("run_id") == self.run_id and
+                        previous.get("repository") == self.repo):
+                    if previous.get("finished_at") and not previous.get("test_finished_at"):
+                        previous["test_finished_at"] = previous["finished_at"]
+                    previous.setdefault("stages", [])
+                    previous["recovery"] = True
+                    previous["recovery_started_at"] = self.report["recovery_started_at"]
+                    self.report = previous
+                else:
+                    self.report["previous_report_error"] = "test result report owner did not match"
+
+    def valid_git_branch(self, branch: str) -> bool:
+        if not branch:
+            return False
+        response = self.call(["git", "check-ref-format", "--branch", branch],
+                             timeout=10, allow_failure=True)
+        return response.returncode == 0
+
+    def verify_target_ref(self) -> None:
+        if not self.valid_git_branch(self.branch):
+            raise E2EError("CI_TARGET_BRANCH is not a valid Git branch")
+        response = self.call(["git", "ls-remote", "--heads", "origin",
+                              f"refs/heads/{self.branch}"], timeout=30)
+        matches = [line.split() for line in response.stdout.splitlines() if line.strip()]
+        matches = [parts for parts in matches
+                   if len(parts) == 2 and parts[1] == f"refs/heads/{self.branch}"]
+        if len(matches) != 1:
+            raise E2EError("CI_TARGET_BRANCH was not found on origin")
+        if matches[0][0] != self.sha:
+            raise E2EError("CI_TARGET_BRANCH does not point to CI_HEAD_SHA; "
+                           "use a run-specific ref pinned to the tested commit")
+
+    def setup_recovery_files(self) -> None:
+        for name in ("oc", "helm", "podman", "make"):
+            if shutil.which(name) is None:
+                raise E2EError(f"required tool {name} is unavailable")
+        secret_home = Path(tempfile.mkdtemp(prefix="saw-ci-cleanup-",
+                                            dir=os.environ.get("RUNNER_TEMP")))
+        secret_home.chmod(0o700)
+        self.home = secret_home
+        self.env["HOME"] = str(secret_home)
+        self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
+        self.env["TARGET_BRANCH"] = self.branch
+        self.env["TARGET_ORIGIN"] = "origin"
+        self.env["BUILD_NS"] = NAMESPACE
+        self.env["NS"] = NAMESPACE
+        kubeconfig = base64.b64decode(self.required("CI_KUBECONFIG_B64"), validate=True)
+        self.private_file(".kube/config", kubeconfig)
+        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
+
+    def mark_cleanup_required(self) -> None:
+        if self.locked:
+            self.update_lock_data({"state": "cleanup-required"})
+
+    def update_lock_data(self, updates: dict[str, str]) -> None:
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        annotations = lock.get("metadata", {}).get("annotations", {})
+        if (annotations.get("saw.redhat.com/run-id") != self.run_id or
+                annotations.get("saw.redhat.com/sha") != self.sha):
+            raise E2EError("cluster lock owner changed; refusing to update it")
+        data = lock.get("data") or {}
+        data.update(updates)
+        lock["data"] = data
+        self.call(["oc", "replace", "-f", "-"], input_text=json.dumps(lock))
 
     def release_lock(self) -> None:
         lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
@@ -312,6 +453,9 @@ class Runner:
         self.baseline_namespaces = {
             item["metadata"]["name"] for item in self.oc_json("get", "namespaces")["items"]
         }
+        self.update_lock_data({
+            "baseline-namespaces": json.dumps(sorted(self.baseline_namespaces)),
+        })
         # This run requires a fresh cluster. Do not remove existing resources.
         resources = (
             ("patterns.gitops.hybrid-cloud-patterns.io", None),
@@ -404,6 +548,7 @@ class Runner:
 
     def build(self) -> None:
         self.build_attempted = True
+        self.update_lock_data({"build-attempted": "true"})
         for target in ("sandbox-build", "cli-build", "gateway-build-podman",
                        "governance-interceptor-build"):
             print(f"{now()} build {target}", flush=True)
@@ -557,6 +702,7 @@ class Runner:
         topology = self.topology()
         self.env["EXTRA_HELM_OPTS"] = self.install_options(topology)
         self.install_attempted = True
+        self.update_lock_data({"install-attempted": "true"})
         ports_quoted = False
         with ThreadPoolExecutor(max_workers=1) as pool:
             install = pool.submit(self.call, ["./pattern.sh", "make", "install"],
@@ -598,6 +744,23 @@ class Runner:
                         json.dumps(item.get("spec", {}).get("sources", []))]
             if len(selected) < 6:
                 return False
+            selected_revisions: list[str] = []
+            all_healthy_at_other_revision = True
+            for item in selected:
+                status = item.get("status") or {}
+                sync = status.get("sync") or {}
+                revisions = [sync.get("revision")]
+                revisions.extend(sync.get("revisions") or [])
+                revisions = [revision for revision in revisions if revision]
+                selected_revisions.extend(revisions)
+                if (not revisions or self.sha in revisions or
+                        sync.get("status") not in {"Synced", "OutOfSync"} or
+                        status.get("health", {}).get("status") != "Healthy"):
+                    all_healthy_at_other_revision = False
+            if all_healthy_at_other_revision:
+                observed = ", ".join(sorted(set(selected_revisions)))
+                raise E2EError("Argo applications are Healthy at revision(s) "
+                               f"{observed}, not tested SHA {self.sha}")
             applications = {item.get("metadata", {}).get("name"): item for item in items}
             return all(self.application_ready(item, applications) for item in selected)
         self.wait_for("Argo applications at the tested SHA", ready, seconds=5400)
@@ -938,6 +1101,7 @@ class Runner:
             json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
 
     def cleanup(self) -> None:
+        self.update_lock_data({"state": "cleanup-in-progress"})
         if self.install_attempted:
             self.call(["./pattern.sh", "make", "pattern-uninstall"], timeout=5400)
             self.call(["./pattern.sh", "make", "pattern-uninstall"], timeout=5400)
@@ -991,6 +1155,7 @@ class Runner:
         if new_pattern_namespaces:
             raise E2EError("cleanup left Pattern namespaces: "
                            + ", ".join(sorted(new_pattern_namespaces)))
+        self.update_lock_data({"state": "cleanup-verified", "cleanup-verified": "true"})
         self.report["cleanup_verified"] = True
         self.save_report()
         self.release_lock()
@@ -1023,18 +1188,54 @@ class Runner:
                 except Exception as exc:
                     self.report["diagnostics_error"] = self.redact(str(exc))
                 try:
-                    self.stage("uninstall-and-cleanup", self.cleanup)
+                    self.update_lock_data({
+                        "state": "cleanup-required",
+                        "test-outcome": "failure" if failure else "success",
+                    })
                 except Exception as exc:
-                    self.report["cleanup_error"] = self.redact(str(exc))
-                    failure = failure or "cleanup failed"
+                    self.report["lock_state_error"] = self.redact(str(exc))
+                    failure = failure or "could not mark the cluster for cleanup"
             self.finish()
         if failure:
             print(f"Pattern E2E failed: {failure}", file=sys.stderr)
             return 1
         return 0
 
+    def recover_cleanup(self) -> int:
+        failure: str | None = None
+        try:
+            self.stage("cleanup-prerequisites", self.setup_recovery_files)
+            self.stage("cluster-identity", lambda: self.cluster_identity(
+                create_lock_namespace=False))
+            self.load_recovery_state()
+            if self.locked:
+                try:
+                    self.diagnostics()
+                except Exception as exc:
+                    self.report["diagnostics_error"] = self.redact(str(exc))
+                self.stage("recovery-cleanup", self.cleanup)
+        except BaseException as exc:
+            failure = self.redact(str(exc)) or "cleanup recovery failed"
+            self.report["cleanup_recovery_failure"] = failure
+        finally:
+            if self.locked:
+                try:
+                    self.mark_cleanup_required()
+                except Exception as exc:
+                    self.report["cleanup_lock_error"] = self.redact(str(exc))
+            else:
+                self.report["cleanup_verified"] = self.report.get("cleanup_verified", False)
+            self.finish()
+        if failure:
+            print(f"Pattern E2E cleanup failed: {failure}", file=sys.stderr)
+            return 1
+        return 0
+
 
 def main() -> int:
+    if sys.argv[1:]:
+        print("Usage: pattern_e2e.py", file=sys.stderr)
+        return 2
     try:
         runner = Runner()
     except E2EError as exc:

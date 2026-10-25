@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.ci import e2e_control, pattern_e2e
+from scripts.ci import e2e_control, pattern_e2e, pattern_e2e_cleanup
 
 
 @pytest.fixture
@@ -126,6 +126,27 @@ def test_lock_owner_change_prevents_release(runner, monkeypatch):
     assert runner.locked
 
 
+def test_lock_state_update_preserves_run_ownership(runner, monkeypatch):
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/run-id": runner.run_id,
+        "saw.redhat.com/sha": runner.sha,
+    }}, "data": {"state": "active", "baseline-namespaces": "[]"}}
+    calls = []
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+
+    def fake_call(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.update_lock_data({"state": "cleanup-required"})
+
+    assert lock["data"] == {"state": "cleanup-required", "baseline-namespaces": "[]"}
+    assert calls[0][0] == ["oc", "replace", "-f", "-"]
+    assert json.loads(calls[0][1]["input_text"])["metadata"]["annotations"][
+        "saw.redhat.com/run-id"] == runner.run_id
+
+
 def test_release_removes_run_created_lock_namespace(runner, monkeypatch):
     runner.locked = True
     runner.lock_namespace_created = True
@@ -227,6 +248,53 @@ def test_wait_for_retries_a_timed_out_status_check(runner):
     assert attempts == 2
 
 
+def test_target_ref_must_point_at_tested_sha(runner, monkeypatch):
+    monkeypatch.setattr(runner, "valid_git_branch", lambda _branch: True)
+    monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0,
+                                        stdout=f"{'b' * 40}\trefs/heads/{runner.branch}\n",
+                                        stderr=""))
+
+    with pytest.raises(pattern_e2e.E2EError, match="does not point to CI_HEAD_SHA"):
+        runner.verify_target_ref()
+
+
+def test_target_ref_accepts_the_tested_sha(runner, monkeypatch):
+    calls = []
+    monkeypatch.setattr(runner, "valid_git_branch", lambda _branch: True)
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0,
+                               stdout=f"{runner.sha}\trefs/heads/{runner.branch}\n",
+                               stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.verify_target_ref()
+    assert calls == [["git", "ls-remote", "--heads", "origin",
+                      f"refs/heads/{runner.branch}"]]
+
+
+def test_argo_check_fails_fast_when_all_apps_are_healthy_at_another_sha(
+        runner, monkeypatch):
+    other_sha = "b" * 40
+    applications = [{
+        "metadata": {"name": f"app-{index}"},
+        "spec": {"source": {"repoURL": f"https://github.com/{runner.repo}.git",
+                             "targetRevision": runner.branch}},
+        "status": {"sync": {"status": "Synced", "revision": other_sha},
+                   "health": {"status": "Healthy"}},
+    } for index in range(6)]
+    monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs:
+                        SimpleNamespace(returncode=0, stdout=json.dumps({
+                            "items": applications}), stderr=""))
+    monkeypatch.setattr(runner, "wait_for",
+                        lambda _label, predicate, **_kwargs: predicate())
+
+    with pytest.raises(pattern_e2e.E2EError, match="not tested SHA"):
+        runner.check_argo()
+
+
 def test_install_patches_pattern_api_port_for_operator(runner, monkeypatch):
     topology = {"cleanupApi": {"serviceIP": "172.30.0.1", "endpoints": [
         {"ip": "192.0.2.10", "port": 6443}]}, "networkPolicy": {
@@ -281,6 +349,7 @@ def test_install_checks_pattern_ports_after_make_finishes(runner, monkeypatch):
     topology = {"cleanupApi": {"endpoints": []}}
     monkeypatch.setattr(runner, "topology", lambda: topology)
     monkeypatch.setattr(runner, "install_options", lambda _topology: "options")
+    monkeypatch.setattr(runner, "update_lock_data", lambda _updates: None)
 
     class CompletedFuture:
         @staticmethod
@@ -324,6 +393,7 @@ def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     digest = "sha256:" + "a" * 64
     waited = []
     monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "update_lock_data", lambda _updates: None)
 
     def fake_oc_json(*args):
         if args[1] == "builds":
@@ -370,21 +440,25 @@ def test_install_options_use_guest_registry_and_base64_public_ca(runner, tmp_pat
     assert "/pattern-home/cluster-service-ca.crt" not in options
 
 
-def test_cleanup_failure_cannot_report_success(runner, monkeypatch):
+def test_e2e_script_does_not_start_cleanup(runner, monkeypatch):
     runner.locked = True
     monkeypatch.setattr(runner, "setup_files", lambda: None)
     monkeypatch.setattr(runner, "preflight", lambda: None)
     monkeypatch.setattr(runner, "build", lambda: None)
+    monkeypatch.setattr(runner, "prepare_registry_pull", lambda: None)
     monkeypatch.setattr(runner, "install", lambda: None)
     monkeypatch.setattr(runner, "verify_deployment_smoke", lambda: None)
     monkeypatch.setattr(runner, "verify_guest_install", lambda: None)
     monkeypatch.setattr(runner, "live_behavior", lambda: None)
     monkeypatch.setattr(runner, "diagnostics", lambda: None)
-    monkeypatch.setattr(runner, "cleanup", lambda: (_ for _ in ()).throw(
-        pattern_e2e.E2EError("namespace remains")))
-    assert runner.run() == 1
+    cleanup_calls = []
+    lock_updates = []
+    monkeypatch.setattr(runner, "cleanup", lambda: cleanup_calls.append(True))
+    monkeypatch.setattr(runner, "update_lock_data", lambda updates: lock_updates.append(updates))
+    assert runner.run() == 0
+    assert cleanup_calls == []
+    assert lock_updates == [{"state": "cleanup-required", "test-outcome": "success"}]
     assert runner.report["cleanup_verified"] is False
-    assert "cleanup_error" in runner.report
     assert runner.locked
 
 
@@ -412,6 +486,7 @@ def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeyp
     runner.baseline_namespaces = {"vp-gitops"}
     namespaces = {"vp-gitops", "patterns-operator"}
     deleted = []
+    updates = []
 
     def fake_call(args, **_kwargs):
         if args[:3] == ["oc", "delete", "namespace"]:
@@ -425,10 +500,176 @@ def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeyp
     monkeypatch.setattr(runner, "call", fake_call)
     monkeypatch.setattr(runner, "oc_json", lambda *_args: {"items": [
         {"metadata": {"name": name}} for name in namespaces]})
+    monkeypatch.setattr(runner, "update_lock_data", lambda data: updates.append(data))
     monkeypatch.setattr(runner, "release_lock", lambda: None)
     runner.cleanup()
     assert deleted == ["patterns-operator"]
     assert runner.report["cleanup_verified"] is True
+    assert updates == [
+        {"state": "cleanup-in-progress"},
+        {"state": "cleanup-verified", "cleanup-verified": "true"},
+    ]
+
+
+def test_recovery_loads_only_the_requested_run_lock(monkeypatch, tmp_path):
+    run_id = "123"
+    sha = "b" * 40
+    monkeypatch.setenv("CI_RECOVERY_RUN_ID", run_id)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_ARTIFACT_DIR", str(tmp_path))
+    runner = pattern_e2e.Runner(recovery=True)
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/repository": "example/repo",
+        "saw.redhat.com/run-id": run_id,
+        "saw.redhat.com/sha": sha,
+        "saw.redhat.com/run-url": "https://github.com/example/repo/actions/runs/123",
+        "saw.redhat.com/target-branch": "codex/ci-deployment-validation",
+    }}, "data": {
+        "state": "cleanup-required",
+        "baseline-namespaces": json.dumps(["default", "vp-gitops"]),
+        "build-attempted": "true", "install-attempted": "true",
+        "lock-namespace-created": "true",
+    }}
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+
+    runner.load_recovery_state()
+
+    assert runner.run_id == run_id
+    assert runner.sha == sha
+    assert runner.branch == "codex/ci-deployment-validation"
+    assert runner.baseline_namespaces == {"default", "vp-gitops"}
+    assert runner.build_attempted is True
+    assert runner.install_attempted is True
+    assert runner.locked is True
+    assert runner.lock_namespace_created is True
+
+
+def test_recovery_preserves_test_report_and_appends_cleanup_stage(monkeypatch, tmp_path):
+    run_id = "123"
+    sha = "b" * 40
+    monkeypatch.setenv("CI_RECOVERY_RUN_ID", run_id)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_ARTIFACT_DIR", str(tmp_path))
+    results = {
+        "source_sha": sha,
+        "repository": "example/repo",
+        "run_id": run_id,
+        "started_at": "2026-10-25T08:00:00Z",
+        "finished_at": "2026-10-25T09:00:00Z",
+        "stages": [{"name": "live-behavior", "result": "passed"}],
+        "cleanup_verified": False,
+    }
+    (tmp_path / "results.json").write_text(json.dumps(results), encoding="utf-8")
+    runner = pattern_e2e.Runner(recovery=True)
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/repository": "example/repo",
+        "saw.redhat.com/run-id": run_id,
+        "saw.redhat.com/sha": sha,
+        "saw.redhat.com/run-url": "https://github.com/example/repo/actions/runs/123",
+        "saw.redhat.com/target-branch": "codex/ci-deployment-validation",
+    }}, "data": {
+        "state": "cleanup-required",
+        "baseline-namespaces": json.dumps(["default"]),
+        "build-attempted": "true", "install-attempted": "true",
+        "lock-namespace-created": "true",
+    }}
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+
+    runner.load_recovery_state()
+    runner.stage("recovery-cleanup", lambda: None)
+
+    assert runner.report["started_at"] == "2026-10-25T08:00:00Z"
+    assert runner.report["test_finished_at"] == "2026-10-25T09:00:00Z"
+    assert [stage["name"] for stage in runner.report["stages"]] == [
+        "live-behavior", "recovery-cleanup"]
+
+
+def test_recovery_refuses_a_different_run_id(runner, monkeypatch):
+    monkeypatch.setenv("CI_RECOVERY_RUN_ID", "123")
+    runner.recovery_run_id = "123"
+    runner.repo = "example/repo"
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/repository": "example/repo",
+        "saw.redhat.com/run-id": "456",
+        "saw.redhat.com/sha": "b" * 40,
+    }}, "data": {}}
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+    with pytest.raises(pattern_e2e.E2EError, match="does not match"):
+        runner.load_recovery_state()
+
+
+def test_recovery_refuses_to_clean_without_saved_namespace_snapshot(
+    runner, monkeypatch,
+):
+    runner.recovery_run_id = "123"
+    runner.repo = "example/repo"
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/repository": "example/repo",
+        "saw.redhat.com/run-id": "123",
+        "saw.redhat.com/sha": "b" * 40,
+    }}, "data": {"state": "cleanup-required"}}
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
+    with pytest.raises(pattern_e2e.E2EError, match="namespace snapshot"):
+        runner.load_recovery_state()
+
+
+def test_cleanup_failure_keeps_cluster_lock_for_recovery(runner, monkeypatch):
+    runner.locked = True
+    monkeypatch.setattr(runner, "setup_recovery_files", lambda: None)
+    monkeypatch.setattr(runner, "cluster_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "load_recovery_state", lambda: None)
+    monkeypatch.setattr(runner, "diagnostics", lambda: None)
+    monkeypatch.setattr(runner, "stage", lambda _name, action: action())
+    monkeypatch.setattr(runner, "cleanup", lambda: (_ for _ in ()).throw(
+        pattern_e2e.E2EError("namespace remains")))
+    required = []
+    monkeypatch.setattr(runner, "mark_cleanup_required", lambda: required.append(True))
+
+    assert runner.recover_cleanup() == 1
+    assert required == [True]
+    assert runner.report["cleanup_verified"] is False
+
+
+def test_cleanup_script_uses_recovery_mode(monkeypatch):
+    instances = []
+
+    class FakeRunner:
+        def __init__(self, *, recovery):
+            instances.append(recovery)
+            self.cancelled = False
+
+        def recover_cleanup(self):
+            return 7
+
+    monkeypatch.setattr(pattern_e2e_cleanup, "Runner", FakeRunner)
+    monkeypatch.setattr(pattern_e2e_cleanup.signal, "signal", lambda *_args: None)
+    assert pattern_e2e_cleanup.main() == 7
+    assert instances == [True]
+
+
+def test_workflow_finish_retains_source_ref_until_cleanup_is_verified(
+    monkeypatch, tmp_path,
+):
+    sha = "a" * 40
+    branch = "ci/pattern-e2e/123-1"
+    result_path = tmp_path / "results.json"
+    result_path.write_text(json.dumps({"cleanup_verified": False}))
+    for key, value in {
+        "GITHUB_REPOSITORY": "example/repo", "CI_HEAD_SHA": sha,
+        "CI_TARGET_BRANCH": branch, "CI_E2E_OUTCOME": "success",
+        "CI_E2E_RESULTS_PATH": str(result_path),
+        "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
+    }.items():
+        monkeypatch.setenv(key, value)
+    calls = []
+    monkeypatch.setattr(e2e_control, "api", lambda method, path, payload=None:
+                        calls.append((method, path, payload)) or {})
+
+    e2e_control.finish()
+
+    assert not any(method == "DELETE" for method, _, _ in calls)
+    assert any(method == "POST" and path.endswith("/statuses/" + sha)
+               and payload["state"] == "failure" for method, path, payload in calls)
 
 
 def test_changed_pr_sha_is_rejected(monkeypatch):
