@@ -23,9 +23,10 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
 
 1. **The profile.** Copy the chart's example,
    `charts/governance-policy/profiles/examples/custom-inference.yaml`, to
-   `overrides/governance-profiles/custom-inference.yaml` (the shipped copy
-   there is this example with a host filled in), set `endpoints` to your
-   server, and list the file in `overrides/governance-profiles/kustomization.yaml`:
+   `overrides/governance-profiles/custom-inference.yaml` (shipped as that
+   same example), set `endpoints` to your server, and uncomment the
+   `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml`
+   listing the file:
 
    ```yaml
    id: custom-inference

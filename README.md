@@ -515,7 +515,7 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
 
 **Option A (Validated Pattern)** — four files in your fork, one Secret:
 
-1. **Profile** — copy `charts/governance-policy/profiles/examples/custom-inference.yaml` to `overrides/governance-profiles/custom-inference.yaml`, set `endpoints[0].host`/`port` to your server, and list the file under `configMapGenerator.files` in `overrides/governance-profiles/kustomization.yaml`. (A second server with its own key is a second file with its own `id`; the SAW-BOM provider for it is named *and* typed after that id.)
+1. **Profile** — copy `charts/governance-policy/profiles/examples/custom-inference.yaml` to `overrides/governance-profiles/custom-inference.yaml`, set `endpoints[0].host`/`port` to your server, and uncomment the `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml` (it lists the file). (A second server with its own key is a second file with its own `id`; the SAW-BOM provider for it is named *and* typed after that id.)
 2. **Egress** — a host outside the cluster goes in `egress.extraAllow` under `defaults.openshellSaw` in `overrides/saw-users.yaml`; an in-cluster Service needs a `networkPolicy.extraEgress` rule instead.
 3. **User** — give the entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`.
 4. **Secret** — in `~/values-secret-secure-agent-workspace.yaml` use the commented custom example of the `inference` secret (`url` ending in `/v1`, `model`, `api_key`; no `provider` if the Secret also serves data-science users).

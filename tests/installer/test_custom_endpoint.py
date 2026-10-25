@@ -206,10 +206,10 @@ def test_the_extra_profile_file_is_a_complete_openshell_profile():
     assert doc["id"] == "custom-inference" and doc["category"] == "inference"
     assert doc["credentials"][0]["env_vars"] == ["CUSTOM_INFERENCE_API_KEY"]
     assert doc["endpoints"] and all({"host", "port"} <= set(e) for e in doc["endpoints"])
-    kustomization = yaml.safe_load((EXTRA_PROFILE.parent / "kustomization.yaml").read_text())
-    gen = kustomization["configMapGenerator"][0]
-    assert gen["name"] == "governance-interceptor-extra-profiles"
-    assert "custom-inference.yaml" in gen["files"]
+    # Shipped with the generator commented out: a deployment uncomments it.
+    text = (EXTRA_PROFILE.parent / "kustomization.yaml").read_text()
+    assert "# configMapGenerator:" in text and "#       - custom-inference.yaml" in text
+    assert doc["endpoints"][0]["host"] == "custom.inference.local", "a placeholder, not a real host"
 
 
 REPLACED = ("error: Replacement credential saved but inactive. Your connection is unchanged. "

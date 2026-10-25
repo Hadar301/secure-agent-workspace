@@ -129,10 +129,23 @@ INTERCEPTOR_DEPLOYMENT = ROOT / "charts/governance-interceptor/templates/deploym
 
 
 def extra_profiles():
-    kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text())
-    (gen,) = kustomization["configMapGenerator"]
-    assert gen["name"] == "governance-interceptor-extra-profiles"
-    return {name: yaml.safe_load((EXTRA_DIR / name).read_text()) for name in gen.get("files") or []}
+    """The profiles a deployment lists in its kustomization; upstream ships
+    the generator commented out (no profile is served until a deployment
+    names its host), so the shipped example file is checked on its own."""
+    kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text()) or {}
+    gens = kustomization.get("configMapGenerator") or []
+    files = []
+    for gen in gens:
+        assert gen["name"] == "governance-interceptor-extra-profiles"
+        files += gen.get("files") or []
+    files = files or [p.name for p in EXTRA_DIR.glob("*.yaml") if p.name != "kustomization.yaml"]
+    return {name: yaml.safe_load((EXTRA_DIR / name).read_text()) for name in files}
+
+
+def test_the_shipped_kustomization_serves_nothing_until_a_deployment_lists_a_profile():
+    text = (EXTRA_DIR / "kustomization.yaml").read_text()
+    assert (yaml.safe_load(text) or {}).get("configMapGenerator") is None
+    assert "# configMapGenerator:" in text and "custom-inference.yaml" in text
 
 
 def test_extra_profiles_are_complete_and_do_not_shadow_shipped_ones():
