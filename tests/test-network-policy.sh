@@ -144,7 +144,8 @@ if "${PYTHON}" - "${tmpdir}/policies.json" <<'PY'
 import json, sys
 items = json.load(open(sys.argv[1]))['items']
 names = {i['metadata']['name'] for i in items}
-assert {'saw-default-deny', 'saw-vm', 'saw-credential-proxy', 'saw-cdi-import', 'saw-cleanup-hook'} <= names, names
+# GitOps leaves cleanupOnDelete off when users retain their VM on removal.
+assert {'saw-default-deny', 'saw-vm', 'saw-credential-proxy', 'saw-cdi-import'} <= names, names
 for item in items:
     spec = item['spec']
     if item['metadata']['name'] == 'saw-default-deny':

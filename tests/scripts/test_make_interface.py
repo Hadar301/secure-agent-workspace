@@ -483,7 +483,8 @@ def test_platform_builds_keep_the_repository_source_label():
 
 
 @pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
-                                  "build-governance-interceptor.yml", "build-openshell-gateway.yml"])
+                                  "build-governance-interceptor.yml", "build-openshell-gateway.yml",
+                                  "credential-proxy.yml"])
 def test_platform_builds_report_independently_and_merge_needs_both(name):
     text = (ROOT / ".github/workflows" / name).read_text()
     workflow = yaml.safe_load(text)

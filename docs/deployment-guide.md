@@ -63,7 +63,7 @@ The `openshell-gateway-image` BuildConfig creates a Fedora 44 qcow2 image with:
 - Podman by default (`containerRuntime: podman`), or Docker CE with `containerRuntime: docker`; plus Node.js, Python3, cloud-init, openssh, qemu-guest-agent. See [Container runtime support](container-runtime.md).
 - `cloud-user` with sudo access (and the `docker` group only in the Docker variant)
 - Systemd user service for the OpenShell gateway (`openshell-gateway.service`)
-- First-boot setup service (`openshell-gateway-setup.service`) that starts the container runtime, enables the gateway, and configures mTLS certs
+- First-boot setup service (`openshell-gateway-setup.service`) that starts the container runtime and enables the gateway; `saw-gateway-pki` generates gateway PKI in tmpfs through its systemd `ExecStartPre` drop-in
 
 The image is pushed to an internal ImageStream (`openshell-gateway:latest`). CDI imports it into each VM disk by default. A DataSource can be used for cloning instead.
 
@@ -133,11 +133,11 @@ With the in-cluster Keycloak (`oidc.issuerUrl` empty) and no `oidc.caBundle`, ev
 
 1. The `saw-ingress-ca` imperative job (`ansible/playbooks/saw-ingress-ca.yaml`, every 10 minutes) copies `openshift-config-managed/default-ingress-cert` to Vault at `secret/data/hub/cluster-ingress-ca`. That ConfigMap is public data, and the job only writes when the CA changed.
 2. Each user's `saw-<user>-secrets` app syncs it into their namespace as the Secret `saw-ingress-ca` (pattern-secrets, from saw-users `defaults.clusterCaSecret`).
-3. The VM mounts that Secret like a provider Secret (openshell-saw `oidc.clusterCaSecret`). On every boot, the installer trusts its `ca-bundle.crt`.
+3. The VM mounts that Secret like a provider metadata Secret (openshell-saw `oidc.clusterCaSecret`). On every boot, the installer trusts its `ca-bundle.crt`.
 
 No workspace needs RBAC on `openshift-config-managed`, and nothing reads a private key. On clusters whose `*.apps` certificate is from a public CA it is harmless.
 
-- **First install.** The VM waits for the Secret, as it does for the provider Secrets, so a VM created before the job's first run starts within about 10 minutes. To skip the wait, run the job once: `oc create job -n imperative --from=cronjob/<the saw-ingress-ca cronjob> saw-ingress-ca-now`.
+- **First install.** The VM waits for the Secret, as it does for the provider metadata Secrets, so a VM created before the job's first run starts within about 10 minutes. To skip the wait, run the job once: `oc create job -n imperative --from=cronjob/<the saw-ingress-ca cronjob> saw-ingress-ca-now`.
 - **Rotation.** A rotated CA reaches Vault and the Secret on its own, and each VM on its next restart.
 - **Turning it off.** Set saw-users `defaults.clusterCaSecret: ""`, for example when the issuer is external or the cluster has a public certificate.
 
@@ -179,7 +179,10 @@ ExternalSecret CRs pull from Vault:
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
-| `web-search` | `<prefix>/web-search` | Brave provider and API key; omitted when web search is off |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key; proxy only, omitted when web search is off |
+| `inference-meta` | `<prefix>/inference` | Provider, model and URL only; VM mount |
+| `web-search-meta` | `<prefix>/web-search` | Provider only; VM mount, omitted when web search is off |
+| `<additional-provider>-meta` | `<prefix>/<additional-provider>` | Provider, model and URL only; VM mount |
 
 `<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
@@ -198,11 +201,11 @@ The VM boots from a disk imported from the golden image. Nothing logs in over SS
 
 #### Cloud-init
 
-Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
+Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, the PKI systemd drop-in, `server-sans` and `pki-generation`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
 
 #### Root disk
 
-There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make images-mirror` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), `source.httpURL` (or the older `source.goldenImageURL`) to download a qcow2 over HTTP, or `source.dataSource` to clone a golden image DataSource that already exists. An `http://` or `https://` disk URL is added to the namespace egress firewall on its own host and port; a host already allowed on that port is not listed twice. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the redirect registrar in Keycloak's namespace, or by an administrator ([Web UI redirect URIs](#web-ui-redirect-uris)).
+There is no prepare Job. The namespace runs the VM, credential proxy Deployment and a bounded PreSync CA hook. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make images-mirror` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), `source.httpURL` (or the older `source.goldenImageURL`) to download a qcow2 over HTTP, or `source.dataSource` to clone a golden image DataSource that already exists. An `http://` or `https://` disk URL is added to the namespace egress firewall on its own host and port; a host already allowed on that port is not listed twice. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the redirect registrar in Keycloak's namespace, or by an administrator ([Web UI redirect URIs](#web-ui-redirect-uris)).
 
 #### Guest
 
@@ -397,9 +400,9 @@ egress:
 
 > Rolling default-deny NetworkPolicy out on an existing deployment is a staged, one-user-at-a-time procedure — see [NetworkPolicy upgrade procedure](#networkpolicy-upgrade-procedure).
 
-The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
+The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, `saw-credential-proxy`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. The PreSync CA hook has its own temporary policy for exact API egress. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
 
-The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
+The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The VM reaches its credential proxy on TCP 3128. The proxy policy permits DNS and bound HTTPS destinations; add scoped in-cluster peers to its `extraEgress` when needed. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
 
 The outside rule excludes every pod and Service CIDR, exact API endpoint IPs, and `169.254.0.0/16`, so the Kubernetes API Service, other tenants, and the metadata endpoint do not inherit outside access. **Before installing or upgrading**, compare live topology with this SAW's values:
 
@@ -411,7 +414,7 @@ oc get endpointslice -n default -l kubernetes.io/service-name=kubernetes -o yaml
 
 The chart has no assumed CIDR or API endpoint values. `make saw-create` discovers them; direct Helm and GitOps users must supply them. `make prereqs-check` compares each enabled pattern user's effective values with the live topology. `extraBlockedCIDRs` excludes another IPv4 range. The template rejects empty or malformed CIDR lists and broad custom rules. The outside rule is IPv4 only; IPv6 has no allow rule and remains denied. NetworkPolicy and EgressFirewall cannot distinguish one Route host from another on TCP 443, so cluster Routes still rely on their own authentication.
 
-The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
+The API firewall exception is always present for both cleanup and credential-proxy CA hooks, including with `cleanupOnDelete: false` or during a NetworkPolicy rollback. The VM remains blocked from the API by `saw-vm`. The CA hook uses `restartPolicy: Never` and a 120-second deadline. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
 
 **Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
 
@@ -425,7 +428,9 @@ For an in-cluster MCP server, also configure its sandbox provider and MCP permis
 | Gateway (VM) | Keycloak (pod) | HTTPS | OIDC token validation |
 | Gateway (VM) | DNS, registry, ingress controller | TCP/UDP 5353, TCP 5000, TCP 443/80 | Resolution, image pull, Routes |
 | CDI importer pod | Registry or configured disk URL | TCP 5000 or allowed outside port | Root disk import |
-| Cleanup hook pod | Kubernetes API | HTTPS | Delete VM and PVCs |
+| Cleanup hook / CA hook pod | Kubernetes API | HTTPS | Delete VM and PVCs / initialize proxy CA |
+| Gateway (VM) | Credential proxy | HTTP CONNECT on TCP 3128 | Send markers in HTTPS requests |
+| Credential proxy | Bound upstream host | HTTPS on TCP 443 | Inject provider key; keyed in-cluster endpoints also require HTTPS 443 |
 | In-guest installer | mounted ConfigMaps, provider metadata Secrets, public proxy CA | virtiofs or iso9660 | Install binaries and apply profiles with markers |
 | Credential proxy | full provider Secrets | namespace pod mounts | Inject keys into bound HTTPS requests |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
@@ -434,7 +439,7 @@ For an in-cluster MCP server, also configure its sandbox provider and MCP permis
 
 - **CLI:** `openshell gateway login` uses the browser flow by default, or the OIDC device-code flow when `OPENSHELL_NO_BROWSER=1` is set, authenticating against Keycloak. The token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
-- **In-guest installer:** a two-hour `OU=openshell-admin` certificate and CLI entry in tmpfs during each apply. The long-running `saw-relay` identity has only the workspace user role. Users still use OIDC. See [Credential isolation](credential-isolation.md).
+- **In-guest installer:** a one-day `OU=openshell-admin` certificate and CLI entry in tmpfs during each apply. The long-running `saw-relay` identity has only the workspace user role. Users still use OIDC. See [Credential isolation](credential-isolation.md).
 
 ## Operator Quick Reference
 
@@ -460,7 +465,8 @@ make governance-deploy           # Deploy governance policy and interceptor
 ### Sandbox Lifecycle
 
 ```bash
-# Create
+# Create (required digest; GitOps uses defaults.openshellSaw.credentialProxy.image)
+export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 make saw-create OPENSHELL_SAW_NAME=my-saw
 
 # Access — NemoClaw sandbox
@@ -503,6 +509,8 @@ The `add`, `remove`, and `create` targets edit `charts/governance-policy/profile
 ```bash
 make lint                   # Lint all 13 charts
 make test                   # Run local Python tests through uv
+make test-credential-proxy   # Go vet and race tests
+SAW_NS=saw-<user> VM_NAME=<user> make test-credential-isolation
 make test-deployment        # Run the dedicated live-cluster test
 SKIP_LIVE=1 ./tests/test-network-policy.sh  # Offline policy structure checks
 # On two dedicated test SAWs:
@@ -545,6 +553,7 @@ export PROVIDER=build
 export MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
+export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 # Off-mode run:
 unset WEB_SEARCH_API_KEY
 # For a separate on-mode run, restore the secrets-file entry and use:
@@ -698,7 +707,7 @@ Web search is on by default for GitOps deployments. If Vault has no
 Alternatively, set `global.webSearch.enabled: false` in `values-global.yaml`.
 A user's `webSearch: {enabled: false}` in `overrides/saw-users.yaml` wins over
 the global value; `true` opts that user back in and requires their Vault key.
-Off removes web-search from secret delivery and VM mounts, disables every
+Off removes web-search and web-search-meta from secret delivery and VM mounts, removes the web-search proxy binding, and disables every
 BOM provider whose `credentialSecret` is `web-search`, and removes those
 provider names from sandbox lists. Other providers are unchanged. The
 quickstart detects a missing web-search Secret and applies the same BOM
@@ -707,14 +716,14 @@ setting automatically. A rerun keeps web search on if the Secret exists.
 Leaving web search on without its key produces ESO `SecretSyncedError` and
 a Degraded secrets Application, and the VM can stay in `ContainerCreating`
 with `FailedMount` for `web-search`. If the mount is bypassed, the installer
-reports `credential for provider 'brave' in workspace 'default' not found`.
+reports `metadata Secret 'web-search-meta' is not mounted`.
 Turn the switch off to avoid all three failures.
 
 When switching an existing workspace off, the per-user Applications use
 self-heal without automatic prune. Check for retained objects with
-`oc get externalsecret,secret web-search -n saw-<user>` and remove them after
+`oc get externalsecret,secret web-search web-search-meta -n saw-<user>` and remove them after
 the updated Applications have synced:
-`oc delete externalsecret,secret web-search -n saw-<user> --ignore-not-found`.
+`oc delete externalsecret,secret web-search web-search-meta -n saw-<user> --ignore-not-found`. Also check the proxy ConfigMap has no web-search binding and the credential-proxy Deployment is Available.
 Removing the VM volume may require `make saw-restart-pending` (review the
 listed VMs before confirming). The default installer prune mode is `report`,
 so an existing gateway's Brave provider may remain; inspect

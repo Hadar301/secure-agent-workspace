@@ -17,7 +17,7 @@ can begin.
 ## Test results
 
 All three providers passed authenticated inference requests from inside the
-sandbox through OpenShell's credential proxy. Each API returned **HTTP 200**
+sandbox through the in-VM OpenShell sandbox proxy, before namespace credential isolation. The namespace-proxy path is **not yet re-validated** for this matrix. Each API returned **HTTP 200**
 with a response matching the test prompt.
 
 OpenClaw chat also returned responses from all three providers. NVIDIA passed

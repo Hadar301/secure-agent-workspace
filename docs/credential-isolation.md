@@ -77,7 +77,10 @@ while it exists in tmpfs.
 
 Build and publish `credential-proxy/Containerfile`, then set
 `credentialProxy.image` to the resulting **digest reference** (`...@sha256:...`).
-The chart refuses an empty or tag-only image. `make saw-create` accepts
+Use the multi-architecture index digest for published multi-arch images.
+For GitOps, set `defaults.openshellSaw.credentialProxy.image` in
+`overrides/saw-users.yaml` before deploying Option A. The chart refuses an
+empty or tag-only image. `make saw-create` accepts
 `CREDENTIAL_PROXY_IMAGE` or `SAW_VALUES_FILE` with that value. The proxy CA
 hook creates a namespace CA Secret and its public ConfigMap before the VM and
 proxy Deployment. The CA ConfigMap is a required VM disk.

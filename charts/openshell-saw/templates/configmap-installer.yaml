@@ -58,6 +58,11 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- fail "signing.mode enforce requires signing.trustKeys or both signing.identity and signing.issuer" }}
 {{- end }}
 {{- $trusted := .Values.sandboxUiProxy.trustedProxy | default dict }}
+{{- $bindings := list }}
+{{- $attached := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact }}
+{{- range .Values.credentialProxy.secrets }}
+{{- if has .name $attached }}{{- $bindings = append $bindings . }}{{- end }}
+{{- end }}
 {{- $config := dict
       "vmName" (include "openshell-sandbox.fullname" .)
       "namespace" .Release.Namespace
@@ -67,7 +72,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "credentialProxy" (dict
           "url" (printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace)
           "markerPrefix" "saw-cred"
-          "secrets" .Values.credentialProxy.secrets)
+          "secrets" $bindings)
       "gatewayPki" (dict "generation" .Values.gatewayPki.generation)
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "ownerSubjectSource" (.Values.accessControl.ownerSubjectSource | default "")
@@ -92,7 +97,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
           "issuer" (.Values.harness.cosign.issuer | default "https://token.actions.githubusercontent.com")
           "cacheTtlSeconds" (.Values.harness.cosign.cacheTtlSeconds)))
       "prune" (dict "mode" $pruneMode "sandboxes" (.Values.prune.sandboxes | default false))
-      "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray)
+      "secrets" (concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact)
       "sandboxUi" (include "openshell-sandbox.sandboxUi" . | fromJsonArray)
       "sandboxUiProxy" (dict
           "targetPort" (int .Values.sandboxUiProxy.targetPort)

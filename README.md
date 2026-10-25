@@ -236,6 +236,15 @@ make images-mirror
 # oidc.caBundle snippet to add to overrides/saw-users.yaml.
 make check-oidc-ca
 
+# 5c. Pin the credential proxy image before rendering any user VM.
+# Set this in overrides/saw-users.yaml (alongside your users list):
+# defaults:
+#   openshellSaw:
+#     credentialProxy:
+#       image: <repo>/saw-credential-proxy@sha256:<multi-arch-index-digest>
+# Build credential-proxy/Containerfile and publish it, or build in-cluster;
+# see docs/credential-isolation.md. This is required until a default is published.
+
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on your fork (origin): the Pattern
 # CR points Argo CD at it, and every later change (steps 7+) is a push there.
@@ -474,7 +483,7 @@ will not stop the other process.
 The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
-`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
+`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`, `CREDENTIAL_PROXY_IMAGE`,
 `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
 and owner access checks described in the deployment guide. The repo supplies
 the second-user denial check by default. Set `WEB_SEARCH_API_KEY` to test
@@ -516,6 +525,14 @@ disabled by default. To add either to the existing notebook with Option A:
    `model` override. The Secret's `model` overrides that provider's model in
    the sandbox's `inference.models`; defaults are `gpt-6-luna` for OpenAI and
    `claude-sonnet-4-6` for Anthropic. Official APIs need no URL.
+4. Run `uv run --locked scripts/saw-profile-catalog.py`, then commit and push
+   the updated profiles and catalogs. The generated credential bindings attach
+   each API Secret to its provider's allowed hosts. ESO creates the full Secrets
+   for the namespace proxy and `inference-openai-meta` /
+   `inference-anthropic-meta` for the VM, containing only the nonsecret
+   `provider`, `model` and `url` fields. The sandbox sends a nonsecret marker;
+   the namespace proxy injects the real key only for the bound HTTPS host on
+   port 443.
 
 Select the provider's model in the notebook chat's model picker. These optional
 providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
@@ -691,7 +708,7 @@ make test
 # Tool-action gate tests (needs node; not part of CI)
 make test-tool-gate
 
-# Run offline template validation (43 checks)
+# Run offline template validation (48 checks)
 ./tests/test-oidc-templates.sh
 
 # NetworkPolicy chart checks run offline; name two test SAWs for live checks

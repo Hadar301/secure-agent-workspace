@@ -1,5 +1,9 @@
 """Official APIs use native onboarding; explicit endpoint URLs remain custom."""
+from copy import deepcopy
+
 import pytest
+
+from conftest import TEST_PROXY, resolve
 
 
 def test_attached_models_resolve_and_register_without_changing_default(
@@ -248,13 +252,14 @@ def test_shipped_optional_apis_do_not_require_keys_by_default(ab, secrets_dir):
     # The model is the sandbox's (inference.model); the provider holds credentials only.
     assert nvidia.model == ""
     assert nvidia.credential_secret_key == "api_key"
-    assert set(ab.resolve_credentials(profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
+    assert set(resolve(ab, profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
     assert ab.sandbox_model(workspace.sandboxes[0], nvidia) == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_each_official_api_reads_its_own_secret(ab, secrets_dir):
     from conftest import profile_files
 
+    proxy = deepcopy(TEST_PROXY)
     profiles = ab.parse_profiles(profile_files())
     workspace = next(ws for ws in profiles[0].workspaces if ws.name == "default")
     for kind in ("openai", "anthropic"):
@@ -264,13 +269,15 @@ def test_each_official_api_reads_its_own_secret(ab, secrets_dir):
         secret = secrets_dir / f"inference-{kind}"
         secret.mkdir()
         (secret / "provider").write_text(kind)
-        (secret / "api_key").write_text(f"test-{kind}-key")
+        proxy["secrets"].append({"name": f"inference-{kind}", "key": "api_key",
+                                 "providers": [kind]})
         (secret / "model").write_text(f"test-{kind}-model")
     ab.validate_profiles(profiles)
-    credentials = ab.resolve_credentials(profiles, secrets_dir)
+    credentials = ab.resolve_credentials(profiles, secrets_dir, proxy)
     assert credentials["default"] == {
-        "nvidia": "nvapi-TEST-KEY-123", "brave": "brave-TEST-KEY-456",
-        "openai": "test-openai-key", "anthropic": "test-anthropic-key"}
+        "nvidia": "saw-cred.inference.api_key", "brave": "saw-cred.web-search.api_key",
+        "openai": "saw-cred.inference-openai.api_key",
+        "anthropic": "saw-cred.inference-anthropic.api_key"}
     assert credentials["cuda-dev"]["nvidia"] == credentials["default"]["nvidia"]
     for kind in ("openai", "anthropic"):
         provider = next(p for p in workspace.providers if p.name == kind)

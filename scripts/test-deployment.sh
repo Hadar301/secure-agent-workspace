@@ -327,20 +327,34 @@ check_repeat_state() {
   fi
 }
 check_web_search_absent() {
-  local label="$1" kind found
+  local label="$1" kind name found policy
   for kind in externalsecret secret; do
-    # Empty output means NotFound; API/RBAC errors must still fail the check.
-    if ! found="$(oc get "${kind}" web-search -n "${pattern_namespace}" \
-        --ignore-not-found -o name)"; then
-      record "${label}" 1 "could not check web-search ${kind}"
-      return 1
-    fi
-    if [[ -n "${found}" ]]; then
-      record "${label}" 1 "web-search ${kind} still exists"
-      return 1
-    fi
+    for name in web-search web-search-meta; do
+      # Empty output means NotFound; API/RBAC errors must still fail the check.
+      if ! found="$(oc get "${kind}" "${name}" -n "${pattern_namespace}" \
+          --ignore-not-found -o name)"; then
+        record "${label}" 1 "could not check ${name} ${kind}"
+        return 1
+      fi
+      if [[ -n "${found}" ]]; then
+        record "${label}" 1 "${name} ${kind} still exists"
+        return 1
+      fi
+    done
   done
-  record "${label}" 0 "inference Secret exists; web-search ExternalSecret and Secret are absent"
+  if ! policy="$(oc get configmap "${TEST_PATTERN_SAW_NAME}-credential-proxy-config" \
+      -n "${pattern_namespace}" -o json)" ||
+      ! jq -e '.data["config.json"] | fromjson | .bindings | all(.secret != "web-search")' \
+      <<<"${policy}" >/dev/null; then
+    record "${label}" 1 "could not verify proxy bindings without web-search"
+    return 1
+  fi
+  if ! oc wait --for=condition=Available "deployment/${TEST_PATTERN_SAW_NAME}-credential-proxy" \
+      -n "${pattern_namespace}" --timeout=120s; then
+    record "${label}" 1 "credential proxy is not Available"
+    return 1
+  fi
+  record "${label}" 0 "web-search and web-search-meta are absent; proxy has no web-search binding and is Available"
 }
 
 echo "Testing commit ${commit} on context ${context}. Evidence: ${evidence}"

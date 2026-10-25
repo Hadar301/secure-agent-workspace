@@ -27,19 +27,19 @@ This page is the visual overview of how a SAW is assembled from its versioned Bi
 │              apply_bom.py (runs on the gateway VM, no SSH)              │
 │                                                                         │
 │  saw-install (root)                                                     │
-│  ├── Check component signatures (warn by default; enforce stops first) │
-│  ├── Pull each digest, install the binary, start the gateway           │
+│  ├── Check component signatures (warn by default; enforce stops first)  │
+│  ├── Pull each digest, install the binary, start the gateway            │
 │  └── Skip components that are already current                           │
 │                                                                         │
-│  saw-apply (root reads inputs, then cloud-user runs the plan)          │
-│  ├── per-run admin mTLS cert and CA in tmpfs                             │
+│  saw-apply (root reads inputs, then cloud-user runs the plan)           │
+│  ├── per-run admin mTLS cert and CA in tmpfs                            │
 │  ├── Workspaces, providers, sandboxes (provider attached per sandbox)   │
 │  ├── provider credentials are nonsecret markers                         │
-│  ├── Ledger of created objects; report mode only logs deletions        │
+│  ├── Ledger of created objects; report mode only logs deletions         │
 │  └── Verify workspaces, providers, and sandboxes                        │
 │                                                                         │
-│  saw-reconcile, only when vm.liveInputs is true                        │
-│  └── install+apply on a BOM change; apply only on profile or Secret    │
+│  saw-reconcile, only when vm.liveInputs is true                         │
+│  └── install+apply on a BOM change; apply only on profile or Secret     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -149,15 +149,16 @@ User → OpenClaw TUI/GUI
          │
          │ model: nvidia/nemotron-3.5-lightning-30b-a3b
          │ baseUrl: https://integrate.api.nvidia.com/v1 (the provider's own endpoint)
-         │ key: the placeholder in NVIDIA_API_KEY
+         │ key: nonsecret marker in NVIDIA_API_KEY
          │
          ▼
   OpenShell Network Proxy (10.200.0.1:3128)
          │
-         │ Swaps in the real NVIDIA_API_KEY, only for the provider
-         │ profile's endpoints and binaries (node, curl)
-         │ Enforces governance network policy
-         │
+         │ Enforces governance network policy; carries marker
+         │ through HTTPS CONNECT
+         ▼
+  saw-credential-proxy (namespace pod, port 3128)
+         │ Injects the real key only on a bound HTTPS host
          ▼
   integrate.api.nvidia.com:443
 ```
@@ -175,13 +176,13 @@ User → OpenClaw TUI/GUI
 ├─────────────────────────────────────────────────┤
 │ Credential Boundary                             │
 │ ├── API keys in Vault / K8s secrets             │
-│ ├── VM and OpenShell store markers only          │
+│ ├── VM and OpenShell store markers only         │
 │ ├── Namespace proxy injects keys at bound hosts │
-│ └── No provider keys inside the VM or sandboxes  │
+│ └── No provider keys inside the VM or sandboxes │
 ├─────────────────────────────────────────────────┤
 │ Identity Boundary                               │
 │ ├── OIDC via Keycloak (alice)                   │
-│ ├── mTLS; platform admin CA only during apply    │
+│ ├── mTLS; platform admin CA only during apply   │
 │ ├── Gateway token for OpenClaw Control UI       │
 │ └── Sandbox user (UID 65532) — non-root         │
 └─────────────────────────────────────────────────┘

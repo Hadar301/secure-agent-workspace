@@ -185,6 +185,12 @@ provider's `type` must be one the installer knows (`PROVIDER_CRED_MAP` in
 keyed service of a new type needs that one-line addition; until then only
 keyless providers can be declared in a SAW-BOM profile.
 
+The namespace credential proxy injects keys only for a bound HTTPS host on
+port 443. A plain-HTTP `*.svc` MCP server receives the nonsecret marker, so
+in-cluster MCP services should use `credentialFree: true`, or expose keyed
+services through an HTTPS Route on port 443. HTTPS to a `.svc` host on another
+port is refused. Add any in-cluster peer to the proxy's NetworkPolicy too.
+
 ### Tool plugins (`plugins/<id>/`)
 
 Plain ES modules (`.mjs`, or `.js` with `"type": "module"`), self-contained:

@@ -161,7 +161,9 @@ additionalProviderSecrets:
   - web-search
 
 # A published image digest is required before rendering this chart. Build the
-# source in credential-proxy/ and set this to repo@sha256:<digest>.
+# source in credential-proxy/ and set this to repo@sha256:<digest>. Use the
+# multi-arch index digest, not a per-platform digest (skopeo inspect --raw
+# docker://<image>:sha-<commit> | sha256sum).
 credentialProxy:
   image: ""
   replicas: 1

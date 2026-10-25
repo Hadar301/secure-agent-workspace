@@ -41,7 +41,11 @@ case "$1" in
        elif [[ "$2" == secret ]]; then
          if [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]]; then
            if [[ " $* " == *" -o json "* ]]; then
-             echo '{"metadata":{"namespace":"default"},"data":{}}'
+             if [[ "$3" == inference-openai ]]; then
+               echo '{"metadata":{"namespace":"saw-cinf"},"data":{"provider":"b3BlbmFp","model":"Z3B0LTRv","api_key":"VEVTVC1LRVk="}}'
+             else
+               echo '{"metadata":{"namespace":"default"},"data":{}}'
+             fi
            else
              echo "secret/$3"
            fi
@@ -438,7 +442,7 @@ def test_without_a_web_search_key_the_vm_does_not_wait_for_that_secret(run):
     log, values = run(PROVIDER="build", MODEL="m", API_KEY="k", WEB_SEARCH_API_KEY="",
                       PROFILES="data-science,custom-inference")
     helm = _saw_helm(log)
-    assert "additionalProviderSecrets=null" in helm
+    assert "additionalProviderSecrets=[]" in helm
     assert "inference.secretName=" not in helm
     bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom "))
     assert "--set webSearch.enabled=false" in bom
@@ -450,6 +454,28 @@ def test_a_rerun_keeps_the_existing_web_search_secret(run):
                  WEB_SEARCH_API_KEY="", EXISTING_SECRETS="web-search")
     helm = _saw_helm(log)
     assert "inference.secretName=" not in helm
-    assert "additionalProviderSecrets=null" not in helm
+    assert "additionalProviderSecrets=[]" not in helm
     bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom "))
     assert "webSearch.enabled" not in bom
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_additional_provider_metadata_and_bindings(run, tmp_path, explicit):
+    import json
+    values = tmp_path / "additional.yaml"
+    payload = {"additionalProviderSecrets": ["inference-openai"]}
+    binding = {"name": "inference-openai", "key": "api_key", "providers": ["openai"]}
+    if explicit:
+        payload["credentialProxy"] = {"secrets": [binding]}
+    values.write_text(yaml.safe_dump(payload))
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k", WEB_SEARCH_API_KEY="",
+                 EXISTING_SECRETS="inference-openai", SAW_VALUES_FILE=str(values))
+    import re
+    metadata = [json.JSONDecoder().raw_decode(log[m.start():])[0]
+                for m in re.finditer(r"(?m)^\{", log)]
+    extra = next(d for d in metadata if d["metadata"]["name"] == "inference-openai-meta")
+    assert extra["data"] == {"provider": "b3BlbmFp", "model": "Z3B0LTRv"}
+    helm = next(line for line in log.splitlines() if "helm upgrade --install cinf " in line)
+    assert 'additionalProviderSecrets=["inference-openai"]' in helm
+    bindings = json.loads(helm.split("credentialProxy.secrets=", 1)[1].split(" --", 1)[0])
+    assert bindings.count(binding) == 1

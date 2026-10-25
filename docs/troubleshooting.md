@@ -1,6 +1,6 @@
 # Network troubleshooting
 
-Each `saw-<name>` namespace has two outbound controls. The namespaced `NetworkPolicy` selects the VM's `virt-launcher` pod and limits in-cluster peers and outside TCP ports. The OVN-Kubernetes `EgressFirewall` named `default` limits outside destinations by hostname and also evaluates API traffic on the test cluster. A connection must pass both layers. The sandbox proxy and governance profile are another decision point inside the VM.
+Each `saw-<name>` namespace has two outbound controls. The VM's `saw-vm` NetworkPolicy limits in-cluster peers and outside TCP ports, while `saw-credential-proxy` separately permits the proxy's DNS and HTTPS egress. The OVN-Kubernetes `EgressFirewall` named `default` limits outside destinations by hostname and also evaluates API traffic on the test cluster. A connection must pass both layers. The sandbox proxy and governance profile are another decision point inside the VM.
 
 Use the affected SAW namespace in every command. Check the current context before probing a cluster:
 
@@ -24,7 +24,9 @@ Compare it with a known allowed destination from the same VM. A `000` HTTP code 
 ## Provider call fails through the credential proxy
 
 Check `oc get deploy,pod,svc -n saw-<name> -l openshell.pattern/role=credential-proxy`
-and the proxy's `/healthz` Service port 8081. Its logs report host, binding,
+and the proxy's `/healthz` Service port 8081. Inspect `saw-credential-proxy`
+NetworkPolicy for DNS, HTTPS and any scoped in-cluster peers; the CA hook has
+a separate API-egress policy during PreSync. Its logs report host, binding,
 and status without keys. An `unknown or unbound credential marker` 502 means
 the marker, Secret provider type, and profile endpoint do not agree. A missing
 mounted key makes `/healthz` fail. A proxy outage cannot cause a key fallback
@@ -49,7 +51,7 @@ during apply. Re-run `saw-apply` after correcting workspace membership.
 
 The governance profile can become live through the interceptor before the `openshell-saw` release receives its matching EgressFirewall and NetworkPolicy update. A persistent version of this problem occurs when a profile is added without its exact outside host in `egress.allow` or `egress.extraAllow`, or without a narrow `networkPolicy.extraEgress` rule for an in-cluster Service. Custom provider URLs held only in Vault cannot be inferred by the chart.
 
-Compare the destination and port in the active profile with the `EgressFirewall` and `saw-vm` NetworkPolicy. Probe its hostname from the VM and a known allowed host from the same VM. For an outside host, add it to `egress.extraAllow` and sync the SAW; for an in-cluster Service, add its namespace, pod selector, and port to `networkPolicy.extraEgress` and sync. Keep the profile and allowlist changes together. CI checks the shipped profile hosts and ports against the chart's default allowlist and outside ports; site-specific additions still need review.
+Compare the destination and port in the active profile with the `EgressFirewall`, `saw-vm` and `saw-credential-proxy` NetworkPolicies. Probe its hostname from the VM and a known allowed host from the same VM. For an outside host, add it to `egress.extraAllow` and sync the SAW; for an in-cluster Service, add its namespace, pod selector, and port to `networkPolicy.extraEgress` and sync. Keep the profile and allowlist changes together. CI checks the shipped profile hosts and ports against the chart's default allowlist and outside ports; site-specific additions still need review.
 
 In the 2026-10-11 test, the live NVIDIA profile still listed `integrate.api.nvidia.com`. A credential-free request from the notebook sandbox returned HTTP 404 with the firewall rule present, timed out after eight seconds when that one hostname was removed from the EgressFirewall, and returned HTTP 404 again after rollback. The sandbox image lacked curl, so the probe used Node `fetch` and reported `TimeoutError` on the denied request. No supervisor log line was captured; the unchanged live profile and reversible firewall rule establish the configuration skew observed here.
 

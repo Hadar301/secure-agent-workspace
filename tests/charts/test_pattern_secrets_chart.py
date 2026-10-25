@@ -38,6 +38,7 @@ def test_inference_only_renders_no_web_search_external_secret():
     got = keys("--set", "secrets={inference}")
     assert "inference" in got
     assert "web-search" not in got
+    assert "web-search-meta" not in got
 
 
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
@@ -99,6 +100,10 @@ def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
         "secrets": ["inference", "web-search", "inference-openai", "inference-anthropic"]}))
     assert keys("-f", str(values)) == {
         "inference": {"secret/data/hub/saw-alice/inference"},
+        "inference-meta": {"secret/data/hub/saw-alice/inference"},
+        "web-search-meta": {"secret/data/hub/saw-alice/web-search"},
+        "inference-openai-meta": {"secret/data/hub/saw-alice/inference-openai"},
+        "inference-anthropic-meta": {"secret/data/hub/saw-alice/inference-anthropic"},
         "web-search": {"secret/data/hub/saw-alice/web-search"},
         "inference-openai": {"secret/data/hub/saw-alice/inference-openai"},
         "inference-anthropic": {"secret/data/hub/saw-alice/inference-anthropic"},

@@ -135,7 +135,8 @@ capture that result as a validation blocker rather than switching the production
 back silently.
 
 **Inference routing** follows the current SAW-BOM provider profiles. The
-agent calls its provider endpoint through the sandbox proxy. See
+agent sends a nonsecret marker through the sandbox proxy and namespace
+credential proxy; only the latter injects the real key on a bound HTTPS host. See
 [deployment details](deployment-guide.md) for the current installer flow.
 
 **The `nemoclaw-sandbox` image** must be reachable from the VM before the in-guest installer creates that sandbox. Either build it with `make sandbox-build` or mirror it from `ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest` using `make images-mirror MIRROR_IMAGES=nemoclaw-sandbox`. The default BOM pulls this public GHCR image directly from the VM. See [Container images](container-images.md).

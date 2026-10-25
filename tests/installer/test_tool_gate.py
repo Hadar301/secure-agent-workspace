@@ -66,7 +66,7 @@ def test_audit_volume_permissions_use_podman_user_namespace(
 
     monkeypatch.setattr(Path, "chmod", reject_host_chmod)
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     applier_for(ab, config, creds).apply(profiles)
 
     audit = fake_env.state / "volumes" / ab.sandbox_volume_name(

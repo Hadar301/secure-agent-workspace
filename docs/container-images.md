@@ -19,9 +19,10 @@ those deployment overrides local when preparing changes for upstream.
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
 | `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
+| `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | `credentialProxy.image`, digest-only; use the multi-arch index digest |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
 
-`openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox` and `governance-interceptor` tags are
+`openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox`, `saw-credential-proxy` and `governance-interceptor` tags are
 multi-architecture indexes (`linux/amd64`, `linux/arm64`): each architecture
 builds natively and pushes by digest, and the merge job joins the digests with
 `.github/actions/merge-image`. `make images-mirror` on an arm64 cluster gets

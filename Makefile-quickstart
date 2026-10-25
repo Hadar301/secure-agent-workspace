@@ -587,7 +587,7 @@ test-credential-proxy: ## Race-enabled credential proxy tests
 	cd credential-proxy && $(GO) vet ./... && $(GO) test -race ./...
 
 credential-proxy-image: ## Build the credential proxy image locally
-	podman build -f credential-proxy/Containerfile -t $(IMAGE_REPO)/saw-credential-proxy:$(IMAGE_TAG) credential-proxy
+	podman build --platform linux/$(BUILD_ARCH) -f credential-proxy/Containerfile -t $(IMAGE_REPO)/saw-credential-proxy:$(IMAGE_TAG) credential-proxy
 
 test-credential-isolation: ## Verify credential isolation on a live SAW
 	SAW_NS=$(SAW_NS) VM_NAME=$(or $(VM_NAME),$(OPENSHELL_SAW_NAME)) tests/test-credential-isolation.sh

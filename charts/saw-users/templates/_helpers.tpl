@@ -118,7 +118,10 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
 {{- $proxy := deepCopy (index $base "credentialProxy" | default dict) -}}
-{{- $_ := set $proxy "secrets" (include "saw-users.credentialBindings" . | fromJsonArray) -}}
+{{- $bindings := include "saw-users.credentialBindings" . | fromJsonArray -}}
+{{- if $bindings -}}
+{{- $_ := set $proxy "secrets" $bindings -}}
+{{- end -}}
 {{- $_ := set $base "credentialProxy" $proxy -}}
 {{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
      uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
@@ -236,16 +239,18 @@ an enabled workspace). pattern-secrets syncs only these.
 {{/* Only fields marked kind=secret become proxy bindings. */}}
 {{- define "saw-users.credentialBindings" -}}
 {{- $bindings := dict -}}
+{{- $secretNames := include "saw-users.secretNames" . | fromJsonArray -}}
 {{- $known := include "saw-users.userCatalog" . | fromJsonArray -}}
 {{- range $profile := $known -}}
   {{- range $secret, $entry := $profile.secrets | default dict -}}
     {{- range $field := $entry.fields | default list -}}
-      {{- if eq $field.kind "secret" -}}
+      {{- if and (has $secret $secretNames) (eq $field.kind "secret") -}}
         {{- $id := printf "%s/%s" $secret $field.key -}}
         {{- $previous := index $bindings $id | default (dict "name" $secret "key" $field.key "providers" (list)) -}}
         {{- $providers := $previous.providers -}}
         {{- range $entry.providers | default list -}}
           {{- if not (has . $providers) -}}{{- $providers = append $providers . -}}{{- end -}}
+          {{- if and (eq . "nvidia") (not (has "build" $providers)) -}}{{- $providers = append $providers "build" -}}{{- end -}}
         {{- end -}}
         {{- $_ := set $previous "providers" $providers -}}
         {{- $_ := set $bindings $id $previous -}}

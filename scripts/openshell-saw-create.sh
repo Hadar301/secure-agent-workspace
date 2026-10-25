@@ -84,6 +84,10 @@ if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   echo "Error: python3 with PyYAML is required for network topology discovery." >&2
   exit 1
 fi
+additional_provider_secrets=()
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  mapfile -t additional_provider_secrets < <(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")
+fi
 if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
   echo "Error: DASHBOARD must be true or false." >&2
   exit 1
@@ -285,11 +289,21 @@ if [[ -n "${API_KEY}" || -n "${MODEL}" || -n "${PROVIDER}" || -n "${ENDPOINT_URL
   fi
 fi
 
-if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
-  oc get secret inference -n "${DEPLOY_NS}" -o json |
-    jq '{apiVersion:"v1",kind:"Secret",metadata:{name:"inference-meta",namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key == "provider" or .key == "model" or .key == "url")))}' |
+sync_provider_metadata() {
+  local name="$1"
+  oc get secret "${name}" -n "${DEPLOY_NS}" -o json |
+    jq --arg name "${name}-meta" '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key == "provider" or .key == "model" or .key == "url")))}' |
     oc apply -f - >/dev/null
+}
+if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+  sync_provider_metadata inference
 fi
+for name in "${additional_provider_secrets[@]}"; do
+  [[ -n "${name}" && "${name}" != web-search ]] || continue
+  if [[ -n "$(oc get secret "${name}" -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+    sync_provider_metadata "${name}"
+  fi
+done
 
 if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   umask 077
@@ -316,7 +330,8 @@ if ! grep -qx 'secret/inference' <<<"${secret_names}"; then
   SECRET_SET+=(--set "inference.secretName=")
 fi
 if ! grep -qx 'secret/web-search' <<<"${secret_names}"; then
-  SECRET_SET+=(--set "additionalProviderSecrets=null")
+  extra_secrets="$(printf '%s\n' "${additional_provider_secrets[@]}" | jq -Rsc 'split("\n") | map(select(length > 0 and . != "web-search"))')"
+  SECRET_SET+=(--set-json "additionalProviderSecrets=${extra_secrets}")
   web_search_enabled=false
 fi
 
@@ -397,6 +412,13 @@ fi
 if grep -qx 'secret/web-search' <<<"${secret_names}"; then
   proxy_bindings="$(jq -c 'if any(.[]; .name == "web-search" and .key == "api_key") then . else . + [{name:"web-search",key:"api_key",providers:["brave"]}] end' <<<"${proxy_bindings}")"
 fi
+for name in "${additional_provider_secrets[@]}"; do
+  [[ -n "${name}" && "${name}" != web-search ]] || continue
+  if grep -qx "secret/${name}" <<<"${secret_names}"; then
+    provider="$(oc get secret "${name}" -n "${DEPLOY_NS}" -o json | jq -er '.data.provider | @base64d | select(length > 0)')"
+    proxy_bindings="$(jq -c --arg name "${name}" --arg provider "${provider}" 'if any(.[]; .name == $name) then . else . + [{name:$name,key:"api_key",providers:[$provider]}] end' <<<"${proxy_bindings}")"
+  fi
+done
 helm_opts+=(--set-json "credentialProxy.secrets=${proxy_bindings}")
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
