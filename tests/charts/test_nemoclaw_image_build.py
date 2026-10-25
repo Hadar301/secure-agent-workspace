@@ -52,7 +52,22 @@ def test_reviewed_lock_contains_fixed_dependencies():
     manifest = json.loads((RUNTIME / "package.json").read_text())
     lock = json.loads((RUNTIME / "package-lock.json").read_text())
     for package, minimum in (("@modelcontextprotocol/sdk", (1, 31, 0)),
-                             ("fast-uri", (3, 1, 7)), ("proxy-addr", (2, 0, 8))):
+                             ("body-parser", (2, 4, 0)),
+                             ("fast-uri", (3, 1, 9)),
+                             ("proxy-addr", (2, 0, 8)),
+                             ("zod", (4, 6, 6))):
+        version = lock["packages"][f"node_modules/{package}"]["version"]
+        assert manifest["overrides"][package] == version
+        assert tuple(map(int, version.split("."))) >= minimum
+
+
+def test_discovery_lock_contains_fixed_dependencies():
+    runtime = CHART / "files/discovery-runtime"
+    manifest = json.loads((runtime / "package.json").read_text())
+    lock = json.loads((runtime / "package-lock.json").read_text())
+    for package, minimum in (("body-parser", (2, 4, 0)),
+                             ("fast-uri", (3, 1, 9)),
+                             ("zod", (4, 6, 6))):
         version = lock["packages"][f"node_modules/{package}"]["version"]
         assert manifest["overrides"][package] == version
         assert tuple(map(int, version.split("."))) >= minimum
