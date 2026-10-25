@@ -123,6 +123,50 @@ def test_release_removes_run_created_lock_namespace(runner, monkeypatch):
     assert runner.locked is False
 
 
+def test_cnv_preflight_allows_absent_crd_on_fresh_cluster(runner, monkeypatch):
+    calls = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=1, stderr="NotFound", stdout="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.check_cnv_webhook()
+    assert len(calls) == 1
+
+
+def test_cnv_preflight_rejects_orphaned_crd(runner, monkeypatch):
+    crd = {"spec": {"conversion": {"strategy": "Webhook", "webhook": {
+        "clientConfig": {"service": {"name": "hco-webhook-service",
+                                     "namespace": "openshift-cnv"}}}}}}
+
+    def fake_call(args, **_kwargs):
+        if args[2] == "crd":
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(crd))
+        return SimpleNamespace(returncode=1, stderr="NotFound", stdout="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    with pytest.raises(pattern_e2e.E2EError, match="stale CNV CRD"):
+        runner.check_cnv_webhook()
+
+
+def test_cnv_preflight_rejects_missing_webhook_service(runner, monkeypatch):
+    crd = {"spec": {"conversion": {"strategy": "Webhook", "webhook": {
+        "clientConfig": {"service": {"name": "hco-webhook-service",
+                                     "namespace": "openshift-cnv"}}}}}}
+
+    def fake_call(args, **_kwargs):
+        if args[2] == "crd":
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(crd))
+        if args[2] == "namespace":
+            return SimpleNamespace(returncode=0, stderr="", stdout="openshift-cnv")
+        return SimpleNamespace(returncode=1, stderr="NotFound", stdout="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    with pytest.raises(pattern_e2e.E2EError, match="conversion webhook service"):
+        runner.check_cnv_webhook()
+
+
 def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch):
     monkeypatch.setattr(pattern_e2e.subprocess, "run", lambda *_args, **_kwargs:
                         SimpleNamespace(returncode=1, stdout="build root cause",

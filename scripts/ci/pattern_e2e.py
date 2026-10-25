@@ -328,6 +328,7 @@ class Runner:
         for namespace in (NAMESPACE, "saw-keycloak", *[f"saw-{u}" for u in USERS]):
             if namespace in self.baseline_namespaces:
                 raise E2EError(f"fresh cluster preflight found namespace {namespace}")
+        self.check_cnv_webhook()
         storage = self.oc_json("get", "storageclass")
         if not any((item.get("metadata", {}).get("annotations") or {}).get(
                 "storageclass.kubernetes.io/is-default-class") == "true"
@@ -336,6 +337,43 @@ class Runner:
         nodes = self.oc_json("get", "nodes")
         if not any(self.node_has_capacity(item) for item in nodes.get("items", [])):
             raise E2EError("no Ready node has at least 4 CPU and 8 GiB memory")
+
+    def check_cnv_webhook(self) -> None:
+        crd = self.call(["oc", "get", "crd", "hyperconvergeds.hco.kubevirt.io",
+                         "-o", "json"], allow_failure=True)
+        if crd.returncode:
+            if self.is_not_found(crd.stderr):
+                return
+            raise E2EError("cannot inspect CNV CRD: "
+                           + self.redact(crd.stderr.strip())[-300:])
+        document = json.loads(crd.stdout)
+        service = (document.get("spec", {}).get("conversion", {}).get("webhook", {})
+                   .get("clientConfig", {}).get("service", {}))
+        namespace = service.get("namespace", "openshift-cnv")
+        namespace_result = self.call(["oc", "get", "namespace", namespace, "-o", "name"],
+                                     allow_failure=True)
+        if namespace_result.returncode:
+            if not self.is_not_found(namespace_result.stderr):
+                raise E2EError("cannot inspect CNV namespace: "
+                               + self.redact(namespace_result.stderr.strip())[-300:])
+            raise E2EError(f"stale CNV CRD: namespace {namespace} is missing")
+        if document.get("spec", {}).get("conversion", {}).get("strategy") == "Webhook":
+            name = service.get("name")
+            if not name:
+                raise E2EError("CNV CRD has no conversion webhook service")
+            result = self.call(["oc", "get", "service", name, "-n", namespace,
+                                "-o", "name"], allow_failure=True)
+            if result.returncode:
+                if not self.is_not_found(result.stderr):
+                    raise E2EError("cannot inspect CNV webhook service: "
+                                   + self.redact(result.stderr.strip())[-300:])
+                raise E2EError(f"CNV conversion webhook service {namespace}/{name} "
+                               "is missing")
+
+    @staticmethod
+    def is_not_found(message: str) -> bool:
+        lowered = message.lower()
+        return "not found" in lowered or "notfound" in lowered
 
     @staticmethod
     def node_has_capacity(node: dict[str, Any]) -> bool:

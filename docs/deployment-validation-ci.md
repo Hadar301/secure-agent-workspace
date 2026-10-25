@@ -23,7 +23,7 @@ Create an environment named `pattern-e2e`. Add these values:
 | `CI_CLUSTER_API` | variable | Exact `oc whoami --show-server` URL |
 | `CI_CLUSTER_UID` | variable | UID of the `kube-system` namespace |
 | `CI_PROVIDER` | variable | `build` |
-| `CI_MODEL` | variable | Model in `charts/saw-bom/profiles/data-science/default/providers.yaml` |
+| `CI_MODEL` | variable | Model in `charts/saw-bom/profiles/ci-nvidia/default/providers.yaml` |
 
 The runner needs access to the cluster API, application routes, internal
 registry, GitHub, the OpenShift client mirror, and public package registries.
@@ -51,8 +51,7 @@ checks the built image digest references, requires both guest installer phases
 to finish, tests two-user access, makes a real NVIDIA inference request,
 checks network isolation, and uninstalls the Pattern twice.
 The NemoClaw sandbox image is built and checked in the deployed profile; the
-`cuda-sandbox` remains disabled in this first scope. See
-`docs/ci-current-baseline.md` for the last trial and follow-up work.
+`cuda-sandbox` remains disabled in this first scope.
 
 ## Rollout
 
