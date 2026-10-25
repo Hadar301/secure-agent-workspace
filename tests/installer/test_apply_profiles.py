@@ -204,6 +204,45 @@ def test_gateway_unreachable_fails_before_any_change(ab, fake_env, config, profi
     assert "workspace create" not in cli_ops(fake_env)
 
 
+
+@pytest.mark.parametrize("failure", ["connection was not ready", "TLS handshake: UnknownIssuer"])
+def test_first_admin_rpc_waits_for_the_client_ca_reload(ab, config, monkeypatch, failure):
+    applier = ab.ProfileApplier(ab.Shell(), config, {})
+    attempts, sleeps, relays = [], [], []
+
+    def cli(*args, **kwargs):
+        if args == ("workspace", "list"):
+            attempts.append(args)
+            return ab.Result(1, err=failure) if len(attempts) < 3 else ab.Result(0, out="default")
+        return ab.Result(0)
+
+    monkeypatch.setattr(applier, "cli", cli)
+    monkeypatch.setattr(applier, "register_relay_gateway", lambda: relays.append(len(attempts)))
+    monkeypatch.setattr(ab.time, "sleep", sleeps.append)
+    applier.register_gateway()
+    assert len(attempts) == 3 and len(sleeps) == 2
+    assert relays == [3]
+
+
+def test_first_admin_rpc_reload_wait_is_bounded(ab, config, monkeypatch):
+    applier = ab.ProfileApplier(ab.Shell(), config, {})
+    times = iter([0, 0, 31])
+    attempts = []
+
+    def cli(*args, **kwargs):
+        if args == ("workspace", "list"):
+            attempts.append(args)
+            return ab.Result(1, err="connection was not ready")
+        return ab.Result(0)
+
+    monkeypatch.setattr(applier, "cli", cli)
+    monkeypatch.setattr(ab.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(ab.time, "sleep", lambda _: None)
+    monkeypatch.setattr(applier, "register_relay_gateway", lambda: pytest.fail("relay registered before admin RPC succeeded"))
+    with pytest.raises(ab.InstallerError, match="cannot list workspaces"):
+        applier.register_gateway()
+    assert len(attempts) == 2
+
 def test_provider_failure_stops_the_apply(ab, fake_env, config, profiles, creds):
     fake_env.deny("provider create")
     with pytest.raises(ab.InstallerError, match="provider create"):

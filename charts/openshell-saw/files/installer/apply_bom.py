@@ -3467,11 +3467,22 @@ class ProfileApplier:
         self.cli("gateway", "remove", self.gateway, check=False, quiet=True)
         self.cli("gateway", "add", f"https://127.0.0.1:{GATEWAY_PORT}",
                  "--name", self.gateway, "--local", env={"OPENSHELL_LOCAL_TLS_DIR": str(tls_dir)})
-        result = self.cli("workspace", "list", check=False)
-        if not result.ok:
-            raise InstallerError(
-                "the mTLS client cannot list workspaces; the installer needs the "
-                "local mTLS identity to act as a platform admin (openshell-admin)")
+        # TLS 1.3 can finish the client handshake before the server reports
+        # UnknownIssuer. The gateway's CA watcher reloads asynchronously, so
+        # require a successful RPC before applying anything to the workspace.
+        deadline = time.monotonic() + 30
+        while True:
+            result = self.cli("workspace", "list", check=False)
+            if result.ok:
+                break
+            detail = (result.err + "\n" + result.out).lower()
+            pending_reload = any(message in detail for message in (
+                "connection was not ready", "tls handshake", "unknownissuer"))
+            if not pending_reload or time.monotonic() >= deadline:
+                raise InstallerError(
+                    "the mTLS client cannot list workspaces; the installer needs the "
+                    "local mTLS identity to act as a platform admin (openshell-admin)")
+            time.sleep(0.25)
         self.register_relay_gateway()
 
     def register_relay_gateway(self):
