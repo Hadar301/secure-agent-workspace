@@ -61,6 +61,51 @@ two manual runs together to verify that only one gets the lock. Require the
 E2E status for merge only after a complete run passes. A new PR commit needs
 a new manual `Pattern E2E` result. No nightly run is configured.
 
+The first `Deployment validation` run starts when a PR opens or changes. The
+first `Pattern E2E` run needs its workflow on the default branch. It also needs
+an open same-repository PR with an approval for the current head SHA and a
+passing `Deployment validation` check. Therefore, the initial GitHub cluster
+E2E run happens after the workflow is merged. Later PRs can run both checks
+before merge.
+
+## Test coverage by stage
+
+| Stage | Test | What was tested |
+| --- | --- | --- |
+| Existing PR tests | Lint charts and project files | `make lint` checks charts and project files in the existing installer test workflow. |
+| Existing PR tests | Run Python test suite | `make test-installer` runs installer, chart, script, portal, and CLI tests under Python 3.12 and 3.14. |
+| Existing PR tests | Check installer bundle drift | If a signed bundle exists, render the installer and verify its signature; skip this check when no bundle is committed. |
+| Deployment validation | Render charts | All application and image-builder Helm charts render with CI values. |
+| Deployment validation | Validate schemas | Rendered resources pass Kubernetes and vendored CRD schemas; missing or skipped schemas fail. |
+| Deployment validation | Check external dependencies | Referenced external images, Git refs, and package URLs exist; repository-built images are checked during E2E. |
+| Deployment validation | Check OpenShell versions | CLI, gateway, supervisor, and sandbox versions agree with the BOM; the interceptor ref matches the API version. |
+| PR control | Check PR and SHA | The PR is open, belongs to this repository, and still points to the supplied full head SHA. |
+| PR control | Check approval and validation | The current head SHA has an active approval and a passing `Deployment validation` check. |
+| Cluster preflight | Check cluster identity and freshness | The API URL and cluster UID match; no Pattern, VM, build, or test namespace from an earlier run exists. |
+| Cluster preflight | Check cluster capacity | The cluster has a default StorageClass, a Ready node with at least 4 CPU and 8 GiB, and valid CNV webhook state when present. |
+| Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, PR, SHA, and run link. |
+| Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, and governance interceptor builds complete and produce image digests. |
+| Registry setup | Prepare guest image pulls | A short-lived, scoped registry token is added to private CI inputs for the guest VMs. |
+| Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests and CI network settings. |
+| Deployment readiness | Check Argo applications | At least six selected applications become healthy at the tested SHA; allowed parent drift must be healthy child applications at that SHA. |
+| Deployment readiness | Check virtual machines | Both CI user VMs reach `Running`. |
+| Deployment readiness | Check image digests | The interceptor deployment, each user BOM and profile, and each VM gateway disk use the images built in this run. |
+| Guest installer | Check installer phases | Both users report `install` and `apply` phases as `Done`; either phase failing stops the run. |
+| Live cluster | Authenticate both users | Keycloak issues usable OIDC tokens for the owner and second user. |
+| Live cluster | List the sandbox | The owner can list the `notebook` sandbox through OpenShell. |
+| Live cluster | Execute in the sandbox | The owner can run a command in `notebook` and confirm `/sandbox` exists. |
+| Live cluster | Deny cross-user access | The second user receives gRPC `PERMISSION_DENIED` when accessing the owner's sandbox. |
+| Live cluster | Call NVIDIA inference | A real request with the configured model and NVIDIA key returns a completion. |
+| Live cluster | Block undeclared egress | A request from the sandbox to `example.org` fails. |
+| Cleanup | Uninstall Pattern | The cleanup stage runs Pattern uninstall twice to check repeat behavior. |
+| Cleanup | Verify resource removal | Test namespaces and VMs, the Pattern, and repository Argo applications are gone; only namespaces created by the run are removed. |
+| Cleanup | Release the lock and source ref | The cluster lock and temporary Git ref are removed only after cleanup verification; otherwise both remain for recovery. |
+| Reporting | Publish result and artifacts | GitHub sets `Pattern E2E` to success only when tests and cleanup pass, and uploads structured results and resource status without credentials. |
+
+The existing installer test workflow runs the Python test suite on every PR.
+It does not deploy to a cluster. `Deployment validation` checks rendered
+charts and dependencies. `Pattern E2E` checks the live cluster behavior.
+
 ## Local checks and schema sources
 
 Run `make test-dependencies` with Helm 3, `kubeconform` 0.7.0, `skopeo`, Git,
