@@ -1,0 +1,447 @@
+{
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "spec": {
+      "properties": {
+        "application": {
+          "properties": {
+            "appConfig": {
+              "properties": {
+                "configMaps": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "mountPath": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "mountPath": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "dynamicPlugins": {
+              "items": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "integrity": {
+                    "type": "string"
+                  },
+                  "package": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "pluginConfig": {
+                    "x-kubernetes-preserve-unknown-fields": true
+                  }
+                },
+                "required": [
+                  "package"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "dynamicPluginsConfigMapName": {
+              "type": "string"
+            },
+            "extraEnvs": {
+              "properties": {
+                "configMaps": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "envs": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "secrets": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "extraFiles": {
+              "properties": {
+                "configMaps": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "mountPath": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "mountPath": {
+                  "type": "string"
+                },
+                "pvcs": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "mountPath": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "secrets": {
+                  "items": {
+                    "properties": {
+                      "containers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "If '*' is specified, no other container names are allowed",
+                            "rule": "!(size(self) != 1 && self[0]==\"*\")"
+                          }
+                        ]
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "mountPath": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "route": {
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "maxLength": 253,
+                  "pattern": "^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])(\\.([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9]))*$",
+                  "type": "string"
+                },
+                "subdomain": {
+                  "maxLength": 253,
+                  "pattern": "^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])(\\.([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9]))*$",
+                  "type": "string"
+                },
+                "tls": {
+                  "properties": {
+                    "caCertificate": {
+                      "type": "string"
+                    },
+                    "certificate": {
+                      "type": "string"
+                    },
+                    "externalCertificateSecretName": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "database": {
+          "properties": {
+            "authSecretName": {
+              "type": "string"
+            },
+            "enableLocalDb": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "deployment": {
+          "properties": {
+            "kind": {
+              "enum": [
+                "Deployment",
+                "StatefulSet"
+              ],
+              "type": "string"
+            },
+            "patch": {
+              "x-kubernetes-preserve-unknown-fields": true
+            }
+          },
+          "type": "object"
+        },
+        "flavours": {
+          "items": {
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "monitoring": {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "rawRuntimeConfig": {
+          "properties": {
+            "backstageConfig": {
+              "type": "string"
+            },
+            "localDbConfig": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "status": {
+      "properties": {
+        "conditions": {
+          "items": {
+            "properties": {
+              "lastTransitionTime": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "message": {
+                "maxLength": 32768,
+                "type": "string"
+              },
+              "observedGeneration": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "True",
+                  "False",
+                  "Unknown"
+                ],
+                "type": "string"
+              },
+              "type": {
+                "maxLength": 316,
+                "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "lastTransitionTime",
+              "message",
+              "reason",
+              "status",
+              "type"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "plugins": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "object"
+}

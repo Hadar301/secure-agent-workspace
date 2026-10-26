@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -51,7 +52,22 @@ def test_reviewed_lock_contains_fixed_dependencies():
     manifest = json.loads((RUNTIME / "package.json").read_text())
     lock = json.loads((RUNTIME / "package-lock.json").read_text())
     for package, minimum in (("@modelcontextprotocol/sdk", (1, 31, 0)),
-                             ("fast-uri", (3, 1, 7)), ("proxy-addr", (2, 0, 8))):
+                             ("body-parser", (2, 4, 0)),
+                             ("fast-uri", (3, 1, 9)),
+                             ("proxy-addr", (2, 0, 8)),
+                             ("zod", (4, 6, 6))):
+        version = lock["packages"][f"node_modules/{package}"]["version"]
+        assert manifest["overrides"][package] == version
+        assert tuple(map(int, version.split("."))) >= minimum
+
+
+def test_discovery_lock_contains_fixed_dependencies():
+    runtime = CHART / "files/discovery-runtime"
+    manifest = json.loads((runtime / "package.json").read_text())
+    lock = json.loads((runtime / "package-lock.json").read_text())
+    for package, minimum in (("body-parser", (2, 4, 0)),
+                             ("fast-uri", (3, 1, 9)),
+                             ("zod", (4, 6, 6))):
         version = lock["packages"][f"node_modules/{package}"]["version"]
         assert manifest["overrides"][package] == version
         assert tuple(map(int, version.split("."))) >= minimum
@@ -174,11 +190,13 @@ def test_discovery_runtime_keeps_vulnerability_and_integrity_checks():
     assert "skipping npm audit" not in script
 
 
-def test_nemoclaw_pins_match_across_builds():
+def test_nemoclaw_sources_and_base_image_are_pinned():
     sandbox = yaml.safe_load((CHART / "values.yaml").read_text())
     cli = yaml.safe_load((CLI_CHART / "values.yaml").read_text())
-    assert sandbox["source"]["git"]["ref"]
-    assert sandbox["source"]["git"] == cli["source"]["git"]
+    assert sandbox["source"]["git"]["uri"] == cli["source"]["git"]["uri"]
+    # The sandbox uses a later commit with the Debian curl package fix.
+    for chart in (sandbox, cli):
+        assert re.fullmatch(r"[0-9a-f]{40}", chart["source"]["git"]["ref"])
     version = cli["build"]["nemoclawVersion"]
     assert version
     assert sandbox["build"]["baseImage"] == f"ghcr.io/nvidia/nemoclaw/sandbox-base:v{version}"

@@ -36,7 +36,7 @@ while IFS=$'\t' read -r namespace owner; do
     vmis="$(oc get vmi -n "${namespace}" -o json)"
     if jq -e --arg name "${owner}" \
         '.items | any(.metadata.name == $name)' <<<"${vmis}" >/dev/null; then
-      oc wait --for=delete vmi "${owner}" -n "${namespace}" --timeout=120s
+      oc wait --for=delete vmi "${owner}" -n "${namespace}" --timeout=600s
     fi
   fi
 done <<<"${owned_namespace_rows}"

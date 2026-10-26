@@ -103,6 +103,26 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 
+def test_agent_apps_ignore_only_kubevirt_vm_defaults(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
+    pointers = [
+        "/metadata/annotations/kubemacpool.io~1transaction-timestamp",
+        "/metadata/annotations/kubevirt.io~1latest-observed-api-version",
+        "/metadata/annotations/kubevirt.io~1storage-observed-api-version",
+        "/spec/template/metadata/annotations/kubevirt.io~1pci-topology-version",
+        "/spec/template/spec/architecture",
+        "/spec/template/spec/domain/devices/interfaces/0/macAddress",
+        "/spec/template/spec/domain/firmware/serial",
+        "/spec/template/spec/domain/firmware/uuid",
+        "/spec/template/spec/domain/machine",
+    ]
+    for name in ("saw-alice", "saw-bob"):
+        assert app(docs, name)["spec"]["ignoreDifferences"] == [{
+            "group": "kubevirt.io", "kind": "VirtualMachine", "jsonPointers": pointers}]
+    for name in ("saw-alice-bom", "saw-alice-secrets", "saw-bob-bom", "saw-bob-secrets"):
+        assert "ignoreDifferences" not in app(docs, name)["spec"]
+
+
 def test_waves_release_names_and_value_overrides(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
 
@@ -125,8 +145,9 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
     assert bom["spec"]["source"]["path"] == "charts/saw-bom"
-    assert helm_values(bom) == {"profiles": ["data-science"]}
-    assert helm_values(app(docs, "saw-bob-bom")) == {"profiles": ["custom"]}
+    assert helm_values(bom) == {"profiles": ["data-science"], "imageOverrides": {}}
+    assert helm_values(app(docs, "saw-bob-bom")) == {
+        "profiles": ["custom"], "imageOverrides": {}}
 
     alice = app(docs, "saw-alice")
     assert alice["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
@@ -150,6 +171,23 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     # A user's own values win; openshell-saw ignores clusterCaSecret for an
     # external issuer.
     assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
+
+
+def test_registry_pull_secret_uses_shared_vault_entry(tmp_path):
+    extra = {"defaults": {"openshellSaw": {"registry": {
+        "host": "image-registry.openshift-image-registry.svc.cluster.local:5000",
+        "authSecret": "registry-pull"}}}}
+    docs = docs_from(render_file(tmp_path, [ALICE], extra))
+    values = helm_values(app(docs, "saw-alice-secrets"))
+    assert values["registryPullSecret"] == "registry-pull"
+    result = helm("template", "secrets", str(ROOT / "charts/pattern-secrets"),
+                  "--set-string", "registryPullSecret=registry-pull",
+                  "--set-string", "sshVaultPrefix=secret/data/hub")
+    secret_docs = docs_from(result)
+    registry = next(doc for doc in secret_docs if doc["kind"] == "ExternalSecret"
+                    and doc["metadata"]["name"] == "registry-pull")
+    assert registry["spec"]["data"][0]["remoteRef"] == {
+        "key": "secret/data/hub/registry-pull", "property": "token"}
 
 
 def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
@@ -203,6 +241,7 @@ def test_demo_harness_turns_on_allow_driver_config(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "alice", "harnessEnabled": True}]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": ["data-science"], "harnessEnabled": True,
+        "imageOverrides": {},
     }
     assert helm_values(app(docs, "saw-alice"))["allowDriverConfig"] is True
 
@@ -299,7 +338,8 @@ def test_shipped_override_renders_alice(tmp_path):
     result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"))
     docs = docs_from(result)
     assert [doc["metadata"]["name"] for doc in by_kind(docs, "Namespace")] == ["saw-alice"]
-    assert helm_values(app(docs, "saw-alice-bom")) == {"profiles": ["data-science"]}
+    assert helm_values(app(docs, "saw-alice-bom")) == {
+        "profiles": ["data-science"], "imageOverrides": {}}
 
 
 def test_owner_resolution_writes_only_a_dedicated_input():
@@ -397,6 +437,7 @@ def test_web_search_switch_controls_all_child_apps(
         (["web-search"] if enabled else [])
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": [profile], **({} if enabled else {"webSearch": {"enabled": False}}),
+        "imageOverrides": {},
     }
 
 
@@ -509,6 +550,16 @@ def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
     assert vm["sandboxUi"] == []
 
 
+def test_ci_nvidia_profile_uses_only_the_available_key(tmp_path):
+    user = {"name": "ciowner", "profiles": ["ci-nvidia"]}
+    docs = docs_from(render_file(tmp_path, [user]))
+    assert helm_values(app(docs, "saw-ciowner-secrets"))["secrets"] == ["inference"]
+    vm = helm_values(app(docs, "saw-ciowner"))
+    assert vm["inference"]["secretName"] == "inference"
+    assert vm["additionalProviderSecrets"] == []
+    assert helm_values(app(docs, "saw-ciowner-bom"))["profiles"] == ["ci-nvidia"]
+
+
 def test_namespace_labels_are_added(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {"namespaceLabels": {"saw.redhat.com/portal": "true"}}))
     [ns] = [d for d in docs if d["kind"] == "Namespace"]
@@ -526,4 +577,5 @@ def test_names_that_would_take_another_users_apps_are_refused(tmp_path, name):
 def test_a_user_can_opt_into_the_demo_harness(tmp_path):
     docs = docs_from(render_file(tmp_path, [dict(ALICE, harnessEnabled=True)]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
-        "profiles": ["data-science"], "harnessEnabled": True}
+        "profiles": ["data-science"], "harnessEnabled": True,
+        "imageOverrides": {}}

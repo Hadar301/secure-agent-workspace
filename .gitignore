@@ -20,3 +20,6 @@ __pycache__/
 *.pyc
 # Local nested checkout
 /secure-agent-workspace/
+# CI result files
+/deployment-validation.json
+/pattern-e2e-results/

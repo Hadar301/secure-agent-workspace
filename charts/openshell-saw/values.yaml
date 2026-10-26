@@ -197,6 +197,17 @@ oidc:
   # The VM waits for the Secret to exist, like the provider Secrets.
   clusterCaSecret: ""
 
+# Private registry access for images pulled inside the VM. The CA is trusted
+# only for this registry by Podman. The Secret must contain a "token" key and
+# is mounted as a Secret disk; the token never enters Helm values or ConfigMaps.
+registry:
+  host: ""
+  caBundle: ""
+  # Use this field when the PEM must pass through a Pattern extra parameter.
+  # The chart decodes it before writing the installer config.
+  caBundleBase64: ""
+  authSecret: ""
+
 # Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's
 # OIDC subject (`openshell whoami`) and, when set, is added as admin to every
 # workspace the installer creates.

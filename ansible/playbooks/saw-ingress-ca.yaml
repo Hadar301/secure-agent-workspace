@@ -55,11 +55,10 @@
         namespace: "{{ keys_ns }}"
         name: vaultkeys
       register: vaultkeys
+      until: vaultkeys.resources | length > 0
+      retries: 24
+      delay: 10
       no_log: true
-
-    - name: Skip until Vault is initialised
-      ansible.builtin.meta: end_play
-      when: vaultkeys.resources | length == 0
 
     - name: Set the root token and the CA
       ansible.builtin.set_fact:

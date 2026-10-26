@@ -1,0 +1,176 @@
+name: Pattern E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Reviewed same-repository PR number
+        required: true
+        type: number
+      expected_sha:
+        description: Full current PR head commit SHA
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      checks: read
+      statuses: write
+    outputs:
+      sha: ${{ steps.control.outputs.sha }}
+      branch: ${{ steps.control.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Verify PR and reserve a fixed source ref
+        id: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_HEAD_SHA: ${{ inputs.expected_sha }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python scripts/ci/e2e_control.py prepare
+
+  execute:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    environment: pattern-e2e
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install cluster and sandbox clients
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo jq
+          curl --fail --location --silent --show-error \
+            https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
+            --output "$RUNNER_TEMP/openshift-client.tar.gz"
+          tar -xzf "$RUNNER_TEMP/openshift-client.tar.gz" -C "$RUNNER_TEMP" oc
+          sudo install -m 0755 "$RUNNER_TEMP/oc" /usr/local/bin/oc
+          gh release download v0.1.2 -R NVIDIA/OpenShell \
+            -p openshell-x86_64-unknown-linux-musl.tar.gz \
+            -p openshell-checksums-sha256.txt -D "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          grep ' openshell-x86_64-unknown-linux-musl.tar.gz$' \
+            openshell-checksums-sha256.txt | sha256sum -c -
+          tar -xzf openshell-x86_64-unknown-linux-musl.tar.gz openshell
+          sudo install -m 0755 openshell /usr/local/bin/openshell
+      - name: Log in to the cluster
+        env:
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_USERNAME: ${{ secrets.CI_CLUSTER_USERNAME }}
+          CI_CLUSTER_PASSWORD: ${{ secrets.CI_CLUSTER_PASSWORD }}
+          CI_CA_B64: ${{ secrets.CI_CA_B64 }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+        run: |
+          set -euo pipefail
+          if [[ -z "$CI_CLUSTER_API" || -z "$CI_CLUSTER_USERNAME" || -z "$CI_CLUSTER_PASSWORD" || -z "$CI_CA_B64" ]]; then
+            echo "Cluster login inputs are missing"
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$(dirname "$CI_KUBECONFIG_FILE")"
+          chmod 700 "$(dirname "$CI_KUBECONFIG_FILE")"
+          CI_CA_FILE="$(dirname "$CI_KUBECONFIG_FILE")/cluster-ca.pem"
+          printf '%s' "$CI_CA_B64" | base64 --decode > "$CI_CA_FILE"
+          chmod 600 "$CI_CA_FILE"
+          oc login "$CI_CLUSTER_API" \
+            --username="$CI_CLUSTER_USERNAME" \
+            --password="$CI_CLUSTER_PASSWORD" \
+            --certificate-authority="$CI_CA_FILE" \
+            --kubeconfig="$CI_KUBECONFIG_FILE"
+          chmod 600 "$CI_KUBECONFIG_FILE"
+      - name: Install Pattern for E2E
+        id: install
+        env:
+          CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
+          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+          CI_CA_B64: ${{ secrets.CI_CA_B64 }}
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+          CI_PROVIDER: ${{ vars.CI_PROVIDER }}
+          CI_MODEL: ${{ vars.CI_MODEL }}
+          CI_INFERENCE_KEY: ${{ secrets.CI_INFERENCE_KEY }}
+        run: make test-pattern-e2e-install
+      - name: Run live behavior checks
+        id: live
+        env:
+          CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
+          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+          CI_MODEL: ${{ vars.CI_MODEL }}
+        run: make test-pattern-e2e-live
+      - name: Clean Pattern E2E resources
+        if: always() && steps.install.outcome != 'skipped'
+        env:
+          CI_RECOVERY_RUN_ID: ${{ github.run_id }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+        run: make test-pattern-e2e-cleanup
+      - name: Remove cluster login files
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/pattern-e2e-auth" ]]; then
+            rm -r "$RUNNER_TEMP/pattern-e2e-auth"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pattern-e2e-results
+          path: pattern-e2e-results/
+          if-no-files-found: warn
+
+  report:
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, execute]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/download-artifact@v4
+        if: always()
+        with:
+          name: pattern-e2e-results
+          path: pattern-e2e-results
+      - name: Remove the temporary ref and publish PR status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
+          CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
+          CI_E2E_OUTCOME: ${{ needs.execute.result }}
+          CI_E2E_RESULTS_PATH: pattern-e2e-results/results.json
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python scripts/ci/e2e_control.py finish

@@ -2,6 +2,7 @@
      openshell-saw chart and is versioned with its InstallerBOM. */ -}}
 {{- $profileFiles := dict }}
 {{- $webSearch := ne (toString .Values.webSearch.enabled) "false" }}
+{{- $imageOverrides := .Values.imageOverrides | default dict }}
 {{- range $profile := .Values.profiles }}
 {{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
 {{- /* Provider names are scoped to the workspace directory, not the profile. */ -}}
@@ -32,9 +33,13 @@
 {{- end }}
 {{- end }}
 {{- if $changed }}{{- $content = toYaml $doc }}{{- end }}
-{{- else if and (eq (base $path) "sandbox.yaml") (or $names (not $.Values.harnessEnabled)) }}
+{{- else if and (eq (base $path) "sandbox.yaml") (or $names (not $.Values.harnessEnabled) $imageOverrides) }}
 {{- $doc := $content | fromYaml }}
 {{- range $sb := (($doc.spec).sandboxes | default list) }}
+{{- with (index $imageOverrides $sb.name) }}
+{{- $_ := set $sb "image" . }}
+{{- $changed = true }}
+{{- end }}
 {{- if and (not $.Values.harnessEnabled) (hasKey $sb "harnessRef") }}
 {{- $_ := unset $sb "harnessRef" }}
 {{- $changed = true }}

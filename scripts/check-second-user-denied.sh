@@ -6,6 +6,11 @@ set -euo pipefail
 : "${TEST_OWNER_SUBJECT:?Set TEST_OWNER_SUBJECT}"
 : "${TEST_ACTIVE_SAW_NAME:?Set TEST_ACTIVE_SAW_NAME}"
 : "${TEST_ACTIVE_SAW_NS:?Set TEST_ACTIVE_SAW_NS}"
+: "${TEST_GATEWAY_CA_BUNDLE:?Set TEST_GATEWAY_CA_BUNDLE}"
+if [[ ! -f "${TEST_GATEWAY_CA_BUNDLE}" ]]; then
+  echo "Error: gateway CA bundle is absent." >&2
+  exit 1
+fi
 
 token_file="${TEST_SECOND_TOKEN_DIR}/token.json"
 if [[ ! -f "${token_file}" ]]; then
@@ -32,10 +37,7 @@ jq -e --argjson now "$(date +%s)" '.exp | type == "number" and . > $now' \
 route="$(oc get route "${TEST_ACTIVE_SAW_NAME}-gateway" \
   -n "${TEST_ACTIVE_SAW_NS}" -o json)"
 host="$(jq -er '.spec.host | select(type == "string" and length > 0)' <<<"${route}")"
-tls_options=(--insecure)
-if [[ -n "${OIDC_CA_BUNDLE:-}" ]]; then
-  tls_options=(--cacert "${OIDC_CA_BUNDLE}")
-fi
+tls_options=(--cacert "${TEST_GATEWAY_CA_BUNDLE}")
 # The gateway exposes an authenticated gRPC API. GET / returns 404 even for
 # the owner, so probe ListSandboxes with an explicit default workspace scope.
 # Request fields: ListSandboxesRequest.workspace_scope (4),

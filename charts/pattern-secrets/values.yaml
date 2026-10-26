@@ -17,3 +17,6 @@ secrets:
 # <sshVaultPrefix>/cluster-ingress-ca, written by the saw-ingress-ca
 # imperative job); empty = none. saw-users sets saw-ingress-ca.
 clusterCaSecret: ""
+# Optional Secret for a VM to pull images from a private registry. The token
+# comes from the shared <sshVaultPrefix>/registry-pull Vault entry.
+registryPullSecret: ""
