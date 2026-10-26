@@ -390,7 +390,8 @@ then:
   `signing.mode: enforce` with live inputs on (see "Signing" above).
 - runs `apply` when profiles, metadata Secrets, or the public proxy CA change.
   Provider key rotation happens in the proxy without a VM action. A changed
-  egress wiring fingerprint recreates sandboxes and wipes `/sandbox`.
+  egress wiring fingerprint migrates sandboxes through a verified archive and
+  restore of `/sandbox`.
 - writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
   `make saw-status` shows whether that matches the cluster. A
   failed install or apply is recorded there too (`lastFailedHash`); the

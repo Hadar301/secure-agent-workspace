@@ -91,7 +91,7 @@ def test_deployment_profile_endpoint_must_come_from_credential_secret_url(ab, tm
 
 
 @pytest.mark.parametrize("change", ["proxy", "gateway"])
-def test_proxy_rotation_preserves_files_but_gateway_rotation_recreates(
+def test_proxy_and_gateway_rotation_preserve_files(
         ab, tmp_path, fake_env, config, change):
     p = ab.Provider(name="nvidia", type="nvidia", credential_secret="inference")
     sb = ab.Sandbox(name="tools", type="generic", providers=[p.name])
@@ -107,4 +107,4 @@ def test_proxy_rotation_preserves_files_but_gateway_rotation_recreates(
     cfg["credentialProxy" if change == "proxy" else "gatewayPki"]["caFingerprint"] = "rotated-ca"
     ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     files = fake_env.openshell_state()["sandboxes"]["default/tools"].get("files", {})
-    assert files == ({"notes.md": "preserve me"} if change == "proxy" else {})
+    assert files == {"notes.md": "preserve me"}

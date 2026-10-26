@@ -105,9 +105,12 @@ file found on a VM input disk or a provider without a binding.
 
 An upgrade from the old layout rotates gateway PKI, removes persistent
 `saw-installer` admin material, updates provider credentials to markers, and
-recreates sandboxes whose gateway CA changed. **Gateway-CA recreation wipes
-`/sandbox`**; a proxy-only wiring change preserves files through the archive/
-restore migration. Users must fetch the new gateway CA (`make saw-configure` or
+recreates sandboxes whose gateway CA changed. Before deletion, the installer
+archives `/sandbox` from the workload's podman volume and verifies the archive,
+then restores the files into the replacement. An unavailable or failed archive
+stops migration without deleting the sandbox. Interrupted migrations resume
+from the volume even when the old supervisor cannot reach the rotated gateway.
+Users must fetch the new gateway CA (`make saw-configure` or
 `scripts/extract-gateway-ca.sh`). Rotate every provider key that previously
 reached a VM; old copies on copy-on-write storage cannot be reliably scrubbed.
 Increasing `gatewayPki.generation` or changing the route host rotates the
@@ -139,8 +142,9 @@ gateway PKI and causes the same sandbox recreation.
   sandbox user (the archive is normalized before upload). Read-only image
   files are kept in place and verified.
   `saw.redhat.com/gateway-ca` separately tracks gateway trust: missing or
-  changed gateway trust requires recreation that wipes `/sandbox`, because
-  the old supervisor cannot connect to serve an archive.
+  changed gateway trust archives `/sandbox` from the workload volume before
+  recreation, because the old supervisor cannot connect to serve an archive.
+  Archive failures leave the original sandbox and files intact.
 - OAuth2 refresh declared by the Slack/Gmail profiles is unsupported under
   isolation until refresh runs in the namespace proxy. Do not configure
   refresh credentials or refresh execution on the in-VM gateway.
@@ -179,7 +183,7 @@ platform-admin mTLS authority. It must use a dedicated Secret.
 | Key rotated | The projected key is read on the next request after sync. |
 | Admin CA reload timeout | Apply fails and systemd can retry. |
 | Crash during apply | The admin key disappears with tmpfs; the stale public CA is pruned on the next install or boot. |
-| Route host or PKI generation changes | Gateway PKI rotates; sandboxes are recreated. |
+| Route host or PKI generation changes | Gateway PKI rotates; sandboxes are recreated after a verified `/sandbox` volume archive. |
 
 Run `make test-credential-proxy` locally and
 `make test-credential-isolation OPENSHELL_SAW_NAME=<name> SAW_NS=saw-<name>`

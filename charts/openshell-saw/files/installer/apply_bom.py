@@ -4018,6 +4018,21 @@ class ProfileApplier:
                 self._podman("rm", "-f", cid, check=False, quiet=True, force=True)
             return read_harness_tar(exported)
 
+    def workload_container(self, ws, sb):
+        """Return the unique workload container, excluding its supervisor."""
+        names = self._podman("ps", "-a",
+                             "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
+                             "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
+                             "--filter", f"label={WORKLOAD_ROLE_LABEL}",
+                             "--format", "{{.Names}}", check=False, quiet=True)
+        found = (names.out or "").split()
+        if not names.ok or not found:
+            return None
+        if len(found) > 1:
+            raise InstallerError(f"more than one workload container for sandbox '{sb.name}' in "
+                                 f"workspace '{ws.name}': {', '.join(found)}")
+        return found[0]
+
     def sandbox_mount_map(self, ws, sb):
         """Relevant workload mounts keyed by destination; False if uninspectable.
 
@@ -4033,19 +4048,10 @@ class ProfileApplier:
             <volume>, ...} (checked live on 0.0.116; same labels in 0.1.2,
             driver_utils.rs).
         """
-        names = self._podman("ps", "-a",
-                             "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
-                             "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
-                             "--filter", f"label={WORKLOAD_ROLE_LABEL}",
-                             "--format", "{{.Names}}", check=False, quiet=True)
-        found = (names.out or "").split()
-        if not names.ok or not found:
+        name = self.workload_container(ws, sb)
+        if name is None:
             return False
-        if len(found) > 1:
-            raise InstallerError(f"more than one workload container for sandbox '{sb.name}' in "
-                                 f"workspace '{ws.name}': {', '.join(found)}")
-        name = found
-        got = self._podman("inspect", "--format", "{{json .Mounts}}", name[0],
+        got = self._podman("inspect", "--format", "{{json .Mounts}}", name,
                            check=False, quiet=True)
         if not got.ok:
             return False
@@ -4314,9 +4320,19 @@ class ProfileApplier:
                 f"{self.BROKEN_GRACE_SECONDS}s for it to recover")
             state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
         if state == "broken":
-            log(f"Sandbox '{sb.name}' is not running; recreating it")
-            self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-            state = "deleting"
+            key = self.migration_key(ws, sb)
+            if not self.sh.dry_run and key not in self.migrations and not self.sandbox_gateway_ca_ok(ws, sb):
+                labels = self.sandbox_labels(ws, sb)
+                if labels is None:
+                    raise InstallerError(f"sandbox '{sb.name}' labels cannot be read; "
+                                         "nothing was changed, the apply is retried")
+                self.begin_migration(ws, sb, labels, reason="a stale or missing gateway CA",
+                                     via_volume=True)
+                state = "missing"
+            else:
+                log(f"Sandbox '{sb.name}' is not running; recreating it")
+                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+                state = "deleting"
         if state == "deleting":
             # Also a deletion an earlier run started (found live: that run
             # failed on "already exists" and left the sandbox Deleting).
@@ -4339,12 +4355,11 @@ class ProfileApplier:
             state = self.recover_migration(ws, sb, state, labels)
             if state == "running":
                 labels = self.sandbox_labels(ws, sb) if not self.sh.dry_run else labels
-        if state == "running" and not self.sh.dry_run and not self.sandbox_gateway_ca_ok(ws, sb):
-            # The old supervisor cannot authenticate to the rotated gateway,
-            # so it cannot serve a /sandbox archive for migration.
-            log(f"Sandbox '{sb.name}' has a stale or missing gateway CA; recreating it "
-                "(this wipes /sandbox)")
-            self.delete_sandbox_and_wait(ws, sb)
+        if state == "running" and labels is not None and key not in self.migrations \
+                and not self.sandbox_gateway_ca_ok(ws, sb):
+            # The old supervisor cannot authenticate to the rotated gateway.
+            self.begin_migration(ws, sb, labels, reason="a stale or missing gateway CA",
+                                 via_volume=True)
             state = "missing"
         if state == "running" and labels is not None and key not in self.migrations:
             have = labels[0] or "none"             # created before the label: had no env
@@ -5179,11 +5194,8 @@ class ProfileApplier:
         base.mkdir(parents=True, exist_ok=True)
         return base
 
-    def preserve_sandbox(self, ws, sb):
-        """Archive the sandbox's own files (under /sandbox, minus the
-        installer's mounts), checksum them in the sandbox, download the
-        archive and verify it. Returns {"archive", "sha256"}; raises when
-        anything fails: the caller must not delete the sandbox then."""
+    def preserve_pruned(self, ws, sb):
+        """Installer-owned mount paths excluded from every recovery archive."""
         # Everything under /sandbox except the installer's own paths: the
         # mounts (`./harness`, `./.saw/trusted`, ...) and `./.saw` itself,
         # each pruned at its exact path (a bare `harness` would also drop a
@@ -5200,7 +5212,15 @@ class ProfileApplier:
             pruned.update("./" + target[len("/sandbox/"):] for target in seen
                           if target.startswith("/sandbox/"))
         pruned.add("./" + Path(self.PRESERVE_SUM).name)
-        prune = " ".join(f"-path {shlex.quote(p)} -prune -o" for p in sorted(pruned))
+        return sorted(pruned)
+
+    def preserve_sandbox(self, ws, sb):
+        """Archive the sandbox's own files (under /sandbox, minus the
+        installer's mounts), checksum them in the sandbox, download the
+        archive and verify it. Returns {"archive", "sha256"}; raises when
+        anything fails: the caller must not delete the sandbox then."""
+        prune = " ".join(f"-path {shlex.quote(p)} -prune -o"
+                         for p in self.preserve_pruned(ws, sb))
         own = shlex.quote("./" + Path(self.PRESERVE_ARCHIVE).name)
         script = (f"cd /sandbox || exit 3; rm -f {self.PRESERVE_ARCHIVE}; "
                   f"find . {prune} ! -path . ! -path {own} -print0 | "
@@ -5226,6 +5246,50 @@ class ProfileApplier:
             raise InstallerError(f"the downloaded archive of '{sb.name}' does not match its "
                                  "checksum; the sandbox is left as it is")
         return {"archive": str(local), "sha256": digest}
+
+    def preserve_sandbox_volume(self, ws, sb):
+        """preserve_sandbox for a sandbox whose supervisor cannot reach the
+        gateway (a rotated gateway CA): archive /sandbox from its workload's
+        podman volume on the VM, same members and format, verified before
+        the caller deletes anything."""
+        name = self.workload_container(ws, sb)
+        got = (self._podman("inspect", "--format", "{{json .Mounts}}", name,
+                            check=False, quiet=True) if name else None)
+        try:
+            mounts = json.loads(got.out) if got and got.ok else []
+        except ValueError:
+            mounts = []
+        if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts):
+            mounts = []
+        volume = next((m.get("Name") for m in mounts or [] if m.get("Destination") == "/sandbox"
+                       and (m.get("Type") or "").lower() == "volume"), "")
+        info = self.volumes.inspect(volume) if volume else None
+        if not info or not info.get("Mountpoint"):
+            raise InstallerError(f"cannot find the /sandbox volume of sandbox '{sb.name}'; nothing "
+                                 "was deleted. Back up its files and delete the sandbox to recreate it")
+        prune = " ".join(f"-path {shlex.quote(p)} -prune -o" for p in self.preserve_pruned(ws, sb))
+        own = shlex.quote("./" + Path(self.PRESERVE_ARCHIVE).name)
+        fd, path = tempfile.mkstemp(prefix=f"{ws.name}-{sb.name}-", suffix=".tar.gz",
+                                    dir=self.archive_dir())
+        os.close(fd)
+        local = Path(path)
+        # podman unshare: the files belong to the sandbox's subordinate ids.
+        script = ('umask 077; entries=$(mktemp) || exit 1; '
+                  "trap 'rm -f \"$entries\"' EXIT; "
+                  f'cd "$1" || exit 3; find . {prune} ! -path . ! -path {own} '
+                  '! -path "./.saw-preserve.sha256" -print0 > "$entries" || exit 1; '
+                  'tar -czf "$2" --null --no-recursion -T "$entries"')
+        packed = self._podman("unshare", "sh", "-c", script, "sh", info["Mountpoint"], str(local),
+                              check=False)
+        if self.sh.dry_run:
+            return {"archive": str(local), "sha256": "dry-run", "via": "volume"}
+        listed = (self.sh.run(["sh", "-c", 'tar -tzf "$1" >/dev/null', "sh", str(local)],
+                              check=False, quiet=True) if local.is_file() else None)
+        if not packed.ok or not listed or not listed.ok:
+            local.unlink(missing_ok=True)
+            raise InstallerError(f"could not archive the /sandbox volume of '{sb.name}' "
+                                 f"(exit {packed.rc}); nothing was deleted")
+        return {"archive": str(local), "sha256": sha256_file(local), "via": "volume"}
 
     def restore_sandbox(self, ws, sb, record):
         """Upload the archive into the (new) sandbox, verify it there, unpack
@@ -5329,7 +5393,7 @@ class ProfileApplier:
             except OSError:
                 pass
 
-    def begin_migration(self, ws, sb, labels, reason="a different environment"):
+    def begin_migration(self, ws, sb, labels, reason="a different environment", via_volume=False):
         """Recreate a sandbox for env, proxy-wiring or mount drift: archive and
         verify its /sandbox, persist the record (the
         original's identity, the replacement's instance token and the env
@@ -5337,8 +5401,11 @@ class ProfileApplier:
         anything is destroyed, so every later apply can finish the job."""
         log(f"Sandbox '{sb.name}' has {reason}; recreating it "
             "(its /sandbox files are carried over, open sessions end)")
-        self.wait_exec_ready(ws, sb)
-        record = self.preserve_sandbox(ws, sb)
+        if via_volume:
+            record = self.preserve_sandbox_volume(ws, sb)
+        else:
+            self.wait_exec_ready(ws, sb)
+            record = self.preserve_sandbox(ws, sb)
         record.update({"fromInstance": labels[1] or "", "fromNative": labels[2] or "",
                        "env": dict(sb.env_values), "toInstance": secrets.token_hex(8)})
         self.migrations[self.migration_key(ws, sb)] = record
@@ -5381,7 +5448,9 @@ class ProfileApplier:
                                "native": record.get("fromNative", "")}):
             log(f"Sandbox '{sb.name}' is still the original (an earlier recreation did not get "
                 "to delete it); archiving it again and retrying")
-            fresh = self.preserve_sandbox(ws, sb)       # verified before anything changes
+            # Refresh through the same channel when the old supervisor is unreachable.
+            fresh = (self.preserve_sandbox_volume(ws, sb) if record.get("via") == "volume"
+                     else self.preserve_sandbox(ws, sb))
             old_archive = record["archive"]
             record.update(fresh)
             self.save_migrations()

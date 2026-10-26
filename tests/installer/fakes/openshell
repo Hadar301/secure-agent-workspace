@@ -377,7 +377,7 @@ elif op == "sandbox upload":
     if not remote.startswith("/sandbox/"):
         fail(f"Error: upload destination {remote!r} escapes the sandbox working directory")
     with tarfile.open(local, "r:gz") as archive:
-        content = {member.name: archive.extractfile(member).read().decode()
+        content = {member.name.removeprefix("./"): archive.extractfile(member).read().decode()
                    for member in archive if member.isfile()}
     sb.setdefault("archives", {})[remote] = content
     sb.setdefault("archiveDigests", {})[remote] = hashlib.sha256(Path(local).read_bytes()).hexdigest()
@@ -389,6 +389,8 @@ elif op == "sandbox delete":
     else:
         state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    if (state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}).get("execBroken"):
+        fail("Error: supervisor transport unavailable after gateway CA rotation")
     script = args[-1] if args[-3:-1] == ["sh", "-c"] else ""
 
     def archive_digest(content):
