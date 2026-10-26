@@ -24,6 +24,8 @@ apiVersion: k8s.ovn.org/v1
 kind: EgressFirewall
 metadata:
   name: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 spec:

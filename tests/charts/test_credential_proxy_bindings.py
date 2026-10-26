@@ -97,6 +97,21 @@ def test_gitops_ca_hook_has_a_bounded_failure():
 
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_gitops_updates_legacy_firewall_before_bootstrapping_the_ca():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"))
+    firewall = next(d for d in docs if d["kind"] == "EgressFirewall")
+    firewall_annotations = firewall["metadata"]["annotations"]
+    assert "argocd.argoproj.io/hook" not in firewall_annotations
+    firewall_wave = int(firewall_annotations["argocd.argoproj.io/sync-wave"])
+    hooks = [d for d in docs if d["metadata"]["name"] == "saw-credential-proxy-ca-hook"]
+    for hook in hooks:
+        annotations = hook["metadata"]["annotations"]
+        assert annotations["argocd.argoproj.io/hook"] == "Sync"
+        assert firewall_wave < int(annotations["argocd.argoproj.io/sync-wave"]) < -1
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_public_issuer_ca_stays_in_the_guest_mount_list():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
                   "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
