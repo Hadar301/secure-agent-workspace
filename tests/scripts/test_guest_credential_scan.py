@@ -52,3 +52,4 @@ def test_live_scan_never_transmits_a_provider_needle_to_the_vm():
     assert 'needle = sys.stdin' not in script
     assert 'vm_exec "$remote" </dev/null' in script
     assert 'hashlib.sha256(key).digest()[:8]' in script
+    assert 'key = key.strip()' in script

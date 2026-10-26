@@ -99,6 +99,7 @@ import base64, gzip, hashlib, json, re, sys
 key = base64.b64decode(json.load(sys.stdin).get("data", {}).get(sys.argv[1], ""))
 if not key:
     print(f"SKIP {sys.argv[2]}: empty key (keyless endpoint)"); raise SystemExit(0)
+key = key.strip()  # Secret files can end in a newline; HTTP credentials cannot.
 if not re.fullmatch(rb"[A-Za-z0-9_-]{20,512}", key):
     raise SystemExit(f"FAIL {sys.argv[2]}: key shape outside [A-Za-z0-9_-]{{20,512}}; cannot check")
 blob = gzip.decompress(base64.b64decode(open(sys.argv[3], "rb").read()))
