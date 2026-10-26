@@ -39,6 +39,22 @@ def status(repo: str, sha: str, state: str, description: str) -> None:
     })
 
 
+def pull_request_reviews(repo: str, number: int) -> list[dict[str, Any]]:
+    reviews: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        response = api(
+            "GET",
+            f"/repos/{repo}/pulls/{number}/reviews?per_page=100&page={page}",
+        )
+        if not isinstance(response, list):
+            raise RuntimeError("GitHub returned an invalid PR reviews response")
+        reviews.extend(response)
+        if len(response) < 100:
+            return reviews
+        page += 1
+
+
 def prepare() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     number = int(os.environ["CI_PR_NUMBER"])
@@ -50,7 +66,7 @@ def prepare() -> None:
         raise RuntimeError("PR is closed or its head SHA changed")
     if pr["head"]["repo"]["full_name"] != repo:
         raise RuntimeError("Pattern E2E needs a reviewed branch in this repository")
-    reviews = api("GET", f"/repos/{repo}/pulls/{number}/reviews?per_page=100")
+    reviews = pull_request_reviews(repo, number)
     latest_review: dict[str, dict] = {}
     for review in reviews:
         if review["state"] in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:

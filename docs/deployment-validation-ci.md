@@ -39,13 +39,19 @@ The runner requires the NVIDIA key for a real inference request. The two CI
 users use the `ci-nvidia` profile, which needs only that key. Normal users
 can still use the data science profile with Brave web search.
 
-The cluster runner creates `saw-ci-lock` outside Pattern ownership. It creates
-the `saw-pattern-e2e` ConfigMap there with an atomic create call. The lock
-holds the repository, PR, SHA, run ID, and run URL. A second run fails with
-the active run link. If cleanup fails or the runner stops, the lock remains.
-An administrator must inspect the cluster and remove the lock before another
-run. Do not use an age limit to release it. Every other workflow that changes
-this test cluster must honor this lock.
+The cluster runner creates `saw-ci-lock` outside Pattern ownership and keeps
+the namespace across runs. It creates the `saw-pattern-e2e` ConfigMap there
+with an atomic create call. The lock holds the repository, PR, SHA, run ID,
+and run URL. A second run fails with the active run link. Cleanup removes only
+the ConfigMap after it verifies the lock owner. If cleanup fails or the runner
+stops, the ConfigMap remains. An administrator must inspect the cluster and
+remove the lock before another run. Do not use an age limit to release it.
+Every other workflow that changes this test cluster must honor this lock.
+
+Each run labels its Pattern utility container with the GitHub run ID. If a
+command times out, the runner stops the command process group and any utility
+container for that run before it starts cluster cleanup. Cleanup checks for
+leftover run-labeled utility containers and stops if it cannot remove them.
 
 Use a fresh cluster for each run. The E2E test builds the sandbox, CLI,
 Podman gateway, and governance interceptor images. It installs two ordinary

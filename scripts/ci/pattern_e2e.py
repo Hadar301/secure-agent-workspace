@@ -34,6 +34,7 @@ NAMESPACE = "openshell-agents"
 REGISTRY_PULLER = "saw-ci-registry-puller"
 REGISTRY_HOST = "image-registry.openshift-image-registry.svc.cluster.local:5000"
 USERS = ("ciowner", "cisecond")
+UTILITY_CONTAINER_LABEL = "saw.redhat.com/ci-run-id"
 PATTERN_NAMESPACES = (
     "external-secrets", "external-secrets-operator", "openshift-cnv",
     "openshell-agents", "saw-keycloak", "vault", "vp-gitops",
@@ -104,10 +105,11 @@ class Runner:
         # private directory for the run.
         self.env["XDG_CONFIG_HOME"] = (
             os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
+        if self.run_id:
+            self.env["SAW_CI_RUN_ID"] = self.run_id
         for key in ("CI_KUBECONFIG_FILE", "CI_CA_B64", "CI_INFERENCE_KEY"):
             self.env.pop(key, None)
         self.locked = False
-        self.lock_namespace_created = False
         self.install_attempted = False
         self.build_attempted = False
         self.cancelled = False
@@ -135,23 +137,44 @@ class Runner:
         if env is None and args[0] == "openshell" and self.openshell_env is not None:
             command_env = self.openshell_env
         try:
-            completed = subprocess.run(
-                args, cwd=ROOT, env=command_env, input=input_text,
-                text=True, capture_output=True, timeout=timeout, check=False,
+            process = subprocess.Popen(
+                args, cwd=ROOT, env=command_env,
+                stdin=subprocess.PIPE if input_text is not None else None,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                start_new_session=os.name == "posix",
             )
+        except OSError as exc:
+            raise E2EError(f"{args[0]} failed: OSError") from exc
+
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            try:
+                stdout, stderr = self.terminate_process_tree(process)
+            except OSError as stop_error:
+                raise E2EError(
+                    f"{args[0]} timed out and its process tree could not be stopped: OSError"
+                ) from stop_error
             partial_output = "\n".join(
                 part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part
-                for part in (exc.stdout, exc.stderr) if part
+                for part in (exc.stdout or stdout, exc.stderr or stderr) if part
             )
             detail = self.redact(partial_output.strip()[-500:])
             command = " ".join(str(part) for part in args[:2])
             message = f"{command} timed out after {timeout}s"
             if detail:
                 message = f"{message}: {detail}"
+            if Path(str(args[0])).name == "pattern.sh":
+                try:
+                    self.stop_run_utility_containers()
+                except E2EError as stop_error:
+                    raise E2EError(
+                        f"{message}; Pattern utility container cleanup failed: "
+                        f"{self.redact(str(stop_error))}"
+                    ) from stop_error
             raise E2ECommandTimeout(message) from exc
-        except OSError as exc:
-            raise E2EError(f"{args[0]} failed: OSError") from exc
+
+        completed = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
         if completed.returncode and not allow_failure:
             output = "\n".join(part for part in (completed.stdout.strip()[-1400:],
                                                   completed.stderr.strip()[-500:]) if part)
@@ -159,6 +182,48 @@ class Runner:
             raise E2EError(f"{args[0]} {args[1] if len(args) > 1 else ''} "
                            f"failed ({completed.returncode}): {detail}")
         return completed
+
+    @staticmethod
+    def signal_process_tree(process: subprocess.Popen, *, force: bool = False) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            elif force:
+                process.kill()
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            pass
+
+    def terminate_process_tree(self, process: subprocess.Popen) -> tuple[str, str]:
+        self.signal_process_tree(process)
+        try:
+            return process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.signal_process_tree(process, force=True)
+            return process.communicate()
+
+    def stop_run_utility_containers(self) -> None:
+        if not self.run_id:
+            raise E2EError("run ID is not available for utility container cleanup")
+        label_filter = f"label={UTILITY_CONTAINER_LABEL}={self.run_id}"
+
+        def container_ids(*, all_containers: bool) -> list[str]:
+            command = ["podman", "ps"]
+            if all_containers:
+                command.append("--all")
+            command.extend(("--quiet", "--filter", label_filter))
+            return self.call(command, timeout=30).stdout.split()
+
+        running = container_ids(all_containers=False)
+        if running:
+            self.call(["podman", "stop", "--ignore", "--time", "10", *running],
+                      timeout=60)
+        remaining = container_ids(all_containers=True)
+        if remaining:
+            self.call(["podman", "rm", "--force", "--ignore", *remaining], timeout=60)
+        if container_ids(all_containers=True):
+            raise E2EError("Pattern utility containers remain after stop")
 
     def oc_json(self, *args: str) -> dict[str, Any]:
         output = self.call(["oc", *args, "-o", "json"]).stdout
@@ -384,7 +449,6 @@ class Runner:
         self.baseline_namespaces = set(baseline)
         self.build_attempted = data.get("build-attempted") == "true"
         self.install_attempted = data.get("install-attempted") == "true"
-        self.lock_namespace_created = data.get("lock-namespace-created") == "true"
         self.locked = True
 
     def remove_run_private_home(self) -> None:
@@ -418,13 +482,10 @@ class Runner:
                 raise E2EError("cannot inspect CI lock namespace")
             if not create_lock_namespace:
                 raise E2EError("CI lock namespace is missing; recovery stopped")
-            self.lock_namespace_created = True
             namespace_doc = {"apiVersion": "v1", "kind": "Namespace",
                              "metadata": {"name": self.lock_ns,
                                           "labels": {"openshell.pattern/ci-lock": "true"}}}
             self.call(["oc", "apply", "-f", "-"], input_text=json.dumps(namespace_doc))
-        else:
-            self.lock_namespace_created = False
         namespace = self.oc_json("get", "namespace", self.lock_ns)
         if namespace["metadata"]["name"] != self.lock_ns:
             raise E2EError("CI lock namespace is unavailable")
@@ -446,8 +507,7 @@ class Runner:
                              "saw.redhat.com/created-at": now()}},
             "data": {"state": "active", "baseline-namespaces": "",
                      "build-attempted": "false", "install-attempted": "false",
-                     "cleanup-verified": "false",
-                     "lock-namespace-created": str(self.lock_namespace_created).lower()},
+                     "cleanup-verified": "false"},
         }
         created = self.call(["oc", "create", "-f", "-"],
                             input_text=json.dumps(document), allow_failure=True)
@@ -488,6 +548,7 @@ class Runner:
             raise E2EError("cluster lock has no valid namespace snapshot; recovery stopped")
         self.sha = owner_sha
         self.run_id = owner_id
+        self.env["SAW_CI_RUN_ID"] = self.run_id
         self.run_url = annotations.get("saw.redhat.com/run-url", "unknown run")
         self.branch = annotations.get("saw.redhat.com/target-branch", "")
         self.env["TARGET_BRANCH"] = self.branch
@@ -496,7 +557,6 @@ class Runner:
         self.install_attempted = data.get("install-attempted") == "true"
         if self.install_attempted and not self.valid_git_branch(self.branch):
             raise E2EError("cluster lock has no valid source branch; recovery stopped")
-        self.lock_namespace_created = data.get("lock-namespace-created") == "true"
         self.locked = True
         self.report.update({
             "source_sha": self.sha,
@@ -587,9 +647,6 @@ class Runner:
             raise E2EError("cluster lock owner changed; manual recovery is required")
         self.call(["oc", "delete", "configmap", LOCK_NAME, "-n", self.lock_ns,
                    "--wait=true"], timeout=90)
-        if self.lock_namespace_created:
-            self.call(["oc", "delete", "namespace", self.lock_ns, "--wait=true",
-                       "--timeout=20m"], timeout=1300)
         self.locked = False
 
     def preflight(self) -> None:
@@ -1252,6 +1309,7 @@ class Runner:
             json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
 
     def cleanup(self) -> None:
+        self.stop_run_utility_containers()
         self.update_lock_data({"state": "cleanup-in-progress"})
         if self.install_attempted:
             self.call(["./pattern.sh", "make", "pattern-uninstall"], timeout=5400)

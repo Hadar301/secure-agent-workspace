@@ -2,6 +2,8 @@
 
 import base64
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,11 +47,17 @@ def test_openshell_uses_private_config_without_changing_podman_env(runner, monke
     runner.openshell_env = dict(runner.env, XDG_CONFIG_HOME="/private/openshell-config")
     captured_envs = []
 
-    def fake_run(_args, **kwargs):
-        captured_envs.append(kwargs["env"])
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    class FakeProcess:
+        returncode = 0
 
-    monkeypatch.setattr(pattern_e2e.subprocess, "run", fake_run)
+        def communicate(self, **_kwargs):
+            return "", ""
+
+    def fake_popen(_args, **kwargs):
+        captured_envs.append(kwargs["env"])
+        return FakeProcess()
+
+    monkeypatch.setattr(pattern_e2e.subprocess, "Popen", fake_popen)
 
     runner.call(["openshell", "gateway", "select", "ciowner"])
     runner.call(["podman", "info"])
@@ -185,9 +193,8 @@ def test_lock_state_update_preserves_run_ownership(runner, monkeypatch):
         "saw.redhat.com/run-id"] == runner.run_id
 
 
-def test_release_removes_run_created_lock_namespace(runner, monkeypatch):
+def test_release_keeps_lock_namespace_and_deletes_only_configmap(runner, monkeypatch):
     runner.locked = True
-    runner.lock_namespace_created = True
     calls = []
     monkeypatch.setattr(runner, "oc_json", lambda *_args: {"metadata": {
         "annotations": {"saw.redhat.com/run-id": runner.run_id,
@@ -195,9 +202,37 @@ def test_release_removes_run_created_lock_namespace(runner, monkeypatch):
     monkeypatch.setattr(runner, "call", lambda args, **_kwargs:
                         calls.append(args))
     runner.release_lock()
-    assert calls[0][:4] == ["oc", "delete", "configmap", pattern_e2e.LOCK_NAME]
-    assert calls[1][:4] == ["oc", "delete", "namespace", runner.lock_ns]
+    assert calls == [["oc", "delete", "configmap", pattern_e2e.LOCK_NAME,
+                      "-n", runner.lock_ns, "--wait=true"]]
     assert runner.locked is False
+
+
+def test_stop_run_utility_containers_by_run_label(runner, monkeypatch):
+    calls = []
+    all_queries = 0
+
+    def fake_call(args, **_kwargs):
+        nonlocal all_queries
+        calls.append(args)
+        if args[:2] == ["podman", "ps"] and "--all" in args:
+            all_queries += 1
+            output = "container-1\n" if all_queries == 1 else ""
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+        if args[:2] == ["podman", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="container-1\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.stop_run_utility_containers()
+
+    label_filter = f"label={pattern_e2e.UTILITY_CONTAINER_LABEL}={runner.run_id}"
+    assert calls == [
+        ["podman", "ps", "--quiet", "--filter", label_filter],
+        ["podman", "stop", "--ignore", "--time", "10", "container-1"],
+        ["podman", "ps", "--all", "--quiet", "--filter", label_filter],
+        ["podman", "rm", "--force", "--ignore", "container-1"],
+        ["podman", "ps", "--all", "--quiet", "--filter", label_filter],
+    ]
 
 
 def test_cnv_preflight_allows_absent_crd_on_fresh_cluster(runner, monkeypatch):
@@ -245,9 +280,14 @@ def test_cnv_preflight_rejects_missing_webhook_service(runner, monkeypatch):
 
 
 def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch):
-    monkeypatch.setattr(pattern_e2e.subprocess, "run", lambda *_args, **_kwargs:
-                        SimpleNamespace(returncode=1, stdout="build root cause",
-                                        stderr="build terminal status"))
+    class FakeProcess:
+        returncode = 1
+
+        def communicate(self, **_kwargs):
+            return "build root cause", "build terminal status"
+
+    monkeypatch.setattr(pattern_e2e.subprocess, "Popen",
+                        lambda *_args, **_kwargs: FakeProcess())
     with pytest.raises(pattern_e2e.E2EError) as error:
         runner.call(["make", "sandbox-build"])
     assert "build root cause" in str(error.value)
@@ -256,20 +296,87 @@ def test_failed_command_keeps_stdout_cause_and_stderr_status(runner, monkeypatch
 
 def test_timed_out_command_keeps_redacted_partial_output(runner, monkeypatch):
     runner.sensitive.append("private-token")
+    events = []
 
-    def timeout(args, **kwargs):
-        raise pattern_e2e.subprocess.TimeoutExpired(
-            args[0], kwargs["timeout"], output=b"partial private-token", stderr=b"ssh wait"
-        )
+    class FakeProcess:
+        pid = 987
+        returncode = -9
+        communicate_calls = 0
 
-    monkeypatch.setattr(pattern_e2e.subprocess, "run", timeout)
+        def communicate(self, **kwargs):
+            self.communicate_calls += 1
+            if self.communicate_calls <= 2:
+                raise pattern_e2e.subprocess.TimeoutExpired(
+                    ["./pattern.sh", "make"], kwargs["timeout"],
+                    output=b"partial private-token", stderr=b"ssh wait"
+                )
+            return "partial private-token", "ssh wait"
+
+    process = FakeProcess()
+
+    def fake_popen(*_args, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return process
+
+    monkeypatch.setattr(pattern_e2e.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(pattern_e2e.os, "killpg",
+                        lambda pid, sig: events.append(("signal", pid, sig)))
+    monkeypatch.setattr(runner, "stop_run_utility_containers",
+                        lambda: events.append(("stop-containers",)))
     with pytest.raises(pattern_e2e.E2ECommandTimeout) as error:
-        runner.call(["make", "saw-status"], timeout=90, allow_failure=True)
+        runner.call(["./pattern.sh", "make", "install"], timeout=90,
+                    allow_failure=True)
     message = str(error.value)
-    assert "make saw-status timed out after 90s" in message
+    assert "./pattern.sh make timed out after 90s" in message
     assert "partial [redacted]" in message
     assert "ssh wait" in message
     assert "private-token" not in message
+    assert events == [
+        ("signal", process.pid, pattern_e2e.signal.SIGTERM),
+        ("signal", process.pid, pattern_e2e.signal.SIGKILL),
+        ("stop-containers",),
+    ]
+
+
+@pytest.mark.parametrize("run_id", ["123", None])
+def test_pattern_script_labels_only_ci_utility_containers(tmp_path, run_id):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "podman-args"
+    podman = fake_bin / "podman"
+    podman.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "case \"$1\" in\n"
+        "  --version) printf 'podman version 5.4.0\\n' ;;\n"
+        "  system) printf 'Name URI Identity Default\\n' ;;\n"
+        "  run) printf '%s\\n' \"$@\" > \"$PODMAN_ARGS_CAPTURE\" ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    podman.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["HOME"] = str(tmp_path / "home")
+    env["PODMAN_ARGS_CAPTURE"] = str(capture)
+    env.pop("SAW_CI_RUN_ID", None)
+    if run_id is not None:
+        env["SAW_CI_RUN_ID"] = run_id
+
+    completed = subprocess.run(
+        ["bash", str(pattern_e2e.ROOT / "pattern.sh"), "make", "install"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    args = capture.read_text(encoding="utf-8").splitlines()
+    if run_id is None:
+        assert "--label" not in args
+    else:
+        label_index = args.index("--label")
+        assert args[label_index + 1] == (
+            f"{pattern_e2e.UTILITY_CONTAINER_LABEL}={run_id}")
 
 
 def test_wait_for_retries_a_timed_out_status_check(runner):
@@ -656,6 +763,7 @@ def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeyp
     monkeypatch.setattr(runner, "call", fake_call)
     monkeypatch.setattr(runner, "oc_json", lambda *_args: {"items": [
         {"metadata": {"name": name}} for name in namespaces]})
+    monkeypatch.setattr(runner, "stop_run_utility_containers", lambda: None)
     monkeypatch.setattr(runner, "update_lock_data", lambda data: updates.append(data))
     monkeypatch.setattr(runner, "release_lock", lambda: None)
     runner.cleanup()
@@ -684,7 +792,6 @@ def test_recovery_loads_only_the_requested_run_lock(monkeypatch, tmp_path):
         "state": "cleanup-required",
         "baseline-namespaces": json.dumps(["default", "vp-gitops"]),
         "build-attempted": "true", "install-attempted": "true",
-        "lock-namespace-created": "true",
     }}
     monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
 
@@ -697,7 +804,7 @@ def test_recovery_loads_only_the_requested_run_lock(monkeypatch, tmp_path):
     assert runner.build_attempted is True
     assert runner.install_attempted is True
     assert runner.locked is True
-    assert runner.lock_namespace_created is True
+    assert runner.env["SAW_CI_RUN_ID"] == run_id
 
 
 def test_recovery_preserves_test_report_and_appends_cleanup_stage(monkeypatch, tmp_path):
@@ -727,7 +834,6 @@ def test_recovery_preserves_test_report_and_appends_cleanup_stage(monkeypatch, t
         "state": "cleanup-required",
         "baseline-namespaces": json.dumps(["default"]),
         "build-attempted": "true", "install-attempted": "true",
-        "lock-namespace-created": "true",
     }}
     monkeypatch.setattr(runner, "oc_json", lambda *_args: lock)
 
@@ -873,7 +979,7 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
             return {"state": "open", "head": {"sha": sha,
                     "repo": {"full_name": "example/repo"}},
                     "merge_commit_sha": merge}
-        if path.endswith("/reviews?per_page=100"):
+        if path.endswith("/reviews?per_page=100&page=1"):
             return [{"state": "APPROVED", "commit_id": sha,
                      "user": {"login": "reviewer"}}]
         if f"/{merge}/check-runs" in path:
@@ -887,3 +993,42 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
     assert any(method == "POST" and path.endswith("/git/refs") for method, path, _ in calls)
     assert any(method == "POST" and path.endswith("/statuses/" + sha)
                and payload["context"] == "Pattern E2E" for method, path, payload in calls)
+
+
+def test_later_review_page_can_revoke_an_older_approval(monkeypatch, tmp_path):
+    sha = "a" * 40
+    for key, value in {
+        "GITHUB_REPOSITORY": "example/repo", "CI_PR_NUMBER": "42",
+        "CI_HEAD_SHA": sha, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+    }.items():
+        monkeypatch.setenv(key, value)
+    page_one = [
+        {"state": "COMMENTED", "user": {"login": f"reviewer-{index}"}}
+        for index in range(99)
+    ]
+    page_one.append({"state": "APPROVED", "commit_id": sha,
+                     "user": {"login": "reviewer"}})
+    calls = []
+
+    def fake_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path.endswith("/pulls/42"):
+            return {"state": "open", "head": {"sha": sha,
+                    "repo": {"full_name": "example/repo"}},
+                    "merge_commit_sha": "b" * 40}
+        if path.endswith("/reviews?per_page=100&page=1"):
+            return page_one
+        if path.endswith("/reviews?per_page=100&page=2"):
+            return [{"state": "CHANGES_REQUESTED", "commit_id": sha,
+                     "user": {"login": "reviewer"}}]
+        return {"check_runs": []}
+
+    monkeypatch.setattr(e2e_control, "api", fake_api)
+
+    with pytest.raises(RuntimeError, match="no active approval"):
+        e2e_control.prepare()
+
+    assert any(path.endswith("/reviews?per_page=100&page=2")
+               for _method, path, _payload in calls)

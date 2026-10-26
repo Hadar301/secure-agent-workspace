@@ -95,7 +95,13 @@ if [[ -t 0 && -t 1 ]]; then
     PODMAN_TTY_ARGS=(-it)
 fi
 
-podman run ${PODMAN_TTY_ARGS[@]+"${PODMAN_TTY_ARGS[@]}"} --rm --pull=newer \
+PODMAN_CI_LABEL_ARGS=()
+if [[ -n "${SAW_CI_RUN_ID:-}" ]]; then
+    PODMAN_CI_LABEL_ARGS=(--label "saw.redhat.com/ci-run-id=${SAW_CI_RUN_ID}")
+fi
+
+podman run ${PODMAN_TTY_ARGS[@]+"${PODMAN_TTY_ARGS[@]}"} --rm \
+    ${PODMAN_CI_LABEL_ARGS[@]+"${PODMAN_CI_LABEL_ARGS[@]}"} --pull=newer \
     --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
