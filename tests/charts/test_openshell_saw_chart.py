@@ -5,6 +5,7 @@ charts: the rendered installer ConfigMap and profile ConfigMap are laid out
 as the VM would mount them, and the shipped installer validates them.
 """
 
+import base64
 import importlib.util
 import json
 import re
@@ -90,6 +91,28 @@ def written(cfg, path):
 
 def installer_data(docs, name="saw-test"):
     return docs[("ConfigMap", f"{name}-installer")]["data"]
+
+
+def test_registry_config_mounts_pull_secret_without_exposing_token():
+    host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+    docs = render("--set-string", f"registry.host={host}",
+                  "--set-string", "registry.authSecret=registry-pull")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["registry"] == {"host": host, "caBundle": "",
+                                  "authSecret": "registry-pull"}
+    assert "registry-pull" in config["secrets"]
+    assert "REGISTRY_AUTH_FILE=/home/cloud-user/.config/openshell/registry-auth.json" in \
+        written(cloud_config(docs), "/etc/openshell/gateway.env")
+
+
+def test_registry_ca_bundle_base64_decodes_for_installer():
+    host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    encoded = base64.b64encode(pem.encode()).decode("ascii")
+    docs = render("--set-string", f"registry.host={host}",
+                  "--set-string", f"registry.caBundleBase64={encoded}")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["registry"] == {"host": host, "caBundle": pem, "authSecret": ""}
 
 
 @pytest.fixture(scope="module")
@@ -1276,6 +1299,16 @@ def test_the_imperative_jobs_run_playbooks_that_exist():
         assert play["hosts"] == "localhost", job["name"]
     (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
     assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
+
+
+def test_ingress_ca_job_waits_for_vault_initialization_without_logging_secret():
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    vault_task = next(task for task in play["tasks"]
+                      if task["name"] == "Read the Vault root token")
+
+    assert vault_task["until"] == "vaultkeys.resources | length > 0"
+    assert vault_task["retries"] * vault_task["delay"] <= 270
+    assert vault_task["no_log"] is True
 
 
 def test_the_installer_configmap_needs_server_side_apply(default_docs):

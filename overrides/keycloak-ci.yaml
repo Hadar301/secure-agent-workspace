@@ -1,0 +1,7 @@
+# Passwords come from the Keycloak user Secret. This file has no credentials.
+keycloak:
+  users:
+    - username: ciowner
+      roles: [openshell-user]
+    - username: cisecond
+      roles: [openshell-user]

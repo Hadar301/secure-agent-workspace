@@ -1,0 +1,7 @@
+# No password values appear in CI render output. The operator reads a Secret.
+keycloak:
+  users:
+    - username: ciowner
+      roles: [openshell-user]
+    - username: cisecond
+      roles: [openshell-user]

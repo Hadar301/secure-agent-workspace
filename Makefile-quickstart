@@ -106,7 +106,7 @@ endif
         keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
-        sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e lint \
+        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
@@ -171,7 +171,7 @@ cli-build: .check-image-repo ## Build the NemoClaw CLI image in-cluster (IMAGE_R
 	@oc delete is nemoclaw-cli -n "$(BUILD_NS)" --ignore-not-found=true
 	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
 		--namespace $(BUILD_NS) --create-namespace
-	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
+	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
@@ -186,7 +186,7 @@ governance-interceptor-build: .check-image-repo ## Build the governance intercep
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
 		--set-string output.externalImage=$(if $(PUSH_IMAGE_REPO),$(PUSH_IMAGE_REPO)/governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF)) \
 		--set-string output.imageStreamTag=$(if $(PUSH_IMAGE_REPO),,governance-interceptor:$(OPENSHELL_INTERCEPTOR_REF))
-	oc start-build governance-interceptor -n $(BUILD_NS) --follow
+	oc start-build governance-interceptor -n $(BUILD_NS) --follow --wait
 	@echo "Image built in $(BUILD_NS)$(if $(PUSH_IMAGE_REPO), and pushed to $(PUSH_IMAGE_REPO))."
 
 governance-interceptor-build-local: ## Build the governance interceptor image in the cluster
@@ -196,27 +196,30 @@ governance-interceptor-build-local: ## Build the governance interceptor image in
 		--set source.git.ref=$(OPENSHELL_INTERCEPTOR_REF) \
 		--set output.externalImage= \
 		--set output.imageStreamTag=governance-interceptor:v$(patsubst v%,%,$(OPENSHELL_INTERCEPTOR_REF))
-	oc start-build governance-interceptor -n $(BUILD_NS) --follow
+	oc start-build governance-interceptor -n $(BUILD_NS) --follow --wait
 
 # --- Gateway VM image ---
 
 gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Docker gateway image (openshell-gateway-docker)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
-	@oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete datasource openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete pvc openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete builds -l buildconfig=openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete is openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true
 	@resources=$$(oc api-resources --api-group=cdi.kubevirt.io -o name) || exit $$?; \
 	GOLDEN_FLAG=""; \
-	if ! printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+	if printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+		oc delete dv openshell-gateway-docker-golden -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
+	else \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
+	if printf '%s\n' "$$resources" | grep -q '^datasources.cdi.kubevirt.io$$'; then \
+		oc delete datasource openshell-gateway-docker -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
 	fi; \
 	helm upgrade --install openshell-gateway-docker-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=docker
-	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow
+	oc start-build openshell-gateway-docker -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
@@ -224,20 +227,23 @@ gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-clu
 gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-cluster (IMAGE_REPO opts into pushing)
 	@echo "Building Podman gateway image (openshell-gateway)..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
-	@oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete datasource openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete pvc openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete builds -l buildconfig=openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@oc delete is openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
 	@resources=$$(oc api-resources --api-group=cdi.kubevirt.io -o name) || exit $$?; \
 	GOLDEN_FLAG=""; \
-	if ! printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+	if printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
+		oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
+	else \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
+	fi; \
+	if printf '%s\n' "$$resources" | grep -q '^datasources.cdi.kubevirt.io$$'; then \
+		oc delete datasource openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true || exit $$?; \
 	fi; \
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
 		--set containerRuntime=podman
-	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+	oc start-build openshell-gateway -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
@@ -515,6 +521,21 @@ git-hooks: ## Use the repo's git hooks (regenerate the catalogs on commit)
 
 test-deployment: ## Run the live OpenShift deployment test (read docs first)
 	@$(SCRIPTS_DIR)/test-deployment.sh
+
+test-dependencies: ## Validate rendered charts and deployment dependencies
+	@uv run --locked scripts/ci/deployment_validation.py --report deployment-validation.json
+
+test-pattern-e2e: ## Run E2E checks on a fresh cluster; cleanup is separate
+	@uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-install: ## Build and install the E2E deployment; keep it ready for live checks
+	@CI_E2E_PHASE=install uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-live: ## Run live behavior checks on the installed E2E deployment
+	@CI_E2E_PHASE=live uv run --locked scripts/ci/pattern_e2e.py
+
+test-pattern-e2e-cleanup: ## Clean an E2E run when ready (set CI_RECOVERY_RUN_ID)
+	@uv run --locked scripts/ci/pattern_e2e_cleanup.py
 
 lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \

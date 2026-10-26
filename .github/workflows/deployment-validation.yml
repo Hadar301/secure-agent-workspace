@@ -1,0 +1,43 @@
+name: Deployment validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: Deployment validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependency inspection tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          gh release download v0.7.0 -R yannh/kubeconform \
+            -p kubeconform-linux-amd64.tar.gz -D "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/kubeconform-linux-amd64.tar.gz" \
+            -C "$RUNNER_TEMP" kubeconform
+          sudo install -m 0755 "$RUNNER_TEMP/kubeconform" /usr/local/bin/kubeconform
+      - name: Validate deployment and dependencies
+        run: make test-dependencies
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-validation
+          path: deployment-validation.json
+          if-no-files-found: error

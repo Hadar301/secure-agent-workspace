@@ -90,7 +90,18 @@ fi
 # $HOME is mounted as itself for any files that are referenced with absolute paths
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
-podman run -it --rm --pull=newer \
+PODMAN_TTY_ARGS=()
+if [[ -t 0 && -t 1 ]]; then
+    PODMAN_TTY_ARGS=(-it)
+fi
+
+PODMAN_CI_LABEL_ARGS=()
+if [[ -n "${SAW_CI_RUN_ID:-}" ]]; then
+    PODMAN_CI_LABEL_ARGS=(--label "saw.redhat.com/ci-run-id=${SAW_CI_RUN_ID}")
+fi
+
+podman run ${PODMAN_TTY_ARGS[@]+"${PODMAN_TTY_ARGS[@]}"} --rm \
+    ${PODMAN_CI_LABEL_ARGS[@]+"${PODMAN_CI_LABEL_ARGS[@]}"} --pull=newer \
     --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \

@@ -13,7 +13,7 @@ SCRIPT = ROOT / "scripts/check-second-user-denied.sh"
 
 
 def run_check(tmp_path, *, subject="bob-sub", status="200", grpc_code="7", route=True,
-              expires=True, curl_fails=False):
+              expires=True, curl_fails=False, gateway_ca=True):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     oc = bindir / "oc"
@@ -32,6 +32,10 @@ args = sys.argv[1:]
 if os.environ["CURL_FAIL"] == "yes":
     sys.exit(7)
 assert "--http2" in args
+assert "--insecure" not in args
+ca_bundle = Path(os.environ["TEST_GATEWAY_CA_BUNDLE"])
+assert ca_bundle.is_file()
+assert args[args.index("--cacert") + 1] == str(ca_bundle)
 assert args[-1] == "https://saw.example.test/openshell.v1.OpenShell/ListSandboxes"
 request = Path(args[args.index("--data-binary") + 1].removeprefix("@"))
 assert request.read_bytes() == b"\\x00\\x00\\x00\\x00\\x0b\\x22\\x09\\x0a\\x07default"
@@ -54,11 +58,17 @@ print(os.environ["HTTP_STATUS"], end="")
     token_dir = tmp_path / "second"
     token_dir.mkdir()
     (token_dir / "token.json").write_text(json.dumps({"access_token": f"a.{payload}.c"}))
+    ca_bundle = tmp_path / "gateway-ca.pem"
+    ca_bundle.write_text("test gateway CA\n")
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
                TEST_SECOND_TOKEN_DIR=str(token_dir), TEST_OWNER_SUBJECT="alice-sub",
                TEST_ACTIVE_SAW_NAME="alice", TEST_ACTIVE_SAW_NS="saw-alice",
                ROUTE_PRESENT="yes" if route else "no", HTTP_STATUS=status,
                GRPC_CODE=grpc_code, CURL_FAIL="yes" if curl_fails else "no")
+    if gateway_ca:
+        env["TEST_GATEWAY_CA_BUNDLE"] = str(ca_bundle)
+    else:
+        env.pop("TEST_GATEWAY_CA_BUNDLE", None)
     result = subprocess.run(["bash", str(SCRIPT)], env=env, cwd=ROOT,
                             text=True, capture_output=True)
     assert "a." not in result.stdout + result.stderr
@@ -69,6 +79,12 @@ def test_second_user_permission_denied_passes(tmp_path):
     result = run_check(tmp_path)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"result": "denied", "protocol": "grpc", "grpc_code": 7}
+
+
+def test_missing_gateway_ca_fails_closed(tmp_path):
+    result = run_check(tmp_path, gateway_ca=False)
+    assert result.returncode != 0
+    assert not result.stdout
 
 
 @pytest.mark.parametrize("changes", [

@@ -238,6 +238,11 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $profiles = $user.profiles -}}
 {{- end -}}
 {{- $bomValues := dict "profiles" $profiles -}}
+{{- $imageOverrides := deepCopy ($root.Values.defaults.imageOverrides | default dict) -}}
+{{- range $name, $image := ($user.imageOverrides | default dict) -}}
+{{- $_ := set $imageOverrides $name $image -}}
+{{- end -}}
+{{- $_ := set $bomValues "imageOverrides" $imageOverrides -}}
 {{- if $user.harnessEnabled -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
 {{- end -}}
@@ -254,10 +259,17 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- define "saw-users.vaultPrefix" -}}
 {{- $user := .user -}}
 {{- $root := .root -}}
-{{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
+{{- $saw := deepCopy ($root.Values.defaults.openshellSaw | default dict) -}}
+{{- $saw = mergeOverwrite $saw (deepCopy ($user.values | default dict)) -}}
+{{- $registry := index $saw "registry" | default dict -}}
+{{- $values := dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
       "secrets" (include "saw-users.secretNames" . | fromJsonArray)
-      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- if $registry.authSecret -}}
+{{- $_ := set $values "registryPullSecret" $registry.authSecret -}}
+{{- end -}}
+{{- toYaml $values -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}
@@ -290,14 +302,20 @@ metadata:
   {{- end }}
 spec:
   project: {{ $root.Values.argo.project }}
-  {{- if eq .path "charts/openshell-saw" }}
-  # KubeMacPool changes this timestamp even on admission dry-runs. With
-  # ServerSideDiff it otherwise makes every healthy VM permanently OutOfSync.
+  {{- if .ignoreVMDefaults }}
   ignoreDifferences:
     - group: kubevirt.io
       kind: VirtualMachine
       jsonPointers:
         - /metadata/annotations/kubemacpool.io~1transaction-timestamp
+        - /metadata/annotations/kubevirt.io~1latest-observed-api-version
+        - /metadata/annotations/kubevirt.io~1storage-observed-api-version
+        - /spec/template/metadata/annotations/kubevirt.io~1pci-topology-version
+        - /spec/template/spec/architecture
+        - /spec/template/spec/domain/devices/interfaces/0/macAddress
+        - /spec/template/spec/domain/firmware/serial
+        - /spec/template/spec/domain/firmware/uuid
+        - /spec/template/spec/domain/machine
   {{- end }}
   destination:
     name: {{ $root.Values.argo.destinationName }}

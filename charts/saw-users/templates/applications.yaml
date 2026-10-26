@@ -28,6 +28,7 @@
   "wave" $.Values.syncWave.sandbox
   "path" "charts/openshell-saw"
   "release" $user.name
+  "ignoreVMDefaults" true
   "values" (include "saw-users.openshellValues" (dict "root" $ "user" $user))
 ) }}
 {{- end }}

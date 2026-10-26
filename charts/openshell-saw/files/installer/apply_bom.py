@@ -446,6 +446,7 @@ CONFIG_DEFAULTS = {
     "dashboard": {"enabled": False},
     "signing": {"mode": "off"},
     "prune": {"mode": "off", "sandboxes": False},
+    "registry": {"host": "", "caBundle": "", "authSecret": ""},
 }
 
 SIGNING_MODE_ORDER = {"off": 0, "warn": 1, "enforce": 2}
@@ -507,6 +508,22 @@ def load_config(path):
         raise InstallerError("installer config: prune.mode must be off, report, or on")
     merged["prune"] = {**CONFIG_DEFAULTS["prune"], **prune, "mode": prune_mode,
                        "sandboxes": bool(prune.get("sandboxes", False))}
+    registry = merged.get("registry") or {}
+    if not isinstance(registry, dict) or set(registry) - {"host", "caBundle", "authSecret"}:
+        raise InstallerError("installer config: registry must have host, caBundle, and authSecret only")
+    registry = {**CONFIG_DEFAULTS["registry"], **registry}
+    host, ca_bundle, auth_secret = (registry[key] for key in ("host", "caBundle", "authSecret"))
+    if not all(isinstance(value, str) for value in (host, ca_bundle, auth_secret)):
+        raise InstallerError("installer config: registry settings must be strings")
+    name, separator, port = host.rpartition(":")
+    if host and (not separator or not HOST_RE.fullmatch(name) or not port.isdigit()
+                 or not 1 <= int(port) <= 65535):
+        raise InstallerError("installer config: registry.host must be a DNS name and port")
+    if (ca_bundle or auth_secret) and not host:
+        raise InstallerError("installer config: registry.host is required for CA or authentication")
+    if auth_secret and not SECRET_NAME_RE.fullmatch(auth_secret):
+        raise InstallerError("installer config: registry.authSecret is invalid")
+    merged["registry"] = registry
     dash = merged.get("dashboard") or {}
     if dash.get("enabled"):
         for key in ("image", "proxyImage", "clientId"):
@@ -2446,6 +2463,68 @@ def issuer_ca_certs(pem, is_ca=cert_is_ca):
     if len(cas) < len(certs):
         log(f"caBundle: ignoring {len(certs) - len(cas)} certificate(s) that are not a CA")
     return "\n".join(cas) + "\n"
+
+
+REGISTRY_CERTS_DIR = Path(os.environ.get("SAW_REGISTRY_CERTS_DIR", "/etc/containers/certs.d"))
+REGISTRY_CA_NAME = "saw-registry-ca.crt"
+REGISTRY_AUTH_NAME = "registry-auth.json"
+
+
+def registry_auth_path(home):
+    return Path(home) / ".config" / "openshell" / REGISTRY_AUTH_NAME
+
+
+def configure_registry_access(shell, cfg, secrets_dir, home, owner=None,
+                              dry_run=False, is_ca=cert_is_ca):
+    """Set Podman's registry-scoped CA and private auth file before pulls.
+
+    The public CA stays under containers/certs.d/<host:port>. The bearer
+    token comes only from a mounted Secret, never from config.json or argv.
+    """
+    registry = cfg["registry"]
+    host = registry["host"]
+    try:
+        ca = issuer_ca_certs(registry["caBundle"], is_ca)
+    except InstallerError as exc:
+        raise InstallerError(f"registry.{exc}") from None
+    changed = False
+    if host:
+        ca_file = REGISTRY_CERTS_DIR / host / REGISTRY_CA_NAME
+        if ca:
+            if dry_run:
+                log(f"[dry-run] would trust registry CA for {host}")
+            else:
+                changed = write_if_changed(ca_file, ca, 0o644) or changed
+        elif ca_file.exists():
+            if not dry_run:
+                ca_file.unlink()
+            changed = True
+    auth_file = registry_auth_path(home)
+    if registry["authSecret"]:
+        token_file = Path(secrets_dir) / registry["authSecret"] / "token"
+        try:
+            token = token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            raise InstallerError("registry pull token Secret is not mounted") from None
+        if not token or any(char.isspace() for char in token):
+            raise InstallerError("registry pull token Secret has no valid token")
+        shell.add_secret(token)
+        encoded = base64.b64encode(f"serviceaccount:{token}".encode()).decode()
+        shell.add_secret(encoded)
+        auth = json.dumps({"auths": {host: {"auth": encoded}}}, separators=(",", ":")) + "\n"
+        if dry_run:
+            log(f"[dry-run] would update private registry auth file {auth_file}")
+        else:
+            changed = write_if_changed(auth_file, auth, 0o600, owner) or changed
+            os.chmod(auth_file, 0o600)
+            if owner and os.geteuid() == 0:
+                os.chown(auth_file, *owner)
+        shell.env["REGISTRY_AUTH_FILE"] = str(auth_file)
+    elif auth_file.exists():
+        if not dry_run:
+            auth_file.unlink()
+        changed = True
+    return changed
 
 
 def issuer_trust_paths(home):
@@ -6226,9 +6305,14 @@ def cmd_validate(args):
 def runtime_user(cfg, as_current_user):
     """Return (env, wrap) for running things as the runtime user."""
     if as_current_user:
-        return dict(os.environ), (lambda argv: argv)
+        env = dict(os.environ)
+        if cfg["registry"]["authSecret"]:
+            env["REGISTRY_AUTH_FILE"] = str(registry_auth_path(runtime_home(cfg, True)[0]))
+        return env, (lambda argv: argv)
     user = cfg["runtimeUser"]
     _, env = user_env(user)
+    if cfg["registry"]["authSecret"]:
+        env["REGISTRY_AUTH_FILE"] = str(registry_auth_path(runtime_home(cfg, False)[0]))
     return env, (lambda argv: as_user(user, env, argv))
 
 
@@ -6256,6 +6340,9 @@ def cmd_install(args):
         bom = load_bom(inputs.bom)
         cfg = load_config(inputs.config)
         bom_name = bom["metadata"]["name"]
+        home, owner = runtime_home(cfg, args.as_current_user)
+        registry_changed = configure_registry_access(
+            shell, cfg, inputs.secrets, home, owner, dry_run=args.dry_run)
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
                                        podman=args.podman, opt_dir=args.opt_dir,
                                        signing_mode=cfg.get("signing", {}).get("mode", "off"))
@@ -6275,7 +6362,6 @@ def cmd_install(args):
         log(f"changed components: {', '.join(changed) or 'none'}")
 
         env, wrap = runtime_user(cfg, args.as_current_user)
-        home, owner = runtime_home(cfg, args.as_current_user)
         pending = read_json(state_file, {}).get("gatewayStateResetPending") or \
             state.get("gatewayStateResetPending")
         if pending:
@@ -6306,7 +6392,8 @@ def cmd_install(args):
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
         state = read_json(state_file, {"components": {}})
-        if {"gateway", "supervisor"} & set(changed) or config_changed or trust_changed:
+        if ({"gateway", "supervisor"} & set(changed) or config_changed or
+                trust_changed or registry_changed):
             state["gatewayRestartPending"] = True
             if not args.dry_run:
                 write_json_atomic(state_file, state)

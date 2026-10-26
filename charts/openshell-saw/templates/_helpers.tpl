@@ -260,6 +260,9 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- with include "openshell-sandbox.caBundleSecret" . -}}
   {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
 {{- end -}}
+{{- with .Values.registry.authSecret -}}
+  {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
+{{- end -}}
 {{- toJson $names -}}
 {{- end }}
 
@@ -297,6 +300,9 @@ OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml
 OPENSHELL_ENABLE_MTLS_AUTH=true
 {{- if .Values.spiffe.enabled }}
 OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET=/spiffe-workload-api/agent.sock
+{{- end }}
+{{- if .Values.registry.authSecret }}
+REGISTRY_AUTH_FILE=/home/cloud-user/.config/openshell/registry-auth.json
 {{- end }}
 {{- if $routeHost }}
 OPENSHELL_ROUTE_FQDN={{ $routeHost }}
@@ -463,7 +469,7 @@ rule. The list can be empty only while NetworkPolicy is disabled. */}}
   {{- end -}}
   {{- $ip := get $entry "ip" | toString -}}
   {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $ip) -}}
-  {{- $rawPort := get $entry "port" | toString -}}
+  {{- $rawPort := printf "%v" (get $entry "port") -}}
   {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $rawPort)) (gt (int $rawPort) 65535) -}}
     {{- fail (printf "cleanupApi endpoint %q has invalid TCP port %q" $ip $rawPort) -}}
   {{- end -}}

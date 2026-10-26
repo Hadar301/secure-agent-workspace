@@ -91,6 +91,13 @@ def test_default_deny_and_policy_scopes():
     assert shell.returncode == 0, shell.stderr
 
 
+def test_json_number_api_port_renders_as_integer():
+    docs = render("--set-json", 'cleanupApi.endpoints=[{"ip":"192.0.2.10","port":6443}]')
+    assert {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
+            "ports": [{"protocol": "TCP", "port": 6443}]} in (
+                docs[("EgressFirewall", "default")]["spec"]["egress"])
+
+
 def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
     api_rule = {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
         "ports": [{"protocol": "TCP", "port": 6443}]}
@@ -248,8 +255,12 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
     docs = render("-f", str(path))
     vm = policies(docs)["saw-vm"]["spec"]
     [router_rule] = by_port(vm["ingress"], 17670)
-    assert router_rule["from"] == [{"namespaceSelector": {"matchLabels": {
-        "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}}]
+    assert router_rule["from"] == [
+        {"namespaceSelector": {"matchLabels": {
+            "policy-group.network.openshift.io/ingress": ""}}, "podSelector": {}},
+        {"namespaceSelector": {"matchLabels": {
+            "policy-group.network.openshift.io/host-network": ""}}},
+    ]
     ports = {p["port"] for p in router_rule["ports"]}
     service = docs[("Service", "saw-test-gateway")]["spec"]
     names = {p["name"]: p["port"] for p in service["ports"]}

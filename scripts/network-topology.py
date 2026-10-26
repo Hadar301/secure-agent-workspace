@@ -233,10 +233,13 @@ def main():
     discover_parser.add_argument("--values-file", action="append", default=[])
     pattern_parser = sub.add_parser("check-pattern")
     pattern_parser.add_argument("--values-file", default=str(ROOT / "overrides/saw-users.yaml"))
+    sub.add_parser("print-json")
     args = parser.parse_args()
     try:
         if args.action == "discover":
             discover(args.output, args.values_file)
+        elif args.action == "print-json":
+            print(json.dumps(live_topology()))
         else:
             check_pattern(args.values_file)
     except TopologyError as exc:

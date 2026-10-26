@@ -64,6 +64,10 @@ spec:
             matchLabels:
               policy-group.network.openshift.io/ingress: ""
           podSelector: {}
+        # OVN also identifies host-network router traffic through this group.
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/host-network: ""
       ports:
         - protocol: TCP
           port: 17670

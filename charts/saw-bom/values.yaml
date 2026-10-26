@@ -5,6 +5,10 @@ profiles:
 # Additional operator-approved profile documents, keyed as profiles/<profile>/<workspace>/<file>.yaml.
 profileFiles: {}
 
+# CI may replace a profile sandbox image with this run's build digest.
+# Keys are sandbox names. Normal deployments leave this map empty.
+imageOverrides: {}
+
 # Off disables every provider whose credentialSecret is web-search and removes
 # it from sandbox provider lists. saw-users resolves the global/per-user switch.
 webSearch:
