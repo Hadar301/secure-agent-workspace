@@ -39,63 +39,55 @@ def status(repo: str, sha: str, state: str, description: str) -> None:
     })
 
 
-def pull_request_reviews(repo: str, number: int) -> list[dict[str, Any]]:
-    reviews: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        response = api(
-            "GET",
-            f"/repos/{repo}/pulls/{number}/reviews?per_page=100&page={page}",
-        )
-        if not isinstance(response, list):
-            raise RuntimeError("GitHub returned an invalid PR reviews response")
-        reviews.extend(response)
-        if len(response) < 100:
-            return reviews
-        page += 1
-
-
 def prepare() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     number = int(os.environ["CI_PR_NUMBER"])
-    sha = os.environ["CI_HEAD_SHA"]
-    if number <= 0 or not SHA.fullmatch(sha):
-        raise RuntimeError("PR number and full expected SHA are required")
+    if number <= 0:
+        raise RuntimeError("PR number must be a positive integer")
     pr = api("GET", f"/repos/{repo}/pulls/{number}")
-    if pr["state"] != "open" or pr["head"]["sha"] != sha:
-        raise RuntimeError("PR is closed or its head SHA changed")
-    if pr["head"]["repo"]["full_name"] != repo:
-        raise RuntimeError("Pattern E2E needs a reviewed branch in this repository")
-    reviews = pull_request_reviews(repo, number)
-    latest_review: dict[str, dict] = {}
-    for review in reviews:
-        if review["state"] in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-            latest_review[review["user"]["login"]] = review
-    if not any(review["state"] == "APPROVED" and review.get("commit_id") == sha
-               for review in latest_review.values()):
-        raise RuntimeError("the current PR head has no active approval")
+    if pr.get("state") != "open":
+        raise RuntimeError("PR is not open")
+    base = pr.get("base")
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    if not isinstance(base_name, str) or base_name.lower() != repo.lower():
+        raise RuntimeError("PR does not target this repository")
+    head = pr.get("head", {})
+    sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+        raise RuntimeError("PR head SHA is invalid")
+    source_repo = head.get("repo")
+    source_name = (source_repo.get("full_name")
+                   if isinstance(source_repo, dict) else None)
+    if not isinstance(source_name, str) or not source_name:
+        raise RuntimeError("PR source repository is unavailable")
+
     automatic = []
     # pull_request jobs can be attached to GitHub's current merge commit.
-    # Check both that commit and the expected PR head.
+    # Check both that commit and the latest PR head from the API response.
     for commit in {sha, pr.get("merge_commit_sha")} - {None}:
         checks = api("GET", f"/repos/{repo}/commits/{commit}/check-runs?per_page=100")
-        automatic.extend(check for check in checks.get("check_runs", [])
+        check_runs = checks.get("check_runs") if isinstance(checks, dict) else None
+        if not isinstance(check_runs, list):
+            raise RuntimeError("GitHub returned an invalid check-runs response")
+        automatic.extend(check for check in check_runs
                          if check["name"] == "Deployment validation" and
-                         check["app"]["slug"] == "github-actions")
+                         check.get("app", {}).get("slug") == "github-actions")
     if not automatic or not any(check["conclusion"] == "success" for check in automatic):
         raise RuntimeError("Deployment validation has not passed at this SHA")
-    # The reviewer starts this workflow from the default branch. The temporary
-    # ref gives the Pattern operator a stable Git revision during the run.
+
+    # The environment approval is the trust gate before the cluster job gets
+    # credentials. The temporary ref pins the PR commit for the full run.
     branch = f"ci/pattern-e2e/{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
     api("POST", f"/repos/{repo}/git/refs", {"ref": "refs/heads/" + branch, "sha": sha})
     try:
-        status(repo, sha, "pending", "Cluster test is running")
+        status(repo, sha, "pending", "Pattern E2E is queued for cluster test")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write(f"sha={sha}\nbranch={branch}\n")
     except RuntimeError:
         api("DELETE", f"/repos/{repo}/git/refs/heads/{branch}")
         raise
-    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        output.write(f"sha={sha}\nbranch={branch}\n")
-    print(f"Prepared PR {number} at {sha} on {branch}")
+    print(f"Prepared PR {number} from {source_name} at {sha} on {branch}")
 
 
 def finish() -> None:
