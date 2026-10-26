@@ -92,6 +92,52 @@ def test_read_kubeconfig_file_rejects_empty_file(runner, tmp_path, monkeypatch):
         runner.read_kubeconfig_file()
 
 
+def test_setup_files_stores_ca_beside_kubeconfig(runner, tmp_path, monkeypatch):
+    kubeconfig = tmp_path / "auth" / "config"
+    kubeconfig.parent.mkdir()
+    kubeconfig.write_text(
+        "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority: cluster-ca.pem\n",
+        encoding="utf-8",
+    )
+    ca = b"-----BEGIN CERTIFICATE-----\ncluster\n-----END CERTIFICATE-----\n"
+    monkeypatch.setenv("CI_KUBECONFIG_FILE", str(kubeconfig))
+    monkeypatch.setenv("CI_CA_B64", base64.b64encode(ca).decode())
+    monkeypatch.setenv("CI_INFERENCE_KEY", "test-only-key")
+    monkeypatch.setenv("CI_PROVIDER", "build")
+    bom = pattern_e2e.yaml.safe_load(
+        (pattern_e2e.ROOT / "charts/openshell-saw/values.yaml").read_text())
+    api_version = bom["bom"]["spec"]["openshell"]["cli"]["version"].split("-", 1)[0]
+    provider_profile = pattern_e2e.yaml.safe_load(
+        (pattern_e2e.ROOT / "charts/saw-bom/profiles/ci-nvidia/default/providers.yaml")
+        .read_text())
+    model = next(item["model"] for item in provider_profile["spec"]["providers"]
+                 if item.get("nemoclawProvider") == "build")
+    monkeypatch.setenv("CI_MODEL", model)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(pattern_e2e.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(runner, "verify_target_ref", lambda: None)
+
+    def fake_call(args, **_kwargs):
+        if args[:3] == ["podman", "info", "--format"]:
+            stdout = "amd64"
+        elif args[:2] == ["openshell", "--version"]:
+            stdout = f"openshell {api_version}"
+        elif args[:3] == ["oc", "get", "configmap"]:
+            stdout = json.dumps({"data": {"service-ca.crt":
+                "-----BEGIN CERTIFICATE-----\\nservice\\n-----END CERTIFICATE-----"}})
+        else:
+            stdout = ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.setup_files()
+
+    ca_path = runner.home / ".kube/cluster-ca.pem"
+    assert ca_path.read_bytes() == ca
+    assert runner.env["KUBECONFIG"] == str(runner.home / ".kube/config")
+    assert runner.env["OIDC_CA_BUNDLE"] == str(ca_path)
+
+
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
     child = {
         "metadata": {"name": "saw-ciowner"},
@@ -674,7 +720,7 @@ def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, 
     private_home.mkdir()
     (private_home / ".run-id").write_text("123\n")
     required_files = (
-        ".kube/config", "cluster-ca.pem", "cluster-service-ca.crt",
+        ".kube/config", ".kube/cluster-ca.pem", "cluster-service-ca.crt",
         "ssh/sandbox-ssh", "ssh/sandbox-ssh.pub", "ciowner-password",
         "cisecond-password", "inference-key", "bin/virtctl",
     )
@@ -709,6 +755,7 @@ def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, 
     assert runner.locked is True
     assert runner.home == private_home
     assert runner.env["KUBECONFIG"] == str(private_home / ".kube/config")
+    assert runner.env["OIDC_CA_BUNDLE"] == str(private_home / ".kube/cluster-ca.pem")
     assert runner.report["phase"] == "live"
 
 

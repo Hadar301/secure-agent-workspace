@@ -300,14 +300,14 @@ class Runner:
         kubeconfig = self.read_kubeconfig_file()
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
-        self.private_file("cluster-ca.pem", ca)
+        self.private_file(".kube/cluster-ca.pem", ca)
         service_ca = self.oc_json("get", "configmap", "openshift-service-ca.crt",
                                   "-n", "openshift-service-ca")["data"]["service-ca.crt"]
         if "BEGIN CERTIFICATE" not in service_ca or "PRIVATE KEY" in service_ca:
             raise E2EError("cluster registry service CA is invalid")
         self.private_file("cluster-service-ca.crt", service_ca.encode())
         # Route TLS uses this CA. Keep the system trust store for public hosts.
-        self.env["OIDC_CA_BUNDLE"] = str(secret_home / "cluster-ca.pem")
+        self.env["OIDC_CA_BUNDLE"] = str(secret_home / ".kube/cluster-ca.pem")
         self.env["TEST_SECOND_TOKEN_DIR"] = str(secret_home / "second-oidc")
         self.env["TEST_ACTIVE_SAW_NAME"] = USERS[0]
         self.env["TEST_ACTIVE_SAW_NS"] = f"saw-{USERS[0]}"
@@ -375,7 +375,7 @@ class Runner:
     def configure_live_environment(self) -> None:
         self.home = self.private_home_from_report()
         required_files = (
-            ".kube/config", "cluster-ca.pem", "cluster-service-ca.crt",
+            ".kube/config", ".kube/cluster-ca.pem", "cluster-service-ca.crt",
             "ssh/sandbox-ssh", "ssh/sandbox-ssh.pub", "ciowner-password",
             "cisecond-password", "inference-key", "bin/virtctl",
         )
@@ -391,7 +391,7 @@ class Runner:
             "BUILD_NS": NAMESPACE,
             "NS": NAMESPACE,
             "PUSH_IMAGE_REPO": "",
-            "OIDC_CA_BUNDLE": str(self.home / "cluster-ca.pem"),
+            "OIDC_CA_BUNDLE": str(self.home / ".kube/cluster-ca.pem"),
             "TEST_SECOND_TOKEN_DIR": str(self.home / "second-oidc"),
             "TEST_ACTIVE_SAW_NAME": USERS[0],
             "TEST_ACTIVE_SAW_NS": f"saw-{USERS[0]}",
@@ -1044,7 +1044,7 @@ class Runner:
         if self.home is None:
             raise E2EError("private HOME is not ready")
         context = ssl.create_default_context()
-        context.load_verify_locations(cafile=str(self.home / "cluster-ca.pem"))
+        context.load_verify_locations(cafile=str(self.home / ".kube/cluster-ca.pem"))
         return context
 
     def install_virtctl(self) -> None:
