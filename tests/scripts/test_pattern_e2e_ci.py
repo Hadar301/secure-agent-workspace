@@ -145,6 +145,35 @@ def test_setup_files_stores_ca_beside_kubeconfig(runner, tmp_path, monkeypatch):
         if args[:3] == ["oc", "get", "configmap"])
 
 
+def test_recovery_setup_stores_ca_and_checks_api_before_podman(
+    runner, tmp_path, monkeypatch,
+):
+    kubeconfig = tmp_path / "auth" / "config"
+    kubeconfig.parent.mkdir()
+    kubeconfig.write_text(
+        "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority: cluster-ca.pem\n",
+        encoding="utf-8",
+    )
+    ca = b"-----BEGIN CERTIFICATE-----\ncluster\n-----END CERTIFICATE-----\n"
+    (kubeconfig.parent / "cluster-ca.pem").write_bytes(ca)
+    monkeypatch.setenv("CI_KUBECONFIG_FILE", str(kubeconfig))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(pattern_e2e.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    runner.setup_recovery_files()
+
+    assert (runner.home / ".kube/config").read_bytes() == kubeconfig.read_bytes()
+    assert (runner.home / ".kube/cluster-ca.pem").read_bytes() == ca
+    assert calls.index(["oc", "get", "--raw=/version"]) < calls.index(
+        ["podman", "info", "--format", "{{.Host.Arch}}"])
+
+
 def test_verify_kubeconfig_ca_rejects_missing_relative_file(runner, tmp_path):
     kube_dir = tmp_path / ".kube"
     kube_dir.mkdir()
@@ -158,6 +187,69 @@ def test_verify_kubeconfig_ca_rejects_missing_relative_file(runner, tmp_path):
     with pytest.raises(pattern_e2e.E2EError,
                        match="private kubeconfig CA file is missing or unreadable"):
         runner.verify_kubeconfig_ca()
+
+
+def test_selected_storage_class_is_temporary_and_restored(runner, monkeypatch):
+    selected = "ocs-external-storagecluster-ceph-rbd"
+    classes = {
+        "ocs-old": {"metadata": {"name": "ocs-old", "annotations": {
+            pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION: "true"}}},
+        selected: {"metadata": {"name": selected, "annotations": {}}},
+        "thin-csi": {"metadata": {"name": "thin-csi", "annotations": {
+            pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION: "false"}}},
+    }
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/run-id": runner.run_id,
+        "saw.redhat.com/sha": runner.sha,
+    }}, "data": {}}
+    updates = []
+    runner.env["CI_STORAGE_CLASS"] = selected
+
+    def fake_oc_json(*args):
+        if args[:3] == ("get", "configmap", pattern_e2e.LOCK_NAME):
+            return lock
+        if args[:2] == ("get", "storageclass"):
+            return {"items": list(classes.values())}
+        raise AssertionError(f"unexpected oc_json call: {args}")
+
+    def fake_update(updates_to_apply):
+        lock["data"].update(updates_to_apply)
+        updates.append(dict(updates_to_apply))
+
+    def fake_call(args, **_kwargs):
+        if args[:3] == ["oc", "annotate", "storageclass"]:
+            name = args[3]
+            annotation = args[4]
+            annotations = classes[name]["metadata"].setdefault("annotations", {})
+            if annotation.endswith("-"):
+                annotations.pop(pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION, None)
+            else:
+                key, value = annotation.split("=", 1)
+                annotations[key] = value
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "oc_json", fake_oc_json)
+    monkeypatch.setattr(runner, "update_lock_data", fake_update)
+    monkeypatch.setattr(runner, "call", fake_call)
+
+    runner.configure_storage_class()
+    assert classes[selected]["metadata"]["annotations"][
+        pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION] == "true"
+    assert classes["ocs-old"]["metadata"]["annotations"][
+        pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION] == "false"
+    assert json.loads(lock["data"]["storageclass-restore"]) == [
+        {"name": "ocs-old", "value": "true"},
+        {"name": selected, "value": None},
+    ]
+
+    runner.restore_storage_class()
+
+    assert pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION not in classes[selected][
+        "metadata"]["annotations"]
+    assert classes["ocs-old"]["metadata"]["annotations"][
+        pattern_e2e.STORAGE_CLASS_DEFAULT_ANNOTATION] == "true"
+    assert lock["data"]["storageclass-restore"] == ""
+    assert updates[-1] == {"storageclass-restore": ""}
 
 
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
@@ -830,8 +922,18 @@ def test_cleanup_removes_only_run_created_pattern_infrastructure(runner, monkeyp
         return SimpleNamespace(returncode=0, stdout='{"items": []}', stderr="")
 
     monkeypatch.setattr(runner, "call", fake_call)
-    monkeypatch.setattr(runner, "oc_json", lambda *_args: {"items": [
-        {"metadata": {"name": name}} for name in namespaces]})
+    lock = {"metadata": {"annotations": {
+        "saw.redhat.com/run-id": runner.run_id,
+        "saw.redhat.com/sha": runner.sha,
+    }}, "data": {}}
+
+    def fake_oc_json(*args):
+        if args[:3] == ("get", "configmap", pattern_e2e.LOCK_NAME):
+            return lock
+        return {"items": [
+            {"metadata": {"name": name}} for name in namespaces]}
+
+    monkeypatch.setattr(runner, "oc_json", fake_oc_json)
     monkeypatch.setattr(runner, "stop_run_utility_containers", lambda: None)
     monkeypatch.setattr(runner, "update_lock_data", lambda data: updates.append(data))
     monkeypatch.setattr(runner, "release_lock", lambda: None)

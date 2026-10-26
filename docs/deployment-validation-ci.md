@@ -37,14 +37,19 @@ Create an environment named `pattern-e2e`. Add these values:
 | `CI_INFERENCE_KEY` | secret | NVIDIA inference API key |
 | `CI_CLUSTER_API` | variable | Exact `oc whoami --show-server` URL |
 | `CI_CLUSTER_UID` | variable | UID of the `kube-system` namespace |
+| `CI_STORAGE_CLASS` | optional variable | StorageClass to use for this run; defaults to the RH demo catalog class used in development |
 | `CI_PROVIDER` | variable | `build` |
 | `CI_MODEL` | variable | Model in `charts/saw-bom/profiles/ci-nvidia/default/providers.yaml` |
 
 The runner needs access to the cluster API, application routes, internal
 registry, GitHub, the OpenShift client mirror, and public package registries.
-The fresh cluster must have a default StorageClass for the VM disks. The
-runner checks this before it starts builds and does not change the cluster
-default.
+The cluster must have the `ocs-external-storagecluster-ceph-rbd` StorageClass
+used in development, or set `CI_STORAGE_CLASS` to a class on the target
+cluster. This class may need to change when the CI cluster changes. Before
+builds, the runner temporarily makes the selected class the only default and
+stores the prior default annotations in the cluster lock. Cleanup restores the
+prior annotations before it releases the lock. Recovery uses the same snapshot
+if a run stops before cleanup completes.
 Each run uses `oc login` to create a fresh kubeconfig. The workflow stores it
 under a private runner temporary directory, copies it into the runner's
 private home, and removes the login files after cleanup. The workflow uploads
@@ -108,7 +113,8 @@ or any PR that targets it, including a fork PR, before merge.
 | Environment approval | Protect cluster credentials | A required reviewer approves the `pattern-e2e` deployment before the job receives cluster and inference credentials. |
 | Workflow queue | Serialize cluster runs | GitHub runs one Pattern E2E workflow at a time and queues up to 100 waiting runs. |
 | Cluster preflight | Check cluster identity and freshness | The API URL and cluster UID match; no Pattern, VM, build, or test namespace from an earlier run exists. |
-| Cluster preflight | Check cluster capacity | The cluster has a default StorageClass, a Ready node with at least 4 CPU and 8 GiB, and valid CNV webhook state when present. |
+| Cluster preflight | Check cluster capacity and storage | The cluster has a Ready node with at least 4 CPU and 8 GiB, valid CNV webhook state when present, and the selected StorageClass exists. |
+| Cluster preflight | Set a temporary default StorageClass | The selected class becomes the only default for this run; the lock records prior annotations for cleanup and recovery. |
 | Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, selected target, SHA, and run link. |
 | Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, and governance interceptor builds complete and produce image digests. |
 | Registry setup | Prepare guest image pulls | A short-lived, scoped registry token is added to private CI inputs for the guest VMs. |
@@ -125,6 +131,7 @@ or any PR that targets it, including a fork PR, before merge.
 | Live cluster | Block undeclared egress | A request from the sandbox to `example.org` fails. |
 | Cleanup | Uninstall Pattern | The cleanup stage runs Pattern uninstall twice to check repeat behavior. |
 | Cleanup | Verify resource removal | Test namespaces and VMs, the Pattern, and repository Argo applications are gone; only namespaces created by the run are removed. |
+| Cleanup | Restore cluster storage settings | Cleanup restores prior StorageClass annotations before it releases the cluster lock. |
 | Cleanup | Release the lock and source ref | The cluster lock and temporary Git ref are removed only after cleanup verification; otherwise both remain for recovery. |
 | Reporting | Publish result and artifacts | GitHub sets `Pattern E2E` to success only when tests and cleanup pass, and uploads structured results and resource status without credentials. |
 

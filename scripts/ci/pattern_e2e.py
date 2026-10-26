@@ -33,6 +33,10 @@ LOCK_NAME = "saw-pattern-e2e"
 NAMESPACE = "openshell-agents"
 REGISTRY_PULLER = "saw-ci-registry-puller"
 REGISTRY_HOST = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+STORAGE_CLASS_DEFAULT_ANNOTATION = "storageclass.kubernetes.io/is-default-class"
+# This is the RH demo catalog class used in development. Change it if the CI
+# cluster changes, or set CI_STORAGE_CLASS in the workflow environment.
+DEVELOPMENT_CI_STORAGE_CLASS = "ocs-external-storagecluster-ceph-rbd"
 USERS = ("ciowner", "cisecond")
 UTILITY_CONTAINER_LABEL = "saw.redhat.com/ci-run-id"
 PATTERN_NAMESPACES = (
@@ -654,7 +658,17 @@ class Runner:
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
         kubeconfig = self.read_kubeconfig_file()
+        ca_path = Path(self.required("CI_KUBECONFIG_FILE")).parent / "cluster-ca.pem"
+        try:
+            ca = ca_path.read_bytes()
+        except OSError:
+            raise E2EError("cluster CA file beside CI_KUBECONFIG_FILE is missing or unreadable") from None
+        if not ca:
+            raise E2EError("cluster CA file beside CI_KUBECONFIG_FILE is empty")
         self.private_file(".kube/config", kubeconfig)
+        self.private_file(".kube/cluster-ca.pem", ca)
+        self.verify_kubeconfig_ca()
+        self.call(["oc", "get", "--raw=/version"], timeout=30)
         self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
 
     def mark_cleanup_required(self) -> None:
@@ -714,14 +728,109 @@ class Runner:
             if namespace in self.baseline_namespaces:
                 raise E2EError(f"fresh cluster preflight found namespace {namespace}")
         self.check_cnv_webhook()
-        storage = self.oc_json("get", "storageclass")
-        if not any((item.get("metadata", {}).get("annotations") or {}).get(
-                "storageclass.kubernetes.io/is-default-class") == "true"
-                for item in storage.get("items", [])):
-            raise E2EError("no default StorageClass is available")
         nodes = self.oc_json("get", "nodes")
         if not any(self.node_has_capacity(item) for item in nodes.get("items", [])):
             raise E2EError("no Ready node has at least 4 CPU and 8 GiB memory")
+        self.configure_storage_class()
+
+    def configure_storage_class(self) -> None:
+        storage = self.oc_json("get", "storageclass")
+        items = storage.get("items", [])
+        selected = (self.env.get("CI_STORAGE_CLASS", "").strip()
+                    or DEVELOPMENT_CI_STORAGE_CLASS)
+
+        classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in items if item.get("metadata", {}).get("name")
+        }
+        if selected not in classes:
+            raise E2EError(f"CI_STORAGE_CLASS {selected} does not exist")
+
+        restore: list[dict[str, str | None]] = []
+        for name, item in classes.items():
+            annotations = item.get("metadata", {}).get("annotations") or {}
+            previous = annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION)
+            if name == selected or previous == "true":
+                restore.append({"name": name, "value": previous})
+
+        # Store the original default annotations before changing the cluster.
+        # Cleanup and recovery use this snapshot to restore the cluster state.
+        self.update_lock_data({
+            "storageclass-name": selected,
+            "storageclass-restore": json.dumps(restore, sort_keys=True),
+        })
+        for item in restore:
+            name = item["name"]
+            previous = item["value"]
+            desired = "true" if name == selected else "false"
+            if previous == desired:
+                continue
+            self.call(["oc", "annotate", "storageclass", name,
+                       f"{STORAGE_CLASS_DEFAULT_ANNOTATION}={desired}", "--overwrite"])
+
+        verified = self.oc_json("get", "storageclass")
+        verified_defaults = sorted(
+            item.get("metadata", {}).get("name")
+            for item in verified.get("items", [])
+            if (item.get("metadata", {}).get("annotations") or {}).get(
+                STORAGE_CLASS_DEFAULT_ANNOTATION) == "true"
+        )
+        if verified_defaults != [selected]:
+            raise E2EError("selected StorageClass did not become the only default")
+        self.report["storage_class"] = selected
+
+    def restore_storage_class(self) -> None:
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        annotations = lock.get("metadata", {}).get("annotations", {})
+        if (annotations.get("saw.redhat.com/run-id") != self.run_id or
+                annotations.get("saw.redhat.com/sha") != self.sha):
+            raise E2EError("cluster lock owner changed; refusing to restore StorageClass")
+        data = lock.get("data") or {}
+        encoded = data.get("storageclass-restore", "")
+        if not encoded:
+            return
+        try:
+            restore = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot") from exc
+        if not isinstance(restore, list):
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot")
+        if any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or
+               item.get("value") not in (None, "true", "false") for item in restore):
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot")
+
+        current = self.oc_json("get", "storageclass")
+        classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in current.get("items", []) if item.get("metadata", {}).get("name")
+        }
+        for item in restore:
+            name = item["name"]
+            if name not in classes:
+                raise E2EError(f"StorageClass {name} is missing; cannot restore the cluster")
+            annotations = classes[name].get("metadata", {}).get("annotations") or {}
+            actual = annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION)
+            previous = item["value"]
+            if actual == previous:
+                continue
+            value = (f"{STORAGE_CLASS_DEFAULT_ANNOTATION}={previous}"
+                     if previous is not None else f"{STORAGE_CLASS_DEFAULT_ANNOTATION}-")
+            args = ["oc", "annotate", "storageclass", name, value]
+            if previous is not None:
+                args.append("--overwrite")
+            self.call(args)
+
+        restored = self.oc_json("get", "storageclass")
+        restored_classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in restored.get("items", []) if item.get("metadata", {}).get("name")
+        }
+        for item in restore:
+            name = item["name"]
+            annotations = restored_classes[name].get("metadata", {}).get("annotations") or {}
+            if annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION) != item["value"]:
+                raise E2EError(f"StorageClass {name} did not restore to its prior state")
+        self.update_lock_data({"storageclass-restore": ""})
 
     def check_cnv_webhook(self) -> None:
         crd = self.call(["oc", "get", "crd", "hyperconvergeds.hco.kubevirt.io",
@@ -1397,6 +1506,7 @@ class Runner:
         if new_pattern_namespaces:
             raise E2EError("cleanup left Pattern namespaces: "
                            + ", ".join(sorted(new_pattern_namespaces)))
+        self.restore_storage_class()
         self.update_lock_data({"state": "cleanup-verified", "cleanup-verified": "true"})
         self.report["cleanup_verified"] = True
         self.save_report()

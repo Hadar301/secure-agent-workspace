@@ -121,6 +121,8 @@ jobs:
           CI_CA_B64: ${{ secrets.CI_CA_B64 }}
           CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
           CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+          # Used in development. Change it if the RH demo catalog cluster changes.
+          CI_STORAGE_CLASS: ${{ vars.CI_STORAGE_CLASS || 'ocs-external-storagecluster-ceph-rbd' }}
           CI_PROVIDER: ${{ vars.CI_PROVIDER }}
           CI_MODEL: ${{ vars.CI_MODEL }}
           CI_INFERENCE_KEY: ${{ secrets.CI_INFERENCE_KEY }}
