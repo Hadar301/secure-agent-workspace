@@ -72,17 +72,21 @@ For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom in
 
 ### Architecture diagrams
 
-The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
+The first diagram shows an OpenShift Virtualization and APF governance reference
+architecture. It shows conceptual Phase I and Phase II workspaces. APF is an
+optional governance engine in this repository; the OpenShell governance
+interceptor is the default. The two diagrams that follow also illustrate the
+[NVIDIA Secure Agent Workspace OpenShift Virtualization reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
 
-#### Reference Architecture
+#### OpenShift Virtualization and APF reference architecture
 
-![OpenShift Virtualization Reference Implementation](docs/images/openshift-reference-shape.png)
+![Reference architecture with an endpoint, Phase I and Phase II workspace VMs, APF governance, and corporate services](docs/images/openshift-reference-shape.png)
 
-#### GitOps Policy Model
+#### Reference design: GitOps policy model
 
 ![GitOps Policy Model — End-to-End Policy Flow](docs/images/gitops-policy-model.png)
 
-#### Storage Layout
+#### Reference design: storage layout
 
 ![NFS storage layout for policy bundles and workspace persistence](docs/images/nfs-storage-layout.png)
 
@@ -154,6 +158,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Software | Version |
 |---|---|
 | Red Hat OpenShift | 4.22+ |
+| Cluster architecture | x86_64 or arm64 ([arm64 notes](docs/arm64.md)) |
 | Network plugin | OVN-Kubernetes (the OpenShift default), for each workspace's egress firewall; set `egress.enabled: false` otherwise |
 | OpenShift Virtualization operator | stable channel |
 | Red Hat Build of Keycloak operator | stable-v26 channel |
@@ -176,7 +181,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
 5. The `openshell` CLI installed at the API version pinned by the gateway BOM
-   (`0.1.2` for the current `0.1.2-rhaiv.0` image;
+   (`0.1.2` for the current `0.1.2-rhaiv.6` image;
    [releases](https://github.com/NVIDIA/OpenShell/releases))
 
 Verify prerequisites:
@@ -194,9 +199,15 @@ Two deployment paths are available:
 Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default sandbox — via ArgoCD.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+# 1. Fork, then clone your fork. Argo CD deploys from the branch you push
+# (users, profiles, endpoints are files in this repository), so GitOps
+# changes need a remote you can write to:
+# https://github.com/validatedpatterns-sandbox/secure-agent-workspace/fork
+# (Cloning upstream directly also installs; then add users outside git,
+# see step 7.)
+git clone https://github.com/<your-github-user>/secure-agent-workspace.git
 cd secure-agent-workspace
+git remote add upstream https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 
 # 2. Log in to OpenShift with cluster-admin
 oc login --server=https://api.<cluster>:6443 -u <user>
@@ -209,7 +220,8 @@ make ssh-key-generate
 # template; edit it to add your inference and web-search keys. The Validated
 # Patterns framework reads ~/values-secret-secure-agent-workspace.yaml before ~/values-secret.yaml,
 # so the pattern-named file wins when both exist.
-# The default profile needs an NVIDIA key and a Brave Search key:
+# The default profile needs an NVIDIA key; the Brave Search key is optional
+# when web search is off (omit its whole entry from the secrets file):
 #   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
@@ -225,18 +237,36 @@ make images-mirror
 make check-oidc-ca
 
 # 6. Deploy the pattern (runs inside the VP utility container)
-# NOTE: The deploying branch must exist on the remote (origin).
+# NOTE: The deploying branch must exist on your fork (origin): the Pattern
+# CR points Argo CD at it, and every later change (steps 7+) is a push there.
 # pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
 #   export TARGET_BRANCH=main TARGET_ORIGIN=origin
 ./pattern.sh make install
+# Without a Brave Search key, use this instead:
+# ./pattern.sh make install WEB_SEARCH_ENABLED=false
+# A user's webSearch.enabled in overrides/saw-users.yaml overrides the global switch.
 
-# 7. Authenticate and configure the CLI
+# 7. Add your first user. The pattern ships overrides/saw-users.yaml with
+# `users: []`, so no workspace VM exists yet. Add an entry for the account
+# (a lowercase DNS label, at most 19 characters), push it to the deploying
+# branch, and create the Keycloak account; Argo CD then builds saw-<name>.
+#   users:
+#     - name: alice
+git add overrides/saw-users.yaml && git commit -m "Add alice" && git push
+make keycloak-add-users       # creates the account; password in a Secret
+oc -n vp-gitops get application saw-alice   # wait until Synced/Healthy
+make saw-logs OPENSHELL_SAW_NAME=alice      # until "apply: Done"
+# Without a fork: users create their own workspace in the self-service
+# portal (Red Hat Developer Hub, docs/rhdh-user-guide.md), or create one
+# outside GitOps with `make saw-create OPENSHELL_SAW_NAME=alice` (Option B).
+
+# 8. Authenticate and configure the CLI
 make login                    # Opens the browser for Keycloak sign-in
 export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
 make saw-configure
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
-# 8. Verify
+# 9. Verify
 # The first command lists the default workspace; the second lists cuda-dev.
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
@@ -300,17 +330,18 @@ make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
 #     Keys come from files so they stay out of the shell history.
-#     The default data-science profile also creates a Brave Search provider,
-#     so it needs WEB_SEARCH_API_KEY; without it the in-VM apply fails with
-#     "credential for provider 'brave' in workspace 'default' not found".
+#     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
+#     web-search Secret), saw-create disables the Brave Search provider.
 #     The target asks "Press Enter to set owner to '<you>', ..."; press Enter.
 #     To create a VM for someone else, pass OWNER=<name> OWNER_SUBJECT=<keycloak-user-id>.
-read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# Optional, to enable web search:
+# read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# export WEB_SEARCH_API_KEY
 read -r API_KEY < "$HOME/.nvidia-api-key"
-export WEB_SEARCH_API_KEY API_KEY
+export API_KEY
 make saw-create \
   PROVIDER=build \
-  MODEL=nvidia/nemotron-3-super-120b-a12b
+  MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
@@ -426,7 +457,7 @@ CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
-separately pins OpenShell `0.1.2-rhaiv.0` by digest. See
+separately pins OpenShell `0.1.2-rhaiv.6` by digest. See
 [the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run
@@ -442,9 +473,10 @@ The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
 `TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
-`WEB_SEARCH_API_KEY`, `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
+`TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
 and owner access checks described in the deployment guide. The repo supplies
-the second-user denial check by default. Then run
+the second-user denial check by default. Set `WEB_SEARCH_API_KEY` to test
+web search on; leave it unset to test off. Then run
 `make test-deployment`. It tests manual setup and
 the pattern install, uninstall, and reinstall cycle. It records timestamps,
 the commit, the cluster context, and exit codes in a local evidence file.
@@ -452,8 +484,7 @@ It requires confirmation for interactive TUI and GUI checks. It runs
 inference and access checks and records their status codes. See
 [the deployment guide](docs/deployment-guide.md#live-deployment-test).
 
-The existing Python CLI has a smaller command set than Make. See
-[CLI migration gaps](docs/cli-migration-gaps.md) before moving an operation.
+The existing Python CLI has a smaller command set than Make.
 
 #### Supported inference providers
 
@@ -465,26 +496,43 @@ The existing Python CLI has a smaller command set than Make. See
 | NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
-| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `custom-inference` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+
+The `data-science` profile defaults to NVIDIA
+`nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
+disabled by default. To add either to the existing notebook with Option A:
+
+1. Set its `enabled: true` in
+   `charts/saw-bom/profiles/data-science/default/providers.yaml`.
+2. Add its name (`openai` or `anthropic`) to `notebook.providers` in the same
+   directory's `sandbox.yaml`. The first provider supplies the default model;
+   keep `nvidia` first to retain the NVIDIA default.
+3. Add its separate `inference-openai` or `inference-anthropic` entry from
+   `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
+   entries. Each uses `provider`, `model`, and `api_key`; the API Secret's
+   `model` overrides the profile's model. Official APIs need no URL.
+
+Select the provider's model in the notebook chat's model picker. These optional
+providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The installer creates an `openai` provider with the endpoint's base URL and onboards OpenClaw against that URL. OpenShell 0.1.x has no inference routing: the agent sends a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider profile names, so the profile must name your endpoint's host (see [docs/custom-inference.md](docs/custom-inference.md)).
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. OpenShell 0.1.x has no inference routing: the agent calls the endpoint itself with a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider's **profile** names. The pattern cannot know your host, so you add a profile for it: a plain OpenShell profile file in `overrides/governance-profiles/` (copy `charts/governance-policy/profiles/examples/custom-inference.yaml` and set its host), served to every gateway by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile uses it (`type: custom-inference`), reads the URL and model from the `inference` Secret, and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
 
-Select the `custom-inference` SAW-BOM profile and give the endpoint's URL, model and key.
+**Option A (Validated Pattern)** — four files in your fork, one Secret:
 
-**Option A (Validated Pattern)** — in `~/values-secret-secure-agent-workspace.yaml`, use the commented custom example of the `inference` secret (`provider: openai`, `model`, `url`, `api_key`), and select the profile in `charts/saw-bom/values.yaml` (committed to the branch the pattern deploys):
+1. **Profile** — copy `charts/governance-policy/profiles/examples/custom-inference.yaml` to `overrides/governance-profiles/custom-inference.yaml`, set `endpoints[0].host`/`port` to your server, and uncomment the `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml` (it lists the file). (A second server with its own key is a second file with its own `id`; the SAW-BOM provider for it is named *and* typed after that id.)
+2. **Egress** — a host outside the cluster goes in `egress.extraAllow` under `defaults.openshellSaw` in `overrides/saw-users.yaml`; an in-cluster Service needs a `networkPolicy.extraEgress` rule instead.
+3. **User** — give the entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`.
+4. **Secret** — in `~/values-secret-secure-agent-workspace.yaml` use the commented custom example of the `inference` secret (`url` ending in `/v1`, `model`, `api_key`; no `provider` if the Secret also serves data-science users).
 
-```yaml
-profiles:
-  - custom-inference
-```
+Then `git push`, `./pattern.sh make load-secrets`, wait for Argo CD (`governance-extra-profiles`, `saw-<user>-bom`), and `make saw-restart OPENSHELL_SAW_NAME=<user>`. The installer log shows `Provider 'custom-inference': type 'custom-inference' is a governance-catalog profile` and OpenClaw onboarded with `--custom-base-url <your url>`.
 
 **Option B (Quickstart)** — one command:
 
 ```bash
 make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
-  PROVIDER=openai MODEL=<served model> \
+  PROVIDER=custom-inference MODEL=<served model> \
   ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
   API_KEY=<key>          # use API_KEY='' if the server needs no key
 ```
@@ -492,8 +540,8 @@ make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
 Notes:
 
 - The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
-- With governance on, the `openai` provider type must be in the governance catalog (`charts/governance-policy/profiles/openai.yaml`, shipped with the chart).
-- Self-hosted models can be slow; the profile sets a 300-second inference timeout.
+- Governance must be on: the `custom-inference` profile reaches the gateway through the governance catalog. The installer refuses the apply, naming `overrides/governance-profiles`, until the profile is served.
+- Self-hosted models can be slow; the profile sets a 300-second inference timeout (`inference.timeoutSeconds`).
 
 Details: [docs/custom-inference.md](docs/custom-inference.md).
 
@@ -588,11 +636,13 @@ While APF is not running the gateways refuse write operations (fail closed). If 
 
 ### Self-service workspaces and sandbox web UIs
 
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 
 A sandbox's `harnessRef` in its SAW-BOM profile names a harness bundle: skills, MCP servers (`mcp.json`) and OpenClaw tool plugins (`.mjs`). The installer puts it, unchanged, into a volume the sandbox mounts read-only at `/sandbox/harness`, and points OpenClaw at it. Keys never go in a bundle: a server or plugin that calls a service gets its key through a provider attached to the sandbox. A bundle is either an OCI image built from `harness-bundles/` and published to GHCR by CI (`harnessRef: { image: ghcr.io/<owner>/saw-harness-<bundle>@sha256:… }`), or an inline bundle in the saw-bom chart (`harnessRef: { name: <bundle> }`). Details: [docs/harness-bundles.md](docs/harness-bundles.md).
+
+For an MCP server running inside OpenShift, see [In-cluster MCP Services](docs/harness-bundles.md#in-cluster-mcp-services) for network rules, governance, provider attachment, and BOM provider provisioning.
 
 ### Validating the deployment
 
@@ -632,6 +682,9 @@ make saw-vm-ssh
 # Local tests and all 13 Helm charts (no cluster needed)
 make lint
 make test
+
+# Tool-action gate tests (needs node; not part of CI)
+make test-tool-gate
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh

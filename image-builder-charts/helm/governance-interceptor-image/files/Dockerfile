@@ -26,19 +26,16 @@ RUN grep -q 'insert(PROFILE_HASH_ANNOTATION' src/main.rs \
     && grep -q 'PROFILE_SIGNATURE_KID_ANNOTATION.to_string()' src/main.rs \
     && perl -0pi -e 's/\n    profile\n        \.annotations\n        \.insert\(PROFILE_HASH_ANNOTATION\.to_string\(\), profile_hash\);\n    profile\.annotations\.insert\(\n        PROFILE_SIGNATURE_KID_ANNOTATION\.to_string\(\),\n        policy_signer\.kid\(\)\.to_string\(\),\n    \);\n/\n/' src/main.rs \
     && ! grep -q 'insert(PROFILE_HASH_ANNOTATION' src/main.rs
-# Harness driver-config guard. allow_driver_config is a
-# fleet-wide switch, and OpenShell's resource admission never inspects who sent
-# a driver_config envelope or what mount mode it asks for
-# (crates/openshell-core/src/resource_admission.rs). The interceptor sees both,
-# so only an mTLS platform admin may mount one read-only saw-harness volume
-# at /sandbox/harness. Template-based creates are refused because
-# workload_template resolves after the seam and template RPCs are not interceptable.
+# Agent driver-config guard. Every agent needs read-only gate and append-only audit
+# mounts; an OpenClaw harness adds a third read-only mount. Only the installer
+# mTLS admin can request these exact combinations. Templates are refused before
+# resolution because their effective driver config cannot be inspected here.
 RUN grep -q 'Ok(validate_create_sandbox(' src/main.rs \
     && perl -0pi -e 's#            \("CreateSandbox", interceptor_evaluation::Phase::Validate\(_\)\) => \{\n                Ok\(validate_create_sandbox\(#            ("CreateSandbox", interceptor_evaluation::Phase::Validate(_)) => {\n                let gate = validate_sandbox_driver_config(&operation, &evaluation.principal);\n                if !gate.allowed {\n                    return Ok(gate);\n                }\n                Ok(validate_create_sandbox(#' src/main.rs \
     && grep -q 'let gate = validate_sandbox_driver_config(' src/main.rs
 RUN printf '%s\n' \
 '' \
-'const HARNESS_ADMIN_ROLE: &str = "openshell-admin";' \
+'const SAW_ADMIN_ROLE: &str = "openshell-admin";' \
 'fn validate_sandbox_driver_config(operation: &Value, principal: &HashMap<String, String>) -> InterceptorResult {' \
 '    if operation.get("workloadTemplate").or_else(|| operation.get("workload_template"))' \
 '        .and_then(Value::as_str).is_some_and(|name| !name.is_empty()) {' \
@@ -48,7 +45,16 @@ RUN printf '%s\n' \
 '        .or_else(|| operation.pointer("/spec/template/driver_config")), principal)' \
 '}' \
 '' \
-'/// Admit only the installer identity and its single read-only harness volume.' \
+'fn valid_volume(mount: &Value, prefix: &str, target: &str, read_only: bool) -> bool {' \
+'    let Some(fields) = mount.as_object() else { return false; };' \
+'    fields.len() == 4' \
+'        && fields.get("type").and_then(Value::as_str) == Some("volume")' \
+'        && fields.get("source").and_then(Value::as_str)' \
+'            .is_some_and(|source| source.starts_with(prefix) && source.len() > prefix.len())' \
+'        && fields.get("target").and_then(Value::as_str) == Some(target)' \
+'        && fields.get("read_only") == Some(&Value::Bool(read_only))' \
+'}' \
+'' \
 'fn validate_driver_config(' \
 '    driver_config: Option<&Value>,' \
 '    principal: &HashMap<String, String>,' \
@@ -61,13 +67,13 @@ RUN printf '%s\n' \
 '    let is_admin = principal.get("kind").map(String::as_str) == Some("user")' \
 '        && principal.get("provider").map(String::as_str) == Some("mtls")' \
 '        && principal.get("roles").is_some_and(|roles| {' \
-'            roles.split(",").any(|role| role.trim() == HARNESS_ADMIN_ROLE)' \
+'            roles.split(",").any(|role| role.trim() == SAW_ADMIN_ROLE)' \
 '        });' \
 '    if !is_admin {' \
 '        return deny("driver config may only be submitted by a platform admin mTLS identity");' \
 '    }' \
 '    let Some(podman) = drivers.get("podman").and_then(Value::as_object) else {' \
-'        return deny("driver config must contain only podman harness mounts");' \
+'        return deny("driver config must contain only podman agent mounts");' \
 '    };' \
 '    if drivers.len() != 1 || podman.len() != 1 {' \
 '        return deny("driver config contains unsupported drivers or options");' \
@@ -75,26 +81,22 @@ RUN printf '%s\n' \
 '    let Some(mounts) = podman.get("mounts").and_then(Value::as_array) else {' \
 '        return deny("driver config mounts must be an array");' \
 '    };' \
-'    if mounts.len() != 1 {' \
-'        return deny("driver config must contain exactly one harness mount");' \
-'    }' \
-'    let Some(mount) = mounts[0].as_object() else {' \
-'        return deny("driver config mount must be an object");' \
+'    let valid = match mounts.as_slice() {' \
+'        [gate, audit] => valid_volume(gate, "saw-gate-", "/sandbox/.saw/trusted", true)' \
+'            && valid_volume(audit, "saw-audit-", "/sandbox/.saw/audit", false),' \
+'        [harness, gate, audit] => valid_volume(harness, "saw-harness-", "/sandbox/harness", true)' \
+'            && valid_volume(gate, "saw-gate-", "/sandbox/.saw/trusted", true)' \
+'            && valid_volume(audit, "saw-audit-", "/sandbox/.saw/audit", false),' \
+'        _ => false,' \
 '    };' \
-'    let valid_source = mount.get("source").and_then(Value::as_str)' \
-'        .is_some_and(|source| source.starts_with("saw-harness-") && source.len() > "saw-harness-".len());' \
-'    if mount.len() != 4' \
-'        || mount.get("type").and_then(Value::as_str) != Some("volume")' \
-'        || !valid_source' \
-'        || mount.get("target").and_then(Value::as_str) != Some("/sandbox/harness")' \
-'        || mount.get("read_only") != Some(&Value::Bool(true))' \
-'    {' \
-'        return deny("driver config must be a read-only saw-harness volume at /sandbox/harness");' \
+'    if !valid {' \
+'        return deny("driver config must contain gate and audit volumes, with an optional read-only harness");' \
 '    }' \
 '    allow()' \
 '}' \
+'' \
 '#[cfg(test)]' \
-'mod harness_driver_tests {' \
+'mod agent_driver_tests {' \
 '    use super::*;' \
 '    use serde_json::json;' \
 '' \
@@ -102,9 +104,20 @@ RUN printf '%s\n' \
 '        HashMap::from([("kind".into(), "user".into()), ("provider".into(), "mtls".into()),' \
 '            ("roles".into(), "viewer, openshell-admin".into())])' \
 '    }' \
-'    fn mount() -> Value {' \
-'        json!({"podman":{"mounts":[{"type":"volume", "source":"saw-harness-default-notebook-12345678",' \
-'            "target":"/sandbox/harness", "read_only":true}]}})' \
+'    fn gate_and_audit() -> Value {' \
+'        json!({"podman":{"mounts":[' \
+'            {"type":"volume", "source":"saw-gate-default-notebook-12345678",' \
+'             "target":"/sandbox/.saw/trusted", "read_only":true},' \
+'            {"type":"volume", "source":"saw-audit-default-notebook-12345678",' \
+'             "target":"/sandbox/.saw/audit", "read_only":false}' \
+'        ]}})' \
+'    }' \
+'    fn with_harness() -> Value {' \
+'        let mut config = gate_and_audit();' \
+'        config["podman"]["mounts"].as_array_mut().unwrap().insert(0,' \
+'            json!({"type":"volume", "source":"saw-harness-default-notebook-12345678",' \
+'                   "target":"/sandbox/harness", "read_only":true}));' \
+'        config' \
 '    }' \
 '    #[test]' \
 '    fn rejects_unresolved_workload_templates() {' \
@@ -112,20 +125,20 @@ RUN printf '%s\n' \
 '            let mut operation = json!({});' \
 '            operation[key] = json!("stored-template");' \
 '            assert!(!validate_sandbox_driver_config(&operation, &admin()).allowed);' \
-'            assert!(!validate_sandbox_driver_config(&operation, &HashMap::new()).allowed);' \
 '            operation[key] = json!("");' \
 '            assert!(validate_sandbox_driver_config(&operation, &HashMap::new()).allowed);' \
 '        }' \
 '        for key in ["driverConfig", "driver_config"] {' \
 '            let mut operation = json!({"spec":{"template":{}}});' \
-'            operation["spec"]["template"][key] = mount();' \
+'            operation["spec"]["template"][key] = with_harness();' \
 '            assert!(validate_sandbox_driver_config(&operation, &admin()).allowed);' \
 '            assert!(!validate_sandbox_driver_config(&operation, &HashMap::new()).allowed);' \
 '        }' \
 '    }' \
 '    #[test]' \
-'    fn accepts_installer_and_absent_or_empty_config() {' \
-'        assert!(validate_driver_config(Some(&mount()), &admin()).allowed);' \
+'    fn accepts_exact_installer_combinations_and_empty_config() {' \
+'        assert!(validate_driver_config(Some(&gate_and_audit()), &admin()).allowed);' \
+'        assert!(validate_driver_config(Some(&with_harness()), &admin()).allowed);' \
 '        assert!(validate_driver_config(None, &HashMap::new()).allowed);' \
 '        assert!(validate_driver_config(Some(&json!({})), &HashMap::new()).allowed);' \
 '    }' \
@@ -133,42 +146,52 @@ RUN printf '%s\n' \
 '    fn rejects_oidc_admin_and_nonadmin_mtls() {' \
 '        let mut principal = admin();' \
 '        principal.insert("provider".into(), "oidc".into());' \
-'        assert!(!validate_driver_config(Some(&mount()), &principal).allowed);' \
+'        assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);' \
 '        principal = admin();' \
 '        principal.insert("roles".into(), "viewer".into());' \
-'        assert!(!validate_driver_config(Some(&mount()), &principal).allowed);' \
+'        assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);' \
 '        principal = admin();' \
 '        principal.insert("kind".into(), "service".into());' \
-'        assert!(!validate_driver_config(Some(&mount()), &principal).allowed);' \
+'        assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);' \
 '    }' \
 '    #[test]' \
-'    fn rejects_bind_wrong_source_target_and_mode() {' \
-'        for (key, value) in [("type", json!("bind")), ("source", json!("other")),' \
-'            ("source", json!("saw-harness-")), ("source", json!("")),' \
-'            ("target", json!("/other")), ("read_only", json!(false)), ("read_only", json!("true"))] {' \
-'            let mut config = mount();' \
-'            config["podman"]["mounts"][0][key] = value;' \
-'            assert!(!validate_driver_config(Some(&config), &admin()).allowed, "accepted {config}");' \
+'    fn rejects_wrong_source_target_type_and_mode() {' \
+'        for index in 0..2 {' \
+'            for (key, value) in [("type", json!("bind")), ("source", json!("other")),' \
+'                ("source", json!("saw-gate-")), ("target", json!("/other")),' \
+'                ("read_only", json!("wrong"))] {' \
+'                let mut config = gate_and_audit();' \
+'                config["podman"]["mounts"][index][key] = value;' \
+'                assert!(!validate_driver_config(Some(&config), &admin()).allowed, "accepted {config}");' \
+'            }' \
 '        }' \
-'        let mut config = mount();' \
-'        config["podman"]["mounts"][0].as_object_mut().unwrap().remove("read_only");' \
+'        let mut config = gate_and_audit();' \
+'        config["podman"]["mounts"][0]["read_only"] = json!(false);' \
+'        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
+'        config = gate_and_audit();' \
+'        config["podman"]["mounts"][1]["read_only"] = json!(true);' \
 '        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
 '    }' \
 '    #[test]' \
-'    fn rejects_other_drivers_options_and_extra_mounts() {' \
+'    fn rejects_other_drivers_options_and_mount_combinations() {' \
 '        for config in [json!({"docker":{"mounts":[]}}), json!({"podman":{"mounts":[]}}),' \
 '            json!({"podman":{}}), json!({"podman":{"privileged":true}})] {' \
 '            assert!(!validate_driver_config(Some(&config), &admin()).allowed, "accepted {config}");' \
 '        }' \
-'        let mut config = mount();' \
+'        let mut config = gate_and_audit();' \
 '        config["podman"]["privileged"] = json!(true);' \
 '        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
-'        config = mount();' \
+'        config = gate_and_audit();' \
 '        config["podman"]["mounts"][0]["options"] = json!(["rw"]);' \
 '        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
-'        config = mount();' \
-'        let duplicate = config["podman"]["mounts"][0].clone();' \
-'        config["podman"]["mounts"].as_array_mut().unwrap().push(duplicate);' \
+'        config = gate_and_audit();' \
+'        config["podman"]["mounts"].as_array_mut().unwrap().swap(0, 1);' \
+'        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
+'        config = gate_and_audit();' \
+'        config["podman"]["mounts"].as_array_mut().unwrap().pop();' \
+'        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
+'        config = with_harness();' \
+'        config["podman"]["mounts"].as_array_mut().unwrap().push(json!(null));' \
 '        assert!(!validate_driver_config(Some(&config), &admin()).allowed);' \
 '    }' \
 '    #[test]' \
@@ -181,7 +204,7 @@ RUN printf '%s\n' \
 '    }' \
 '}' \
 >> src/main.rs
-RUN cargo test --locked --release --target-dir /out harness_driver_tests \
+RUN cargo test --locked --release --target-dir /out agent_driver_tests \
     && cargo build --locked --release --target-dir /out
 
 FROM debian:bookworm-slim AS debian-runtime

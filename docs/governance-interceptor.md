@@ -190,6 +190,26 @@ The interceptor must be built from the same OpenShell release as the gateways (0
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 
+## Tool actions
+
+The interceptor above does not see a tool call. OpenShell 0.1.2 only forwards allowlisted control-plane RPCs (`CreateSandbox`, `CreateProvider`, `UpdateConfig`, `SubmitPolicyAnalysis`), and its timeout is too short for a person to approve something. Agent tool calls run inside the sandbox.
+
+`charts/governance-policy/tool-actions.yaml` is the tool policy (`allow`, `deny`, or `approval` per tool; `whenCommandMatches` narrows `exec`). The installer disk carries an identical copy. `saw-apply` fills a `saw-gate-*` podman volume on the host with this policy, the signed-in identity (`username` from `accessControl.owner`, `subject` from the resolved `ownerSubject`), and the plugin tree. Every OpenClaw and NemoClaw sandbox mounts it read-only at `/sandbox/.saw/trusted`. A generic toolbox sandbox gets no gate.
+
+OpenClaw loads `saw-tool-gate` from `/sandbox/.saw/trusted/plugin` through `plugins.load.paths`. The installer appends it to a restrictive `plugins.allow`, enables it, and verifies that OpenClaw reports it loaded from the trusted mount. Each policy read is hashed against a SHA-256 constant embedded in the mounted plugin. A mismatch denies the call with rule `policy-hash`.
+
+- The default action is `deny`. The explicit read-only allowlist covers `read`, memory reads, session inspection, and `exec` for `git status`, `git diff`, `git log`, and `git show`. `message`, `git push`, `gh pr merge`, `rm`, `kubectl delete`, and `oc delete` require approval. Unknown tools deny.
+- `exec` matches the command at its start after normalizing whitespace, leading assignments, and the executable basename. Empty commands deny as `exec-unreadable`; shell operators and opaque wrappers such as `sh -c` deny as `exec-opaque`.
+- Every call appends one JSON line to `/sandbox/.saw/audit/tool-actions.jsonl`, a separate `saw-audit-*` volume. The directory is not writable by the sandbox user, and the log file is append-only (`chattr +a`). The same line goes to gateway stderr for `podman logs`. Each line includes the user, OpenClaw session task id, `policyHash`, rule, and decision. An optional `/sandbox/.saw/current-task.json` `title` is copied onto that record.
+- `allow` runs the tool after the audit append succeeds.
+- `deny` blocks it.
+- `approval` pauses the tool (`requireApproval`) until the signed-in user approves in the session. Timeout and cancel are recorded as rejected and the tool does not run.
+- A missing policy, either missing identity field, a missing session, or a failed audit append blocks the call. Missing owner or subject also fails the installer apply before the OpenClaw gateway starts.
+
+The mounted plugin and policy are read-only to the agent. The installer recreates an existing agent sandbox missing its gate or audit mount; OpenShell deletes that sandbox's `/sandbox` volume during recreation, so preserve needed files before applying. The writable `openclaw.json` can still be changed between applies; the next apply checks the loaded plugin again. This is not a cluster OCSF pipeline.
+
+The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs` and `tests/installer/test_tool_gate.py`. They run in `make test` and installer CI (Node on `PATH`); `make test-tool-gate` runs them alone.
+
 ## Audit Trail
 
 Every interceptor decision is logged by the gateway:

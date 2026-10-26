@@ -216,6 +216,8 @@ elif cmd == "volume":
         labels_file.write_text(json.dumps(all_labels))
 elif cmd == "unshare":
     # No user namespace in tests: run the command as is.
+    if args[1] == "chown":
+        sys.exit(0)  # The fake volume is already accessible to the test user.
     sys.exit(subprocess.run(args[1:]).returncode)
 elif cmd == "rmi":
     image = args[-1]

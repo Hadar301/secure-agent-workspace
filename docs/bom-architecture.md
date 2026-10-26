@@ -1,5 +1,7 @@
 # BOM-Driven Agent Configuration — Architecture
 
+This page is the visual overview of how a SAW is assembled from its versioned Bill of Materials. For the installer mechanics, signing and live-input reconcile, see [Versioned BOM installer](versioned-bom-installer.md); for the container-runtime choice (rootless **podman** by default, Docker as an optional legacy variant), see [Container runtime](container-runtime.md).
+
 ## End-to-End Flow
 
 ```
@@ -109,6 +111,8 @@ in [Versioned BOM installer](versioned-bom-installer.md).
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+> **Container runtime:** the default is rootless **podman**; Docker is an optional legacy variant selected with `containerRuntime: docker`. The *Docker Containers* box above applies to either runtime — see [Container runtime](container-runtime.md).
+
 The `openshell-saw-dashboard` Route maps to VM port 18789, the OpenClaw UI, which is not reachable on OpenShell 0.1.x (see [OpenClaw UI and the dashboard Route](deployment-guide.md#openclaw-ui-and-the-dashboard-route)). The `openshell-saw-webui` Route maps to VM port 8080, the oauth2-proxy in front of the OpenShell Dashboard.
 
 ## BOM Profile Structure
@@ -142,7 +146,7 @@ User → OpenClaw TUI/GUI
          ▼
   OpenClaw Gateway (inside sandbox, port 18789)
          │
-         │ model: nvidia/nemotron-3-super-120b-a12b
+         │ model: nvidia/nemotron-3.5-lightning-30b-a3b
          │ baseUrl: https://integrate.api.nvidia.com/v1 (the provider's own endpoint)
          │ key: the placeholder in NVIDIA_API_KEY
          │

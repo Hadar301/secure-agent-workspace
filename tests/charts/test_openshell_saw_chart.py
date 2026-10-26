@@ -380,17 +380,16 @@ def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     assert "OPENSHELL_DRIVERS" not in env
 
 
-def test_driver_config_is_off_by_default(default_docs):
-    """Any signed-in user can attach a labelled volume to a sandbox once this
-    is on, so it defaults off; a profile with a harnessRef must opt in."""
+def test_driver_config_is_on_for_agent_gate_mounts(default_docs):
+    """Every agent sandbox needs the trusted gate and audit volume mounts."""
     _, toml = gateway_files(default_docs)
-    assert "allow_driver_config" not in toml["openshell"]["drivers"]["podman"]
+    assert toml["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
-def test_gateway_allows_caller_driver_config_for_harness_mounts():
+def test_gateway_allows_caller_driver_config_for_agent_mounts():
     """0.1.x refuses --driver-config-json unless allow_driver_config is set;
     resource admission and the bind-mount switch keep their safe defaults."""
-    _, toml = gateway_files(render("--set", "allowDriverConfig=true"))
+    _, toml = gateway_files(render())
     podman = toml["openshell"]["drivers"]["podman"]
     assert podman["allow_driver_config"] is True
     assert "resource_admission" not in podman
@@ -482,6 +481,7 @@ DEFAULT_EGRESS_HOSTS = [
     "integrate.api.nvidia.com",
     "api.search.brave.com",
     "api.openai.com",
+    "api.anthropic.com",
     "api.tavily.com",
     "registry.npmjs.org",
     "github.com",
@@ -1007,12 +1007,40 @@ def test_every_profile_names_its_binaries():
             assert doc.get("binaries"), path.name
 
 
+def test_tool_actions_copy_matches_governance_policy():
+    """The installer cannot read another chart, so the consequential-tool
+    list is copied. The two files are the same policy."""
+    gov = ROOT / "charts" / "governance-policy" / "tool-actions.yaml"
+    copy = CHART / "files" / "installer" / "tool-actions.yaml"
+    assert copy.read_text() == gov.read_text()
+    assert yaml.safe_load(gov.read_text())["defaultAction"] == "deny"
+
+
+def test_installer_disk_ships_the_tool_gate(default_docs):
+    data = installer_data(default_docs)
+    assert data["tool-actions.yaml"] == (CHART / "files" / "installer" / "tool-actions.yaml").read_text()
+    assert "before_tool_call" in data["tool-gate-plugin.mjs"]
+    assert "parsePolicy" in data["tool-gate.mjs"]
+
+
+def test_governance_policy_configmap_ships_tool_actions():
+    result = helm_template(ROOT / "charts" / "governance-policy",
+                           release="governance-policy", namespace="openshell-agents")
+    assert result.returncode == 0, result.stderr
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    policy = next(d for d in docs if d["metadata"]["name"] == "governance-interceptor-policy")
+    assert policy["data"]["tool-actions.yaml"] == (
+        ROOT / "charts" / "governance-policy" / "tool-actions.yaml").read_text()
+    assert "policy.yaml" in policy["data"]
+
+
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     data = installer_data(default_docs)
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
+    shipped = {p.stem for p in (ROOT / "charts/governance-policy/profiles").glob("*.yaml")}
+    assert set(ab.provider_profiles(tmp_path)) == shipped
 
 
 def test_create_script_passes_the_keycloak_it_finds():
@@ -1029,10 +1057,12 @@ def test_secret_template_matches_the_default_profile():
     for f in (ROOT / "charts/saw-bom/profiles/data-science").glob("*/providers.yaml"):
         providers += yaml.safe_load(f.read_text())["spec"]["providers"]
     for p in providers:
+        if not p.get("enabled", True):
+            continue
         fields = secrets[p["credentialSecret"]]
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
-        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+        assert configured in (p["type"], {"nvidia": "build"}.get(p["type"])), (p["name"], configured)
 
 
 def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
@@ -1052,7 +1082,7 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     for key, value in cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "openai", "model": "m",
+    for secret, data in {"inference": {"api_key": "k1", "provider": "custom-inference", "model": "m",
                                        "url": "https://vllm.models.svc:8443/v1"},
                          "web-search": {"api_key": "k2"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
@@ -1349,3 +1379,11 @@ def test_egress_allows_an_outside_registry_only_for_pod_pulls():
         assert len(allowed) == len(set(allowed)), url
         assert not [r for r in rules if r["to"].get("dnsName") in
                     ("image-registry.openshift-image-registry.svc", "fedora")], url
+
+
+def test_the_vm_runs_on_arm64_too(default_docs):
+    """UEFI without Secure Boot, and no smm: smm is x86-only (only needed for
+    Secure Boot), and KubeVirt on arm64 refuses it."""
+    domain = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["domain"]
+    assert domain["firmware"]["bootloader"]["efi"]["secureBoot"] is False
+    assert "smm" not in domain["features"]

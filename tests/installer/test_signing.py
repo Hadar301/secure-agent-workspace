@@ -9,6 +9,53 @@ import sys
 
 import pytest
 
+IDENTITY_FILES = ("identity.py", "saw_spire.pp.b64")
+TOOL_GATE_FILES = ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
+BUNDLE_FILES = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
+                *IDENTITY_FILES, *TOOL_GATE_FILES)
+
+
+def _write_bundle_files(directory):
+    for name in BUNDLE_FILES:
+        (directory / name).write_text(name + "\n")
+
+
+def test_manifest_requires_every_tool_gate_file():
+    import importlib.util
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts/build-installer-manifest.py"
+    spec = importlib.util.spec_from_file_location("installer_manifest", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = {name: name + "\n" for name in BUNDLE_FILES}
+    assert len(module.build_manifest(data).splitlines()) == len(BUNDLE_FILES)
+    for name in TOOL_GATE_FILES:
+        with pytest.raises(SystemExit, match=name):
+            module.build_manifest({k: v for k, v in data.items() if k != name})
+    without_identity = {k: v for k, v in data.items() if k not in IDENTITY_FILES}
+    assert len(module.build_manifest(without_identity).splitlines()) == len(BUNDLE_FILES) - len(IDENTITY_FILES)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
+@pytest.mark.parametrize("mode", ["off", "warn", "enforce"])
+def test_verify_bundle_rejects_a_missing_tool_gate_file(tmp_path, mode):
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "charts/openshell-saw/files/guest/verify-bundle"
+    installer = tmp_path / "installer"
+    installer.mkdir()
+    _write_bundle_files(installer)
+    (installer / "tool-gate-plugin.mjs").unlink()
+    (installer / "config.json").write_text(json.dumps({"signing": {"mode": mode}}))
+    status = tmp_path / "status.json"
+    env = {**os.environ, "SAW_INSTALLER_DIR": str(installer), "SAW_STATUS_FILE": str(status),
+           "SAW_STAGE_ROOT": str(tmp_path / "verified"),
+           "SAW_SIGNING_FLOOR_FILE": str(tmp_path / "no-floor")}
+    result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "missing one of its covered files" in result.stderr
+    assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
+    assert not (tmp_path / "verified" / "installer").exists()
+
 
 def _installer(ab, tmp_path, mode):
     shell = ab.Shell()
@@ -160,8 +207,7 @@ def test_verify_bundle_floor_overrides_config_json_off(tmp_path):
     script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
     installer = tmp_path / "installer"
     installer.mkdir()
-    for name in ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"):
-        (installer / name).write_text(name + "\n")
+    _write_bundle_files(installer)
     (installer / "config.json").write_text(json.dumps({"signing": {"mode": "off"}}))
     floor = tmp_path / "signing-mode"
     floor.write_text("enforce\n")
@@ -184,8 +230,7 @@ def test_verify_bundle_without_a_floor_file_respects_config_json(tmp_path):
     script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
     installer = tmp_path / "installer"
     installer.mkdir()
-    for name in ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"):
-        (installer / name).write_text(name + "\n")
+    _write_bundle_files(installer)
     (installer / "config.json").write_text(json.dumps({"signing": {"mode": "off"}}))
     status = tmp_path / "status.json"
     env = {**os.environ, "SAW_INSTALLER_DIR": str(installer), "SAW_TRUST_DIR": str(tmp_path / "trust"),
@@ -274,8 +319,7 @@ def test_verify_bundle_warn_allows_unsigned_and_enforce_stops(tmp_path):
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     installer = tmp_path / "installer"
     installer.mkdir()
-    for name in ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"):
-        (installer / name).write_text(name + "\n")
+    _write_bundle_files(installer)
     status = tmp_path / "status.json"
     staged = tmp_path / "verified" / "installer"
     env = {**os.environ, "SAW_INSTALLER_DIR": str(installer), "SAW_TRUST_DIR": str(tmp_path / "trust"),
@@ -325,6 +369,7 @@ def test_identity_inputs_are_covered_by_signed_manifest():
         "setup-dashboard.sh": "dashboard", "identity.py": "identity",
         "saw_spire.pp.b64": "policy",
     }
+    data.update({name: name for name in TOOL_GATE_FILES})
     manifest = module.build_manifest(data)
     assert "  identity.py\n" in manifest
     assert "  saw_spire.pp.b64\n" in manifest
@@ -341,10 +386,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path, edited):
     script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
     installer = tmp_path / "installer"
     installer.mkdir()
-    covered = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
-               "identity.py", "saw_spire.pp.b64")
-    for name in covered:
-        (installer / name).write_text(name + "\n")
+    _write_bundle_files(installer)
     trust = tmp_path / "trust"
     trust.mkdir()
     key = trust / "test.key"
@@ -353,7 +395,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path, edited):
                     "-out", str(key)], check=True, capture_output=True)
     subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
     payload = tmp_path / "payload"
-    payload.write_text(_manifest_text(installer, covered))
+    payload.write_text(_manifest_text(installer, BUNDLE_FILES))
     bundle = installer / "bundle.sigstore.json"
     subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key), "-out", str(bundle), str(payload)],
                    check=True, capture_output=True)
@@ -421,6 +463,8 @@ def test_a_byte_shifted_between_files_is_rejected(tmp_path):
     (installer / "installer-bom.yaml").write_text("AAAA")
     (installer / "apply_bom.py").write_text("BBBB")
     (installer / "setup-dashboard.sh").write_text("CCCC")
+    for name in BUNDLE_FILES[3:]:
+        (installer / name).write_text(name + "\n")
     trust = tmp_path / "trust"
     trust.mkdir()
     key, pub = trust / "test.key", trust / "test.pub"
@@ -429,7 +473,7 @@ def test_a_byte_shifted_between_files_is_rejected(tmp_path):
     subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)],
                    check=True, capture_output=True)
     payload = tmp_path / "payload"
-    payload.write_text(_manifest_text(installer, ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh")))
+    payload.write_text(_manifest_text(installer, BUNDLE_FILES))
     bundle = installer / "bundle.sigstore.json"
     subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key), "-out", str(bundle), str(payload)],
                    check=True, capture_output=True)

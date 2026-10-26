@@ -94,6 +94,12 @@ clusterGroup:
       overrides:
         - name: ownerResolution.enabled
           value: "true"
+        # clustergroup 0.9 formats booleans in extraParametersNested with %s,
+        # producing "%!s(bool=false)". Its final overrides use tpl/toString:
+        # forward the typed global value here so the install knob survives.
+        - name: global.webSearch.enabled
+          value: '{{ .Values.global.webSearch.enabled }}'
+          forceString: true
       syncPolicy:
         automated:
           prune: true
@@ -111,6 +117,19 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+    # Provider profiles this deployment adds to the shipped catalog, from
+    # plain profile files in overrides/governance-profiles (kustomize
+    # ConfigMap generator); the interceptor mounts the result next to the
+    # shipped profiles. See that directory's kustomization.yaml.
+    governance-extra-profiles:
+      name: governance-extra-profiles
+      namespace: openshell-agents
+      path: overrides/governance-profiles
+      kustomize: true
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
     # prune: switching global.governance.engine removes the interceptor's
     # Deployment and Service (APF takes over the Service name) and back.
     governance-interceptor:

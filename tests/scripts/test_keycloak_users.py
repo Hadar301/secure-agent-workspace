@@ -297,6 +297,17 @@ def test_password_reports_secret_location_without_value(tmp_path, keycloak):
     assert missing.returncode != 0 and "keycloak-reset-password KC_USER=nobody" in missing.stderr
 
 
+def test_password_prints_the_value_only_with_show(tmp_path, keycloak):
+    run(tmp_path, "ensure")
+    run(tmp_path, "add-users", write_users(tmp_path, [{"name": "carol"}]))
+    shown = run(tmp_path, "password", "--show", "carol")
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.strip() == added(tmp_path)["carol"]
+    default = run(tmp_path, "password", "carol")
+    assert added(tmp_path)["carol"] not in default.stdout
+    assert "Secret openshell-keycloak-users" in default.stdout
+
+
 def test_reset_password_sets_and_keeps_a_new_one_without_output(tmp_path, keycloak):
     run(tmp_path, "ensure")
     run(tmp_path, "add-users", write_users(tmp_path, [{"name": "carol"}, {"name": "dave"}]))

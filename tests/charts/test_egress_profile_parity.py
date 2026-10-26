@@ -93,14 +93,18 @@ def test_allowlist_has_no_unexplained_reverse_drift():
         "document why they are needed in ALLOW_EXCEPTIONS: " + ", ".join(sorted(unexplained)))
 
 
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_COPIES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
-    for path in copies:
-        twin = PROFILES / path.name
-        assert path.read_text() == twin.read_text(), (
-            f"copy charts/governance-policy/profiles/{path.name} to "
-            f"charts/openshell-saw/files/provider-profiles/{path.name}")
+def test_installer_profile_copies_mirror_governance_policy():
+    """The installer ships every governance profile (the gateway's catalog
+    with governance off), as exact copies kept by scripts/saw-profile-catalog.py
+    (`make catalog`; the pre-commit hook and the Profile catalog workflow run
+    it). A hand-maintained subset left github and web-search out (found in
+    review)."""
+    copies = {p.name: p.read_text() for p in SAW_COPIES.glob("*.yaml")}
+    shipped = {p.name: p.read_text() for p in PROFILES.glob("*.yaml")}
+    assert set(copies) == set(shipped), "run `make catalog`"
+    for name, text in shipped.items():
+        assert copies[name] == text, f"run `make catalog` ({name} differs)"
+    assert not (SAW_COPIES / "examples").exists()
 
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
@@ -116,3 +120,72 @@ def test_profile_configmap_keys_match_files():
         "charts/governance-policy/templates/configmap.yaml must include exactly "
         f"charts/governance-policy/profiles/*.yaml: expected {sorted(expected)}, "
         f"got {sorted(config['data'])}")
+
+
+# --- a deployment's own profiles (overrides/governance-profiles) -------------
+
+EXTRA_DIR = ROOT / "overrides/governance-profiles"
+INTERCEPTOR_DEPLOYMENT = ROOT / "charts/governance-interceptor/templates/deployment.yaml"
+
+
+def extra_profiles():
+    """The profiles a deployment lists in its kustomization; upstream ships
+    the generator commented out (no profile is served until a deployment
+    names its host), so the shipped example file is checked on its own."""
+    kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text()) or {}
+    gens = kustomization.get("configMapGenerator") or []
+    files = []
+    for gen in gens:
+        assert gen["name"] == "governance-interceptor-extra-profiles"
+        files += gen.get("files") or []
+    files = files or [p.name for p in EXTRA_DIR.glob("*.yaml") if p.name != "kustomization.yaml"]
+    return {name: yaml.safe_load((EXTRA_DIR / name).read_text()) for name in files}
+
+
+def test_the_shipped_kustomization_serves_nothing_until_a_deployment_lists_a_profile():
+    text = (EXTRA_DIR / "kustomization.yaml").read_text()
+    assert (yaml.safe_load(text) or {}).get("configMapGenerator") is None
+    assert "# configMapGenerator:" in text and "custom-inference.yaml" in text
+
+
+def test_extra_profiles_are_complete_and_do_not_shadow_shipped_ones():
+    shipped = {p.stem for p in PROFILES.glob("*.yaml")}
+    for name, doc in extra_profiles().items():
+        assert doc["id"] == Path(name).stem, f"{name}: the file is named after its id"
+        assert doc["id"] not in shipped, f"{name}: a shipped profile has this id"
+        assert doc["endpoints"] and all(
+            {"host", "port", "protocol", "enforcement"} <= set(e) for e in doc["endpoints"]), name
+        assert all(c.get("env_vars") for c in doc["credentials"]), (
+            f"{name}: each credential needs env_vars (the installer passes the key through it)")
+
+
+def test_the_interceptor_mounts_the_extra_profiles_next_to_the_shipped_ones():
+    text = INTERCEPTOR_DEPLOYMENT.read_text()
+    assert "projected:" in text and "governance-interceptor-profiles" in text
+    assert "{{ .Values.extraProfilesConfigMap }}" in text and "optional: true" in text
+    values = yaml.safe_load((ROOT / "charts/governance-interceptor/values.yaml").read_text())
+    assert values["extraProfilesConfigMap"] == "governance-interceptor-extra-profiles"
+
+
+def test_the_pattern_deploys_the_extra_profiles_directory():
+    apps = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["applications"]
+    app = apps["governance-extra-profiles"]
+    assert app["path"] == "overrides/governance-profiles" and app["kustomize"] is True
+    assert app["namespace"] == "openshell-agents"
+
+
+EXAMPLES = PROFILES / "examples"
+
+
+def test_the_chart_example_profile_is_not_vended_but_is_what_overrides_copies():
+    example = yaml.safe_load((EXAMPLES / "custom-inference.yaml").read_text())
+    assert example["id"] == "custom-inference" and example["endpoints"][0]["host"]
+    # Not part of the shipped catalog: the template globs profiles/*.yaml only.
+    assert "examples" not in {p.parent.name for p in PROFILES.glob("*.yaml")}
+    template = (POLICY_CHART / "templates/configmap.yaml").read_text()
+    assert 'Files.Glob "profiles/*.yaml"' in template
+    # The deployment copy differs from the example only in where it points.
+    copy = yaml.safe_load((EXTRA_DIR / "custom-inference.yaml").read_text())
+    strip = lambda d: {k: v for k, v in d.items() if k != "endpoints"}
+    assert strip(copy) == strip(example)
+    assert [sorted(e) for e in copy["endpoints"]] == [sorted(e) for e in example["endpoints"]]

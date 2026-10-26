@@ -1,6 +1,9 @@
 # Shared namespace: golden image, image builds, governance interceptor.
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
+# NemoClaw sandbox architecture. Empty detects one architecture among
+# schedulable nodes; set amd64/arm64 explicitly on mixed-architecture clusters.
+BUILD_ARCH     ?=
 # Only an explicit destination opts manual builds into publishing.
 ifeq ($(origin PUSH_IMAGE_REPO),undefined)
 PUSH_IMAGE_REPO := $(IMAGE_REPO)
@@ -70,20 +73,32 @@ export SAW_NS SAW_CHART SAW_VALUES_FILE DYNAMIC_PROVIDERS SAW_VALUES SAW_BOM_VAL
 export KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
-# Pattern install: `./pattern.sh make install GOVERNANCE_ENGINE=apf` selects the
-# governance engine for this cluster without editing values-global.yaml. It
-# becomes a Pattern extraParameter (global.governance.engine), which the
-# operator passes to every application and which overrides values-global.yaml.
-# Only an explicit GOVERNANCE_ENGINE does this; otherwise values-global.yaml
-# decides. Run make install again with the other engine to switch back.
+# Explicit install knobs override values-global.yaml through Pattern
+# extraParameters. Without them, values-global.yaml decides.
+SAW_INSTALL_PARAMETERS :=
 ifneq ($(findstring $(origin GOVERNANCE_ENGINE),command line environment),)
 ifeq ($(filter interceptor apf,$(GOVERNANCE_ENGINE)),)
 $(error GOVERNANCE_ENGINE must be interceptor or apf, not "$(GOVERNANCE_ENGINE)")
 endif
-export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) --set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=$(GOVERNANCE_ENGINE)
+SAW_INSTALL_PARAMETERS += global.governance.engine=$(GOVERNANCE_ENGINE)
+endif
+ifneq ($(findstring $(origin WEB_SEARCH_ENABLED),command line environment),)
+ifneq ($(WEB_SEARCH_ENABLED),true)
+ifneq ($(WEB_SEARCH_ENABLED),false)
+$(error WEB_SEARCH_ENABLED must be true or false, not "$(WEB_SEARCH_ENABLED)")
+endif
+endif
+SAW_INSTALL_PARAMETERS += global.webSearch.enabled=$(WEB_SEARCH_ENABLED)
+endif
+# Pair each name=value with a contiguous index; neither knob reserves a slot.
+# --set-string keeps false a string in the Pattern CR's extraParameter value.
+saw_install_parameter = --set main.extraParameters[$(word 1,$(subst =, ,$(1)))].name=$(word 2,$(subst =, ,$(1))) --set-string main.extraParameters[$(word 1,$(subst =, ,$(1)))].value=$(word 3,$(subst =, ,$(1)))
+ifneq ($(strip $(SAW_INSTALL_PARAMETERS)),)
+SAW_INSTALL_PARAMETER_INDICES := $(wordlist 1,$(words $(SAW_INSTALL_PARAMETERS)),0 1)
+export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) $(foreach p,$(join $(addsuffix =,$(SAW_INSTALL_PARAMETER_INDICES)),$(SAW_INSTALL_PARAMETERS)),$(call saw_install_parameter,$(p)))
 endif
 
-.PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
+.PHONY: prereqs-check quickstart-prereqs-check storage-class-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
         gateway-build gateway-build-docker gateway-build-podman images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
@@ -105,6 +120,9 @@ prereqs-check: .check-prereqs ## Check tools and cluster capacity before Pattern
 
 quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickstart
 	@PREREQS_MODE=quickstart $(SCRIPTS_DIR)/prereqs-check.sh
+
+storage-class-check: ## Ensure a default StorageClass exists for the VM disks (offers to reuse one or enable HPP)
+	@$(SCRIPTS_DIR)/storage-class-check.sh
 
 check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
 	@$(SCRIPTS_DIR)/check-oidc-ca.sh
@@ -134,8 +152,14 @@ sandbox-build: .check-image-repo ## Build audited discovery artifacts, then the 
 	if ! printf '%s\n' "$$digest" | grep -Eq '^sha256:[0-9a-f]{64}$$'; then \
 		echo "Error: discovery build $$discovery_build has no valid output digest." >&2; exit 1; fi; \
 	discovery_image="image-registry.openshift-image-registry.svc:5000/$(BUILD_NS)/nemoclaw-discovery-runtime@$$digest"; \
+	build_arch="$(BUILD_ARCH)"; \
+	if [ -z "$$build_arch" ]; then \
+		build_arch=$$(oc get nodes -o json | jq -r '[.items[] | select(.spec.unschedulable != true) | .status.nodeInfo.architecture] | unique | if length == 1 then .[0] else "" end'); \
+	fi; \
+	case "$$build_arch" in amd64|arm64) ;; *) echo "Error: set BUILD_ARCH=amd64 or arm64 for the sandbox build." >&2; exit 1 ;; esac; \
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace "$(BUILD_NS)" --set-string "source.discoveryImage=$$discovery_image" \
+		--set-string "build.targetArch=$$build_arch" \
 		$(if $(filter 1,$(OTEL)),--set build.otelEnabled=1)
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
@@ -291,9 +315,9 @@ KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCL
 keycloak-add-users: ## Create missing Keycloak users and store passwords in a Secret (USERS_FILE=...)
 	@$(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
 
-keycloak-password: ## Show the Secret location for one user (KC_USER=alice)
+keycloak-password: ## Copy a user's password to the clipboard / name its Secret (KC_USER=alice; SHOW=1 prints it)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
-	@$(SCRIPTS_DIR)/keycloak-users.sh password "$(KC_USER)"
+	@$(SCRIPTS_DIR)/keycloak-users.sh password $(if $(SHOW),--show) "$(KC_USER)"
 
 keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=alice)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
@@ -473,6 +497,22 @@ governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=
 
 test: test-installer ## Run local installer, chart, script, portal, and CLI tests
 
+# The RHDH form and the profile catalogs are generated from
+# charts/saw-bom/profiles (scripts/saw-profile-catalog.py).
+CATALOG_PY = if [ "$${CI:-}" = true ] || ! command -v uv >/dev/null 2>&1; then \
+	python3 scripts/saw-profile-catalog.py $(1); else \
+	uv run --locked scripts/saw-profile-catalog.py $(1); fi
+
+catalog: ## Regenerate the RHDH form and profile catalogs from charts/saw-bom/profiles
+	@$(call CATALOG_PY,)
+
+catalog-check: ## Fail when the generated profile catalogs are stale
+	@$(call CATALOG_PY,--check)
+
+git-hooks: ## Use the repo's git hooks (regenerate the catalogs on commit)
+	@git config core.hooksPath .githooks
+	@echo "git hooks: .githooks (pre-commit regenerates the profile catalogs)"
+
 test-deployment: ## Run the live OpenShift deployment test (read docs first)
 	@$(SCRIPTS_DIR)/test-deployment.sh
 
@@ -522,16 +562,25 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 
 # --- Local Python tests (no cluster needed) ---
 TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal cli/tests
-.PHONY: test-installer
+.PHONY: test-installer test-tool-gate
 test-installer: ## Run the complete local Python test suite with uv
 	@if [ -n "$(PYTHON)" ]; then \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest \
-			-q -p no:cacheprovider $(TEST_PATHS); \
+		-q -p no:cacheprovider $(TEST_PATHS); \
 	else \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
 		uv run --locked pytest -q -p no:cacheprovider \
 			$(TEST_PATHS); \
 	fi
+
+test-tool-gate: ## Tool-action gate tests (needs node on PATH)
+	@py="$(PYTHON)"; [ -n "$$py" ] || py=python3; \
+	"$$py" -c "import pytest, yaml" 2>/dev/null || { \
+		echo "Missing test dependencies for $$py. Install them with:"; \
+		echo "  $$py -m pip install -r tests/requirements.txt"; exit 1; }; \
+	command -v node >/dev/null || { echo "node is required for make test-tool-gate"; exit 1; }; \
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} "$$py" -m pytest -q -p no:cacheprovider \
+		tests/installer/test_tool_gate.py
 
 ##@ Internal Checks
 

@@ -1,41 +1,5 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
-## NetworkPolicy upgrade procedure
-
-This release introduces default-deny NetworkPolicy. The standalone
-`openshell-saw` chart enables it by default and refuses to render until pod
-CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
-backend IPs and ports are supplied. `make saw-create` discovers these values
-before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
-overlay for other settings; conflicting topology values in it are rejected.
-
-For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
-for each user, so a sync does not cut off active VMs. Roll it out one user at a
-time:
-
-1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
-   destinations. Add each required namespace, pod selector, and TCP port under
-   that user's `networkPolicy.extraEgress`.
-2. Run `make prereqs-check`. It reads the live Network resource, the
-   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
-   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
-   user's effective topology must match the live topology or this command
-   fails with a replacement snippet.
-3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
-   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
-   Check the user's actual in-cluster workflows before enabling the next user.
-
-Argo CD cannot discover topology during Helm rendering. Run the preflight
-before each enablement and after API EndpointSlice changes; update the values
-and sync before an old endpoint is removed. Hosted control planes can expose
-the API on TCP 443 or another port, so use the discovered endpoint ports, not
-an assumed control-plane node port. On a hosted cluster with
-`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
-endpoints too; the legacy control-plane node fallback has no target there.
-The exact API exception remains in EgressFirewall through a temporary
-NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
-correct. See [network troubleshooting](troubleshooting.md).
-
 ## Overview
 
 The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. Production has no demo users. For an explicit demo and separate browser sign-in steps, see [Keycloak production and demo users](../README.md#keycloak-production-and-demo-users).
@@ -215,7 +179,7 @@ ExternalSecret CRs pull from Vault:
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
-| `web-search` | `<prefix>/web-search` | Brave provider and API key |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key; omitted when web search is off |
 
 `<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
@@ -318,6 +282,42 @@ A workspace that stays Starting is usually waiting on a provider Secret. The vir
 oc get events -n saw-<user> | grep FailedMount
 ```
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Upgrading from the single-user layout
 
 Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
@@ -395,6 +395,8 @@ egress:
 
 ### In-cluster NetworkPolicy
 
+> Rolling default-deny NetworkPolicy out on an existing deployment is a staged, one-user-at-a-time procedure — see [NetworkPolicy upgrade procedure](#networkpolicy-upgrade-procedure).
+
 The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
 
 The VM can use DNS in `openshift-dns` on TCP/UDP 5353, the governance Service's pods on TCP 18081 (interceptor or APF engine), the internal registry on TCP 5000, the configured Keycloak issuer Route via the ingress controller on TCP 443/80, and approved outside destinations. The in-VM dashboard proxy also uses that issuer Route; there is no direct Keycloak Service allow. Router ingress to the VM is limited to gateway, dashboard, webui, and configured sandbox UI ports. TCP 22 ingress is allowed only from `virt-api` pods in `openshift-cnv` so `virtctl ssh` and the VM SSH helper can use KubeVirt's port-forward tunnel. The outside IPv4 rule allows TCP 443/80 plus configured `networkPolicy.externalPorts` and automatically added issuer or disk URL ports. The EgressFirewall still decides which outside hostnames may answer. `networkPolicy.allow.*` toggles disable individual peers; `networkPolicy.extraIngress` and `extraEgress` add site-specific rules.
@@ -412,6 +414,8 @@ The chart has no assumed CIDR or API endpoint values. `make saw-create` discover
 The cleanup API firewall exception remains while `cleanupOnDelete: true`, even if `networkPolicy.enabled: false` for a rollback. If exact endpoints were not configured on a policy-disabled, self-managed cluster, the chart uses the older control-plane node TCP 6443 fallback. That fallback does not work on hosted control planes. The cleanup Pod has a 240-second deadline and each API request has bounded curl timeouts. See [network troubleshooting](troubleshooting.md).
 
 **Upgrading an existing sandbox.** Policies do not alter the VM's checksum or restart it. In-cluster custom inference (`http://vllm.<ns>.svc:8000/v1`), an in-cluster MCP server, or an npm mirror needs a narrow `networkPolicy.extraEgress` rule for its namespace, pods, and port before the policy sync. The chart's [`saw-users` values](../charts/saw-users/values.yaml) show a commented example. Quickstart discovers topology on each run; `SAW_VALUES_FILE` remains for other settings and cannot override the discovered topology with conflicting values. See [network troubleshooting](troubleshooting.md) for layer-by-layer checks and [`tests/test-network-policy.sh`](../tests/test-network-policy.sh) for offline and live validation.
+
+For an in-cluster MCP server, also configure its sandbox provider and MCP permissions; see [In-cluster MCP Services](harness-bundles.md#in-cluster-mcp-services).
 
 ### Internal Connectivity
 
@@ -518,9 +522,14 @@ Set `TEST_CLUSTER_CONTEXT` to the result of `oc config current-context`.
 Set `TEST_OWNER_SUBJECT` to the test owner's OIDC subject. Set
 `TEST_SECOND_TOKEN_DIR` to a different local directory that already has a
 second user's `token.json`. Keep credentials in files or environment
-variables; do not add them to a command line. The data-science profile
-needs `WEB_SEARCH_API_KEY`. The pattern also needs its inference and
-web-search keys in Vault before the test. For example:
+variables; do not add them to a command line. `WEB_SEARCH_API_KEY` is optional.
+When unset or empty, the runner installs and reinstalls the pattern with
+`WEB_SEARCH_ENABLED=false` and verifies that both the web-search ExternalSecret
+and Secret are absent. Omit the web-search entry from the pattern's secrets
+file for this run. With a key set, the runner verifies normal secret delivery
+and credential preservation on reinstall; supply the matching key to Vault
+through the pattern's secrets file. Run both modes and retain both evidence
+TSVs; each records `config.web-search` as `on` or `off`. For example:
 
 ```bash
 export TEST_CLUSTER_CONTEXT=<dedicated-oc-context>
@@ -532,11 +541,14 @@ export TEST_SECOND_TOKEN_DIR=<second-user-token-directory>
 export TARGET_BRANCH=<pushed-test-branch>
 export TARGET_ORIGIN=origin
 export PROVIDER=build
-export MODEL=nvidia/nemotron-3-super-120b-a12b
+export MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
-read -r WEB_SEARCH_API_KEY < "$HOME/.web-search-api-key"
-export WEB_SEARCH_API_KEY
+# Off-mode run:
+unset WEB_SEARCH_API_KEY
+# For a separate on-mode run, restore the secrets-file entry and use:
+# read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# export WEB_SEARCH_API_KEY
 export TEST_INFERENCE_CHECK=/absolute/path/check-inference.sh
 export TEST_OWNER_ACCESS_CHECK=/absolute/path/check-owner-access.sh
 # Optional: override the built-in second-user denial check.
@@ -550,12 +562,17 @@ verifies the response. The runner sets `TEST_ACTIVE_SAW_NAME` and
 `TEST_ACTIVE_SAW_NS` for each manual or pattern SAW. It also passes the
 owner's `OIDC_TOKEN_DIR` and `TEST_SECOND_TOKEN_DIR`. The inference check
 must return a JSON object such as `{"result":"accepted","status_code":200}`.
-The owner check must return `{"result":"allowed","status_code":200}`.
-The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` and requires a
-403 response from the active SAW gateway. An override must return
+The owner check must return `{"result":"allowed","status_code":200}` for
+HTTP, or `{"result":"allowed","protocol":"grpc","grpc_code":0}` for gRPC.
+The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` to call the
+gateway's `ListSandboxes` gRPC API in the default workspace. It requires
+gRPC `PERMISSION_DENIED` (7) and returns
+`{"result":"denied","protocol":"grpc","grpc_code":7}`. This requires curl
+with HTTP/2 support. A request to the gateway root is not an access check:
+it returns 404 for both users. An HTTP check override must return
 `{"result":"denied","status_code":403}`.
 Return a nonzero exit code when a request fails. Do not print tokens or
-response bodies. The runner records the status code and a SHA-256 hash of
+response bodies. The runner records the protocol, status code, and a SHA-256 hash of
 the output. These checks are required; a typed confirmation cannot replace
 them.
 
@@ -666,11 +683,51 @@ dashboard Route.
 
 The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which on OpenShell 0.1.x runs in its own network namespace with only loopback (network mode `none`, no port mappings). The Route therefore does not reach the OpenClaw UI and answers 503. Each sandbox has its own namespace, so several OpenClaw sandboxes all listen on 18789 without conflict.
 
-On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](rhdh-architecture.md#opening-a-sandbox-ui). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
+On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](self-service-portal.md#sandbox-web-uis). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
 
 ### Web search in the default sandbox
 
-The `notebook` sandbox attaches only the NVIDIA provider, and its policy allows only that provider's endpoints, so the agent's web search and web fetch calls fail. Attaching the `brave` provider to the sandbox in the BOM profile (`charts/saw-bom/profiles/data-science/default/sandbox.yaml`) opens its endpoints; note that the default profile already creates a `brave` provider but attaches it to no sandbox, which is why step 11 still needs `WEB_SEARCH_API_KEY`. A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's synthetic DNS answers, so enabling web search may take more than the provider change.
+Web search is on by default for GitOps deployments. If Vault has no
+`hub/web-search` key, omit its entry from the secrets file and install with:
+
+```bash
+./pattern.sh make install WEB_SEARCH_ENABLED=false
+```
+
+Alternatively, set `global.webSearch.enabled: false` in `values-global.yaml`.
+A user's `webSearch: {enabled: false}` in `overrides/saw-users.yaml` wins over
+the global value; `true` opts that user back in and requires their Vault key.
+Off removes web-search from secret delivery and VM mounts, disables every
+BOM provider whose `credentialSecret` is `web-search`, and removes those
+provider names from sandbox lists. Other providers are unchanged. The
+quickstart detects a missing web-search Secret and applies the same BOM
+setting automatically. A rerun keeps web search on if the Secret exists.
+
+Leaving web search on without its key produces ESO `SecretSyncedError` and
+a Degraded secrets Application, and the VM can stay in `ContainerCreating`
+with `FailedMount` for `web-search`. If the mount is bypassed, the installer
+reports `credential for provider 'brave' in workspace 'default' not found`.
+Turn the switch off to avoid all three failures.
+
+When switching an existing workspace off, the per-user Applications use
+self-heal without automatic prune. Check for retained objects with
+`oc get externalsecret,secret web-search -n saw-<user>` and remove them after
+the updated Applications have synced:
+`oc delete externalsecret,secret web-search -n saw-<user> --ignore-not-found`.
+Removing the VM volume may require `make saw-restart-pending` (review the
+listed VMs before confirming). The default installer prune mode is `report`,
+so an existing gateway's Brave provider may remain; inspect
+`openshell provider list --workspace default` and remove it explicitly if
+needed. Turning the switch off does not revoke its credential or promise
+to remove a provider already installed on a gateway.
+
+The `notebook` sandbox attaches only the NVIDIA provider, and its policy
+allows only that provider's endpoints, so the agent's web search and web
+fetch calls fail even with web search on. Attaching the `brave` provider in
+`charts/saw-bom/profiles/data-science/default/sandbox.yaml` opens its endpoints.
+A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's
+synthetic DNS answers, so enabling web search may take more than the provider
+change. The self-service portal still requires a web-search key in its form.
 
 ### Shell access
 

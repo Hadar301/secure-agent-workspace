@@ -40,16 +40,23 @@ def fail(message, code=1):
     sys.exit(code)
 
 
-def credential():
-    """Like the real CLI: `--credential NAME` reads $NAME, `NAME=value` is literal."""
-    spec = opt("--credential")
-    if spec is None:
-        return None
+def _resolve_credential(spec):
     if "=" in spec:
         return spec
     if spec not in os.environ:
         fail(f"Error: environment variable {spec} is not set")
     return f"{spec}={os.environ[spec]}"
+
+
+def credential():
+    """Like the real CLI: `--credential NAME` reads $NAME, `NAME=value` is literal."""
+    spec = opt("--credential")
+    return None if spec is None else _resolve_credential(spec)
+
+
+def all_credentials():
+    """Every `--credential` given (a provider may carry several)."""
+    return [_resolve_credential(args[i + 1]) for i, a in enumerate(args) if a == "--credential"]
 
 
 if "--" in args:
@@ -167,8 +174,11 @@ elif op == "provider list-profiles":
                    "web-search": ["api.tavily.com", "api.search.brave.com", "registry.npmjs.org"],
                    "brave": ["api.search.brave.com"], "nvidia": ["integrate.api.nvidia.com"],
                    "github": ["api.github.com"]})
-    print(json.dumps([{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
-                      for pid, hosts in sorted(catalog.items())]))
+    # A value may also be a full profile record (credentials, endpoints),
+    # as a keyless provider's profile needs.
+    print(json.dumps([entry if isinstance(entry, dict) else
+                      {"id": pid, "endpoints": [{"host": h, "port": 443} for h in entry]}
+                      for pid, entry in sorted(catalog.items())]))
 elif op == "provider profile" and head[2] == "import":
     # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
     import yaml
@@ -192,6 +202,8 @@ elif op == "provider create":
     if key in state["providers"]:
         fail(f"Error: provider {opt('--name')} already exists")
     state["providers"][key] = {"type": opt("--type"), "credential": credential()}
+    if len(all_credentials()) > 1:
+        state["providers"][key]["credentials"] = all_credentials()
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
@@ -200,13 +212,18 @@ elif op == "provider update":
     if key not in state["providers"]:
         fail("Error: provider not found")
     state["providers"][key]["credential"] = credential()
+    if len(all_credentials()) > 1:
+        state["providers"][key]["credentials"] = all_credentials()
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
 elif op == "provider get":
-    if f"{ws}/{head[2]}" not in state["providers"]:
+    prov = state["providers"].get(f"{ws}/{head[2]}")
+    if prov is None:
         fail("Error: provider not found")
     print(f"Name: {head[2]}")
+    print(f"Type: {prov['type']}")
+    print(f"Credential keys: {prov['credential'] or '<none>'}")
 elif op == "provider list":
     print("NAME TYPE")
     for key in sorted(state["providers"]):
@@ -250,6 +267,9 @@ elif op == "sandbox get":
     fmt = output_format()
     if fmt == "json" and (state_dir / "reject-json").exists():
         fail("error: unexpected argument '--output' found")
+    if fmt == "json" and (state_dir / "json-get-fails").exists():
+        # A gateway hiccup on the detailed get only (the plain get works).
+        fail("Error: status: Unavailable, message: \"gateway busy\"", 1)
     key = f"{ws}/{name}"
     sb = state["sandboxes"].get(key)
     # "after": [gets, then]: the phase changes after that many gets; then
@@ -268,7 +288,10 @@ elif op == "sandbox get":
         fail(f"Error: sandbox '{name}' not found")
     labels = labels_dict("sandbox", ws, name)
     if fmt == "json":
-        print(json.dumps({"name": name, "phase": sb["phase"], "workspace": ws, "labels": labels}))
+        doc = {"name": name, "phase": sb["phase"], "workspace": ws, "labels": labels}
+        if sb.get("nativeId"):               # a CLI that prints the gateway's own id
+            doc["id"] = sb["nativeId"]
+        print(json.dumps(doc))
     else:
         print(f"Name: {name}\nPhase: {sb['phase']}")
         if labels:
@@ -284,9 +307,44 @@ elif op == "sandbox create":
     if missing:
         fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
+    envs = [head[i + 1] for i, a in enumerate(head) if a == "--env"]
+    if envs:
+        state["sandboxes"][key]["env"] = envs
     remember_labels("sandbox", ws, opt("--name"))
     if opt("--driver-config-json"):
         state["sandboxes"][key]["driverConfig"] = json.loads(opt("--driver-config-json"))
+elif op == "sandbox download":
+    # `sandbox download <sb> <remote> <local>`: the preserve archive. The
+    # fake sandbox's "files" are a dict kept in its state; the archive is
+    # that dict as JSON, so a restore can put it back.
+    key = f"{ws}/{head[2]}"
+    sb = state["sandboxes"].get(key)
+    if not sb:
+        fail(f"Error: sandbox '{head[2]}' not found")
+    remote, local = head[3], head[4]
+    # Like the gateway (0.1.2): only paths inside the working directory
+    # (/sandbox) are served; anything else is refused before any transfer.
+    if not remote.startswith("/sandbox/"):
+        fail(f"Error: download source {remote!r} escapes the sandbox working directory")
+    if remote not in sb.get("archives", {}):
+        fail(f"Error: {remote}: no such file")
+    Path(local).write_text(json.dumps(sb["archives"][remote]))
+elif op == "sandbox upload":
+    key = f"{ws}/{head[2]}"
+    sb = state["sandboxes"].get(key)
+    if not sb:
+        fail(f"Error: sandbox '{head[2]}' not found")
+    # Like the gateway (0.1.2): uploads are filtered by .gitignore rules
+    # unless --no-git-ignore is given, and a filtered-out file stops the
+    # upload ("upload stopped. Use --no-git-ignore ..."). An archive the
+    # installer wrote is always filtered here, as it was live.
+    if "--no-git-ignore" not in args:
+        fail(f"Error: .gitignore filtering excluded {head[-2]}; upload stopped.\n"
+             "Use --no-git-ignore to upload intentionally without filtering")
+    local, remote = head[-2], head[-1]
+    if not remote.startswith("/sandbox/"):
+        fail(f"Error: upload destination {remote!r} escapes the sandbox working directory")
+    sb.setdefault("archives", {})[remote] = json.loads(Path(local).read_text())
 elif op == "sandbox delete":
     key = f"{ws}/{head[2]}"
     delay = state.get("deleteDelay", 0)
@@ -295,6 +353,43 @@ elif op == "sandbox delete":
     else:
         state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    script = args[-1] if args[-3:-1] == ["sh", "-c"] else ""
+
+    def archive_digest(content):
+        # The archive's sha256, as `sha256sum` prints it: the fake archive is
+        # its files as JSON, and `sandbox download` writes exactly that.
+        import hashlib
+        return hashlib.sha256(json.dumps(content).encode()).hexdigest()
+
+    if "tar -czf " in script and "sha256sum" in script:
+        # preserve_sandbox: archive /sandbox (the fake's "files"), print its checksum.
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        if (state_dir / "preserve-fail").exists():
+            fail("tar: /sandbox: Cannot open", 2)
+        archive = script.split("tar -czf ", 1)[1].split()[0]
+        content = dict(sb.get("files", {}))
+        sb.setdefault("archives", {})[archive] = content
+        print(archive_digest(content))
+        save()
+        sys.exit(0)
+    if "tar -xzf " in script and "sha256sum" in script:
+        # restore_sandbox: verify the uploaded archive, unpack, verify, remove.
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        if (state_dir / "restore-fail").exists():
+            fail("tar: short read", 2)
+        archive = script.split("tar -xzf ", 1)[1].split()[0]
+        if archive not in sb.get("archives", {}):
+            fail(f"tar: {archive}: Cannot open: No such file or directory", 2)
+        expected = re.search(r"= '?([0-9a-f]{64})'? \]", script)
+        if expected and archive_digest(sb["archives"][archive]) != expected.group(1):
+            sys.exit(4)
+        sb.setdefault("files", {}).update(sb["archives"].pop(archive))
+        save()
+        sys.exit(0)
+    if args[-2:] in (["id", "-u"], ["id", "-g"]):
+        print("1000")
+        save()
+        sys.exit(0)
     # notReadyExecs: the first N execs fail like a sandbox still provisioning.
     if state.get("notReadyExecs", 0) > 0:
         state["notReadyExecs"] -= 1
@@ -328,6 +423,19 @@ elif op == "sandbox exec":
                     save()
                     sys.exit(0)
         fail(f"cat: {args[-1]}: No such file or directory", 1)
+    if len(args) >= 2 and args[-2] == "sha256sum":
+        import hashlib
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        for mount in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
+            target = mount["target"].rstrip("/") + "/"
+            if args[-1].startswith(target) and mount["type"] == "volume":
+                rel = args[-1][len(target):]
+                file = state_dir / "volumes" / mount["source"] / rel
+                if file.is_file():
+                    print(f"{hashlib.sha256(file.read_bytes()).hexdigest()}  {args[-1]}")
+                    save()
+                    sys.exit(0)
+        fail(f"sha256sum: {args[-1]}: No such file or directory", 1)
     sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
     mounts = ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", [])
 
@@ -346,6 +454,16 @@ elif op == "sandbox exec":
         return {}
 
     script = args[-1] if args else ""
+    if 'const file = "/sandbox/.openclaw/openclaw.json"' in script:
+        cfg = sb.setdefault("openclawConfig", {})
+        paths = cfg.get("plugins.load.paths") or []
+        cfg["plugins.load.paths"] = list(dict.fromkeys([*paths, "/sandbox/.saw/trusted/plugin"]))
+        allowed = cfg.get("plugins.allow") or []
+        if allowed:
+            cfg["plugins.allow"] = list(dict.fromkeys([*allowed, "saw-tool-gate"]))
+        cfg["plugins.entries.saw-tool-gate"] = {"enabled": True}
+        save()
+        sys.exit(0)
     if 'printenv "$v"' in script:
         # mcp_trust_env_probe: the CA settings the sandbox has (trustEnv;
         # default: all of them, as with the proxy CA). trustProbeFails: the
@@ -355,6 +473,12 @@ elif op == "sandbox exec":
         names = re.search(r"for v in (.*?); do", script).group(1).split()
         have = sb.get("trustEnv", names)
         print("\n".join(n for n in names if n in have))
+        save()
+        sys.exit(0)
+    if script.startswith("cat /sandbox/.openclaw/saw-mcp-servers.json"):
+        # The installer's read of its MCP record (`cat FILE 2>/dev/null || true`):
+        # empty, and no error, before the first record.
+        print(sb.get("sawMcpState", ""))
         save()
         sys.exit(0)
     if "saw-mcp-servers.json" in script:
@@ -390,7 +514,7 @@ elif op == "sandbox exec":
                 val = json.loads(tokens[0]) if tokens else None
             except (ValueError, json.JSONDecodeError):
                 val = rest.strip("'\"")
-            if key.startswith(("plugins.load", "skills.load")):
+            if key.startswith(("plugins.load", "skills.load", "models.providers.")):
                 sb.setdefault("openclawConfig", {})[key] = val
             save()
             sys.exit(0)
@@ -442,7 +566,7 @@ elif op == "sandbox exec":
             print(override.read_text(), end="")
             save()
             sys.exit(0)
-        # 2026.9.5 `--json` shape: bundle row from the mount plus native ids.
+        # Pinned OpenClaw 2026.9.6 `--json` shape: bundle row plus native ids.
         # `mcp list` is not modelled (it never shows bundle servers).
         import yaml as _yaml
         files = harness_files()
@@ -462,6 +586,13 @@ elif op == "sandbox exec":
                              if rel.startswith("plugins/") and rel.count("/") >= 2}):
             plugins.append({"id": pname, "name": pname, "format": "openclaw",
                             "enabled": True, "status": "loaded"})
+        cfg = sb.get("openclawConfig") or {}
+        gate_mount = next((m for m in mounts if m["target"] == "/sandbox/.saw/trusted"), None)
+        if gate_mount and cfg.get("plugins.entries.saw-tool-gate", {}).get("enabled"):
+            loaded = "/sandbox/.saw/trusted/plugin" in (cfg.get("plugins.load.paths") or [])
+            plugins.append({"id": "saw-tool-gate", "name": "SAW tool gate", "format": "openclaw",
+                            "rootDir": "/sandbox/.saw/trusted/plugin" if loaded else "",
+                            "enabled": loaded, "status": "loaded" if loaded else "disabled"})
         print(json.dumps({"plugins": plugins}))
         save()
         sys.exit(0)

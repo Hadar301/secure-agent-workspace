@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,7 +37,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
-        "status check-oidc-ca"
+        "status check-oidc-ca catalog catalog-check git-hooks"
     ).split()
     for target in targets:
         assert len(re.findall(rf"^  {target}\s", plain, re.MULTILINE)) == 1
@@ -263,7 +264,9 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("prereqs-check", env=env)
     assert result.returncode != 0
-    assert "does not match gateway BOM 0.1.2-rhaiv.0" in result.stderr
+    values = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+    expected = values["bom"]["spec"]["openshell"]["cli"]["version"]
+    assert f"does not match gateway BOM {expected}" in result.stderr
     assert "oc must not run" not in result.stderr
 
 
@@ -361,7 +364,8 @@ esac
     assert result.returncode == 0, result.stderr
     expected = [
         f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
-        f"registry.example/openshell-agents/openshell-gateway:{tag} --insecure=true"]
+        f"registry.example/openshell-agents/openshell-gateway:{tag} "
+        "--insecure=true --keep-manifest-list=true"]
     destinations = f"openshell-gateway:{tag}"
     if tag != "latest":
         expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")
@@ -373,6 +377,11 @@ esac
     assert result.returncode != 0
     assert len(log.read_text().splitlines()) == 1
     assert ":latest" not in log.read_text()
+
+
+def test_in_cluster_mirror_copies_the_entire_manifest_list():
+    template = (ROOT / "scripts/mirror-images-job.yaml").read_text()
+    assert "skopeo copy --all --src-tls-verify=true" in template
 
 
 def test_public_image_check_ignores_login_and_reports_private_packages(tmp_path):
@@ -428,6 +437,8 @@ esac
     env.pop("IMAGE_REPO", None)
     env.pop("PUSH_IMAGE_REPO", None)
     args = [target, f"SCRIPTS_DIR={scripts}"]
+    if target in ("sandbox-build", "build-nemoclaw"):
+        args.append("BUILD_ARCH=amd64")
     if repo is not None:
         args.append(f"IMAGE_REPO={repo}")
     result = run_make(*args, env=env)
@@ -455,6 +466,43 @@ def test_public_image_check_targets_the_published_tag():
     assert verify["with"]["image"] == "ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}"
 
 
+def test_platform_builds_keep_the_repository_source_label():
+    action = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    builds = [s for s in action["runs"]["steps"] if s.get("uses", "").startswith("docker/build-push-action")]
+    assert len(builds) == 2
+    assert {b["with"]["labels"] for b in builds} == {
+        "org.opencontainers.image.source=https://github.com/${{ github.repository }}"}
+
+
+@pytest.mark.parametrize("name", ["build-nemoclaw-sandbox.yml", "build-nemoclaw-cli.yml",
+                                  "build-governance-interceptor.yml", "build-openshell-gateway.yml"])
+def test_platform_builds_report_independently_and_merge_needs_both(name):
+    text = (ROOT / ".github/workflows" / name).read_text()
+    workflow = yaml.safe_load(text)
+    build, merge = workflow["jobs"]["build"], workflow["jobs"]["merge"]
+    assert build["strategy"]["fail-fast"] is False
+    matrix = build["strategy"]["matrix"]
+    platforms = matrix.get("platform") or [e["platform"] for e in matrix["include"]]
+    assert set(platforms) == {"linux/amd64", "linux/arm64"}
+    assert merge["needs"] == "build"
+    assert text.count(".github/actions/merge-image/**") == 2
+
+
+def test_merge_downloads_only_its_own_image_digests():
+    import fnmatch
+    merge = yaml.safe_load((ROOT / ".github/actions/merge-image/action.yml").read_text())
+    build = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
+    pattern = next(s for s in merge["runs"]["steps"]
+                   if s.get("uses", "").startswith("actions/download-artifact"))["with"]["pattern"]
+    upload = next(s for s in build["runs"]["steps"]
+                  if s.get("uses", "").startswith("actions/upload-artifact"))["with"]["name"]
+    assert upload == "digests-${{ inputs.image_name }}-${{ steps.plat.outputs.suffix }}"
+    own = pattern.replace("${{ inputs.image_name }}", "openshell-gateway")
+    assert fnmatch.fnmatchcase("digests-openshell-gateway-linux-arm64", own)
+    # The docker disk shares the prefix; its digests must not join the podman tag.
+    assert not fnmatch.fnmatchcase("digests-openshell-gateway-docker-linux-arm64", own)
+
+
 @pytest.mark.parametrize("phase,digest", [("Complete", "sha256:" + "a" * 64), ("Failed", "sha256:" + "b" * 64), ("Complete", ""), ("Complete", "sha256:")])
 def test_sandbox_build_consumes_only_its_completed_discovery_build(tmp_path, phase, digest):
     bindir = tmp_path / "bin"
@@ -468,6 +516,7 @@ case "$*" in
       *status.phase*) printf '%s' "$DISCOVERY_PHASE" ;;
       *imageDigest*) printf '%s' "$DISCOVERY_DIGEST" ;;
     esac ;;
+  "get nodes -o json") echo '{"items":[{"spec":{},"status":{"nodeInfo":{"architecture":"arm64"}}}]}' ;;
 esac
 ''')
     executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
@@ -486,6 +535,7 @@ esac
         start = next(i for i, line in enumerate(calls) if "start-build nemoclaw-sandbox " in line)
         assert pinned < start
         assert f"source.discoveryImage=image-registry.openshift-image-registry.svc:5000/test-build/nemoclaw-discovery-runtime@{digest}" in calls[pinned]
+        assert "build.targetArch=arm64" in calls[pinned]
         assert any("get build.build.openshift.io/nemoclaw-discovery-runtime-7 " in line and "imageDigest" in line for line in calls)
         assert not any("get bc/" in line for line in calls)
 
@@ -514,7 +564,7 @@ esac
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
                TERMINAL_PHASE=terminal, PHASE_COUNT=str(tmp_path / "phase-count"))
     env.pop("PUSH_IMAGE_REPO", None)
-    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", env=env)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", "BUILD_ARCH=amd64", env=env)
     calls = log.read_text().splitlines()
     assert sum("status.phase" in line for line in calls) >= 2
     assert not any("oc wait " in line for line in calls)
@@ -573,6 +623,9 @@ def test_saw_restart_pending_with_nothing_pending(tmp_path):
 
 def install_opts(*args, env=None):
     """EXTRA_HELM_OPTS as `make install` hands it to the pattern framework."""
+    if env is None:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOVERNANCE_ENGINE", "WEB_SEARCH_ENABLED", "EXTRA_HELM_OPTS")}
     return run_make("--eval", 'probe-install-opts:\n\t@printf "%s" "$$EXTRA_HELM_OPTS"',
                     "probe-install-opts", *args, env=env)
 
@@ -584,11 +637,12 @@ def test_governance_engine_selects_the_engine_at_install():
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == [
         "--set", "main.extraParameters[0].name=global.governance.engine",
-        "--set", "main.extraParameters[0].value=apf"]
+        "--set-string", "main.extraParameters[0].value=apf"]
 
 
 def test_values_global_decides_without_an_explicit_engine():
-    env = {k: v for k, v in os.environ.items() if k not in ("GOVERNANCE_ENGINE", "EXTRA_HELM_OPTS")}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GOVERNANCE_ENGINE", "WEB_SEARCH_ENABLED", "EXTRA_HELM_OPTS")}
     result = install_opts(env=env)
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
@@ -605,3 +659,88 @@ def test_an_unknown_engine_stops_the_install():
     result = install_opts("GOVERNANCE_ENGINE=opa")
     assert result.returncode != 0
     assert "GOVERNANCE_ENGINE must be interceptor or apf" in result.stderr
+
+
+def test_web_search_can_be_disabled_at_install():
+    result = install_opts("WEB_SEARCH_ENABLED=false")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "--set", "main.extraParameters[0].name=global.webSearch.enabled",
+        "--set-string", "main.extraParameters[0].value=false"]
+
+
+def test_both_install_knobs_get_contiguous_parameter_indices():
+    result = install_opts("GOVERNANCE_ENGINE=apf", "WEB_SEARCH_ENABLED=false")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "--set", "main.extraParameters[0].name=global.governance.engine",
+        "--set-string", "main.extraParameters[0].value=apf",
+        "--set", "main.extraParameters[1].name=global.webSearch.enabled",
+        "--set-string", "main.extraParameters[1].value=false"]
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "true false"])
+def test_an_invalid_web_search_switch_stops_the_install(value):
+    result = install_opts(f"WEB_SEARCH_ENABLED={value}")
+    assert result.returncode != 0
+    assert "WEB_SEARCH_ENABLED must be true or false" in result.stderr
+
+
+def _oc_storageclass(bindir, items_json, extra_cases=""):
+    executable(bindir / "oc", f'''
+case "$*" in
+  "get storageclass -o json") echo '{items_json}' ;;
+{extra_cases}
+  *) echo "unexpected oc call: $*" >&2; exit 4 ;;
+esac
+''')
+
+
+def test_storage_check_passes_when_a_default_exists(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    _oc_storageclass(bindir, '{"items":[{"metadata":{"name":"ocs","annotations":'
+                     '{"storageclass.kubernetes.io/is-default-class":"true"}}}]}')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "Default StorageClass: available" in result.stdout
+
+
+def test_storage_check_adopts_an_existing_class_when_confirmed(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    patch_log = tmp_path / "patched"
+    _oc_storageclass(
+        bindir,
+        '{"items":[{"metadata":{"name":"thin-csi","annotations":{}}}]}',
+        extra_cases=f'  "patch storageclass thin-csi "*) echo "{patch_log}" >"{patch_log}"; echo patched ;;')
+    # No TTY under subprocess; SAW_STORAGE_ASSUME_YES stands in for the "yes".
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SAW_STORAGE_ASSUME_YES="1")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    assert patch_log.exists(), "oc patch was not called to set the default"
+    assert "Marked StorageClass 'thin-csi'" in result.stdout
+
+
+def test_storage_check_fails_clearly_when_no_class_and_non_interactive(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    _oc_storageclass(bindir, '{"items":[]}')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode != 0
+    assert "default StorageClass" in result.stderr
+    assert "docs/storage-setup.md" in result.stderr
+
+
+def test_storage_check_hpp_class_uses_the_csi_provisioner(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    applied = tmp_path / "applied.yaml"
+    _oc_storageclass(bindir, '{"items":[]}', extra_cases=(
+        '  "get crd hostpathprovisioners.hostpathprovisioner.kubevirt.io") exit 0 ;;\n'
+        f'  "apply -f -") cat >> "{applied}" ;;'))
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SAW_STORAGE_ASSUME_YES="1")
+    result = run_make("storage-class-check", env=env)
+    assert result.returncode == 0, result.stderr
+    text = applied.read_text()
+    # storagePools (not legacy pathConfig) deploys only the CSI driver, named with a dot.
+    assert "provisioner: kubevirt.io.hostpath-provisioner" in text
+    assert "- name: saw-hpp" in text and "storagePool: saw-hpp" in text

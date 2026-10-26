@@ -81,6 +81,15 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-installer
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # This ConfigMap's data is ~300 KiB. When Argo CD client-side-applies it,
+    # it writes a last-applied-configuration annotation that exceeds the 256 KiB
+    # metadata limit and the sync fails. On OpenShift GitOps on OCP 5.0 the Argo
+    # controller does not apply server-side (managedFields come back empty), so
+    # the per-resource ServerSideApply=true sync-option hits the same path and
+    # does not help; Replace the object (a full PUT, no last-applied annotation)
+    # instead. On clusters where SSA works, ServerSideApply=true is preferable.
+    argocd.argoproj.io/sync-options: Replace=true
 data:
   installer-bom.yaml: |
 {{- $bom := deepCopy .Values.bom }}
@@ -100,6 +109,12 @@ data:
 {{ .Files.Get "files/installer/identity.py" | indent 4 }}
   saw_spire.pp.b64: |
 {{ .Files.Get "files/selinux/saw_spire.pp.b64" | indent 4 }}
+  tool-actions.yaml: |
+{{ .Files.Get "files/installer/tool-actions.yaml" | indent 4 }}
+  tool-gate.mjs: |
+{{ .Files.Get "files/installer/tool-gate.mjs" | indent 4 }}
+  tool-gate-plugin.mjs: |
+{{ .Files.Get "files/installer/tool-gate-plugin.mjs" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
 {{- if .Files.Get "files/installer/bundle.sigstore.json" }}
@@ -107,7 +122,8 @@ data:
 {{ .Files.Get "files/installer/bundle.sigstore.json" | indent 4 }}
 {{- end }}
 {{- /* Provider profiles the installer imports when the gateway lacks them
-(e.g. brave with governance off). Same files as governance-policy/profiles. */}}
+(governance off). A mirror of governance-policy/profiles/*.yaml kept by
+scripts/saw-profile-catalog.py (`make catalog`); CI fails when it is stale. */}}
 {{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" }}
   provider-profile-{{ base $path }}: |
 {{ $.Files.Get $path | indent 4 }}

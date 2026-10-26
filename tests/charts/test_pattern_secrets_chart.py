@@ -32,6 +32,12 @@ def test_defaults_sync_everything_from_the_hub():
                       "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
 
+def test_inference_only_renders_no_web_search_external_secret():
+    got = keys("--set", "secrets={inference}")
+    assert "inference" in got
+    assert "web-search" not in got
+
+
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
     values = tmp_path / "v.yaml"
     values.write_text(yaml.safe_dump({"vaultPrefix": "secret/data/hub/saw-bob",
@@ -55,7 +61,9 @@ def test_the_inference_template_needs_only_what_every_workspace_has():
     required = set()
     for value in es["spec"]["target"]["template"]["data"].values():
         required |= set(re.findall(r"\{\{\s*\.(\w+)\s*\}\}", value))
-    assert required == {"provider", "api_key"}
+    # `provider` is optional too: a shared hub Secret serving providers of
+    # different types (data-science's nvidia and custom-inference) leaves it out.
+    assert required == {"api_key"}
     # What the portal writes for every profile's inference Secret: the
     # credential field and the provider it adds.
     catalog = json.loads((ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json").read_text())
@@ -79,3 +87,17 @@ def test_the_cluster_ca_comes_from_the_shared_prefix(tmp_path):
     (es,) = [d for d in yaml.safe_load_all(out) if d and d["metadata"]["name"] == "saw-ingress-ca"]
     assert es["spec"]["data"] == [{"secretKey": "ca-bundle.crt", "remoteRef": {
         "key": "secret/data/hub/cluster-ingress-ca", "property": "ca-bundle.crt"}}]
+
+
+def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
+    values = tmp_path / "providers.yaml"
+    values.write_text(yaml.safe_dump({
+        "vaultPrefix": "secret/data/hub/saw-alice", "sshVaultPrefix": "secret/data/hub",
+        "secrets": ["inference", "web-search", "inference-openai", "inference-anthropic"]}))
+    assert keys("-f", str(values)) == {
+        "inference": {"secret/data/hub/saw-alice/inference"},
+        "web-search": {"secret/data/hub/saw-alice/web-search"},
+        "inference-openai": {"secret/data/hub/saw-alice/inference-openai"},
+        "inference-anthropic": {"secret/data/hub/saw-alice/inference-anthropic"},
+        "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
+        "openshell-aap-ssh": {"secret/data/hub/ssh"}}

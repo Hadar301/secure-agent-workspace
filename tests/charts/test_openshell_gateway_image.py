@@ -34,13 +34,55 @@ def test_cosign_download_is_checksum_verified():
     bake a malicious cosign into every image; cosign is what verify-bundle
     trusts to say the installer is genuine (PR #54 review, 7)."""
     values = yaml.safe_load((CHART / "values.yaml").read_text())
-    sha256 = values["cosign"]["sha256"]
-    assert len(sha256) == 64
     text = dockerfile()
-    assert "curl -fsSL -o /build/saw/cosign" in text
-    assert f"echo \"{sha256}  /build/saw/cosign\" | sha256sum -c -" in text
+    # One URL and checksum per architecture; the build picks by `uname -m`.
+    for arch, entry in (("x86_64", values["cosign"]), ("aarch64", values["cosign"]["aarch64"])):
+        assert len(entry["sha256"]) == 64
+        assert f'{arch}) url="{entry["url"]}"; sum="{entry["sha256"]}" ;;' in text
+    assert 'curl -fsSL -o /build/saw/cosign "$url"' in text
+    assert 'echo "$sum  /build/saw/cosign" | sha256sum -c -' in text
     # The checksum check must run before the binary is trusted/used.
     assert text.index("sha256sum -c") > text.index("curl -fsSL -o /build/saw/cosign")
+    assert text.index("sha256sum -c") < text.index("/build/saw/cosign:/usr/local/bin/")
+
+
+def test_the_base_image_matches_the_build_architecture():
+    """KubeVirt runs only guests of the host's architecture: an arm64 cluster
+    builds from the aarch64 Fedora Cloud image."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())["build"]
+    text = dockerfile()
+    assert "/x86_64/" in values["fedoraCloud"] and "/aarch64/" in values["fedoraCloudAarch64"]
+    assert f'x86_64) url="{values["fedoraCloud"]}" ;;' in text
+    assert f'aarch64) url="{values["fedoraCloudAarch64"]}" ;;' in text
+    assert 'unsupported architecture' in text
+
+
+def test_ci_picks_fedora_and_cosign_by_runner_architecture():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    params = next(s["run"] for s in workflow["jobs"]["build"]["steps"] if s.get("id") == "params")
+    assert 'case "$(uname -m)" in' in params and "unsupported architecture" in params
+    for key in (".build.fedoraCloud'", ".build.fedoraCloudAarch64'", ".cosign.url'",
+                ".cosign.sha256'", ".cosign.aarch64.url'", ".cosign.aarch64.sha256'"):
+        assert key in params
+
+
+def test_ci_builds_podman_on_both_architectures_and_docker_on_amd64():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    build = workflow["jobs"]["build"]
+    matrix = build["strategy"]["matrix"]
+    assert matrix["container_runtime"] == ["docker", "podman"]
+    assert matrix["platform"] == ["linux/amd64", "linux/arm64"]
+    excluded = {(e["container_runtime"], e["platform"]) for e in matrix["exclude"]}
+    combinations = {(runtime, platform) for runtime in matrix["container_runtime"]
+                    for platform in matrix["platform"]} - excluded
+    assert combinations == {("docker", "linux/amd64"), ("podman", "linux/amd64"),
+                            ("podman", "linux/arm64")}
+    assert "ubuntu-24.04-arm" in build["runs-on"]
+    push = next(s for s in build["steps"] if s.get("uses") == "./.github/actions/build-push-image")
+    assert push["with"]["platform"] == "${{ matrix.container_runtime == 'podman' && matrix.platform || '' }}"
+    assert "openshell-gateway-docker" in push["with"]["image_name"]
+    assert "openshell-gateway'" in push["with"]["image_name"]
+    assert workflow["jobs"]["merge"]["strategy"]["matrix"]["image_name"] == ["openshell-gateway"]
 
 
 def test_podman_signed_pull_and_static_enforce_policy_are_gone():
