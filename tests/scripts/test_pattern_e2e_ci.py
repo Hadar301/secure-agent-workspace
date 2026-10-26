@@ -964,14 +964,78 @@ def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, 
 
 def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
     monkeypatch.setattr(runner, "install_virtctl", lambda: None)
-    monkeypatch.setattr(runner, "call", lambda *_args, **_kwargs:
-                        SimpleNamespace(returncode=0, stdout=json.dumps({
-                            "install": {"phase": "Done"},
-                            "apply": {"phase": "Failed"}})))
+    runner.sensitive = ["private-token"]
+    def fake_call(args, **_kwargs):
+        user = next(arg.split("=", 1)[1] for arg in args
+                    if arg.startswith("OPENSHELL_SAW_NAME="))
+        apply_status = ({"phase": "Failed", "message": "apply failed with private-token",
+                         "updatedAt": "2026-10-26T19:52:59Z", "bom": "saw-cisecond"}
+                        if user == "cisecond" else {"phase": "Done"})
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "install": {"phase": "Done"}, "apply": apply_status}))
+
+    monkeypatch.setattr(runner, "call", fake_call)
     monkeypatch.setattr(runner, "wait_for", lambda _label, predicate, **_kwargs:
                         predicate())
-    with pytest.raises(pattern_e2e.E2EError, match="ciowner apply phase failed"):
+    with pytest.raises(pattern_e2e.E2EError) as exc_info:
         runner.verify_guest_install()
+    assert str(exc_info.value) == (
+        "cisecond apply phase failed: apply failed with [redacted]; "
+        "updatedAt=2026-10-26T19:52:59Z; bom=saw-cisecond")
+
+
+def test_stage_logs_redacted_exception_trace(runner, capsys):
+    runner.sensitive = ["private-token"]
+
+    def fail_stage():
+        raise pattern_e2e.E2EError("installer failed with private-token")
+
+    with pytest.raises(pattern_e2e.E2EError, match="installer failed"):
+        runner.stage("guest-installer", fail_stage)
+
+    output = capsys.readouterr().err
+    assert "stage guest-installer: E2EError" in output
+    assert "Traceback (most recent call last)" in output
+    assert "installer failed with [redacted]" in output
+    assert "private-token" not in output
+    stage = runner.report["stages"][-1]
+    assert stage["error_type"] == "E2EError"
+    assert stage["error"] == "installer failed with [redacted]"
+
+
+def test_runner_redacts_standard_github_token(runner, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "github-private-token")
+
+    configured = pattern_e2e.Runner()
+
+    assert "github-private-token" in configured.sensitive
+
+
+def test_run_keeps_stage_error_when_finalization_fails(runner, monkeypatch, capsys):
+    runner.locked = True
+    for name in ("setup_files", "preflight", "build", "prepare_registry_pull",
+                 "install", "verify_deployment_smoke"):
+        monkeypatch.setattr(runner, name, lambda: None)
+    monkeypatch.setattr(runner, "verify_guest_install", lambda: (_ for _ in ()).throw(
+        pattern_e2e.E2EError("installer phases did not complete")))
+    monkeypatch.setattr(runner, "diagnostics", lambda: None)
+    monkeypatch.setattr(runner, "update_lock_data", lambda _updates: None)
+    monkeypatch.setattr(runner, "finish", lambda **_kwargs: (_ for _ in ()).throw(
+        PermissionError("plugin.yaml")))
+
+    assert runner.run() == 1
+
+    report = json.loads((runner.artifacts / "results.json").read_text())
+    assert report["stages"][-1]["error"] == "installer phases did not complete"
+    assert report["stages"][-1]["error_type"] == "E2EError"
+    assert report["failure"] == (
+        "E2EError: installer phases did not complete; runner finalization failed: "
+        "PermissionError: plugin.yaml")
+    assert report["finalization_error"] == "PermissionError: plugin.yaml"
+    output = capsys.readouterr().err
+    assert "stage guest-installer traceback" in output
+    assert "runner finalization traceback" in output
+    assert "PermissionError: plugin.yaml" in output
 
 
 def test_guest_status_uses_user_namespace_despite_outer_make_value(runner, monkeypatch):

@@ -18,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import zipfile
@@ -119,9 +120,12 @@ class Runner:
         self.build_attempted = False
         self.cancelled = False
         self.baseline_namespaces: set[str] = set()
-        self.sensitive = [value for key, value in os.environ.items()
-                          if key.startswith("CI_") and
-                          any(term in key for term in ("KEY", "PASSWORD", "TOKEN", "B64")) and value]
+        sensitive_terms = ("KEY", "PASSWORD", "TOKEN", "SECRET", "B64", "AUTH",
+                           "CREDENTIAL")
+        self.sensitive = sorted({
+            value for key, value in os.environ.items()
+            if len(value) >= 4 and any(term in key.upper() for term in sensitive_terms)
+        }, key=len, reverse=True)
 
     @staticmethod
     def required(key: str) -> str:
@@ -134,6 +138,17 @@ class Runner:
         for value in self.sensitive:
             text = text.replace(value, "[redacted]")
         return text
+
+    def log_exception(self, context: str, exc: BaseException) -> str:
+        detail = self.redact(str(exc)) or "(no message)"
+        summary = f"{type(exc).__name__}: {detail}"
+        print(f"{now()} {context}: {summary}", file=sys.stderr, flush=True)
+        trace = self.redact("".join(traceback.format_exception(
+            type(exc), exc, exc.__traceback__))).rstrip()
+        if trace:
+            print(f"{now()} {context} traceback:\n{trace}",
+                  file=sys.stderr, flush=True)
+        return summary
 
     def call(self, args: list[str], *, timeout: int = 120,
              input_text: str | None = None, allow_failure: bool = False,
@@ -249,7 +264,9 @@ class Runner:
         try:
             action()
         except Exception as exc:
+            entry["error_type"] = type(exc).__name__
             entry["error"] = self.redact(str(exc))
+            self.log_exception(f"stage {name}", exc)
             raise
         else:
             entry["result"] = "passed"
@@ -1182,7 +1199,20 @@ class Runner:
                           status.get("apply", {}).get("phase"))
                 for step, phase in zip(("install", "apply"), phases):
                     if phase == "Failed":
-                        raise E2EError(f"{user} {step} phase failed")
+                        phase_status = status.get(step, {})
+                        if not isinstance(phase_status, dict):
+                            phase_status = {}
+                        detail_parts = []
+                        message = phase_status.get("message")
+                        if isinstance(message, str) and message.strip():
+                            message = self.redact(message.strip().splitlines()[0][:500])
+                            detail_parts.append(message)
+                        for field in ("updatedAt", "bom"):
+                            value = phase_status.get(field)
+                            if isinstance(value, str) and value.strip():
+                                detail_parts.append(f"{field}={self.redact(value.strip())}")
+                        detail = f": {'; '.join(detail_parts)}" if detail_parts else ""
+                        raise E2EError(f"{user} {step} phase failed{detail}")
                 return phases == ("Done", "Done")
             self.wait_for(f"{user} installer phases", installer_ready, seconds=3600)
 
@@ -1519,15 +1549,41 @@ class Runner:
 
     def finish(self, *, save_report: bool = True, preserve_home: bool = False,
                complete: bool = True) -> None:
-        if self.home is not None and not preserve_home:
-            shutil.rmtree(self.home)
-            self.home = None
         if complete:
             self.report["finished_at"] = now()
         else:
             self.report["installation_finished_at"] = now()
+        if self.home is not None and not preserve_home:
+            shutil.rmtree(self.home)
+            self.home = None
         if save_report:
             self.save_report()
+
+    def finish_safely(self, *, failure: str | None = None,
+                      save_report: bool = True, preserve_home: bool = False,
+                      complete: bool = True) -> str | None:
+        try:
+            self.finish(save_report=save_report, preserve_home=preserve_home,
+                        complete=complete)
+        except Exception as exc:
+            detail = self.log_exception("runner finalization", exc)
+            self.report["finalization_error"] = detail
+            finalization_failure = f"runner finalization failed: {detail}"
+            failure = (f"{failure}; {finalization_failure}" if failure
+                       else finalization_failure)
+            self.report["failure"] = failure
+            self.report["test_outcome"] = "failure"
+            if self.recovery:
+                self.report["cleanup_recovery_failure"] = failure
+            try:
+                self.save_report()
+            except Exception as report_exc:
+                report_error = self.log_exception("failure report write", report_exc)
+                failure = f"{failure}; result report write failed: {report_error}"
+                self.report["failure"] = failure
+                if self.recovery:
+                    self.report["cleanup_recovery_failure"] = failure
+        return failure
 
     def run(self) -> int:
         if self.phase == "live":
@@ -1550,7 +1606,8 @@ class Runner:
                 self.stage("live-behavior", self.live_behavior)
                 self.report["test_outcome"] = "success"
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "runner cancelled"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'runner cancelled'}")
             self.report["failure"] = failure
             self.report["test_outcome"] = "failure"
         finally:
@@ -1577,7 +1634,9 @@ class Runner:
                     self.report["lock_state_error"] = self.redact(str(exc))
                     failure = failure or "could not mark the cluster for cleanup"
                     preserve_home = False
-            self.finish(preserve_home=preserve_home, complete=not preserve_home)
+            failure = self.finish_safely(
+                failure=failure, preserve_home=preserve_home,
+                complete=not preserve_home)
         if failure:
             print(f"Pattern E2E failed: {failure}", file=sys.stderr)
             return 1
@@ -1594,7 +1653,8 @@ class Runner:
             self.report["test_outcome"] = "success"
             preserve_home = True
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "live checks cancelled"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'live checks cancelled'}")
             self.report["failure"] = failure
             self.report["test_outcome"] = "failure"
             preserve_home = preserve_home or self.home is not None
@@ -1624,7 +1684,7 @@ class Runner:
                         self.report["lock_state_error"] = self.redact(str(exc))
                         failure = "could not mark the cluster for cleanup"
                         preserve_home = self.home is not None
-            self.finish(preserve_home=preserve_home)
+            failure = self.finish_safely(failure=failure, preserve_home=preserve_home)
         if failure:
             print(f"Pattern E2E live checks failed: {failure}", file=sys.stderr)
             return 1
@@ -1654,7 +1714,8 @@ class Runner:
                 if self.report.get("cleanup_verified"):
                     self.stage("private-credential-cleanup", self.remove_run_private_home)
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "cleanup recovery failed"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'cleanup recovery failed'}")
             self.report["cleanup_recovery_failure"] = failure
         finally:
             if self.locked:
@@ -1664,7 +1725,9 @@ class Runner:
                     self.report["cleanup_lock_error"] = self.redact(str(exc))
             else:
                 self.report["cleanup_verified"] = self.report.get("cleanup_verified", False)
-            self.finish(save_report=recovery_loaded or not previous_report_exists)
+            failure = self.finish_safely(
+                failure=failure,
+                save_report=recovery_loaded or not previous_report_exists)
         if failure:
             print(f"Pattern E2E cleanup failed: {failure}", file=sys.stderr)
             return 1
