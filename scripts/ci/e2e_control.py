@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -41,31 +42,57 @@ def status(repo: str, sha: str, state: str, description: str) -> None:
 
 def prepare() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
-    number = int(os.environ["CI_PR_NUMBER"])
-    if number <= 0:
-        raise RuntimeError("PR number must be a positive integer")
-    pr = api("GET", f"/repos/{repo}/pulls/{number}")
-    if pr.get("state") != "open":
-        raise RuntimeError("PR is not open")
-    base = pr.get("base")
-    base_repo = base.get("repo") if isinstance(base, dict) else None
-    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
-    if not isinstance(base_name, str) or base_name.lower() != repo.lower():
-        raise RuntimeError("PR does not target this repository")
-    head = pr.get("head", {})
-    sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(sha, str) or not SHA.fullmatch(sha):
-        raise RuntimeError("PR head SHA is invalid")
-    source_repo = head.get("repo")
-    source_name = (source_repo.get("full_name")
-                   if isinstance(source_repo, dict) else None)
-    if not isinstance(source_name, str) or not source_name:
-        raise RuntimeError("PR source repository is unavailable")
+    pr_input = os.environ.get("CI_PR_NUMBER", "").strip()
+    source_branch = os.environ.get("CI_SOURCE_BRANCH", "").strip()
+    if bool(pr_input) == bool(source_branch):
+        raise RuntimeError("provide exactly one PR number or branch name")
+
+    merge_sha = None
+    if pr_input:
+        try:
+            number = int(pr_input)
+        except ValueError as exc:
+            raise RuntimeError("PR number must be a positive integer") from exc
+        if number <= 0:
+            raise RuntimeError("PR number must be a positive integer")
+        pr = api("GET", f"/repos/{repo}/pulls/{number}")
+        if pr.get("state") != "open":
+            raise RuntimeError("PR is not open")
+        base = pr.get("base")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+        if not isinstance(base_name, str) or base_name.lower() != repo.lower():
+            raise RuntimeError("PR does not target this repository")
+        head = pr.get("head", {})
+        sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(sha, str) or not SHA.fullmatch(sha):
+            raise RuntimeError("PR head SHA is invalid")
+        source_repo = head.get("repo")
+        source_name = (source_repo.get("full_name")
+                       if isinstance(source_repo, dict) else None)
+        if not isinstance(source_name, str) or not source_name:
+            raise RuntimeError("PR source repository is unavailable")
+        merge_sha = pr.get("merge_commit_sha")
+        label = f"PR #{number}"
+        target_url = f"{os.environ['GITHUB_SERVER_URL']}/{repo}/pull/{number}"
+    else:
+        encoded_branch = urllib.parse.quote(source_branch, safe="")
+        ref = api("GET", f"/repos/{repo}/git/ref/heads/{encoded_branch}")
+        obj = ref.get("object") if isinstance(ref, dict) else None
+        sha = obj.get("sha") if isinstance(obj, dict) else None
+        if not isinstance(sha, str) or not SHA.fullmatch(sha):
+            raise RuntimeError("branch head SHA is invalid")
+        if isinstance(obj, dict) and obj.get("type") != "commit":
+            raise RuntimeError("branch does not point to a commit")
+        source_name = repo
+        label = f"branch {source_branch}"
+        encoded_url_branch = urllib.parse.quote(source_branch, safe="/")
+        target_url = f"{os.environ['GITHUB_SERVER_URL']}/{repo}/tree/{encoded_url_branch}"
 
     automatic = []
     # pull_request jobs can be attached to GitHub's current merge commit.
-    # Check both that commit and the latest PR head from the API response.
-    for commit in {sha, pr.get("merge_commit_sha")} - {None}:
+    # For PRs, check both that commit and the latest PR head from the API.
+    for commit in {sha, merge_sha} - {None}:
         checks = api("GET", f"/repos/{repo}/commits/{commit}/check-runs?per_page=100")
         check_runs = checks.get("check_runs") if isinstance(checks, dict) else None
         if not isinstance(check_runs, list):
@@ -83,11 +110,11 @@ def prepare() -> None:
     try:
         status(repo, sha, "pending", "Pattern E2E is queued for cluster test")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            output.write(f"sha={sha}\nbranch={branch}\n")
+            output.write(f"sha={sha}\nbranch={branch}\nlabel={label}\nurl={target_url}\n")
     except RuntimeError:
         api("DELETE", f"/repos/{repo}/git/refs/heads/{branch}")
         raise
-    print(f"Prepared PR {number} from {source_name} at {sha} on {branch}")
+    print(f"Prepared {label} from {source_name} at {sha} on {branch}")
 
 
 def finish() -> None:

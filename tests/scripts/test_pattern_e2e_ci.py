@@ -22,7 +22,7 @@ def runner(monkeypatch, tmp_path):
         "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
         "GITHUB_REPOSITORY": "example/repo",
         "CI_TARGET_BRANCH": "ci/pattern-e2e/123-1",
-        "CI_PR_NUMBER": "42",
+        "CI_TARGET_LABEL": "PR #42",
         "CI_ARTIFACT_DIR": str(tmp_path),
     }
     for key, value in variables.items():
@@ -964,6 +964,7 @@ def test_prepare_uses_latest_fork_head_and_pins_it(monkeypatch, tmp_path):
     for key, value in {
         "GITHUB_REPOSITORY": "example/repo", "CI_PR_NUMBER": "42",
         "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SERVER_URL": "https://github.com",
         "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
         "GITHUB_OUTPUT": str(output),
     }.items():
@@ -985,7 +986,9 @@ def test_prepare_uses_latest_fork_head_and_pins_it(monkeypatch, tmp_path):
 
     monkeypatch.setattr(e2e_control, "api", fake_api)
     e2e_control.prepare()
-    assert output.read_text() == f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+    assert output.read_text() == (
+        f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+        "label=PR #42\nurl=https://github.com/example/repo/pull/42\n")
     assert any(method == "POST" and path.endswith("/git/refs") for method, path, _ in calls)
     assert any(method == "POST" and path.endswith("/statuses/" + sha)
                and payload["context"] == "Pattern E2E" for method, path, payload in calls)
@@ -993,6 +996,53 @@ def test_prepare_uses_latest_fork_head_and_pins_it(monkeypatch, tmp_path):
                        if method == "POST" and path.endswith("/git/refs"))
     assert ref_payload == {"ref": "refs/heads/ci/pattern-e2e/123-1", "sha": sha}
     assert not any("/reviews?" in path for _method, path, _payload in calls)
+
+
+def test_prepare_uses_latest_branch_head_and_pins_it(monkeypatch, tmp_path):
+    sha = "c" * 40
+    output = tmp_path / "output"
+    for key, value in {
+        "GITHUB_REPOSITORY": "example/repo", "GITHUB_SERVER_URL": "https://github.com",
+        "CI_SOURCE_BRANCH": "feature/e2e", "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
+        "GITHUB_OUTPUT": str(output),
+    }.items():
+        monkeypatch.setenv(key, value)
+    calls = []
+
+    def fake_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path.endswith("/git/ref/heads/feature%2Fe2e"):
+            return {"object": {"sha": sha, "type": "commit"}}
+        if path.endswith(f"/commits/{sha}/check-runs?per_page=100"):
+            return {"check_runs": [{"name": "Deployment validation",
+                    "conclusion": "success", "app": {"slug": "github-actions"}}]}
+        return {}
+
+    monkeypatch.setattr(e2e_control, "api", fake_api)
+    e2e_control.prepare()
+
+    assert output.read_text() == (
+        f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+        "label=branch feature/e2e\n"
+        "url=https://github.com/example/repo/tree/feature/e2e\n")
+    assert any(method == "GET" and path.endswith("/git/ref/heads/feature%2Fe2e")
+               for method, path, _ in calls)
+    assert any(method == "POST" and path.endswith("/statuses/" + sha)
+               and payload["context"] == "Pattern E2E" for method, path, payload in calls)
+    ref_payload = next(payload for method, path, payload in calls
+                       if method == "POST" and path.endswith("/git/refs"))
+    assert ref_payload == {"ref": "refs/heads/ci/pattern-e2e/123-1", "sha": sha}
+
+
+@pytest.mark.parametrize(("pr_number", "branch"), [("", ""), ("42", "main")])
+def test_prepare_requires_exactly_one_target(monkeypatch, pr_number, branch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_PR_NUMBER", pr_number)
+    monkeypatch.setenv("CI_SOURCE_BRANCH", branch)
+    with pytest.raises(RuntimeError, match="exactly one PR number or branch name"):
+        e2e_control.prepare()
 
 
 def test_prepare_rejects_pr_targeting_another_repository(monkeypatch):

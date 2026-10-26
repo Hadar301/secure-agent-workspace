@@ -6,11 +6,13 @@ external dependencies, and checks the OpenShell BOM version. The report is
 `deployment-validation.json`.
 
 `Pattern E2E` is a manual workflow. Start it from the default branch and enter
-the PR number. The control job reads the latest head SHA from GitHub when the
-run starts. It checks that the PR is open, targets this repository, and has a
-passing `Deployment validation` check. It accepts PRs from forks. It then pins
-the tested SHA to a temporary branch. A new commit pushed after this check
-needs a new run.
+either a PR number or a branch name. Enter one value only. For a PR, the
+control job reads the latest head SHA from GitHub when the run starts. It
+checks that the PR is open, targets this repository, and has a passing
+`Deployment validation` check. It accepts PRs from forks. For a branch, it
+reads the latest commit from this repository. Both target types need a passing
+`Deployment validation` check. The control job pins the tested SHA to a
+temporary branch. A new commit after this check needs a new run.
 
 The cluster job waits for approval through the protected `pattern-e2e`
 environment before it receives cluster or inference credentials. Configure
@@ -85,10 +87,10 @@ manual `Pattern E2E` result. No nightly run is configured.
 
 The first `Deployment validation` run starts when a PR opens or changes. The
 first `Pattern E2E` run needs its workflow on the default branch. It also needs
-an open PR with a passing `Deployment validation` check. A required reviewer
-must approve the protected environment before the cluster job can access its
-secrets. Maintainers can manually select any PR, including a fork PR, before
-merge.
+either an open PR or a branch with a passing `Deployment validation` check. A
+required reviewer must approve the protected environment before the cluster
+job can access its secrets. Maintainers can select a branch in this repository
+or any PR that targets it, including a fork PR, before merge.
 
 ## Test coverage by stage
 
@@ -101,13 +103,13 @@ merge.
 | Deployment validation | Validate schemas | Rendered resources pass Kubernetes and vendored CRD schemas; missing or skipped schemas fail. |
 | Deployment validation | Check external dependencies | Referenced external images, Git refs, and package URLs exist; repository-built images are checked during E2E. |
 | Deployment validation | Check OpenShell versions | CLI, gateway, supervisor, and sandbox versions agree with the BOM; the interceptor ref matches the API version. |
-| PR control | Read and pin the latest PR commit | The PR is open, targets this repository, and the run pins the latest head SHA returned by GitHub; fork PRs are allowed. |
-| PR control | Check automatic validation | `Deployment validation` passed for the PR head or current merge commit. |
+| Target selection | Read and pin the latest target commit | The run accepts one open PR number or one branch name, resolves its latest commit, then pins that SHA; fork PRs are allowed. |
+| Target validation | Check automatic validation | `Deployment validation` passed for the selected branch commit or PR head/current merge commit. |
 | Environment approval | Protect cluster credentials | A required reviewer approves the `pattern-e2e` deployment before the job receives cluster and inference credentials. |
 | Workflow queue | Serialize cluster runs | GitHub runs one Pattern E2E workflow at a time and queues up to 100 waiting runs. |
 | Cluster preflight | Check cluster identity and freshness | The API URL and cluster UID match; no Pattern, VM, build, or test namespace from an earlier run exists. |
 | Cluster preflight | Check cluster capacity | The cluster has a default StorageClass, a Ready node with at least 4 CPU and 8 GiB, and valid CNV webhook state when present. |
-| Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, PR, SHA, and run link. |
+| Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, selected target, SHA, and run link. |
 | Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, and governance interceptor builds complete and produce image digests. |
 | Registry setup | Prepare guest image pulls | A short-lived, scoped registry token is added to private CI inputs for the guest VMs. |
 | Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests and CI network settings. |
