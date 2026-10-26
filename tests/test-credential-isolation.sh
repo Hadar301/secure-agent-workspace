@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Read-only checks for a deployed SAW. SSH must already be authorized; this
-# script does not add a key to the VM access Secret.
+# Checks for a deployed SAW; set SKIP_APPLY=1 to skip the apply restart.
+# SSH must already be authorized; this script does not add a VM access key.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -65,10 +65,9 @@ vm_exec() { virtctl "${ssh_args[@]}" --command "$1"; }
 
 guest_code="$(cat "$ROOT/scripts/scan-guest-credentials.py"; cat <<'PY'
 import pathlib, subprocess, sys
-needle = sys.stdin.buffer.read()
-hits = credential_hits(needle)
+hits = ca_key_files()
 if hits:
-    print('FAIL: provider key or gateway CA key found in guest files:', *sorted(set(hits)), sep='\n', file=sys.stderr)
+    print('FAIL: gateway CA key found in guest files:', *hits, sep='\n', file=sys.stderr)
     raise SystemExit(1)
 tls = pathlib.Path('/home/cloud-user/.local/state/openshell/tls')
 assert (tls/'client-ca.pem').read_bytes() == (tls/'ca.crt').read_bytes(), 'stale admin CA in bundle'
@@ -78,7 +77,9 @@ for base in (pathlib.Path('/home/cloud-user/.config/openshell'), pathlib.Path('/
         assert not __import__('re').search(r'OU\s*=\s*openshell-admin', p.stdout), f'admin cert on disk: {cert}'
 assert not pathlib.Path('/home/cloud-user/.local/state/saw-installer').exists()
 assert not pathlib.Path('/home/cloud-user/.config/openshell/gateways/saw-installer').exists()
-print('PASS guest: no provider key or CA key; client CA bundle and admin files are clean')
+print('PASS guest: no CA key; client CA bundle and admin files are clean', file=sys.stderr)
+import base64, gzip
+print(base64.b64encode(gzip.compress(b"".join(sorted(token_digests())))).decode())
 PY
 )"
 guest_b64="$(printf %s "$guest_code" | base64 -w0)"
@@ -90,11 +91,20 @@ cfg = json.load(open(sys.argv[1]))['data']['config.json']
 for b in json.loads(cfg)['credentialProxy']['secrets']:
     print(b['name'], b['key'], sep='\t')
 PY
+vm_exec "$remote" </dev/null > "$tmp/guest-digests.b64"
 while IFS=$'\t' read -r secret key; do
-  value="$(oc get secret "$secret" -n "$SAW_NS" -o json | "$PYTHON" -c \
-    'import json,sys; print(json.load(sys.stdin)["data"][sys.argv[1]])' "$key")"
-  printf %s "$value" | base64 -d | vm_exec "$remote"
-  echo "PASS $secret/$key absent from VM files"
+  oc get secret "$secret" -n "$SAW_NS" -o json | "$PYTHON" -c '
+import base64, gzip, hashlib, json, re, sys
+key = base64.b64decode(json.load(sys.stdin).get("data", {}).get(sys.argv[1], ""))
+if not key:
+    print(f"SKIP {sys.argv[2]}: empty key (keyless endpoint)"); raise SystemExit(0)
+if not re.fullmatch(rb"[A-Za-z0-9_-]{20,512}", key):
+    raise SystemExit(f"FAIL {sys.argv[2]}: key shape outside [A-Za-z0-9_-]{{20,512}}; cannot check")
+blob = gzip.decompress(base64.b64decode(open(sys.argv[3], "rb").read()))
+mine = hashlib.sha256(key).digest()[:8]
+if any(blob[i:i + 8] == mine for i in range(0, len(blob), 8)):
+    raise SystemExit(f"FAIL {sys.argv[2]}: provider key found in guest files")
+print(f"PASS {sys.argv[2]} absent from VM files")' "$key" "$secret/$key" "$tmp/guest-digests.b64"
 done < "$tmp/bindings.tsv"
 
 oc get deployment "$VM_NAME-credential-proxy" -n "$SAW_NS" -o jsonpath='{.status.readyReplicas}' | grep -qx 1
