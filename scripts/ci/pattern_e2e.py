@@ -542,7 +542,9 @@ class Runner:
                              "saw.redhat.com/run-url": self.run_url,
                              "saw.redhat.com/target-branch": self.branch,
                              "saw.redhat.com/created-at": now()}},
-            "data": {"state": "active", "baseline-namespaces": "",
+            "data": {"state": "active",
+                     "baseline-namespaces": json.dumps(
+                         sorted(self.baseline_namespaces)),
                      "build-attempted": "false", "install-attempted": "false",
                      "cleanup-verified": "false"},
         }
@@ -692,19 +694,22 @@ class Runner:
         if (annotations.get("saw.redhat.com/run-id") != self.run_id or
                 annotations.get("saw.redhat.com/sha") != self.sha):
             raise E2EError("cluster lock owner changed; manual recovery is required")
+        data = lock.get("data") or {}
+        if (data.get("state") != "cleanup-verified" or
+                data.get("cleanup-verified") != "true"):
+            raise E2EError("cleanup is not verified; refusing to release cluster lock")
         self.call(["oc", "delete", "configmap", LOCK_NAME, "-n", self.lock_ns,
                    "--wait=true"], timeout=90)
         self.locked = False
 
     def preflight(self) -> None:
         self.cluster_identity()
-        self.acquire_lock()
         self.baseline_namespaces = {
             item["metadata"]["name"] for item in self.oc_json("get", "namespaces")["items"]
         }
-        self.update_lock_data({
-            "baseline-namespaces": json.dumps(sorted(self.baseline_namespaces)),
-        })
+        # Write the cleanup baseline with the atomic lock create. Recovery must
+        # never see a lock that it cannot safely use to identify run resources.
+        self.acquire_lock()
         # This run requires a fresh cluster. Do not remove existing resources.
         resources = (
             ("patterns.gitops.hybrid-cloud-patterns.io", None),

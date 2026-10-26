@@ -189,6 +189,24 @@ def test_verify_kubeconfig_ca_rejects_missing_relative_file(runner, tmp_path):
         runner.verify_kubeconfig_ca()
 
 
+def test_manual_recovery_workflow_is_run_id_scoped_and_default_branch_only():
+    workflow_path = pattern_e2e.ROOT / ".github/workflows/pattern-e2e-cleanup.yml"
+    workflow = pattern_e2e.yaml.load(
+        workflow_path.read_text(encoding="utf-8"), Loader=pattern_e2e.yaml.BaseLoader)
+
+    run_id = workflow["on"]["workflow_dispatch"]["inputs"]["run_id"]
+    cleanup = workflow["jobs"]["cleanup"]
+    recovery_step = next(step for step in cleanup["steps"]
+                         if step.get("name") == "Recover the selected E2E run")
+
+    assert run_id["required"] == "true"
+    assert cleanup["if"] == (
+        "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
+    assert workflow["concurrency"]["group"] == "saw-pattern-e2e-cluster"
+    assert recovery_step["env"]["CI_RECOVERY_RUN_ID"] == "${{ inputs.run_id }}"
+    assert recovery_step["run"] == "make test-pattern-e2e-cleanup"
+
+
 def test_selected_storage_class_is_temporary_and_restored(runner, monkeypatch):
     selected = "ocs-external-storagecluster-ceph-rbd"
     classes = {
@@ -322,6 +340,26 @@ def test_busy_lock_reports_owner_without_replacing_it(runner, monkeypatch):
     assert all(args[:2] != ["oc", "delete"] for args in calls)
 
 
+def test_acquire_lock_stores_namespace_baseline_atomically(runner, monkeypatch):
+    runner.baseline_namespaces = {"default", "saw-ci-lock"}
+    calls = []
+
+    def fake_call(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+
+    runner.acquire_lock()
+
+    assert runner.locked is True
+    assert len(calls) == 1
+    assert calls[0][0] == ["oc", "create", "-f", "-"]
+    lock = json.loads(calls[0][1]["input_text"])
+    assert json.loads(lock["data"]["baseline-namespaces"]) == [
+        "default", "saw-ci-lock"]
+
+
 def test_lock_owner_change_prevents_release(runner, monkeypatch):
     runner.locked = True
     monkeypatch.setattr(runner, "oc_json", lambda *_args: {
@@ -358,13 +396,64 @@ def test_release_keeps_lock_namespace_and_deletes_only_configmap(runner, monkeyp
     calls = []
     monkeypatch.setattr(runner, "oc_json", lambda *_args: {"metadata": {
         "annotations": {"saw.redhat.com/run-id": runner.run_id,
-                        "saw.redhat.com/sha": runner.sha}}})
+                        "saw.redhat.com/sha": runner.sha}},
+        "data": {"state": "cleanup-verified", "cleanup-verified": "true"}})
     monkeypatch.setattr(runner, "call", lambda args, **_kwargs:
                         calls.append(args))
     runner.release_lock()
     assert calls == [["oc", "delete", "configmap", pattern_e2e.LOCK_NAME,
                       "-n", runner.lock_ns, "--wait=true"]]
     assert runner.locked is False
+
+
+def test_release_refuses_unverified_cleanup(runner, monkeypatch):
+    runner.locked = True
+    calls = []
+    monkeypatch.setattr(runner, "oc_json", lambda *_args: {"metadata": {
+        "annotations": {"saw.redhat.com/run-id": runner.run_id,
+                        "saw.redhat.com/sha": runner.sha}},
+        "data": {"state": "cleanup-required", "cleanup-verified": "false"}})
+    monkeypatch.setattr(runner, "call", lambda args, **_kwargs:
+                        calls.append(args))
+
+    with pytest.raises(pattern_e2e.E2EError, match="cleanup is not verified"):
+        runner.release_lock()
+
+    assert calls == []
+    assert runner.locked is True
+
+
+def test_preflight_captures_baseline_before_creating_lock(runner, monkeypatch):
+    events = []
+
+    def fake_oc_json(*args):
+        events.append(("oc_json", args))
+        if args == ("get", "namespaces"):
+            return {"items": [{"metadata": {"name": "default"}},
+                              {"metadata": {"name": "saw-ci-lock"}}]}
+        if args == ("get", "nodes"):
+            return {"items": [{}]}
+        raise AssertionError(f"unexpected oc_json call: {args}")
+
+    def fake_call(args, **_kwargs):
+        events.append(("call", args))
+        return SimpleNamespace(returncode=0, stdout='{"items": []}', stderr="")
+
+    monkeypatch.setattr(runner, "cluster_identity",
+                        lambda: events.append(("cluster_identity", None)))
+    monkeypatch.setattr(runner, "oc_json", fake_oc_json)
+    monkeypatch.setattr(runner, "call", fake_call)
+    monkeypatch.setattr(runner, "acquire_lock", lambda: events.append(
+        ("acquire_lock", set(runner.baseline_namespaces))))
+    monkeypatch.setattr(runner, "check_cnv_webhook", lambda: None)
+    monkeypatch.setattr(runner, "node_has_capacity", lambda _node: True)
+    monkeypatch.setattr(runner, "configure_storage_class", lambda: None)
+
+    runner.preflight()
+
+    assert events[0] == ("cluster_identity", None)
+    assert events[1] == ("oc_json", ("get", "namespaces"))
+    assert events[2] == ("acquire_lock", {"default", "saw-ci-lock"})
 
 
 def test_stop_run_utility_containers_by_run_label(runner, monkeypatch):

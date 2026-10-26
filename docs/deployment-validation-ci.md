@@ -59,13 +59,19 @@ users use the `ci-nvidia` profile, which needs only that key. Normal users
 can still use the data science profile with Brave web search.
 
 The cluster runner creates `saw-ci-lock` outside Pattern ownership and keeps
-the namespace across runs. It creates the `saw-pattern-e2e` ConfigMap there
-with an atomic create call. The lock holds the repository, PR, SHA, run ID,
-and run URL. A second run fails with the active run link. Cleanup removes only
-the ConfigMap after it verifies the lock owner. If cleanup fails or the runner
-stops, the ConfigMap remains. An administrator must inspect the cluster and
-remove the lock before another run. Do not use an age limit to release it.
-Every other workflow that changes this test cluster must honor this lock.
+the namespace across runs. The namespace is the CI control area; it is not a
+Pattern test resource. The runner creates the `saw-pattern-e2e` ConfigMap there
+with an atomic create call. The namespace baseline is part of that same create,
+so recovery never sees a new lock without its cleanup boundary. The lock holds
+the repository, PR, SHA, run ID, and run URL. A second run fails with the
+active run link. Cleanup removes only the ConfigMap after it verifies the lock
+owner and cleanup results. Lock release also requires the verified-cleanup
+state. If cleanup fails or the runner stops, the ConfigMap remains and blocks
+another run. Use the manual `Pattern E2E cleanup` workflow with the owning
+GitHub run ID to recover it. Recovery checks the repository and exact lock run
+ID. It keeps the lock if cleanup cannot be verified. Do not use an age limit
+to release it. Every workflow that changes this test cluster must honor this
+lock.
 
 Each run labels its Pattern utility container with the GitHub run ID. If a
 command times out, the runner stops the command process group and any utility
@@ -132,6 +138,7 @@ or any PR that targets it, including a fork PR, before merge.
 | Cleanup | Uninstall Pattern | The cleanup stage runs Pattern uninstall twice to check repeat behavior. |
 | Cleanup | Verify resource removal | Test namespaces and VMs, the Pattern, and repository Argo applications are gone; only namespaces created by the run are removed. |
 | Cleanup | Restore cluster storage settings | Cleanup restores prior StorageClass annotations before it releases the cluster lock. |
+| Manual recovery | Clean a stopped run | The default-branch workflow requires the run ID and releases only the matching lock after cleanup checks pass. |
 | Cleanup | Release the lock and source ref | The cluster lock and temporary Git ref are removed only after cleanup verification; otherwise both remain for recovery. |
 | Reporting | Publish result and artifacts | GitHub sets `Pattern E2E` to success only when tests and cleanup pass, and uploads structured results and resource status without credentials. |
 
