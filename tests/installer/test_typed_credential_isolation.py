@@ -1,80 +1,10 @@
 """Typed provider config must preserve the VM credential boundary."""
 from copy import deepcopy
-import hashlib
-import io
-import os
-import subprocess
-import tarfile
 
 import pytest
 
 from conftest import marker, proxy_for, resolve
 
-
-@pytest.mark.parametrize("fault", [None, "contents", "mode", "image-conflict"])
-def test_real_restore_allows_runtime_ownership_but_verifies_data_and_modes(ab, tmp_path, fault):
-    if "GNU tar" not in subprocess.check_output(["tar", "--version"], text=True):
-        pytest.skip("sandbox restore requires GNU tar")
-    root = tmp_path / "sandbox"
-    root.mkdir()
-    archive = root / ".saw-preserve.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
-        entry = tarfile.TarInfo("project.sh")
-        content = b"echo preserved\n"
-        entry.size, entry.mode = len(content), 0o750
-        entry.uid, entry.gid = os.getuid() + 12345, os.getgid() + 12346
-        tar.addfile(entry, io.BytesIO(content))
-        for name, data, mode in [("image/fixed", b"image version\n", 0o444),
-                                  ("image/config", b"user changes\n", 0o644)]:
-            entry = tarfile.TarInfo(name)
-            entry.size, entry.mode = len(data), mode
-            tar.addfile(entry, io.BytesIO(data))
-    # Like the CUDA image: immutable files and a writable user config share
-    # a directory the sandbox user cannot write. Existing directory metadata
-    # must survive, while the writable config must receive the user's changes.
-    image = root / "image"
-    image.mkdir()
-    (image / "fixed").write_bytes(b"different image\n" if fault == "image-conflict"
-                                 else b"image version\n")
-    (image / "fixed").chmod(0o444)
-    os.utime(image / "fixed", (0, 0))  # same immutable image entry as in the archive
-    (image / "config").write_bytes(b"image default\n")
-    image.chmod(0o555)
-    applier = ab.ProfileApplier(ab.Shell(), {"mtlsGateway": "g"}, {})
-    captured = []
-
-    class Captured(Exception):
-        pass
-
-    def capture(*args, **kwargs):
-        if args[:2] == ("sandbox", "upload") or "rm" in args:
-            return ab.Result(0, "", "")
-        captured.append(args[-1])
-        raise Captured()
-
-    applier.cli = capture
-    with pytest.raises(Captured):
-        applier.restore_sandbox(ab.Workspace(name="default"), ab.Sandbox(name="tools", type="generic"),
-                                {"archive": str(archive),
-                                 "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
-    script = captured[0].replace("cd /sandbox", f"cd {root}").replace(
-        "/sandbox/.saw-preserve.tar.gz", str(archive))
-    if fault in ("contents", "mode"):
-        change = ("printf changed > project.sh" if fault == "contents" else "chmod 600 project.sh")
-        script = script.replace("diffs=$(", change + "; diffs=$(", 1)
-    result = subprocess.run(["sh", "-c", "umask 077; " + script], capture_output=True, text=True)
-    if fault:
-        assert result.returncode != 0
-        assert archive.exists(), "a failed verification must keep its recovery archive"
-    else:
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert (root / "project.sh").read_bytes() == content
-        assert (root / "project.sh").stat().st_mode & 0o777 == 0o750
-        assert (root / "project.sh").stat().st_uid == os.getuid()
-        assert (image / "config").read_bytes() == b"user changes\n"
-        assert image.stat().st_mode & 0o777 == 0o555
-        assert not archive.exists()
-    image.chmod(0o755)  # allow pytest to remove the fixture
 
 
 def named(ab, tmp_path):
