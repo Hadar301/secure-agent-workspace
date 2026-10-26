@@ -116,12 +116,16 @@ def test_setup_files_stores_ca_beside_kubeconfig(runner, tmp_path, monkeypatch):
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setattr(pattern_e2e.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(runner, "verify_target_ref", lambda: None)
+    calls = []
 
     def fake_call(args, **_kwargs):
+        calls.append(args)
         if args[:3] == ["podman", "info", "--format"]:
             stdout = "amd64"
         elif args[:2] == ["openshell", "--version"]:
             stdout = f"openshell {api_version}"
+        elif args[:3] == ["oc", "get", "--raw=/version"]:
+            stdout = "{}"
         elif args[:3] == ["oc", "get", "configmap"]:
             stdout = json.dumps({"data": {"service-ca.crt":
                 "-----BEGIN CERTIFICATE-----\\nservice\\n-----END CERTIFICATE-----"}})
@@ -136,6 +140,24 @@ def test_setup_files_stores_ca_beside_kubeconfig(runner, tmp_path, monkeypatch):
     assert ca_path.read_bytes() == ca
     assert runner.env["KUBECONFIG"] == str(runner.home / ".kube/config")
     assert runner.env["OIDC_CA_BUNDLE"] == str(ca_path)
+    assert calls.index(["oc", "get", "--raw=/version"]) < next(
+        index for index, args in enumerate(calls)
+        if args[:3] == ["oc", "get", "configmap"])
+
+
+def test_verify_kubeconfig_ca_rejects_missing_relative_file(runner, tmp_path):
+    kube_dir = tmp_path / ".kube"
+    kube_dir.mkdir()
+    kubeconfig = kube_dir / "config"
+    kubeconfig.write_text(
+        "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority: cluster-ca.pem\n",
+        encoding="utf-8",
+    )
+    runner.env["KUBECONFIG"] = str(kubeconfig)
+
+    with pytest.raises(pattern_e2e.E2EError,
+                       match="private kubeconfig CA file is missing or unreadable"):
+        runner.verify_kubeconfig_ca()
 
 
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):

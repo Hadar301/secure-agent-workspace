@@ -301,6 +301,8 @@ class Runner:
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
         self.private_file(".kube/cluster-ca.pem", ca)
+        self.verify_kubeconfig_ca()
+        self.call(["oc", "get", "--raw=/version"], timeout=30)
         service_ca = self.oc_json("get", "configmap", "openshift-service-ca.crt",
                                   "-n", "openshift-service-ca")["data"]["service-ca.crt"]
         if "BEGIN CERTIFICATE" not in service_ca or "PRIVATE KEY" in service_ca:
@@ -354,6 +356,36 @@ class Runner:
         if not content:
             raise E2EError("CI_KUBECONFIG_FILE is empty")
         return content
+
+    def verify_kubeconfig_ca(self) -> None:
+        kubeconfig_path = Path(self.env["KUBECONFIG"])
+        try:
+            config = yaml.safe_load(kubeconfig_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            raise E2EError("private kubeconfig is invalid or unreadable") from None
+        if not isinstance(config, dict) or not isinstance(config.get("clusters"), list):
+            raise E2EError("private kubeconfig has no cluster CA configuration")
+        has_ca = False
+        for entry in config["clusters"]:
+            cluster = entry.get("cluster") if isinstance(entry, dict) else None
+            if not isinstance(cluster, dict):
+                continue
+            ca_data = cluster.get("certificate-authority-data")
+            if isinstance(ca_data, str) and ca_data:
+                has_ca = True
+            ca_file = cluster.get("certificate-authority")
+            if not ca_file:
+                continue
+            if not isinstance(ca_file, str):
+                raise E2EError("private kubeconfig CA path is invalid")
+            ca_path = Path(ca_file)
+            if not ca_path.is_absolute():
+                ca_path = kubeconfig_path.parent / ca_path
+            if not ca_path.is_file() or not os.access(ca_path, os.R_OK):
+                raise E2EError("private kubeconfig CA file is missing or unreadable")
+            has_ca = True
+        if not has_ca:
+            raise E2EError("private kubeconfig has no CA data")
 
     def private_home_from_report(self) -> Path:
         raw_path = self.report.get("private_home")
