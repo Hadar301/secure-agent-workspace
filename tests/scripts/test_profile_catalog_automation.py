@@ -53,6 +53,8 @@ def test_attached_model_fields_follow_enabled_sandbox_providers(scratch, enabled
     for name, model in [("openai", "gpt-6-luna"), ("anthropic", "claude-sonnet-4-6")]:
         if enabled:
             fields = {f["key"]: f for f in secrets[f"inference-{name}"]["fields"]}
+            assert fields["model"]["kind"] == "text"
+            assert fields["api_key"]["kind"] == "secret"
             assert fields["model"]["default"] == model
             assert fields["model"]["required"] is False
         else:

@@ -84,6 +84,15 @@ def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
     assert data["cuda_model"] == '{{ index . "cuda_model" | default "" }}'
 
 
+
+def test_ci_nvidia_binds_both_aliases_and_projects_only_provider(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{"name": "ciowner", "profiles": ["ci-nvidia"]}]))
+    values = helm_values(app(docs, "saw-ciowner"))
+    assert values["credentialProxy"]["secrets"] == [
+        {"name": "inference", "key": "api_key", "providers": ["nvidia", "build"]}]
+    secrets = helm_values(app(docs, "saw-ciowner-secrets"))
+    assert secrets["metaKeys"] == {"inference": ["provider"]}
+
 def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     namespaces = {doc["metadata"]["name"]: doc for doc in by_kind(docs, "Namespace")}
