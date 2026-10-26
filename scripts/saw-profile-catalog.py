@@ -70,7 +70,14 @@ def input_field(src, kind, fallback_title):
     return field
 
 
-def secret_fields(provider):
+def required_string(obj, key, source):
+    value = obj.get(key) if isinstance(obj, dict) else None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{source}: {key} must be a non-empty string")
+    return value
+
+
+def secret_fields(provider, source="provider"):
     """The fields a provider reads from its Secret, as the installer does
     (resolve_credentials): the credential(s), and optionally a base URL and
     a model (the older provider-level fields)."""
@@ -78,7 +85,8 @@ def secret_fields(provider):
     if isinstance(creds, dict) and creds:
         fields = []
         for i, (cname, entry) in enumerate(creds.items()):
-            fields.append({"key": entry["secretKey"], "kind": "secret", "required": True,
+            fields.append({"key": required_string(entry, "secretKey", f"{source}: credential {cname}"),
+                           "kind": "secret", "required": True,
                            "title": entry.get("title") or ("API key" if i == 0 else
                                                           f"Credential ({cname})")})
     else:
@@ -104,7 +112,7 @@ def secret_ref(src):
     return None
 
 
-def sandbox_fields(sandbox):
+def sandbox_fields(sandbox, providers=None):
     """(secret, field) for each input a sandbox reads from a Secret, as the
     installer does: its `inference:` settings (baseUrl: a URL field; model and
     timeoutSeconds: text). `env:` entries are literals fixed by the profile
@@ -116,6 +124,23 @@ def sandbox_fields(sandbox):
         src = inference.get(key)
         if secret_ref(src):
             yield secret_ref(src)[0], input_field(src, kind, f"{title} ({sandbox['name']})")
+    models = inference.get("models", {})
+    if not isinstance(models, dict):
+        raise ValueError("inference models must be a mapping")
+    for name, src in models.items():
+        if providers is not None:
+            if name not in providers:
+                raise ValueError(f"inference models names unknown provider '{name}'")
+            if providers[name].get("type") not in ("openai", "anthropic"):
+                raise ValueError(f"inference models '{name}' needs a native OpenAI or Anthropic provider")
+        if src == "" or (isinstance(src, dict) and not src.get("default")
+                         and not src.get("required", "default" not in src)):
+            raise ValueError(f"inference models '{name}' must be non-empty")
+        if providers is not None and (not providers[name].get("enabled", True)
+                                      or name not in sandbox.get("providers", [])):
+            continue
+        if secret_ref(src):
+            yield secret_ref(src)[0], input_field(src, "text", f"Model ({sandbox['name']}, {name})")
 
 
 def catalog():
@@ -134,6 +159,7 @@ def catalog():
             enabled = spec.get("enabled", True)
             sandboxes = []
             for sb in (load(wdir / "sandbox.yaml").get("spec") or {}).get("sandboxes") or []:
+                required_string(sb, "name", (wdir / "sandbox.yaml").relative_to(ROOT))
                 ui = sb.get("ui") or {}
                 sandboxes.append({"name": sb["name"], "type": sb.get("type", "generic"),
                                   "enabled": sb.get("enabled", True),
@@ -142,20 +168,31 @@ def catalog():
                                "sandboxes": sandboxes})
             if not enabled:
                 continue
-            for prov in (load(wdir / "providers.yaml").get("spec") or {}).get("providers") or []:
+            providers = (load(wdir / "providers.yaml").get("spec") or {}).get("providers") or []
+            for prov in providers:
                 if not prov.get("enabled", True) or not prov.get("credentialSecret"):
                     continue
                 entry = secrets.setdefault(prov["credentialSecret"],
                                            {"providers": [], "fields": []})
                 entry["providers"] = sorted(set(entry["providers"]) | {prov.get("type", "")})
-                for f in secret_fields(prov):
+                for f in secret_fields(prov, (wdir / "providers.yaml").relative_to(ROOT)):
                     if f["key"] not in {x["key"] for x in entry["fields"]}:
                         entry["fields"].append(f)
             # The inputs a sandbox reads from a Secret (inference, env).
             for sb in (load(wdir / "sandbox.yaml").get("spec") or {}).get("sandboxes") or []:
                 if not sb.get("enabled", True):
                     continue
-                for secret, f in sandbox_fields(sb):
+                inference = sb.get("inference") or {}
+                model = inference.get("model")
+                if model == "" or (isinstance(model, dict) and not model.get("default")
+                                   and not model.get("required", "default" not in model)):
+                    raise ValueError(f"{(wdir / 'sandbox.yaml').relative_to(ROOT)}: inference model "
+                                     "must be non-empty: use a non-empty default or required: true")
+                try:
+                    fields = list(sandbox_fields(sb, {p["name"]: p for p in providers}))
+                except ValueError as exc:
+                    raise ValueError(f"{(wdir / 'sandbox.yaml').relative_to(ROOT)}: {exc}") from None
+                for secret, f in fields:
                     entry = secrets.setdefault(secret, {"providers": [], "fields": []})
                     if f["key"] not in {x["key"] for x in entry["fields"]}:
                         entry["fields"].append(f)
@@ -459,7 +496,11 @@ def main(argv=None):
                      ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *mirror, INSTALLER_PROFILES):
             print(path.relative_to(ROOT))
         return 0
-    text = render()
+    try:
+        text = render()
+    except (ValueError, yaml.YAMLError) as exc:
+        print(f"invalid profile catalog: {exc}", file=sys.stderr)
+        return 1
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
     outputs.append((DELETE_TEMPLATE, render_delete_template()))

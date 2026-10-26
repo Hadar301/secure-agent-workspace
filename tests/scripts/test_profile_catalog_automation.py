@@ -25,6 +25,39 @@ def outputs():
     return listed
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_attached_model_fields_follow_enabled_sandbox_providers(scratch, enabled):
+    repo, env, _ = scratch
+    folder = repo / "charts/saw-bom/profiles/data-science/default"
+    source = folder / "providers.yaml"
+    providers = yaml.safe_load(source.read_text())
+    for p in providers["spec"]["providers"]:
+        if p["name"] in ("openai", "anthropic"):
+            p["enabled"] = enabled
+    source.write_text(yaml.safe_dump(providers))
+    source = folder / "sandbox.yaml"
+    doc = yaml.safe_load(source.read_text())
+    sb = doc["spec"]["sandboxes"][0]
+    sb["providers"] += ["openai", "anthropic"] if enabled else []
+    sb["inference"]["models"] = {
+        name: {"secretKeyRef": {"name": f"inference-{name}", "key": "model"},
+               "default": model, "title": f"Model ({name})"}
+        for name, model in [("openai", "gpt-6-luna"), ("anthropic", "claude-sonnet-4-6")]}
+    source.write_text(yaml.safe_dump(doc))
+    subprocess.run([sys.executable, str(repo / "scripts/saw-profile-catalog.py")],
+                   env=env, capture_output=True, text=True, check=True)
+    import json
+    catalog = json.loads((repo / "charts/saw-users/files/profile-catalog.json").read_text())
+    secrets = catalog["profiles"]["data-science"]["secrets"]
+    for name, model in [("openai", "gpt-6-luna"), ("anthropic", "claude-sonnet-4-6")]:
+        if enabled:
+            fields = {f["key"]: f for f in secrets[f"inference-{name}"]["fields"]}
+            assert fields["model"]["default"] == model
+            assert fields["model"]["required"] is False
+        else:
+            assert f"inference-{name}" not in secrets
+
+
 def test_list_names_every_generated_file():
     listed = outputs()
     # The six catalog/form files, plus the installer's mirror of every
@@ -78,6 +111,37 @@ def add_profile(repo, name="demo-new"):
     shutil.copytree(src, dst)
     for f in dst.rglob("*.yaml"):
         f.write_text(f.read_text().replace("profile: custom-inference", f"profile: {name}"))
+
+
+@pytest.mark.parametrize("file,key", [("providers.yaml", "secretKey"), ("sandbox.yaml", "name")])
+def test_invalid_profile_reports_its_source_without_a_traceback(scratch, file, key):
+    repo, env, _ = scratch
+    source = repo / "charts/saw-bom/profiles/custom-inference/default" / file
+    doc = yaml.safe_load(source.read_text())
+    if key == "secretKey":
+        doc["spec"]["providers"][0]["credentials"] = {"api_key": {}}
+    else:
+        doc["spec"]["sandboxes"][0].pop("name")
+    source.write_text(yaml.safe_dump(doc))
+    before = {p: (repo / p).read_bytes() for p in outputs() if (repo / p).is_file()}
+    result = subprocess.run([sys.executable, "scripts/saw-profile-catalog.py"], cwd=repo,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert str(source.relative_to(repo)) in result.stderr and key in result.stderr
+    assert all((repo / p).read_bytes() == content for p, content in before.items())
+
+
+def test_the_catalog_rejects_an_optional_model_with_an_empty_default(scratch):
+    repo, env, _ = scratch
+    source = repo / "charts/saw-bom/profiles/custom-inference/default/sandbox.yaml"
+    doc = yaml.safe_load(source.read_text())
+    doc["spec"]["sandboxes"][0]["inference"]["model"]["default"] = ""
+    source.write_text(yaml.safe_dump(doc))
+    result = subprocess.run([sys.executable, "scripts/saw-profile-catalog.py", "--check"],
+                            cwd=repo, env=env, capture_output=True, text=True)
+    assert result.returncode == 1 and "Traceback" not in result.stderr
+    assert "inference model must be non-empty" in result.stderr
 
 
 def test_the_hook_regenerates_and_commits_the_form_for_a_new_profile(scratch):

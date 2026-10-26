@@ -666,7 +666,8 @@ class Sandbox:
     # (the agent, and argv, can read these): those stay on providers.
     env: dict = field(default_factory=dict)
     # `inference:` -- how the agent reaches its model: {providerRef, protocol,
-    # baseUrl?, model, timeoutSeconds?}. Each of baseUrl/model/timeoutSeconds
+    # baseUrl?, model, models?, timeoutSeconds?}. models maps optional native
+    # provider names to additional chat model inputs. baseUrl/model/timeoutSeconds
     # is a literal or an input ({secretKeyRef: {name, key}, default?,
     # required?, title?}); inference_values is it resolved. The installer onboards the
     # agent from it (by protocol, so any profile-backed provider type works).
@@ -1655,7 +1656,8 @@ def validate_profiles(profiles, known_profiles=(), governed=False):
                 errors.append(f"{where}: {s.type} sandbox '{s.name}' needs at least one provider")
             if s.inference:
                 errors += [f"{where}: sandbox '{s.name}' {p}"
-                           for p in sandbox_inference_problems(s, provider_types)]
+                           for p in sandbox_inference_problems(
+                               s, provider_types, {p.name: p.type for p in ws.providers})]
             if not isinstance(s.env, dict):
                 errors.append(f"{where}: sandbox '{s.name}' env must be a mapping of NAME to "
                               "{value} or {secret, secretKey}")
@@ -1803,7 +1805,7 @@ def secret_ref_problems(src):
     if set(src["secretKeyRef"]) - {"name", "key"}:
         out.append("secretKeyRef takes only name and key")
     return out
-INFERENCE_KEYS = {"providerRef", "protocol", "baseUrl", "model", "timeoutSeconds"}
+INFERENCE_KEYS = {"providerRef", "protocol", "baseUrl", "model", "models", "timeoutSeconds"}
 # The API protocols the installer can onboard an agent with. A provider's
 # *profile* (type) says which hosts a credential may reach; the protocol says
 # how the agent talks to them, so a governed profile for another host (e.g.
@@ -1941,7 +1943,7 @@ def inference_protocol(spec, provider_type):
     return spec.get("protocol") or PROVIDER_PROTOCOLS.get(provider_type or "", "")
 
 
-def sandbox_inference_problems(sb, provider_types):
+def sandbox_inference_problems(sb, provider_types, declared_provider_types=None):
     """What is wrong with a sandbox's `inference:` block ([] when fine).
     `provider_types` maps the workspace's enabled provider names to their
     types."""
@@ -1968,9 +1970,29 @@ def sandbox_inference_problems(sb, provider_types):
                    f"provider type '{provider_types[ref]}' does not imply one")
     if "model" not in spec:
         out.append("inference needs model")
+    model = spec.get("model")
+    if model == "" or (isinstance(model, dict) and not model.get("default")
+                       and not model.get("required", "default" not in model)):
+        out.append("inference model must be non-empty: use a non-empty default or required: true")
     for key in ("baseUrl", "model"):
         if key in spec:
             out += [f"inference {key} {p}" for p in input_problems(spec[key])]
+    models = spec.get("models", {})
+    if not isinstance(models, dict):
+        out.append("inference models must be a mapping of provider names to model inputs")
+    else:
+        declared = declared_provider_types if declared_provider_types is not None else provider_types
+        if models and sb.type != "openclaw":
+            out.append("inference models is supported only for openclaw sandboxes")
+        for name, model in models.items():
+            if name not in declared:
+                out.append(f"inference models names unknown provider '{name}'")
+            elif declared[name] not in ("openai", "anthropic"):
+                out.append(f"inference models '{name}' needs a native OpenAI or Anthropic provider")
+            out += [f"inference models '{name}' {p}" for p in input_problems(model)]
+            if model == "" or (isinstance(model, dict) and not model.get("default")
+                              and not model.get("required", "default" not in model)):
+                out.append(f"inference models '{name}' must be non-empty")
     if "timeoutSeconds" in spec:
         out += [f"inference timeoutSeconds {p}"
                 for p in input_problems(spec["timeoutSeconds"], (str, int))]
@@ -2001,6 +2023,23 @@ def resolve_sandbox_inference(ws, sb, secrets_dir):
     if timeout and (not str(timeout).isdigit() or int(timeout) < 0):
         raise InstallerError(f"{where}: inference timeoutSeconds must be a non-negative integer")
     out["timeoutSeconds"] = int(timeout) if timeout else 0
+    if "models" in spec:
+        out["models"] = {}
+        for name, src in spec["models"].items():
+            attached = next((p for p in ws.providers if p.enabled and p.name == name
+                             and name in sb.providers), None)
+            if attached is None:
+                continue
+            if attached.base_url or attached.base_url_secret_key:
+                raise InstallerError(f"{where}: inference models '{name}' needs a native API")
+            model = resolve_input(src, secrets_dir, f"{where}: inference models '{name}'")
+            if not model:
+                raise InstallerError(f"{where}: inference models '{name}' is empty")
+            try:
+                check_env_value(model)
+            except ValueError as exc:
+                raise InstallerError(f"{where}: inference models '{name}': {exc}") from None
+            out["models"][name] = model
     for key in ("model", "baseUrl"):
         try:
             check_env_value(out[key])
@@ -2022,6 +2061,17 @@ def sandbox_model(sb, provider, default=""):
     if sb.inference_values:
         return sb.inference_values["model"]
     return sb.model or (provider.model if provider else "") or default
+
+
+def openclaw_agent_model(model_ref, current):
+    """Change the model without dropping its provider's selected credential."""
+    primary = current.get("primary", "") if isinstance(current, dict) else current
+    provider = model_ref.split("/", 1)[0]
+    if isinstance(primary, str) and primary.startswith(provider + "/"):
+        binding = primary.partition("@")[2]
+        if binding.startswith(provider + ":"):
+            model_ref += "@" + binding
+    return {**current, "primary": model_ref} if isinstance(current, dict) else model_ref
 
 
 def sandbox_endpoint(sb, provider):
@@ -4109,6 +4159,9 @@ class ProfileApplier:
         labels = None
         if state == "running" and not self.sh.dry_run:
             labels = self.sandbox_labels(ws, sb)
+            if labels is None:
+                raise InstallerError(f"sandbox '{sb.name}' labels cannot be read; "
+                                     "nothing was changed, the apply is retried")
         if key in self.migrations:
             state = self.recover_migration(ws, sb, state, labels)
             if state == "running":
@@ -4119,14 +4172,7 @@ class ProfileApplier:
                 self.begin_migration(ws, sb, labels)
                 state = "missing"
         if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
-            # Mounts are fixed at create: a sandbox created before its
-            # harnessRef, one that still mounts a harness it no longer has,
-            # or one that mounts another volume there is created again.
-            # OpenShell 0.1.x deletes the per-sandbox /sandbox workspace
-            # volume, including /sandbox/persist. Preserve needed files
-            # separately before a recreation; the harness volume is distinct.
-            log(f"Sandbox '{sb.name}' has stale or missing trusted mounts; recreating it")
-            self.delete_sandbox_and_wait(ws, sb)
+            self.begin_migration(ws, sb, labels, reason="stale or missing trusted mounts")
             state = "missing"
         if state == "running":
             log(f"Sandbox '{sb.name}' already exists")
@@ -4343,10 +4389,60 @@ class ProfileApplier:
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
+        model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
         if auth_choice:
-            model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models set {shlex.quote(model_id)}", check=False)
+        model_state = "/sandbox/.openclaw/saw-models.json"
+        seen = self.cli(*exec_cmd, "sh", "-c",
+                        f"if [ -f {model_state} ]; then cat {model_state}; else printf '[]'; fi",
+                        quiet=True)
+        try:
+            previous = json.loads(seen.out) if not self.sh.dry_run else []
+            if not isinstance(previous, list) or not all(isinstance(name, str) for name in previous):
+                raise ValueError("expected a list of model IDs")
+        except ValueError as exc:
+            raise InstallerError(f"cannot read OpenClaw managed models: {exc}") from None
+        if (sb.inference_values or {}).get("models") or previous:
+            current_models = self.cli(*exec_cmd, "sh", "-c",
+                                     f"{oc_env} openclaw config get agents.defaults --json",
+                                     quiet=True)
+            try:
+                defaults = json.loads(current_models.out) if not self.sh.dry_run else {}
+                if not isinstance(defaults, dict):
+                    raise ValueError("expected a mapping")
+                choices = defaults.get("models", {})
+                if not isinstance(choices, dict):
+                    raise ValueError("expected a mapping")
+            except ValueError as exc:
+                raise InstallerError(f"cannot read OpenClaw model choices: {exc}") from None
+            desired = {model_id: {}}
+            for name, selected_model in (sb.inference_values or {}).get("models", {}).items():
+                kind = next(p.type for p in ws.providers if p.name == name)
+                selected_id = (selected_model if selected_model.startswith(f"{kind}/")
+                               else f"{kind}/{selected_model}")
+                desired[selected_id] = {"agentRuntime": {"id": "openclaw"}} if kind == "openai" else {}
+            # Remember profile model IDs so removal never touches unrelated user choices.
+            for name in previous:
+                if name not in desired:
+                    choices.pop(name, None)
+            for name, settings in desired.items():
+                choices.setdefault(name, {}).update(settings)
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config set agents.defaults.models "
+                     + shlex.quote(json.dumps(choices))
+                     + f" && printf '%s\\n' {shlex.quote(json.dumps(list(desired)))} > {model_state}")
+        # Keep activation's credential binding: old profiles may hold stale placeholders.
+        current = self.cli(*exec_cmd, "sh", "-c",
+                           f"{oc_env} openclaw config get agents.entries.main.model --json",
+                           check=False, quiet=True)
+        try:
+            selected = json.loads(current.out) if current.ok else None
+        except ValueError:
+            selected = None
+        self.cli(*exec_cmd, "sh", "-c",
+                 f"{oc_env} openclaw config set agents.entries.main.model "
+                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected)))}")
         # The request timeout: OpenClaw's per-provider HTTP timeout
         # (models.providers.<id>.timeoutSeconds; the custom provider's id is
         # the --custom-provider-id above, a native one's its type).
@@ -4868,10 +4964,6 @@ class ProfileApplier:
         got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
         return (*(_label_from_text(got.out, k) for k in keys), "") if got.ok else None
 
-    def sandbox_env_label(self, ws, sb):
-        labels = self.sandbox_labels(ws, sb)
-        return None if labels is None else labels[0]
-
     # /sandbox is the sandbox's workspace volume, which OpenShell 0.1.x
     # deletes with the sandbox. What the installer mounts there itself is
     # excluded (it is refilled on create); the rest is carried across a
@@ -4916,6 +5008,12 @@ class ProfileApplier:
         # failed ("Cannot utime", found live). The archive excludes itself.
         pruned = {"./.saw", *("./" + m["target"][len("/sandbox/"):]
                              for m in sandbox_mounts(ws, sb) if m["target"].startswith("/sandbox/"))}
+        # A removed harness may still be mounted on the original sandbox.
+        seen = self.sandbox_mount_map(ws, sb)
+        if seen is not False:
+            pruned.update("./" + target[len("/sandbox/"):] for target in seen
+                          if target.startswith("/sandbox/"))
+        pruned.add("./" + Path(self.PRESERVE_SUM).name)
         prune = " ".join(f"-path {shlex.quote(p)} -prune -o" for p in sorted(pruned))
         own = shlex.quote("./" + Path(self.PRESERVE_ARCHIVE).name)
         script = (f"cd /sandbox || exit 3; rm -f {self.PRESERVE_ARCHIVE}; "
@@ -4950,36 +5048,74 @@ class ProfileApplier:
         local = Path(record["archive"])
         if not self.sh.dry_run and not local.is_file():
             raise InstallerError(f"the archive to restore into '{sb.name}' is missing: {local}")
-        # A leftover archive from an earlier attempt (a restore that failed
-        # after the upload) makes the next upload fail ("failed to add
-        # .saw-preserve.tar to tar archive", found live): remove it first.
-        self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
-                 "rm", "-f", self.PRESERVE_ARCHIVE, check=False, quiet=True)
-        # --no-git-ignore: `sandbox upload` filters by .gitignore rules by
-        # default and stops when the file is filtered (found live: the
-        # archive was refused and the restore never ran).
-        put = self.cli("sandbox", "upload", sb.name, *ws_args(ws.name), "--no-git-ignore",
-                       str(local), self.PRESERVE_ARCHIVE, check=False)
-        if not put.ok:
-            raise InstallerError(f"could not upload the archive into '{sb.name}'; the restore "
-                                 "is retried on the next apply")
-        q = shlex.quote
-        script = (f"[ \"$(sha256sum {self.PRESERVE_ARCHIVE} | cut -d' ' -f1)\" = "
-                  f"{q(record['sha256'])} ] || exit 4; cd /sandbox || exit 3; "
-                  # --no-overwrite-dir: an existing directory (the image's
-                  # .openclaw, say) keeps its metadata; a new one gets the
-                  # archived mode. The diff covers the non-directory members:
-                  # directory mtimes drift as soon as anything is written.
-                  f"tar -xzf {self.PRESERVE_ARCHIVE} --no-overwrite-dir && "
-                  f"tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
-                  f"tar -dzf {self.PRESERVE_ARCHIVE} -T - && rm -f {self.PRESERVE_ARCHIVE}")
-        done = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
-                        "sh", "-c", script, check=False)
-        if not done.ok:
-            why = {3: "no /sandbox", 4: "the uploaded archive does not match its checksum"}.get(
-                done.rc, f"exit {done.rc}")
-            raise InstallerError(f"could not restore the files of '{sb.name}' ({why}); the "
-                                 "restore is retried on the next apply")
+        if not self.sh.dry_run:
+            if sha256_file(local) != record["sha256"]:
+                raise InstallerError(f"the archive of '{sb.name}' does not match its checksum")
+            stamp = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                             "--no-tty", "--", "cat", self.PRESERVE_SUM,
+                             check=False, quiet=True)
+            if stamp.ok and stamp.out.strip() == record["sha256"]:
+                return
+        with tempfile.TemporaryDirectory(prefix="saw-restore-") as tmp:
+            digest = record["sha256"]
+            if not self.sh.dry_run:
+                ids = [self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                                "--no-tty", "--", "id", flag, quiet=True).out.strip()
+                       for flag in ("-u", "-g")]
+                if not all(value.isdigit() for value in ids):
+                    raise InstallerError(f"cannot determine restore uid/gid for '{sb.name}'")
+                # Sandbox exec cannot restore foreign ownership. Normalize a copy;
+                # keep the original recovery archive and verify all other metadata.
+                normalized = Path(tmp) / "restore.tar.gz"
+                try:
+                    with tarfile.open(local, "r:gz") as source, tarfile.open(normalized, "w:gz") as target:
+                        for member in source:
+                            member.uid, member.gid = map(int, ids)
+                            member.uname = member.gname = ""
+                            for key in ("uid", "gid", "uname", "gname"):
+                                member.pax_headers.pop(key, None)
+                            if member.isfile():
+                                with source.extractfile(member) as payload:
+                                    target.addfile(member, payload)
+                            else:
+                                target.addfile(member)
+                except (tarfile.TarError, OSError) as exc:
+                    raise InstallerError(f"cannot prepare restore archive for '{sb.name}': {exc}") from exc
+                local, digest = normalized, sha256_file(normalized)
+            # A leftover archive from an earlier attempt (a restore that failed
+            # after the upload) makes the next upload fail ("failed to add
+            # .saw-preserve.tar to tar archive", found live): remove it first.
+            self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                     "rm", "-f", self.PRESERVE_ARCHIVE, check=False, quiet=True)
+            # --no-git-ignore: `sandbox upload` filters by .gitignore rules by
+            # default and stops when the file is filtered (found live: the
+            # archive was refused and the restore never ran).
+            put = self.cli("sandbox", "upload", sb.name, *ws_args(ws.name), "--no-git-ignore",
+                           str(local), self.PRESERVE_ARCHIVE, check=False)
+            if not put.ok:
+                raise InstallerError(f"could not upload the archive into '{sb.name}'; the restore "
+                                     "is retried on the next apply")
+            q = shlex.quote
+            script = (f"[ \"$(sha256sum {self.PRESERVE_ARCHIVE} | cut -d' ' -f1)\" = "
+                      f"{q(digest)} ] || exit 4; cd /sandbox || exit 3; "
+                      # --no-overwrite-dir: an existing directory (the image's
+                      # .openclaw, say) keeps its metadata; a new one gets the
+                      # archived mode. The diff covers the non-directory members:
+                      # directory mtimes drift as soon as anything is written.
+                      f"tar -xzf {self.PRESERVE_ARCHIVE} --same-permissions --no-same-owner --no-overwrite-dir && "
+                      f"tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "
+                      f"tar -dzf {self.PRESERVE_ARCHIVE} -T - && "
+                      # Commit before the CLI returns: a retry after installer
+                      # death must not overwrite work done since the restore.
+                      f"printf '%s' {q(record['sha256'])} > {self.PRESERVE_SUM} && "
+                      f"rm -f {self.PRESERVE_ARCHIVE}")
+            done = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                            "sh", "-c", script, check=False)
+            if not done.ok:
+                why = {3: "no /sandbox", 4: "the uploaded archive does not match its checksum"}.get(
+                    done.rc, f"exit {done.rc}")
+                raise InstallerError(f"could not restore the files of '{sb.name}' ({why}); the "
+                                     "restore is retried on the next apply")
 
     def complete_migration(self, ws, sb):
         """The restore verified: forget the record and the archive. The only
@@ -4992,13 +5128,13 @@ class ProfileApplier:
             except OSError:
                 pass
 
-    def begin_migration(self, ws, sb, labels):
-        """Start recreating a running sandbox whose env differs from the
-        profile's: archive and verify its /sandbox, persist the record (the
+    def begin_migration(self, ws, sb, labels, reason="a different environment"):
+        """Recreate a sandbox for env or mount drift: archive and verify
+        its /sandbox, persist the record (the
         original's identity, the replacement's instance token and the env
         it will be created with), then delete it. The record exists before
         anything is destroyed, so every later apply can finish the job."""
-        log(f"Sandbox '{sb.name}' was created with a different environment; recreating it "
+        log(f"Sandbox '{sb.name}' has {reason}; recreating it "
             "(its /sandbox files are carried over, open sessions end)")
         self.wait_exec_ready(ws, sb)
         record = self.preserve_sandbox(ws, sb)
