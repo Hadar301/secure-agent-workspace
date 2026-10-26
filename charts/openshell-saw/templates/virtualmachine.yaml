@@ -200,5 +200,5 @@ spec:
         {{- range $i, $name := $secrets }}
         - name: saw-sec-{{ $i }}
           secret:
-            secretName: {{ if eq $name (include "openshell-sandbox.caBundleSecret" $) }}{{ $name }}{{ else }}{{ $name }}-meta{{ end }}
+            secretName: {{ include "openshell-sandbox.vmSecretSource" (list $ $name) }}
         {{- end }}

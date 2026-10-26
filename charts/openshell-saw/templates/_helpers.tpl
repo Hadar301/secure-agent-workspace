@@ -645,3 +645,10 @@ namespace podSelector is permitted; an empty namespaceSelector is not. */}}
   {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/* The Secret behind a VM Secret disk: provider Secrets only as their
+key-less -meta copies; the issuer CA bundle and registry pull token as is. */}}
+{{- define "openshell-sandbox.vmSecretSource" -}}
+{{- $root := index . 0 -}}{{- $name := index . 1 -}}
+{{- if has $name (list (include "openshell-sandbox.caBundleSecret" $root) ($root.Values.registry.authSecret | default "")) -}}{{ $name }}{{- else -}}{{ $name }}-meta{{- end -}}
+{{- end }}

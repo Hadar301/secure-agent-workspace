@@ -106,6 +106,19 @@ def test_registry_config_mounts_pull_secret_without_exposing_token():
         written(cloud_config(docs), "/etc/openshell/gateway.env")
 
 
+    volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+    sources = {v["secret"]["secretName"] for v in volumes if "secret" in v}
+    assert {"registry-pull", "inference-meta", "web-search-meta"} <= sources
+    assert not {"registry-pull-meta", "inference", "web-search"} & sources
+
+
+@pytest.mark.parametrize("name", ["inference", "web-search", "inference-meta"])
+def test_registry_pull_secret_cannot_alias_a_provider_secret(name):
+    assert "dedicated pull-token Secret" in render_error(
+        "--set-string", "registry.host=registry.example.test:5000",
+        "--set-string", f"registry.authSecret={name}")
+
+
 def test_registry_ca_bundle_base64_decodes_for_installer():
     host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
     pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"

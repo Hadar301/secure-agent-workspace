@@ -34,6 +34,10 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if and (or $registryCa $registrySecret) (not $registryHost) }}
 {{- fail "registry.host is required when registry.caBundle or registry.authSecret is set" }}
 {{- end }}
+{{- $providerNames := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact }}
+{{- if and $registrySecret (or (has $registrySecret $providerNames) (hasSuffix "-meta" $registrySecret)) }}
+{{- fail "registry.authSecret must name a dedicated pull-token Secret, not a provider Secret or its -meta copy" }}
+{{- end }}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
 {{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
 {{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}

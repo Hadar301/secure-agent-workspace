@@ -142,6 +142,11 @@ gateway PKI and causes the same sandbox recreation.
   isolation until refresh runs in the namespace proxy. Do not configure
   refresh credentials or refresh execution on the in-VM gateway.
 
+Pattern E2E mounts `registry.authSecret` unchanged: a four-hour
+`registry-viewer` token for `openshell-agents`, readable by VM root. This
+CI-only pull token is outside the guarantee for provider API keys and
+platform-admin mTLS authority. It must use a dedicated Secret.
+
 ## Rotation operations
 
 - **Provider key:** update its Vault value or namespace Secret, wait for the
