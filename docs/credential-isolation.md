@@ -121,7 +121,9 @@ gateway PKI and causes the same sandbox recreation.
 - `saw-users` derives `metaKeys` from every selected catalog field whose kind
   is not `secret`, plus optional `provider`. The metadata projection therefore
   retains fields such as `cuda_model` while excluding credential keys.
-  Quickstart likewise removes the keys listed in the Secret's bindings.
+  Quickstart uses the same allowlist: `provider` plus selected profiles'
+  nonsecret catalog fields, or `provider`, `model`, `url` for an unlisted
+  Secret. Bound keys and `api_key` are excluded in every case.
 - A shared Secret can omit `provider`. Its cluster-owned binding then permits
   the union of the listed types' hosts, plus the Secret's HTTPS `url` host.
   Setting `provider` narrows that union to the selected type's hosts.

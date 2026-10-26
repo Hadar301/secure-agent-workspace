@@ -54,6 +54,9 @@ MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
 ENDPOINT_URL="${ENDPOINT_URL:-}"
 PROFILES="${PROFILES:-}"
+# The catalog decides which nonsecret fields a -meta Secret may carry.
+PROFILE_CATALOG="${PROFILE_CATALOG:-$(cd "$(dirname "$0")/.." && pwd)/charts/saw-users/files/profile-catalog.json}"
+[[ -f "${PROFILE_CATALOG}" ]] || { echo "Error: profile catalog not found: ${PROFILE_CATALOG}" >&2; exit 1; }
 WEB_SEARCH="${WEB_SEARCH:-}"
 GCP_SA_JSON="${GCP_SA_JSON:-}"
 OIDC_ISSUER="${OIDC_ISSUER:-}"
@@ -293,12 +296,35 @@ if [[ -n "${API_KEY}" || -n "${MODEL}" || -n "${PROVIDER}" || -n "${ENDPOINT_URL
   fi
 fi
 
+# A -meta Secret carries only nonsecret fields, the rule saw-users applies to the
+# pattern-secrets ExternalSecrets (metaKeys): `provider` plus the selected
+# profiles' catalog fields whose kind is not `secret`, or provider/model/url for
+# a Secret no selected profile lists. Bound keys and api_key are never copied.
+metadata_keys() {
+  python3 - "$1" "${PROFILE_CATALOG}" "${PROFILES:-data-science}" "${proxy_bindings}" <<'PY'
+import json, sys
+name, catalog, profiles, bindings = sys.argv[1:]
+known = json.load(open(catalog)).get("profiles", {})
+keys, listed = {"provider"}, False
+for profile in filter(None, (p.strip() for p in profiles.split(","))):
+    entry = known.get(profile, {}).get("secrets", {}).get(name)
+    if entry is not None:
+        listed = True
+        keys.update(f["key"] for f in entry.get("fields", []) if f.get("kind") != "secret")
+if not listed:
+    keys.update(("model", "url"))
+keys -= {b.get("key") for b in json.loads(bindings) if b.get("name") == name}
+keys.discard("api_key")
+print(json.dumps(sorted(keys)))
+PY
+}
+
 sync_provider_metadata() {
-  local name="$1"
-  local creds
-  creds="$(jq -c --arg name "${name}" '[.[] | select(.name == $name) | .key] + ["api_key"] | unique' <<<"${proxy_bindings}")"
+  local name="$1" allowed
+  allowed="$(metadata_keys "${name}")"
   oc get secret "${name}" -n "${DEPLOY_NS}" -o json |
-    jq --argjson creds "${creds}" --arg name "${name}-meta" '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key as $k | $creds | index($k) | not)))}' |
+    jq --argjson allowed "${allowed}" --arg name "${name}-meta" \
+      '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:((.data // {}) | with_entries(select(.key as $k | $allowed | index($k))))}' |
     oc apply -f - >/dev/null
 }
 if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then

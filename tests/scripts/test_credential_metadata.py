@@ -5,16 +5,25 @@ from pathlib import Path
 import shlex
 import subprocess
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_quickstart_metadata_drops_all_bound_credentials(tmp_path):
+@pytest.mark.parametrize("profiles,name,bound,expected", [
+    ("", "inference", [], {"provider", "model", "cuda_model"}),
+    ("custom-inference", "inference", [], {"provider", "model", "url"}),
+    ("data-science", "unlisted", [], {"provider", "model", "url"}),
+    ("data-science", "inference", ["model"], {"provider", "cuda_model"}),
+])
+def test_quickstart_metadata_drops_all_bound_credentials(tmp_path, profiles, name, bound, expected):
     script = (ROOT / "scripts/openshell-saw-create.sh").read_text()
-    function = "sync_provider_metadata() {" + script.split("sync_provider_metadata() {", 1)[1].split("\n}", 1)[0] + "\n}"
+    functions = "\n".join(name + "() {" + script.split(name + "() {", 1)[1].split("\n}", 1)[0] + "\n}"
+                          for name in ("metadata_keys", "sync_provider_metadata"))
     secret = {"metadata": {"namespace": "saw-test"}, "data": {
         "provider": "cA==", "model": "bQ==", "cuda_model": "Y3VkYQ==", "url": "dQ==",
-        "api_key": "aw==", "client_secret": "cw=="}}
+        "api_key": "aw==", "client_secret": "cw==", "refresh_token": "cg=="}}
     bindir = tmp_path / "bin"
     bindir.mkdir()
     oc = bindir / "oc"
@@ -23,15 +32,17 @@ def test_quickstart_metadata_drops_all_bound_credentials(tmp_path):
                   "elif sys.argv[1] == 'apply': pathlib.Path(os.environ['TEST_CAPTURE']).write_text(sys.stdin.read())\n"
                   "else: raise SystemExit(2)\n")
     oc.chmod(0o755)
-    bindings = [{"name": "inference", "key": key, "providers": ["openai"]}
-                for key in ("api_key", "client_secret")]
+    bindings = [{"name": name, "key": key, "providers": ["openai"]}
+                for key in ["api_key", *bound]]
     capture = tmp_path / "metadata.json"
     command = ("DEPLOY_NS=saw-test\nproxy_bindings=" + shlex.quote(json.dumps(bindings)) +
-               "\n" + function + "\nsync_provider_metadata inference\n")
+               "\nPROFILES=" + shlex.quote(profiles) + "\nPROFILE_CATALOG=" +
+               shlex.quote(str(ROOT / "charts/saw-users/files/profile-catalog.json")) +
+               "\n" + functions + "\nsync_provider_metadata " + shlex.quote(name) + "\n")
     subprocess.run(["bash", "-euo", "pipefail", "-c", command], check=True,
                    env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
                         "TEST_SOURCE": json.dumps(secret), "TEST_CAPTURE": str(capture)})
     projected = json.loads(capture.read_text())
-    assert projected["metadata"] == {"name": "inference-meta", "namespace": "saw-test"}
+    assert projected["metadata"] == {"name": f"{name}-meta", "namespace": "saw-test"}
     assert projected["data"] == {key: secret["data"][key]
-                                 for key in ("provider", "model", "cuda_model", "url")}
+                                 for key in expected}

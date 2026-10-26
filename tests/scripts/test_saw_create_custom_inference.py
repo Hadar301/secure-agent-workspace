@@ -42,7 +42,7 @@ case "$1" in
          if [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]]; then
            if [[ " $* " == *" -o json "* ]]; then
              if [[ "$3" == inference-openai ]]; then
-               echo '{"metadata":{"namespace":"saw-cinf"},"data":{"provider":"b3BlbmFp","model":"Z3B0LTRv","api_key":"VEVTVC1LRVk="}}'
+               echo '{"metadata":{"namespace":"saw-cinf"},"data":{"provider":"b3BlbmFp","model":"Z3B0LTRv","api_key":"VEVTVC1LRVk=","client_secret":"c2VjcmV0"}}'
              else
                echo '{"metadata":{"namespace":"default"},"data":{}}'
              fi
