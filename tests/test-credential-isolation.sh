@@ -59,6 +59,7 @@ PY
 
 ssh_args=(-n "$SAW_NS" ssh "cloud-user@vm/$VM_NAME" --identity-file="$SSH_KEY_PATH"
   --local-ssh-opts=-oBatchMode=yes --local-ssh-opts=-oConnectTimeout=10
+  --local-ssh-opts=-oGSSAPIAuthentication=no
   --local-ssh-opts=-oStrictHostKeyChecking=no
   --local-ssh-opts=-oUserKnownHostsFile=/dev/null)
 vm_exec() { virtctl "${ssh_args[@]}" --command "$1"; }
