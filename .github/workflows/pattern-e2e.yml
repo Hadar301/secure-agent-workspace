@@ -76,6 +76,31 @@ jobs:
             openshell-checksums-sha256.txt | sha256sum -c -
           tar -xzf openshell-x86_64-unknown-linux-musl.tar.gz openshell
           sudo install -m 0755 openshell /usr/local/bin/openshell
+      - name: Log in to the cluster
+        env:
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_USERNAME: ${{ secrets.CI_CLUSTER_USERNAME }}
+          CI_CLUSTER_PASSWORD: ${{ secrets.CI_CLUSTER_PASSWORD }}
+          CI_CA_B64: ${{ secrets.CI_CA_B64 }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+        run: |
+          set -euo pipefail
+          if [[ -z "$CI_CLUSTER_API" || -z "$CI_CLUSTER_USERNAME" || -z "$CI_CLUSTER_PASSWORD" || -z "$CI_CA_B64" ]]; then
+            echo "Cluster login inputs are missing"
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$(dirname "$CI_KUBECONFIG_FILE")"
+          chmod 700 "$(dirname "$CI_KUBECONFIG_FILE")"
+          CI_CA_FILE="$(dirname "$CI_KUBECONFIG_FILE")/cluster-ca.pem"
+          printf '%s' "$CI_CA_B64" | base64 --decode > "$CI_CA_FILE"
+          chmod 600 "$CI_CA_FILE"
+          oc login "$CI_CLUSTER_API" \
+            --username="$CI_CLUSTER_USERNAME" \
+            --password="$CI_CLUSTER_PASSWORD" \
+            --certificate-authority="$CI_CA_FILE" \
+            --kubeconfig="$CI_KUBECONFIG_FILE"
+          chmod 600 "$CI_KUBECONFIG_FILE"
       - name: Install Pattern for E2E
         id: install
         env:
@@ -83,7 +108,7 @@ jobs:
           CI_PR_NUMBER: ${{ inputs.pr_number }}
           CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CI_KUBECONFIG_B64: ${{ secrets.CI_KUBECONFIG_B64 }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
           CI_CA_B64: ${{ secrets.CI_CA_B64 }}
           CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
           CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
@@ -106,10 +131,16 @@ jobs:
         if: always() && steps.install.outcome != 'skipped'
         env:
           CI_RECOVERY_RUN_ID: ${{ github.run_id }}
-          CI_KUBECONFIG_B64: ${{ secrets.CI_KUBECONFIG_B64 }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
           CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
           CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
         run: make test-pattern-e2e-cleanup
+      - name: Remove cluster login files
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/pattern-e2e-auth" ]]; then
+            rm -r "$RUNNER_TEMP/pattern-e2e-auth"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

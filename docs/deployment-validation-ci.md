@@ -17,8 +17,9 @@ Create an environment named `pattern-e2e`. Add these values:
 
 | Name | Type | Value |
 | --- | --- | --- |
-| `CI_KUBECONFIG_B64` | secret | Base64 of a cluster-admin kubeconfig |
-| `CI_CA_B64` | secret | Base64 of the PEM CA bundle for application routes and downloads |
+| `CI_CLUSTER_USERNAME` | secret | OpenShift user for the dedicated CI cluster |
+| `CI_CLUSTER_PASSWORD` | secret | Password for the OpenShift user |
+| `CI_CA_B64` | secret | Base64 of the PEM CA bundle for the API, application routes, and downloads |
 | `CI_INFERENCE_KEY` | secret | NVIDIA inference API key |
 | `CI_CLUSTER_API` | variable | Exact `oc whoami --show-server` URL |
 | `CI_CLUSTER_UID` | variable | UID of the `kube-system` namespace |
@@ -30,7 +31,9 @@ registry, GitHub, the OpenShift client mirror, and public package registries.
 The fresh cluster must have a default StorageClass for the VM disks. The
 runner checks this before it starts builds and does not change the cluster
 default.
-The kubeconfig and CA stay in a private temporary home. The workflow uploads
+Each run uses `oc login` to create a fresh kubeconfig. The workflow stores it
+under a private runner temporary directory, copies it into the runner's
+private home, and removes the login files after cleanup. The workflow uploads
 only structured results and resource status. It does not upload credentials.
 The runner requires the NVIDIA key for a real inference request. The two CI
 users use the `ci-nvidia` profile, which needs only that key. Normal users

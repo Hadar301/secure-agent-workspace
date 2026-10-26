@@ -104,7 +104,7 @@ class Runner:
         # private directory for the run.
         self.env["XDG_CONFIG_HOME"] = (
             os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
-        for key in ("CI_KUBECONFIG_B64", "CI_CA_B64", "CI_INFERENCE_KEY"):
+        for key in ("CI_KUBECONFIG_FILE", "CI_CA_B64", "CI_INFERENCE_KEY"):
             self.env.pop(key, None)
         self.locked = False
         self.lock_namespace_created = False
@@ -231,7 +231,7 @@ class Runner:
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
         self.env["PUSH_IMAGE_REPO"] = ""
-        kubeconfig = base64.b64decode(self.required("CI_KUBECONFIG_B64"), validate=True)
+        kubeconfig = self.read_kubeconfig_file()
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
         self.private_file("cluster-ca.pem", ca)
@@ -278,6 +278,16 @@ class Runner:
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         target.write_bytes(content)
         target.chmod(0o600)
+
+    def read_kubeconfig_file(self) -> bytes:
+        path = Path(self.required("CI_KUBECONFIG_FILE"))
+        try:
+            content = path.read_bytes()
+        except OSError:
+            raise E2EError("CI_KUBECONFIG_FILE is missing or unreadable") from None
+        if not content:
+            raise E2EError("CI_KUBECONFIG_FILE is empty")
+        return content
 
     def private_home_from_report(self) -> Path:
         raw_path = self.report.get("private_home")
@@ -550,7 +560,7 @@ class Runner:
         self.env["TARGET_ORIGIN"] = "origin"
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
-        kubeconfig = base64.b64decode(self.required("CI_KUBECONFIG_B64"), validate=True)
+        kubeconfig = self.read_kubeconfig_file()
         self.private_file(".kube/config", kubeconfig)
         self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
 

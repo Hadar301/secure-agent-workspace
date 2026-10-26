@@ -67,6 +67,23 @@ def test_runner_keeps_podman_config_when_home_is_private(runner, monkeypatch):
     assert configured.env["XDG_CONFIG_HOME"] == "/host-home/.config"
 
 
+def test_read_kubeconfig_file_reads_runtime_login_file(runner, tmp_path, monkeypatch):
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("apiVersion: v1\nkind: Config\n", encoding="utf-8")
+    monkeypatch.setenv("CI_KUBECONFIG_FILE", str(kubeconfig))
+
+    assert runner.read_kubeconfig_file() == b"apiVersion: v1\nkind: Config\n"
+
+
+def test_read_kubeconfig_file_rejects_empty_file(runner, tmp_path, monkeypatch):
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.touch()
+    monkeypatch.setenv("CI_KUBECONFIG_FILE", str(kubeconfig))
+
+    with pytest.raises(pattern_e2e.E2EError, match="CI_KUBECONFIG_FILE is empty"):
+        runner.read_kubeconfig_file()
+
+
 def test_parent_argo_drift_is_ready_when_child_apps_are_healthy(runner):
     child = {
         "metadata": {"name": "saw-ciowner"},
