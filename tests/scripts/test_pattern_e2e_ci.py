@@ -22,7 +22,7 @@ def runner(monkeypatch, tmp_path):
         "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
         "GITHUB_REPOSITORY": "example/repo",
         "CI_TARGET_BRANCH": "ci/pattern-e2e/123-1",
-        "CI_PR_NUMBER": "42",
+        "CI_TARGET_LABEL": "PR #42",
         "CI_ARTIFACT_DIR": str(tmp_path),
     }
     for key, value in variables.items():
@@ -949,24 +949,22 @@ def test_workflow_finish_retains_source_ref_until_cleanup_is_verified(
                and payload["state"] == "failure" for method, path, payload in calls)
 
 
-def test_changed_pr_sha_is_rejected(monkeypatch):
+def test_prepare_rejects_closed_pr(monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
     monkeypatch.setenv("CI_PR_NUMBER", "42")
-    monkeypatch.setenv("CI_HEAD_SHA", "a" * 40)
-    monkeypatch.setattr(e2e_control, "api", lambda *_args: {
-        "state": "open", "head": {"sha": "b" * 40,
-                                   "repo": {"full_name": "example/repo"}}})
-    with pytest.raises(RuntimeError, match="SHA changed"):
+    monkeypatch.setattr(e2e_control, "api", lambda *_args: {"state": "closed"})
+    with pytest.raises(RuntimeError, match="PR is not open"):
         e2e_control.prepare()
 
 
-def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path):
+def test_prepare_uses_latest_fork_head_and_pins_it(monkeypatch, tmp_path):
     sha = "a" * 40
     merge = "b" * 40
     output = tmp_path / "output"
     for key, value in {
         "GITHUB_REPOSITORY": "example/repo", "CI_PR_NUMBER": "42",
-        "CI_HEAD_SHA": sha, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SERVER_URL": "https://github.com",
         "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
         "GITHUB_OUTPUT": str(output),
     }.items():
@@ -976,12 +974,11 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
     def fake_api(method, path, payload=None):
         calls.append((method, path, payload))
         if path.endswith("/pulls/42"):
-            return {"state": "open", "head": {"sha": sha,
-                    "repo": {"full_name": "example/repo"}},
+            return {"state": "open",
+                    "base": {"repo": {"full_name": "example/repo"}},
+                    "head": {"sha": sha,
+                    "repo": {"full_name": "contributor/repo"}},
                     "merge_commit_sha": merge}
-        if path.endswith("/reviews?per_page=100&page=1"):
-            return [{"state": "APPROVED", "commit_id": sha,
-                     "user": {"login": "reviewer"}}]
         if f"/{merge}/check-runs" in path:
             return {"check_runs": [{"name": "Deployment validation",
                     "conclusion": "success", "app": {"slug": "github-actions"}}]}
@@ -989,46 +986,72 @@ def test_current_approval_and_merge_check_allow_fixed_ref(monkeypatch, tmp_path)
 
     monkeypatch.setattr(e2e_control, "api", fake_api)
     e2e_control.prepare()
-    assert output.read_text() == f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+    assert output.read_text() == (
+        f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+        "label=PR #42\nurl=https://github.com/example/repo/pull/42\n")
     assert any(method == "POST" and path.endswith("/git/refs") for method, path, _ in calls)
     assert any(method == "POST" and path.endswith("/statuses/" + sha)
                and payload["context"] == "Pattern E2E" for method, path, payload in calls)
+    ref_payload = next(payload for method, path, payload in calls
+                       if method == "POST" and path.endswith("/git/refs"))
+    assert ref_payload == {"ref": "refs/heads/ci/pattern-e2e/123-1", "sha": sha}
+    assert not any("/reviews?" in path for _method, path, _payload in calls)
 
 
-def test_later_review_page_can_revoke_an_older_approval(monkeypatch, tmp_path):
-    sha = "a" * 40
+def test_prepare_uses_latest_branch_head_and_pins_it(monkeypatch, tmp_path):
+    sha = "c" * 40
+    output = tmp_path / "output"
     for key, value in {
-        "GITHUB_REPOSITORY": "example/repo", "CI_PR_NUMBER": "42",
-        "CI_HEAD_SHA": sha, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_REPOSITORY": "example/repo", "GITHUB_SERVER_URL": "https://github.com",
+        "CI_SOURCE_BRANCH": "feature/e2e", "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
         "CI_RUN_URL": "https://github.com/example/repo/actions/runs/123",
-        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_OUTPUT": str(output),
     }.items():
         monkeypatch.setenv(key, value)
-    page_one = [
-        {"state": "COMMENTED", "user": {"login": f"reviewer-{index}"}}
-        for index in range(99)
-    ]
-    page_one.append({"state": "APPROVED", "commit_id": sha,
-                     "user": {"login": "reviewer"}})
     calls = []
 
     def fake_api(method, path, payload=None):
         calls.append((method, path, payload))
-        if path.endswith("/pulls/42"):
-            return {"state": "open", "head": {"sha": sha,
-                    "repo": {"full_name": "example/repo"}},
-                    "merge_commit_sha": "b" * 40}
-        if path.endswith("/reviews?per_page=100&page=1"):
-            return page_one
-        if path.endswith("/reviews?per_page=100&page=2"):
-            return [{"state": "CHANGES_REQUESTED", "commit_id": sha,
-                     "user": {"login": "reviewer"}}]
-        return {"check_runs": []}
+        if path.endswith("/git/ref/heads/feature%2Fe2e"):
+            return {"object": {"sha": sha, "type": "commit"}}
+        if path.endswith(f"/commits/{sha}/check-runs?per_page=100"):
+            return {"check_runs": [{"name": "Deployment validation",
+                    "conclusion": "success", "app": {"slug": "github-actions"}}]}
+        return {}
 
     monkeypatch.setattr(e2e_control, "api", fake_api)
+    e2e_control.prepare()
 
-    with pytest.raises(RuntimeError, match="no active approval"):
+    assert output.read_text() == (
+        f"sha={sha}\nbranch=ci/pattern-e2e/123-1\n"
+        "label=branch feature/e2e\n"
+        "url=https://github.com/example/repo/tree/feature/e2e\n")
+    assert any(method == "GET" and path.endswith("/git/ref/heads/feature%2Fe2e")
+               for method, path, _ in calls)
+    assert any(method == "POST" and path.endswith("/statuses/" + sha)
+               and payload["context"] == "Pattern E2E" for method, path, payload in calls)
+    ref_payload = next(payload for method, path, payload in calls
+                       if method == "POST" and path.endswith("/git/refs"))
+    assert ref_payload == {"ref": "refs/heads/ci/pattern-e2e/123-1", "sha": sha}
+
+
+@pytest.mark.parametrize(("pr_number", "branch"), [("", ""), ("42", "main")])
+def test_prepare_requires_exactly_one_target(monkeypatch, pr_number, branch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_PR_NUMBER", pr_number)
+    monkeypatch.setenv("CI_SOURCE_BRANCH", branch)
+    with pytest.raises(RuntimeError, match="exactly one PR number or branch name"):
         e2e_control.prepare()
 
-    assert any(path.endswith("/reviews?per_page=100&page=2")
-               for _method, path, _payload in calls)
+
+def test_prepare_rejects_pr_targeting_another_repository(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("CI_PR_NUMBER", "42")
+    monkeypatch.setattr(e2e_control, "api", lambda *_args: {
+        "state": "open",
+        "base": {"repo": {"full_name": "other/repo"}},
+        "head": {"sha": "a" * 40, "repo": {"full_name": "contributor/repo"}},
+    })
+    with pytest.raises(RuntimeError, match="does not target this repository"):
+        e2e_control.prepare()

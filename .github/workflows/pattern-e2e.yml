@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Reviewed same-repository PR number
-        required: true
+        description: Open PR number to test
+        required: false
         type: number
-      expected_sha:
-        description: Full current PR head commit SHA
-        required: true
+      branch:
+        description: Branch name to test (in this repository)
+        required: false
         type: string
+
+concurrency:
+  group: saw-pattern-e2e-cluster
+  queue: max
 
 permissions: {}
 
@@ -26,24 +30,29 @@ jobs:
     outputs:
       sha: ${{ steps.control.outputs.sha }}
       branch: ${{ steps.control.outputs.branch }}
+      label: ${{ steps.control.outputs.label }}
+      url: ${{ steps.control.outputs.url }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
-      - name: Verify PR and reserve a fixed source ref
+      - name: Read latest PR head and reserve a fixed source ref
         id: control
         env:
           GH_TOKEN: ${{ github.token }}
           CI_PR_NUMBER: ${{ inputs.pr_number }}
-          CI_HEAD_SHA: ${{ inputs.expected_sha }}
+          CI_SOURCE_BRANCH: ${{ inputs.branch }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python scripts/ci/e2e_control.py prepare
 
   execute:
     needs: prepare
+    name: "Pattern E2E ${{ needs.prepare.outputs.label }} @ ${{ needs.prepare.outputs.sha }}"
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    environment: pattern-e2e
+    environment:
+      name: pattern-e2e
+      url: ${{ needs.prepare.outputs.url }}
     permissions:
       contents: read
     steps:
@@ -105,7 +114,7 @@ jobs:
         id: install
         env:
           CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
-          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_TARGET_LABEL: ${{ needs.prepare.outputs.label }}
           CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
@@ -120,7 +129,7 @@ jobs:
         id: live
         env:
           CI_HEAD_SHA: ${{ needs.prepare.outputs.sha }}
-          CI_PR_NUMBER: ${{ inputs.pr_number }}
+          CI_TARGET_LABEL: ${{ needs.prepare.outputs.label }}
           CI_TARGET_BRANCH: ${{ needs.prepare.outputs.branch }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}

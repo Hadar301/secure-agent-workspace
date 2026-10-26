@@ -72,11 +72,12 @@ class Runner:
             raise E2EError("CI_E2E_PHASE must be all, install, or live")
         self.phase = phase
         self.recovery = recovery
+        self.repo = self.required("GITHUB_REPOSITORY")
+        self.target_label = ""
         if recovery:
             self.sha = ""
             self.run_id = ""
             self.run_url = ""
-            self.repo = self.required("GITHUB_REPOSITORY")
             self.branch = ""
             self.recovery_run_id = self.required("CI_RECOVERY_RUN_ID")
             if not self.recovery_run_id.isdigit():
@@ -87,8 +88,8 @@ class Runner:
                 raise E2EError("CI_HEAD_SHA must be a full commit SHA")
             self.run_id = self.required("GITHUB_RUN_ID")
             self.run_url = self.required("CI_RUN_URL")
-            self.repo = self.required("GITHUB_REPOSITORY")
             self.branch = self.required("CI_TARGET_BRANCH")
+            self.target_label = self.required("CI_TARGET_LABEL")
             self.recovery_run_id = ""
         self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
         self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
@@ -499,7 +500,7 @@ class Runner:
             "metadata": {"name": LOCK_NAME, "namespace": self.lock_ns,
                          "annotations": {
                              "saw.redhat.com/repository": self.repo,
-                             "saw.redhat.com/pr": self.required("CI_PR_NUMBER"),
+                             "saw.redhat.com/target": self.target_label,
                              "saw.redhat.com/sha": self.sha,
                              "saw.redhat.com/run-id": self.run_id,
                              "saw.redhat.com/run-url": self.run_url,
