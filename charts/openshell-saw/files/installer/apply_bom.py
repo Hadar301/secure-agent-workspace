@@ -2965,6 +2965,30 @@ def certificate_fingerprint(path):
     return hashlib.sha256(der).hexdigest()
 
 
+def mount_upgrade_proxy_ca(inputs, shell, dry_run=False,
+                           dev_dir="/dev/disk/by-id", virtio_dir="/sys/bus/virtio/devices"):
+    """Older cloud-init mount helpers do not know the newly attached CA disk.
+
+    Mount only the chart's dedicated public CA input, read-only. Cloud-init
+    does not refresh its helper on an existing root disk after an upgrade.
+    """
+    target = inputs.proxy_ca
+    if (target / "ca.crt").is_file() or os.path.ismount(target):
+        return
+    device = Path(dev_dir) / "virtio-saw-proxy-ca"
+    if device.exists():
+        kind, source = "iso9660", str(device)
+    elif any(tag.read_text(encoding="utf-8").strip() == "saw-proxy-ca"
+             for tag in Path(virtio_dir).glob("*/tag")):
+        kind, source = "virtiofs", "saw-proxy-ca"
+    else:
+        return  # The caller still rejects a missing required public CA.
+    log("Mounting the public proxy CA input for the legacy guest bootstrap")
+    if not dry_run:
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shell.run(["mount", "-t", kind, "-o", "ro,nosuid,nodev,noexec", source, str(target)])
+
+
 def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
                        dry_run=False):
     """Install the tmpfs-only CA generator and rotate legacy gateway PKI.
@@ -2979,6 +3003,7 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
     proxy_ca = inputs.proxy_ca / "ca.crt"
     if not script.is_file() or not dropin_source.is_file():
         raise InstallerError("installer disk lacks the gateway PKI script or drop-in")
+    mount_upgrade_proxy_ca(inputs, shell, dry_run=dry_run)
     if not proxy_ca.is_file():
         raise InstallerError("required saw-proxy-ca disk is missing ca.crt")
     proxy_pem = proxy_ca.read_text(encoding="utf-8")

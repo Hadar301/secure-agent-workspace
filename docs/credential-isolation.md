@@ -110,6 +110,9 @@ archives `/sandbox` from the workload's podman volume and verifies the archive,
 then restores the files into the replacement. An unavailable or failed archive
 stops migration without deleting the sandbox. Interrupted migrations resume
 from the volume even when the old supervisor cannot reach the rotated gateway.
+Argo applies the API firewall exception before running the CA bootstrap hook.
+The installer also mounts the newly attached public CA input when an existing
+VM still has the old cloud-init mount helper.
 Users must fetch the new gateway CA (`make saw-configure` or
 `scripts/extract-gateway-ca.sh`). Rotate every provider key that previously
 reached a VM; old copies on copy-on-write storage cannot be reliably scrubbed.

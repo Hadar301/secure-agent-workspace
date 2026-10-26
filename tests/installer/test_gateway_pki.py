@@ -3,10 +3,54 @@
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import CHART
+
+
+@pytest.mark.parametrize("transport", ["iso9660", "virtiofs"])
+def test_legacy_guest_mounts_attached_public_ca_read_only(ab, tmp_path, transport):
+    devices, virtio = tmp_path / "devices", tmp_path / "virtio"
+    devices.mkdir()
+    virtio.mkdir()
+    if transport == "iso9660":
+        (devices / "virtio-saw-proxy-ca").touch()
+    else:
+        (virtio / "virtio7").mkdir()
+        (virtio / "virtio7/tag").write_text("saw-proxy-ca\n")
+    target = tmp_path / "inputs/proxy-ca"
+    calls = []
+
+    def mount(argv):
+        calls.append(argv)
+        (target / "ca.crt").write_text("public CA")
+
+    inputs = SimpleNamespace(proxy_ca=target)
+    shell = SimpleNamespace(run=mount)
+    kwargs = {"dev_dir": devices, "virtio_dir": virtio}
+    ab.mount_upgrade_proxy_ca(inputs, shell, dry_run=True, **kwargs)
+    assert not calls and not target.exists()
+    ab.mount_upgrade_proxy_ca(inputs, shell, **kwargs)
+    source = str(devices / "virtio-saw-proxy-ca") if transport == "iso9660" else "saw-proxy-ca"
+    assert calls == [["mount", "-t", transport, "-o", "ro,nosuid,nodev,noexec", source, str(target)]]
+    ab.mount_upgrade_proxy_ca(inputs, shell, **kwargs)
+    assert len(calls) == 1
+
+
+def test_legacy_guest_does_not_mount_an_unattached_or_already_mounted_ca(ab, tmp_path, monkeypatch):
+    target = tmp_path / "proxy-ca"
+    calls = []
+    inputs = SimpleNamespace(proxy_ca=target)
+    shell = SimpleNamespace(run=calls.append)
+    kwargs = {"dev_dir": tmp_path, "virtio_dir": tmp_path}
+    ab.mount_upgrade_proxy_ca(inputs, shell, **kwargs)
+    assert not target.exists() and not calls
+    (tmp_path / "virtio-saw-proxy-ca").touch()
+    monkeypatch.setattr(ab.os.path, "ismount", lambda path: path == target)
+    ab.mount_upgrade_proxy_ca(inputs, shell, **kwargs)
+    assert not target.exists() and not calls
 
 
 def test_guest_generator_keeps_ca_key_in_runtime_tmpfs(tmp_path):
