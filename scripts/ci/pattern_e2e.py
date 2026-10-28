@@ -13,6 +13,7 @@ import secrets
 import shutil
 import signal
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
@@ -58,6 +59,46 @@ SENSITIVE_URL_PARAMETER = re.compile(
 
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def remove_private_home_tree(home: Path) -> None:
+    """Remove a run-scoped HOME, restoring owner access when files are read-only."""
+    home = home.resolve()
+
+    def retry_permission_error(function: Any, raw_path: str,
+                               error: BaseException) -> None:
+        if not isinstance(error, PermissionError):
+            raise error
+        failed_path = Path(raw_path)
+        if not failed_path.is_absolute():
+            failed_path = home / failed_path
+        if failed_path != home and home not in failed_path.parents:
+            raise error
+
+        # unlink/rmdir need a writable parent. scandir needs access to the
+        # directory itself. Add owner permissions only inside this run HOME.
+        if function in (os.unlink, os.remove, os.rmdir):
+            directory = failed_path.parent
+        else:
+            directory = failed_path
+        if directory != home and home not in directory.parents:
+            raise error
+        while True:
+            if not directory.is_symlink():
+                mode = stat.S_IMODE(directory.lstat().st_mode)
+                os.chmod(directory, mode | stat.S_IRWXU)
+            if directory == home:
+                break
+            directory = directory.parent
+        function(raw_path)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(home, onexc=retry_permission_error)
+    else:
+        def onerror(function: Any, raw_path: str, exc_info: tuple[Any, ...]) -> None:
+            retry_permission_error(function, raw_path, exc_info[1])
+
+        shutil.rmtree(home, onerror=onerror)
 
 
 class E2EError(Exception):
@@ -523,7 +564,7 @@ class Runner:
         if not home.exists():
             return
         home = self.private_home_from_report()
-        shutil.rmtree(home)
+        remove_private_home_tree(home)
         if self.home == home:
             self.home = None
 
@@ -1570,7 +1611,7 @@ class Runner:
         else:
             self.report["installation_finished_at"] = now()
         if self.home is not None and not preserve_home:
-            shutil.rmtree(self.home)
+            remove_private_home_tree(self.home)
             self.home = None
         if save_report:
             self.save_report()

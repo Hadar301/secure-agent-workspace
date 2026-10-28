@@ -965,6 +965,26 @@ def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, 
     assert runner.report["phase"] == "live"
 
 
+def test_private_credential_cleanup_removes_read_only_directories(
+    runner, monkeypatch, tmp_path,
+):
+    private_home = tmp_path / "saw-ci-123"
+    private_home.mkdir()
+    (private_home / ".run-id").write_text("123\n")
+    cert_store = private_home / ".kube" / "certs"
+    cert_store.mkdir(parents=True)
+    (cert_store / "8508e720.0").write_text("test certificate")
+    cert_store.chmod(0o500)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    runner.report["private_home"] = str(private_home)
+    runner.home = private_home
+
+    runner.remove_run_private_home()
+
+    assert not private_home.exists()
+    assert runner.home is None
+
+
 def test_guest_failure_names_the_failed_phase(runner, monkeypatch):
     monkeypatch.setattr(runner, "install_virtctl", lambda: None)
     runner.sensitive = ["private-token"]
