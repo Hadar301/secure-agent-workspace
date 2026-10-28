@@ -814,6 +814,75 @@ def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     assert runner.report["image_digests"]["saw-credential-proxy"] == digest
 
 
+def test_image_build_retries_http_5xx_then_passes(runner, monkeypatch, capsys):
+    calls = []
+    sleeps = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        if len(calls) < 3:
+            raise pattern_e2e.E2EError(
+                "make sandbox-build failed: received unexpected HTTP status: 502"
+            )
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    monkeypatch.setattr(pattern_e2e.time, "sleep", sleeps.append)
+
+    runner.run_image_build("sandbox-build")
+
+    assert calls == [["make", "sandbox-build"]] * 3
+    assert sleeps == [10, 30]
+    assert "retrying attempt 2/3 in 10s" in capsys.readouterr().out
+
+
+def test_image_build_does_not_retry_permanent_failure(runner, monkeypatch):
+    calls = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        raise pattern_e2e.E2EError("make cli-build failed: HTTP status: 401")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+
+    with pytest.raises(pattern_e2e.E2EError, match="HTTP status: 401"):
+        runner.run_image_build("cli-build")
+
+    assert calls == [["make", "cli-build"]]
+
+
+def test_image_build_stops_after_bounded_retries(runner, monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        raise pattern_e2e.E2EError("make gateway-build-podman failed: HTTP 503")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+    monkeypatch.setattr(pattern_e2e.time, "sleep", sleeps.append)
+
+    with pytest.raises(pattern_e2e.E2EError, match="HTTP 503"):
+        runner.run_image_build("gateway-build-podman")
+
+    assert calls == [["make", "gateway-build-podman"]] * 3
+    assert sleeps == [10, 30]
+
+
+def test_image_build_does_not_retry_command_timeout(runner, monkeypatch):
+    calls = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        raise pattern_e2e.E2ECommandTimeout("make sandbox-build timed out")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+
+    with pytest.raises(pattern_e2e.E2ECommandTimeout, match="timed out"):
+        runner.run_image_build("sandbox-build")
+
+    assert calls == [["make", "sandbox-build"]]
+
+
 def test_install_options_use_guest_registry_and_base64_public_ca(runner, tmp_path):
     digest = "sha256:" + "a" * 64
     runner.report["image_digests"] = {name: digest for name in (

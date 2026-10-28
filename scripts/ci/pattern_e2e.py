@@ -48,6 +48,11 @@ PATTERN_NAMESPACES = (
 )
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+BUILD_RETRY_DELAYS = (10, 30)
+HTTP_5XX = re.compile(
+    r"\bHTTP(?:/\d(?:\.\d)?)?(?:\s+status)?\s*[:=]?\s*5\d{2}\b",
+    re.IGNORECASE,
+)
 SENSITIVE_URL_PARAMETER = re.compile(
     r"(?i)([?&](?:x-amz-(?:credential|signature|security-token)|"
     r"x-goog-(?:credential|signature|security-token)|akamai_signature|"
@@ -989,7 +994,7 @@ class Runner:
         for target in ("sandbox-build", "cli-build", "gateway-build-podman",
                        "governance-interceptor-build", "credential-proxy-build"):
             print(f"{now()} build {target}", flush=True)
-            self.call(["make", target], timeout=7200)
+            self.run_image_build(target)
         names = ("nemoclaw-discovery-runtime", "nemoclaw-sandbox", "nemoclaw-cli",
                  "openshell-gateway", "governance-interceptor", "saw-credential-proxy")
         for name in names:
@@ -1017,6 +1022,27 @@ class Runner:
                 raise E2EError(f"{name} build has no output digest")
             self.report["image_digests"][name] = digest
         self.save_report()
+
+    def run_image_build(self, target: str) -> None:
+        """Retry image builds only when their output reports a transient HTTP 5xx."""
+        max_attempts = len(BUILD_RETRY_DELAYS) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.call(["make", target], timeout=7200)
+                return
+            except E2ECommandTimeout:
+                # The build may still be active. Do not start a duplicate build.
+                raise
+            except E2EError as exc:
+                if attempt == max_attempts or not HTTP_5XX.search(str(exc)):
+                    raise
+                delay = BUILD_RETRY_DELAYS[attempt - 1]
+                print(
+                    f"{now()} build {target}: HTTP 5xx; retrying "
+                    f"attempt {attempt + 1}/{max_attempts} in {delay}s",
+                    flush=True,
+                )
+                time.sleep(delay)
 
     def topology(self) -> dict[str, Any]:
         # The established topology helper checks the API Service and ready
