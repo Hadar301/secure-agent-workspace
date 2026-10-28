@@ -1011,6 +1011,24 @@ def test_runner_redacts_standard_github_token(runner, monkeypatch):
     assert "github-private-token" in configured.sensitive
 
 
+def test_redact_masks_signed_url_credentials(runner):
+    message = (
+        "fetch failed: https://cdn.example.invalid/object?"
+        "X-Amz-Credential=aws-credential&X-Amz-Signature=aws-signature&"
+        "X-Amz-Security-Token=aws-session-token&akamai_signature=edge-signature&"
+        "region=us-east-1"
+    )
+
+    redacted = runner.redact(message)
+
+    for value in ("aws-credential", "aws-signature", "aws-session-token",
+                  "edge-signature"):
+        assert value not in redacted
+    assert "X-Amz-Signature=[redacted]" in redacted
+    assert "akamai_signature=[redacted]" in redacted
+    assert "region=us-east-1" in redacted
+
+
 def test_run_keeps_stage_error_when_finalization_fails(runner, monkeypatch, capsys):
     runner.locked = True
     for name in ("setup_files", "preflight", "build", "prepare_registry_pull",

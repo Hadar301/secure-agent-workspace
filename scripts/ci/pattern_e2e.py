@@ -47,6 +47,13 @@ PATTERN_NAMESPACES = (
 )
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+SENSITIVE_URL_PARAMETER = re.compile(
+    r"(?i)([?&](?:x-amz-(?:credential|signature|security-token)|"
+    r"x-goog-(?:credential|signature|security-token)|akamai_signature|"
+    r"awsaccesskeyid|googleaccessid|signature|sig|access_token|refresh_token|"
+    r"id_token|token|api[_-]?key|client_secret|password|passwd|authorization)=)"
+    r"[^&#\s\"'<>]*"
+)
 
 
 def now() -> str:
@@ -137,7 +144,7 @@ class Runner:
     def redact(self, text: str) -> str:
         for value in self.sensitive:
             text = text.replace(value, "[redacted]")
-        return text
+        return SENSITIVE_URL_PARAMETER.sub(r"\1[redacted]", text)
 
     def log_exception(self, context: str, exc: BaseException) -> str:
         detail = self.redact(str(exc)) or "(no message)"
