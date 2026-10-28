@@ -13,11 +13,13 @@ import secrets
 import shutil
 import signal
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import zipfile
@@ -33,6 +35,10 @@ LOCK_NAME = "saw-pattern-e2e"
 NAMESPACE = "openshell-agents"
 REGISTRY_PULLER = "saw-ci-registry-puller"
 REGISTRY_HOST = "image-registry.openshift-image-registry.svc.cluster.local:5000"
+STORAGE_CLASS_DEFAULT_ANNOTATION = "storageclass.kubernetes.io/is-default-class"
+# This is the RH demo catalog class used in development. Change it if the CI
+# cluster changes, or set CI_STORAGE_CLASS in the workflow environment.
+DEVELOPMENT_CI_STORAGE_CLASS = "ocs-external-storagecluster-ceph-rbd"
 USERS = ("ciowner", "cisecond")
 UTILITY_CONTAINER_LABEL = "saw.redhat.com/ci-run-id"
 PATTERN_NAMESPACES = (
@@ -42,10 +48,62 @@ PATTERN_NAMESPACES = (
 )
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+BUILD_RETRY_DELAYS = (10, 30)
+HTTP_5XX = re.compile(
+    r"\bHTTP(?:/\d(?:\.\d)?)?(?:\s+status)?\s*[:=]?\s*5\d{2}\b",
+    re.IGNORECASE,
+)
+SENSITIVE_URL_PARAMETER = re.compile(
+    r"(?i)([?&](?:x-amz-(?:credential|signature|security-token)|"
+    r"x-goog-(?:credential|signature|security-token)|akamai_signature|"
+    r"awsaccesskeyid|googleaccessid|signature|sig|access_token|refresh_token|"
+    r"id_token|token|api[_-]?key|client_secret|password|passwd|authorization)=)"
+    r"[^&#\s\"'<>]*"
+)
 
 
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def remove_private_home_tree(home: Path) -> None:
+    """Remove a run-scoped HOME, restoring owner access when files are read-only."""
+    home = home.resolve()
+
+    def retry_permission_error(function: Any, raw_path: str,
+                               error: BaseException) -> None:
+        if not isinstance(error, PermissionError):
+            raise error
+        failed_path = Path(raw_path)
+        if not failed_path.is_absolute():
+            failed_path = home / failed_path
+        if failed_path != home and home not in failed_path.parents:
+            raise error
+
+        # unlink/rmdir need a writable parent. scandir needs access to the
+        # directory itself. Add owner permissions only inside this run HOME.
+        if function in (os.unlink, os.remove, os.rmdir):
+            directory = failed_path.parent
+        else:
+            directory = failed_path
+        if directory != home and home not in directory.parents:
+            raise error
+        while True:
+            if not directory.is_symlink():
+                mode = stat.S_IMODE(directory.lstat().st_mode)
+                os.chmod(directory, mode | stat.S_IRWXU)
+            if directory == home:
+                break
+            directory = directory.parent
+        function(raw_path)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(home, onexc=retry_permission_error)
+    else:
+        def onerror(function: Any, raw_path: str, exc_info: tuple[Any, ...]) -> None:
+            retry_permission_error(function, raw_path, exc_info[1])
+
+        shutil.rmtree(home, onerror=onerror)
 
 
 class E2EError(Exception):
@@ -72,11 +130,12 @@ class Runner:
             raise E2EError("CI_E2E_PHASE must be all, install, or live")
         self.phase = phase
         self.recovery = recovery
+        self.repo = self.required("GITHUB_REPOSITORY")
+        self.target_label = ""
         if recovery:
             self.sha = ""
             self.run_id = ""
             self.run_url = ""
-            self.repo = self.required("GITHUB_REPOSITORY")
             self.branch = ""
             self.recovery_run_id = self.required("CI_RECOVERY_RUN_ID")
             if not self.recovery_run_id.isdigit():
@@ -87,8 +146,8 @@ class Runner:
                 raise E2EError("CI_HEAD_SHA must be a full commit SHA")
             self.run_id = self.required("GITHUB_RUN_ID")
             self.run_url = self.required("CI_RUN_URL")
-            self.repo = self.required("GITHUB_REPOSITORY")
             self.branch = self.required("CI_TARGET_BRANCH")
+            self.target_label = self.required("CI_TARGET_LABEL")
             self.recovery_run_id = ""
         self.lock_ns = os.environ.get("CI_LOCK_NAMESPACE", "saw-ci-lock")
         self.artifacts = Path(os.environ.get("CI_ARTIFACT_DIR", "pattern-e2e-results"))
@@ -114,9 +173,12 @@ class Runner:
         self.build_attempted = False
         self.cancelled = False
         self.baseline_namespaces: set[str] = set()
-        self.sensitive = [value for key, value in os.environ.items()
-                          if key.startswith("CI_") and
-                          any(term in key for term in ("KEY", "PASSWORD", "TOKEN", "B64")) and value]
+        sensitive_terms = ("KEY", "PASSWORD", "TOKEN", "SECRET", "B64", "AUTH",
+                           "CREDENTIAL")
+        self.sensitive = sorted({
+            value for key, value in os.environ.items()
+            if len(value) >= 4 and any(term in key.upper() for term in sensitive_terms)
+        }, key=len, reverse=True)
 
     @staticmethod
     def required(key: str) -> str:
@@ -128,7 +190,18 @@ class Runner:
     def redact(self, text: str) -> str:
         for value in self.sensitive:
             text = text.replace(value, "[redacted]")
-        return text
+        return SENSITIVE_URL_PARAMETER.sub(r"\1[redacted]", text)
+
+    def log_exception(self, context: str, exc: BaseException) -> str:
+        detail = self.redact(str(exc)) or "(no message)"
+        summary = f"{type(exc).__name__}: {detail}"
+        print(f"{now()} {context}: {summary}", file=sys.stderr, flush=True)
+        trace = self.redact("".join(traceback.format_exception(
+            type(exc), exc, exc.__traceback__))).rstrip()
+        if trace:
+            print(f"{now()} {context} traceback:\n{trace}",
+                  file=sys.stderr, flush=True)
+        return summary
 
     def call(self, args: list[str], *, timeout: int = 120,
              input_text: str | None = None, allow_failure: bool = False,
@@ -244,7 +317,9 @@ class Runner:
         try:
             action()
         except Exception as exc:
+            entry["error_type"] = type(exc).__name__
             entry["error"] = self.redact(str(exc))
+            self.log_exception(f"stage {name}", exc)
             raise
         else:
             entry["result"] = "passed"
@@ -264,13 +339,8 @@ class Runner:
             if shutil.which(name) is None:
                 raise E2EError(f"required tool {name} is unavailable")
         self.verify_target_ref()
-        # Check the container runtime before spending time on cluster builds.
-        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
         bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
         api_version = bom["bom"]["spec"]["openshell"]["cli"]["version"].split("-", 1)[0]
-        version = self.call(["openshell", "--version"]).stdout.strip()
-        if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
-            raise E2EError("OpenShell CLI version does not match the installer BOM")
         if self.required("CI_PROVIDER") != "build":
             raise E2EError("CI_PROVIDER must be build for the CI profile")
         provider_profile = yaml.safe_load((ROOT / "charts/saw-bom/profiles/ci-nvidia/"
@@ -286,6 +356,7 @@ class Runner:
         self.private_file(".run-id", self.run_id.encode())
         self.report["private_home"] = str(secret_home)
         self.env["HOME"] = str(secret_home)
+        self.env["XDG_DATA_HOME"] = str(secret_home / ".local/share")
         self.openshell_env = dict(self.env)
         self.openshell_env["XDG_CONFIG_HOME"] = str(secret_home / ".config")
         self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
@@ -296,17 +367,24 @@ class Runner:
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
         self.env["PUSH_IMAGE_REPO"] = ""
+        # Keep Podman's writable image store inside this run's private HOME.
+        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
+        version = self.call(["openshell", "--version"]).stdout.strip()
+        if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
+            raise E2EError("OpenShell CLI version does not match the installer BOM")
         kubeconfig = self.read_kubeconfig_file()
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
-        self.private_file("cluster-ca.pem", ca)
+        self.private_file(".kube/cluster-ca.pem", ca)
+        self.verify_kubeconfig_ca()
+        self.call(["oc", "get", "--raw=/version"], timeout=30)
         service_ca = self.oc_json("get", "configmap", "openshift-service-ca.crt",
                                   "-n", "openshift-service-ca")["data"]["service-ca.crt"]
         if "BEGIN CERTIFICATE" not in service_ca or "PRIVATE KEY" in service_ca:
             raise E2EError("cluster registry service CA is invalid")
         self.private_file("cluster-service-ca.crt", service_ca.encode())
         # Route TLS uses this CA. Keep the system trust store for public hosts.
-        self.env["OIDC_CA_BUNDLE"] = str(secret_home / "cluster-ca.pem")
+        self.env["OIDC_CA_BUNDLE"] = str(secret_home / ".kube/cluster-ca.pem")
         self.env["TEST_SECOND_TOKEN_DIR"] = str(secret_home / "second-oidc")
         self.env["TEST_ACTIVE_SAW_NAME"] = USERS[0]
         self.env["TEST_ACTIVE_SAW_NS"] = f"saw-{USERS[0]}"
@@ -354,6 +432,36 @@ class Runner:
             raise E2EError("CI_KUBECONFIG_FILE is empty")
         return content
 
+    def verify_kubeconfig_ca(self) -> None:
+        kubeconfig_path = Path(self.env["KUBECONFIG"])
+        try:
+            config = yaml.safe_load(kubeconfig_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            raise E2EError("private kubeconfig is invalid or unreadable") from None
+        if not isinstance(config, dict) or not isinstance(config.get("clusters"), list):
+            raise E2EError("private kubeconfig has no cluster CA configuration")
+        has_ca = False
+        for entry in config["clusters"]:
+            cluster = entry.get("cluster") if isinstance(entry, dict) else None
+            if not isinstance(cluster, dict):
+                continue
+            ca_data = cluster.get("certificate-authority-data")
+            if isinstance(ca_data, str) and ca_data:
+                has_ca = True
+            ca_file = cluster.get("certificate-authority")
+            if not ca_file:
+                continue
+            if not isinstance(ca_file, str):
+                raise E2EError("private kubeconfig CA path is invalid")
+            ca_path = Path(ca_file)
+            if not ca_path.is_absolute():
+                ca_path = kubeconfig_path.parent / ca_path
+            if not ca_path.is_file() or not os.access(ca_path, os.R_OK):
+                raise E2EError("private kubeconfig CA file is missing or unreadable")
+            has_ca = True
+        if not has_ca:
+            raise E2EError("private kubeconfig has no CA data")
+
     def private_home_from_report(self) -> Path:
         raw_path = self.report.get("private_home")
         if not isinstance(raw_path, str) or not raw_path:
@@ -374,7 +482,7 @@ class Runner:
     def configure_live_environment(self) -> None:
         self.home = self.private_home_from_report()
         required_files = (
-            ".kube/config", "cluster-ca.pem", "cluster-service-ca.crt",
+            ".kube/config", ".kube/cluster-ca.pem", "cluster-service-ca.crt",
             "ssh/sandbox-ssh", "ssh/sandbox-ssh.pub", "ciowner-password",
             "cisecond-password", "inference-key", "bin/virtctl",
         )
@@ -382,6 +490,7 @@ class Runner:
             raise E2EError("private credentials are incomplete; run install first")
         self.env.update({
             "HOME": str(self.home),
+            "XDG_DATA_HOME": str(self.home / ".local/share"),
             "KUBECONFIG": str(self.home / ".kube/config"),
             "SSH_KEY_PATH": str(self.home / "ssh/sandbox-ssh"),
             "VALUES_SECRET": str(self.home / "values-secret-secure-agent-workspace.yaml"),
@@ -390,7 +499,7 @@ class Runner:
             "BUILD_NS": NAMESPACE,
             "NS": NAMESPACE,
             "PUSH_IMAGE_REPO": "",
-            "OIDC_CA_BUNDLE": str(self.home / "cluster-ca.pem"),
+            "OIDC_CA_BUNDLE": str(self.home / ".kube/cluster-ca.pem"),
             "TEST_SECOND_TOKEN_DIR": str(self.home / "second-oidc"),
             "TEST_ACTIVE_SAW_NAME": USERS[0],
             "TEST_ACTIVE_SAW_NS": f"saw-{USERS[0]}",
@@ -451,6 +560,25 @@ class Runner:
         self.install_attempted = data.get("install-attempted") == "true"
         self.locked = True
 
+    def reset_private_podman_storage(self, home: Path) -> None:
+        home = home.resolve()
+        podman_env = dict(self.env)
+        podman_env["HOME"] = str(home)
+        podman_env["XDG_DATA_HOME"] = str(home / ".local/share")
+        graphroot = home / ".local/share/containers/storage"
+        if graphroot.exists():
+            response = self.call(
+                ["podman", "info", "--format", "{{.Store.GraphRoot}}"],
+                timeout=60, env=podman_env)
+            actual_graphroot = Path(response.stdout.strip()).resolve()
+            if actual_graphroot != graphroot:
+                raise E2EError(
+                    "Podman storage root is not the run-scoped path; refusing reset")
+            # Podman must remove its overlay layers. chmod on those mounted
+            # layers can fail with EPERM, even when the HOME belongs to this run.
+            self.call(["podman", "system", "reset", "--force"],
+                      timeout=600, env=podman_env)
+
     def remove_run_private_home(self) -> None:
         raw_path = self.report.get("private_home")
         if not isinstance(raw_path, str) or not raw_path:
@@ -462,7 +590,8 @@ class Runner:
         if not home.exists():
             return
         home = self.private_home_from_report()
-        shutil.rmtree(home)
+        self.reset_private_podman_storage(home)
+        remove_private_home_tree(home)
         if self.home == home:
             self.home = None
 
@@ -499,13 +628,15 @@ class Runner:
             "metadata": {"name": LOCK_NAME, "namespace": self.lock_ns,
                          "annotations": {
                              "saw.redhat.com/repository": self.repo,
-                             "saw.redhat.com/pr": self.required("CI_PR_NUMBER"),
+                             "saw.redhat.com/target": self.target_label,
                              "saw.redhat.com/sha": self.sha,
                              "saw.redhat.com/run-id": self.run_id,
                              "saw.redhat.com/run-url": self.run_url,
                              "saw.redhat.com/target-branch": self.branch,
                              "saw.redhat.com/created-at": now()}},
-            "data": {"state": "active", "baseline-namespaces": "",
+            "data": {"state": "active",
+                     "baseline-namespaces": json.dumps(
+                         sorted(self.baseline_namespaces)),
                      "build-attempted": "false", "install-attempted": "false",
                      "cleanup-verified": "false"},
         }
@@ -615,13 +746,24 @@ class Runner:
         secret_home.chmod(0o700)
         self.home = secret_home
         self.env["HOME"] = str(secret_home)
+        self.env["XDG_DATA_HOME"] = str(secret_home / ".local/share")
         self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
         self.env["TARGET_BRANCH"] = self.branch
         self.env["TARGET_ORIGIN"] = "origin"
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
         kubeconfig = self.read_kubeconfig_file()
+        ca_path = Path(self.required("CI_KUBECONFIG_FILE")).parent / "cluster-ca.pem"
+        try:
+            ca = ca_path.read_bytes()
+        except OSError:
+            raise E2EError("cluster CA file beside CI_KUBECONFIG_FILE is missing or unreadable") from None
+        if not ca:
+            raise E2EError("cluster CA file beside CI_KUBECONFIG_FILE is empty")
         self.private_file(".kube/config", kubeconfig)
+        self.private_file(".kube/cluster-ca.pem", ca)
+        self.verify_kubeconfig_ca()
+        self.call(["oc", "get", "--raw=/version"], timeout=30)
         self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
 
     def mark_cleanup_required(self) -> None:
@@ -645,19 +787,22 @@ class Runner:
         if (annotations.get("saw.redhat.com/run-id") != self.run_id or
                 annotations.get("saw.redhat.com/sha") != self.sha):
             raise E2EError("cluster lock owner changed; manual recovery is required")
+        data = lock.get("data") or {}
+        if (data.get("state") != "cleanup-verified" or
+                data.get("cleanup-verified") != "true"):
+            raise E2EError("cleanup is not verified; refusing to release cluster lock")
         self.call(["oc", "delete", "configmap", LOCK_NAME, "-n", self.lock_ns,
                    "--wait=true"], timeout=90)
         self.locked = False
 
     def preflight(self) -> None:
         self.cluster_identity()
-        self.acquire_lock()
         self.baseline_namespaces = {
             item["metadata"]["name"] for item in self.oc_json("get", "namespaces")["items"]
         }
-        self.update_lock_data({
-            "baseline-namespaces": json.dumps(sorted(self.baseline_namespaces)),
-        })
+        # Write the cleanup baseline with the atomic lock create. Recovery must
+        # never see a lock that it cannot safely use to identify run resources.
+        self.acquire_lock()
         # This run requires a fresh cluster. Do not remove existing resources.
         resources = (
             ("patterns.gitops.hybrid-cloud-patterns.io", None),
@@ -681,14 +826,109 @@ class Runner:
             if namespace in self.baseline_namespaces:
                 raise E2EError(f"fresh cluster preflight found namespace {namespace}")
         self.check_cnv_webhook()
-        storage = self.oc_json("get", "storageclass")
-        if not any((item.get("metadata", {}).get("annotations") or {}).get(
-                "storageclass.kubernetes.io/is-default-class") == "true"
-                for item in storage.get("items", [])):
-            raise E2EError("no default StorageClass is available")
         nodes = self.oc_json("get", "nodes")
         if not any(self.node_has_capacity(item) for item in nodes.get("items", [])):
             raise E2EError("no Ready node has at least 4 CPU and 8 GiB memory")
+        self.configure_storage_class()
+
+    def configure_storage_class(self) -> None:
+        storage = self.oc_json("get", "storageclass")
+        items = storage.get("items", [])
+        selected = (self.env.get("CI_STORAGE_CLASS", "").strip()
+                    or DEVELOPMENT_CI_STORAGE_CLASS)
+
+        classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in items if item.get("metadata", {}).get("name")
+        }
+        if selected not in classes:
+            raise E2EError(f"CI_STORAGE_CLASS {selected} does not exist")
+
+        restore: list[dict[str, str | None]] = []
+        for name, item in classes.items():
+            annotations = item.get("metadata", {}).get("annotations") or {}
+            previous = annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION)
+            if name == selected or previous == "true":
+                restore.append({"name": name, "value": previous})
+
+        # Store the original default annotations before changing the cluster.
+        # Cleanup and recovery use this snapshot to restore the cluster state.
+        self.update_lock_data({
+            "storageclass-name": selected,
+            "storageclass-restore": json.dumps(restore, sort_keys=True),
+        })
+        for item in restore:
+            name = item["name"]
+            previous = item["value"]
+            desired = "true" if name == selected else "false"
+            if previous == desired:
+                continue
+            self.call(["oc", "annotate", "storageclass", name,
+                       f"{STORAGE_CLASS_DEFAULT_ANNOTATION}={desired}", "--overwrite"])
+
+        verified = self.oc_json("get", "storageclass")
+        verified_defaults = sorted(
+            item.get("metadata", {}).get("name")
+            for item in verified.get("items", [])
+            if (item.get("metadata", {}).get("annotations") or {}).get(
+                STORAGE_CLASS_DEFAULT_ANNOTATION) == "true"
+        )
+        if verified_defaults != [selected]:
+            raise E2EError("selected StorageClass did not become the only default")
+        self.report["storage_class"] = selected
+
+    def restore_storage_class(self) -> None:
+        lock = self.oc_json("get", "configmap", LOCK_NAME, "-n", self.lock_ns)
+        annotations = lock.get("metadata", {}).get("annotations", {})
+        if (annotations.get("saw.redhat.com/run-id") != self.run_id or
+                annotations.get("saw.redhat.com/sha") != self.sha):
+            raise E2EError("cluster lock owner changed; refusing to restore StorageClass")
+        data = lock.get("data") or {}
+        encoded = data.get("storageclass-restore", "")
+        if not encoded:
+            return
+        try:
+            restore = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot") from exc
+        if not isinstance(restore, list):
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot")
+        if any(not isinstance(item, dict) or not isinstance(item.get("name"), str) or
+               item.get("value") not in (None, "true", "false") for item in restore):
+            raise E2EError("cluster lock has an invalid StorageClass restore snapshot")
+
+        current = self.oc_json("get", "storageclass")
+        classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in current.get("items", []) if item.get("metadata", {}).get("name")
+        }
+        for item in restore:
+            name = item["name"]
+            if name not in classes:
+                raise E2EError(f"StorageClass {name} is missing; cannot restore the cluster")
+            annotations = classes[name].get("metadata", {}).get("annotations") or {}
+            actual = annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION)
+            previous = item["value"]
+            if actual == previous:
+                continue
+            value = (f"{STORAGE_CLASS_DEFAULT_ANNOTATION}={previous}"
+                     if previous is not None else f"{STORAGE_CLASS_DEFAULT_ANNOTATION}-")
+            args = ["oc", "annotate", "storageclass", name, value]
+            if previous is not None:
+                args.append("--overwrite")
+            self.call(args)
+
+        restored = self.oc_json("get", "storageclass")
+        restored_classes = {
+            item.get("metadata", {}).get("name"): item
+            for item in restored.get("items", []) if item.get("metadata", {}).get("name")
+        }
+        for item in restore:
+            name = item["name"]
+            annotations = restored_classes[name].get("metadata", {}).get("annotations") or {}
+            if annotations.get(STORAGE_CLASS_DEFAULT_ANNOTATION) != item["value"]:
+                raise E2EError(f"StorageClass {name} did not restore to its prior state")
+        self.update_lock_data({"storageclass-restore": ""})
 
     def check_cnv_webhook(self) -> None:
         crd = self.call(["oc", "get", "crd", "hyperconvergeds.hco.kubevirt.io",
@@ -754,7 +994,7 @@ class Runner:
         for target in ("sandbox-build", "cli-build", "gateway-build-podman",
                        "governance-interceptor-build", "credential-proxy-build"):
             print(f"{now()} build {target}", flush=True)
-            self.call(["make", target], timeout=7200)
+            self.run_image_build(target)
         names = ("nemoclaw-discovery-runtime", "nemoclaw-sandbox", "nemoclaw-cli",
                  "openshell-gateway", "governance-interceptor", "saw-credential-proxy")
         for name in names:
@@ -782,6 +1022,27 @@ class Runner:
                 raise E2EError(f"{name} build has no output digest")
             self.report["image_digests"][name] = digest
         self.save_report()
+
+    def run_image_build(self, target: str) -> None:
+        """Retry image builds only when their output reports a transient HTTP 5xx."""
+        max_attempts = len(BUILD_RETRY_DELAYS) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.call(["make", target], timeout=7200)
+                return
+            except E2ECommandTimeout:
+                # The build may still be active. Do not start a duplicate build.
+                raise
+            except E2EError as exc:
+                if attempt == max_attempts or not HTTP_5XX.search(str(exc)):
+                    raise
+                delay = BUILD_RETRY_DELAYS[attempt - 1]
+                print(
+                    f"{now()} build {target}: HTTP 5xx; retrying "
+                    f"attempt {attempt + 1}/{max_attempts} in {delay}s",
+                    flush=True,
+                )
+                time.sleep(delay)
 
     def topology(self) -> dict[str, Any]:
         # The established topology helper checks the API Service and ready
@@ -1040,7 +1301,20 @@ class Runner:
                           status.get("apply", {}).get("phase"))
                 for step, phase in zip(("install", "apply"), phases):
                     if phase == "Failed":
-                        raise E2EError(f"{user} {step} phase failed")
+                        phase_status = status.get(step, {})
+                        if not isinstance(phase_status, dict):
+                            phase_status = {}
+                        detail_parts = []
+                        message = phase_status.get("message")
+                        if isinstance(message, str) and message.strip():
+                            message = self.redact(message.strip().splitlines()[0][:500])
+                            detail_parts.append(message)
+                        for field in ("updatedAt", "bom"):
+                            value = phase_status.get(field)
+                            if isinstance(value, str) and value.strip():
+                                detail_parts.append(f"{field}={self.redact(value.strip())}")
+                        detail = f": {'; '.join(detail_parts)}" if detail_parts else ""
+                        raise E2EError(f"{user} {step} phase failed{detail}")
                 return phases == ("Done", "Done")
             self.wait_for(f"{user} installer phases", installer_ready, seconds=3600)
 
@@ -1048,7 +1322,7 @@ class Runner:
         if self.home is None:
             raise E2EError("private HOME is not ready")
         context = ssl.create_default_context()
-        context.load_verify_locations(cafile=str(self.home / "cluster-ca.pem"))
+        context.load_verify_locations(cafile=str(self.home / ".kube/cluster-ca.pem"))
         return context
 
     def install_virtctl(self) -> None:
@@ -1373,6 +1647,7 @@ class Runner:
         if new_pattern_namespaces:
             raise E2EError("cleanup left Pattern namespaces: "
                            + ", ".join(sorted(new_pattern_namespaces)))
+        self.restore_storage_class()
         self.update_lock_data({"state": "cleanup-verified", "cleanup-verified": "true"})
         self.report["cleanup_verified"] = True
         self.save_report()
@@ -1380,15 +1655,42 @@ class Runner:
 
     def finish(self, *, save_report: bool = True, preserve_home: bool = False,
                complete: bool = True) -> None:
-        if self.home is not None and not preserve_home:
-            shutil.rmtree(self.home)
-            self.home = None
         if complete:
             self.report["finished_at"] = now()
         else:
             self.report["installation_finished_at"] = now()
+        if self.home is not None and not preserve_home:
+            self.reset_private_podman_storage(self.home)
+            remove_private_home_tree(self.home)
+            self.home = None
         if save_report:
             self.save_report()
+
+    def finish_safely(self, *, failure: str | None = None,
+                      save_report: bool = True, preserve_home: bool = False,
+                      complete: bool = True) -> str | None:
+        try:
+            self.finish(save_report=save_report, preserve_home=preserve_home,
+                        complete=complete)
+        except Exception as exc:
+            detail = self.log_exception("runner finalization", exc)
+            self.report["finalization_error"] = detail
+            finalization_failure = f"runner finalization failed: {detail}"
+            failure = (f"{failure}; {finalization_failure}" if failure
+                       else finalization_failure)
+            self.report["failure"] = failure
+            self.report["test_outcome"] = "failure"
+            if self.recovery:
+                self.report["cleanup_recovery_failure"] = failure
+            try:
+                self.save_report()
+            except Exception as report_exc:
+                report_error = self.log_exception("failure report write", report_exc)
+                failure = f"{failure}; result report write failed: {report_error}"
+                self.report["failure"] = failure
+                if self.recovery:
+                    self.report["cleanup_recovery_failure"] = failure
+        return failure
 
     def run(self) -> int:
         if self.phase == "live":
@@ -1411,7 +1713,8 @@ class Runner:
                 self.stage("live-behavior", self.live_behavior)
                 self.report["test_outcome"] = "success"
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "runner cancelled"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'runner cancelled'}")
             self.report["failure"] = failure
             self.report["test_outcome"] = "failure"
         finally:
@@ -1438,7 +1741,9 @@ class Runner:
                     self.report["lock_state_error"] = self.redact(str(exc))
                     failure = failure or "could not mark the cluster for cleanup"
                     preserve_home = False
-            self.finish(preserve_home=preserve_home, complete=not preserve_home)
+            failure = self.finish_safely(
+                failure=failure, preserve_home=preserve_home,
+                complete=not preserve_home)
         if failure:
             print(f"Pattern E2E failed: {failure}", file=sys.stderr)
             return 1
@@ -1455,7 +1760,8 @@ class Runner:
             self.report["test_outcome"] = "success"
             preserve_home = True
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "live checks cancelled"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'live checks cancelled'}")
             self.report["failure"] = failure
             self.report["test_outcome"] = "failure"
             preserve_home = preserve_home or self.home is not None
@@ -1485,7 +1791,7 @@ class Runner:
                         self.report["lock_state_error"] = self.redact(str(exc))
                         failure = "could not mark the cluster for cleanup"
                         preserve_home = self.home is not None
-            self.finish(preserve_home=preserve_home)
+            failure = self.finish_safely(failure=failure, preserve_home=preserve_home)
         if failure:
             print(f"Pattern E2E live checks failed: {failure}", file=sys.stderr)
             return 1
@@ -1515,7 +1821,8 @@ class Runner:
                 if self.report.get("cleanup_verified"):
                     self.stage("private-credential-cleanup", self.remove_run_private_home)
         except BaseException as exc:
-            failure = self.redact(str(exc)) or "cleanup recovery failed"
+            failure = (f"{type(exc).__name__}: "
+                       f"{self.redact(str(exc)) or 'cleanup recovery failed'}")
             self.report["cleanup_recovery_failure"] = failure
         finally:
             if self.locked:
@@ -1525,7 +1832,9 @@ class Runner:
                     self.report["cleanup_lock_error"] = self.redact(str(exc))
             else:
                 self.report["cleanup_verified"] = self.report.get("cleanup_verified", False)
-            self.finish(save_report=recovery_loaded or not previous_report_exists)
+            failure = self.finish_safely(
+                failure=failure,
+                save_report=recovery_loaded or not previous_report_exists)
         if failure:
             print(f"Pattern E2E cleanup failed: {failure}", file=sys.stderr)
             return 1

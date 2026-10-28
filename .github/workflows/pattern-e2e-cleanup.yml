@@ -1,0 +1,88 @@
+name: Pattern E2E cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: GitHub Actions run ID recorded in the active cluster lock
+        required: true
+        type: string
+
+concurrency:
+  group: saw-pattern-e2e-cluster
+  queue: max
+
+permissions: {}
+
+jobs:
+  cleanup:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    environment:
+      name: pattern-e2e
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install cluster cleanup clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman jq
+          curl --fail --location --silent --show-error \
+            https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
+            --output "$RUNNER_TEMP/openshift-client.tar.gz"
+          tar -xzf "$RUNNER_TEMP/openshift-client.tar.gz" -C "$RUNNER_TEMP" oc
+          sudo install -m 0755 "$RUNNER_TEMP/oc" /usr/local/bin/oc
+      - name: Log in to the cluster
+        env:
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_USERNAME: ${{ secrets.CI_CLUSTER_USERNAME }}
+          CI_CLUSTER_PASSWORD: ${{ secrets.CI_CLUSTER_PASSWORD }}
+          CI_CA_B64: ${{ secrets.CI_CA_B64 }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+        run: |
+          set -euo pipefail
+          if [[ -z "$CI_CLUSTER_API" || -z "$CI_CLUSTER_USERNAME" || -z "$CI_CLUSTER_PASSWORD" || -z "$CI_CA_B64" ]]; then
+            echo "Cluster login inputs are missing"
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$(dirname "$CI_KUBECONFIG_FILE")"
+          chmod 700 "$(dirname "$CI_KUBECONFIG_FILE")"
+          CI_CA_FILE="$(dirname "$CI_KUBECONFIG_FILE")/cluster-ca.pem"
+          printf '%s' "$CI_CA_B64" | base64 --decode > "$CI_CA_FILE"
+          chmod 600 "$CI_CA_FILE"
+          oc login "$CI_CLUSTER_API" \
+            --username="$CI_CLUSTER_USERNAME" \
+            --password="$CI_CLUSTER_PASSWORD" \
+            --certificate-authority="$CI_CA_FILE" \
+            --kubeconfig="$CI_KUBECONFIG_FILE"
+          chmod 600 "$CI_KUBECONFIG_FILE"
+      - name: Recover the selected E2E run
+        env:
+          CI_RECOVERY_RUN_ID: ${{ inputs.run_id }}
+          CI_KUBECONFIG_FILE: ${{ runner.temp }}/pattern-e2e-auth/config
+          CI_CLUSTER_API: ${{ vars.CI_CLUSTER_API }}
+          CI_CLUSTER_UID: ${{ vars.CI_CLUSTER_UID }}
+        run: make test-pattern-e2e-cleanup
+      - name: Remove cluster login files
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/pattern-e2e-auth" ]]; then
+            rm -r "$RUNNER_TEMP/pattern-e2e-auth"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pattern-e2e-cleanup-results
+          path: pattern-e2e-results/
+          if-no-files-found: warn
