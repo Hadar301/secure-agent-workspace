@@ -334,13 +334,8 @@ class Runner:
             if shutil.which(name) is None:
                 raise E2EError(f"required tool {name} is unavailable")
         self.verify_target_ref()
-        # Check the container runtime before spending time on cluster builds.
-        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
         bom = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
         api_version = bom["bom"]["spec"]["openshell"]["cli"]["version"].split("-", 1)[0]
-        version = self.call(["openshell", "--version"]).stdout.strip()
-        if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
-            raise E2EError("OpenShell CLI version does not match the installer BOM")
         if self.required("CI_PROVIDER") != "build":
             raise E2EError("CI_PROVIDER must be build for the CI profile")
         provider_profile = yaml.safe_load((ROOT / "charts/saw-bom/profiles/ci-nvidia/"
@@ -356,6 +351,7 @@ class Runner:
         self.private_file(".run-id", self.run_id.encode())
         self.report["private_home"] = str(secret_home)
         self.env["HOME"] = str(secret_home)
+        self.env["XDG_DATA_HOME"] = str(secret_home / ".local/share")
         self.openshell_env = dict(self.env)
         self.openshell_env["XDG_CONFIG_HOME"] = str(secret_home / ".config")
         self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
@@ -366,6 +362,11 @@ class Runner:
         self.env["BUILD_NS"] = NAMESPACE
         self.env["NS"] = NAMESPACE
         self.env["PUSH_IMAGE_REPO"] = ""
+        # Keep Podman's writable image store inside this run's private HOME.
+        self.call(["podman", "info", "--format", "{{.Host.Arch}}"], timeout=30)
+        version = self.call(["openshell", "--version"]).stdout.strip()
+        if not re.fullmatch(rf"openshell\s+{re.escape(api_version)}(?:[-+][^\s]+)?", version):
+            raise E2EError("OpenShell CLI version does not match the installer BOM")
         kubeconfig = self.read_kubeconfig_file()
         ca = base64.b64decode(self.required("CI_CA_B64"), validate=True)
         self.private_file(".kube/config", kubeconfig)
@@ -484,6 +485,7 @@ class Runner:
             raise E2EError("private credentials are incomplete; run install first")
         self.env.update({
             "HOME": str(self.home),
+            "XDG_DATA_HOME": str(self.home / ".local/share"),
             "KUBECONFIG": str(self.home / ".kube/config"),
             "SSH_KEY_PATH": str(self.home / "ssh/sandbox-ssh"),
             "VALUES_SECRET": str(self.home / "values-secret-secure-agent-workspace.yaml"),
@@ -553,6 +555,25 @@ class Runner:
         self.install_attempted = data.get("install-attempted") == "true"
         self.locked = True
 
+    def reset_private_podman_storage(self, home: Path) -> None:
+        home = home.resolve()
+        podman_env = dict(self.env)
+        podman_env["HOME"] = str(home)
+        podman_env["XDG_DATA_HOME"] = str(home / ".local/share")
+        graphroot = home / ".local/share/containers/storage"
+        if graphroot.exists():
+            response = self.call(
+                ["podman", "info", "--format", "{{.Store.GraphRoot}}"],
+                timeout=60, env=podman_env)
+            actual_graphroot = Path(response.stdout.strip()).resolve()
+            if actual_graphroot != graphroot:
+                raise E2EError(
+                    "Podman storage root is not the run-scoped path; refusing reset")
+            # Podman must remove its overlay layers. chmod on those mounted
+            # layers can fail with EPERM, even when the HOME belongs to this run.
+            self.call(["podman", "system", "reset", "--force"],
+                      timeout=600, env=podman_env)
+
     def remove_run_private_home(self) -> None:
         raw_path = self.report.get("private_home")
         if not isinstance(raw_path, str) or not raw_path:
@@ -564,6 +585,7 @@ class Runner:
         if not home.exists():
             return
         home = self.private_home_from_report()
+        self.reset_private_podman_storage(home)
         remove_private_home_tree(home)
         if self.home == home:
             self.home = None
@@ -719,6 +741,7 @@ class Runner:
         secret_home.chmod(0o700)
         self.home = secret_home
         self.env["HOME"] = str(secret_home)
+        self.env["XDG_DATA_HOME"] = str(secret_home / ".local/share")
         self.env["KUBECONFIG"] = str(secret_home / ".kube/config")
         self.env["TARGET_BRANCH"] = self.branch
         self.env["TARGET_ORIGIN"] = "origin"
@@ -1611,6 +1634,7 @@ class Runner:
         else:
             self.report["installation_finished_at"] = now()
         if self.home is not None and not preserve_home:
+            self.reset_private_podman_storage(self.home)
             remove_private_home_tree(self.home)
             self.home = None
         if save_report:

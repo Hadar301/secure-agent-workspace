@@ -139,6 +139,7 @@ def test_setup_files_stores_ca_beside_kubeconfig(runner, tmp_path, monkeypatch):
     ca_path = runner.home / ".kube/cluster-ca.pem"
     assert ca_path.read_bytes() == ca
     assert runner.env["KUBECONFIG"] == str(runner.home / ".kube/config")
+    assert runner.env["XDG_DATA_HOME"] == str(runner.home / ".local/share")
     assert runner.env["OIDC_CA_BUNDLE"] == str(ca_path)
     assert calls.index(["oc", "get", "--raw=/version"]) < next(
         index for index, args in enumerate(calls)
@@ -170,6 +171,7 @@ def test_recovery_setup_stores_ca_and_checks_api_before_podman(
 
     assert (runner.home / ".kube/config").read_bytes() == kubeconfig.read_bytes()
     assert (runner.home / ".kube/cluster-ca.pem").read_bytes() == ca
+    assert runner.env["XDG_DATA_HOME"] == str(runner.home / ".local/share")
     assert calls.index(["oc", "get", "--raw=/version"]) < calls.index(
         ["podman", "info", "--format", "{{.Host.Arch}}"])
 
@@ -965,12 +967,14 @@ def test_live_phase_restores_only_the_matching_install_run(runner, monkeypatch, 
     assert runner.report["phase"] == "live"
 
 
-def test_private_credential_cleanup_removes_read_only_directories(
+def test_private_credential_cleanup_resets_podman_before_removing_home(
     runner, monkeypatch, tmp_path,
 ):
     private_home = tmp_path / "saw-ci-123"
     private_home.mkdir()
     (private_home / ".run-id").write_text("123\n")
+    graphroot = private_home / ".local/share/containers/storage"
+    graphroot.mkdir(parents=True)
     cert_store = private_home / ".kube" / "certs"
     cert_store.mkdir(parents=True)
     (cert_store / "8508e720.0").write_text("test certificate")
@@ -978,10 +982,70 @@ def test_private_credential_cleanup_removes_read_only_directories(
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     runner.report["private_home"] = str(private_home)
     runner.home = private_home
+    calls = []
+
+    def fake_call(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:3] == ["podman", "info", "--format"]:
+            return SimpleNamespace(returncode=0, stdout=str(graphroot), stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
 
     runner.remove_run_private_home()
 
     assert not private_home.exists()
+    assert runner.home is None
+    assert [call[0] for call in calls] == [
+        ["podman", "info", "--format", "{{.Store.GraphRoot}}"],
+        ["podman", "system", "reset", "--force"],
+    ]
+    assert calls[0][1]["env"]["HOME"] == str(private_home)
+    assert calls[0][1]["env"]["XDG_DATA_HOME"] == str(private_home / ".local/share")
+
+
+def test_private_credential_cleanup_refuses_podman_storage_outside_run_home(
+    runner, monkeypatch, tmp_path,
+):
+    private_home = tmp_path / "saw-ci-123"
+    private_home.mkdir()
+    (private_home / ".run-id").write_text("123\n")
+    (private_home / ".local/share/containers/storage").mkdir(parents=True)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    runner.report["private_home"] = str(private_home)
+    runner.home = private_home
+    calls = []
+
+    def fake_call(args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=str(tmp_path / "shared-store"),
+                               stderr="")
+
+    monkeypatch.setattr(runner, "call", fake_call)
+
+    with pytest.raises(pattern_e2e.E2EError, match="refusing reset"):
+        runner.remove_run_private_home()
+
+    assert calls == [["podman", "info", "--format", "{{.Store.GraphRoot}}"]]
+    assert private_home.exists()
+    assert runner.home == private_home
+
+
+def test_runner_finalization_resets_podman_before_removing_private_home(
+    runner, monkeypatch, tmp_path,
+):
+    private_home = tmp_path / "saw-ci-123"
+    private_home.mkdir()
+    runner.home = private_home
+    calls = []
+    monkeypatch.setattr(runner, "reset_private_podman_storage",
+                        lambda home: calls.append(("reset", home)))
+    monkeypatch.setattr(pattern_e2e, "remove_private_home_tree",
+                        lambda home: calls.append(("remove", home)))
+
+    runner.finish(save_report=False)
+
+    assert calls == [("reset", private_home), ("remove", private_home)]
     assert runner.home is None
 
 
