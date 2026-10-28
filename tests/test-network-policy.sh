@@ -35,6 +35,7 @@ done
 
 if helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
     -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
+    -f "${ROOT}/tests/fixtures/credential-proxy-values.yaml" \
     --set sandboxName=saw-test >"${tmpdir}/rendered.yaml"; then
   pass "chart renders with NetworkPolicies enabled"
 else
@@ -49,7 +50,7 @@ import yaml
 
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 policies = {d['metadata']['name']: d for d in docs if d['kind'] == 'NetworkPolicy'}
-assert set(policies) == {'saw-default-deny', 'saw-vm', 'saw-cdi-import', 'saw-cleanup-hook'}, policies.keys()
+assert set(policies) == {'saw-default-deny', 'saw-vm', 'saw-credential-proxy', 'saw-cdi-import', 'saw-cleanup-hook', 'saw-credential-proxy-ca-hook'}, policies.keys()
 deny = policies['saw-default-deny']['spec']
 assert deny == {'podSelector': {}, 'policyTypes': ['Ingress', 'Egress']}, deny
 vm = policies['saw-vm']['spec']
@@ -61,7 +62,7 @@ assert policies['saw-cleanup-hook']['spec']['egress'] == [
     {'to': [{'ipBlock': {'cidr': '192.0.2.10/32'}}], 'ports': [{'protocol': 'TCP', 'port': 6443}]},
 ]
 assert next(d for d in docs if d['kind'] == 'Pod' and d['metadata']['name'] == 'saw-test-cleanup')['metadata']['labels']['openshell.pattern/role'] == 'cleanup'
-for name in ('saw-vm', 'saw-cdi-import'):
+for name in ('saw-vm', 'saw-credential-proxy', 'saw-cdi-import'):
     spec = policies[name]['spec']
     for direction, key in [('ingress', 'from'), ('egress', 'to')]:
         for rule in spec.get(direction) or []:
@@ -78,7 +79,7 @@ dns = next(r for r in vm['egress'] if {'protocol': 'UDP', 'port': 5353} in r.get
 assert {'protocol': 'TCP', 'port': 5353} in dns['ports']
 assert dns['to'][0]['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'] == 'openshift-dns'
 router = next(r for r in vm['ingress'] if r['from'][0]['namespaceSelector']['matchLabels'].get('policy-group.network.openshift.io/ingress') == '')
-assert router['from'][0]['podSelector'] == {}
+assert 'podSelector' not in router['from'][0], 'host-networked routers need a namespace-only peer'
 assert {p['port'] for p in router['ports']} == {17670, 18789, 8080}
 ssh = next(r for r in vm['ingress'] if {'protocol': 'TCP', 'port': 22} in r.get('ports', []))
 assert ssh['from'] == [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'openshift-cnv'}}, 'podSelector': {'matchLabels': {'kubevirt.io': 'virt-api'}}}]
@@ -99,6 +100,7 @@ fi
 
 if helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
     -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
+    -f "${ROOT}/tests/fixtures/credential-proxy-values.yaml" \
     --set sandboxName=saw-test --set networkPolicy.enabled=false 2>/dev/null \
     | grep -q 'kind: NetworkPolicy'; then
   fail "networkPolicy.enabled=false removes the policies"
@@ -142,7 +144,8 @@ if "${PYTHON}" - "${tmpdir}/policies.json" <<'PY'
 import json, sys
 items = json.load(open(sys.argv[1]))['items']
 names = {i['metadata']['name'] for i in items}
-assert {'saw-default-deny', 'saw-vm', 'saw-cdi-import', 'saw-cleanup-hook'} <= names, names
+# GitOps leaves cleanupOnDelete off when users retain their VM on removal.
+assert {'saw-default-deny', 'saw-vm', 'saw-credential-proxy', 'saw-cdi-import'} <= names, names
 for item in items:
     spec = item['spec']
     if item['metadata']['name'] == 'saw-default-deny':
@@ -152,7 +155,7 @@ for item in items:
             assert rule.get(key) and all(rule[key]), (item['metadata']['name'], rule)
             for peer in rule[key]:
                 assert peer.get('namespaceSelector') != {}
-                if 'ipBlock' in peer and item['metadata']['name'] != 'saw-cleanup-hook':
+                if 'ipBlock' in peer and item['metadata']['name'] not in ('saw-cleanup-hook', 'saw-credential-proxy-ca-hook'):
                     assert peer['ipBlock'].get('except')
                 if item['metadata']['name'] == 'saw-cleanup-hook':
                     assert peer.get('ipBlock', {}).get('cidr', '').endswith('/32')
@@ -169,7 +172,7 @@ if oc get network.config cluster -o json >"${tmpdir}/network.json" && \
 import ipaddress, json, sys
 network = json.load(open(sys.argv[1]))['status']
 policies = {i['metadata']['name']: i for i in json.load(open(sys.argv[2]))['items']}
-for name in ('saw-vm', 'saw-cdi-import'):
+for name in ('saw-vm', 'saw-credential-proxy', 'saw-cdi-import'):
     rules = policies[name]['spec']['egress']
     blocks = [peer['ipBlock'] for r in rules for peer in r['to'] if 'ipBlock' in peer]
     if not blocks:

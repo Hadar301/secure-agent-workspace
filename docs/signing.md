@@ -13,7 +13,8 @@ links to the authoritative detail.
 ## 1. Installer bundle and BOM components
 
 The in-VM installer tree (`installer-bom.yaml`, `apply_bom.py`,
-`setup-dashboard.sh`, and the shipped provider profiles) is signed as one
+`setup-dashboard.sh`, the shipped provider profiles, tool-action policy and
+tool-gate modules, `saw-gateway-pki`, and `openshell-gateway-pki.conf`) is signed as one
 bundle, and each OpenShell component image named in the BOM can require its own
 signer.
 
@@ -61,7 +62,8 @@ Of the images CI publishes to GHCR, only the **harness-bundle** images
 (`saw-harness-<bundle>`) are cosign-signed — keyless, in
 `.github/workflows/harness-bundles.yml`, before their public-pull check, so a
 visibility failure never skips signing. The gateway, NemoClaw and
-governance-interceptor images are **not** signed today. (The installer bundle
+governance-interceptor images are **not** signed today. The multi-arch
+`saw-credential-proxy` image is also unsigned and must be pinned by index digest. (The installer bundle
 is signed separately and key-based — see section 1.)
 
 Keyless means cosign signs with the workflow's GitHub Actions OIDC identity through Fulcio/sigstore (hence `id-token: write` and `cosign sign --yes` with no `--key`), and logs the signature in the public Rekor transparency log. There is therefore **no private signing key or publisher key to manage or distribute** for these images: a verifier matches the signing *identity* (the repo's `harness-bundles.yml` workflow) and the Rekor entry rather than a key. This is the opposite of the installer bundle in section 1, which is key-based (`COSIGN_PRIVATE_KEY`).

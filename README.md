@@ -64,7 +64,7 @@ Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each u
 
 Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
 
-This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Secrets for inference providers flow through HashiCorp Vault and the External Secrets Operator, keeping API keys out of Git and helm values.
+This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy; the VM receives nonsecret markers and metadata only. See [Credential isolation](docs/credential-isolation.md).
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
@@ -139,7 +139,7 @@ interceptor is the default. The two diagrams that follow also illustrate the
 | Agent runtime | NVIDIA OpenShell + OpenClaw/NemoClaw | AI coding and knowledge agents inside sandbox |
 | Gateway | OpenShell Gateway (gRPC over TLS) | Sandbox lifecycle, SSH proxy, inference routing |
 | Golden image | Bootc (Fedora 44) + CDI | Pre-baked VM image for fast provisioning |
-| Secrets | HashiCorp Vault + External Secrets Operator | API keys for inference providers, SSH keys |
+| Secrets | Vault + External Secrets Operator + credential proxy | Provider API keys stay outside the VM; SSH public keys grant guest access |
 | GitOps | ArgoCD (Validated Patterns) | Declarative cluster configuration |
 | Access control | Dashboard token + OIDC gateway validation | Per-user access via application-level tokens |
 
@@ -236,6 +236,15 @@ make images-mirror
 # oidc.caBundle snippet to add to overrides/saw-users.yaml.
 make check-oidc-ca
 
+# 5c. Pin the credential proxy image before rendering any user VM.
+# Set this in overrides/saw-users.yaml (alongside your users list):
+# defaults:
+#   openshellSaw:
+#     credentialProxy:
+#       image: <repo>/saw-credential-proxy@sha256:<multi-arch-index-digest>
+# Build credential-proxy/Containerfile and publish it, or build in-cluster;
+# see docs/credential-isolation.md. This is required until a default is published.
+
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on your fork (origin): the Pattern
 # CR points Argo CD at it, and every later change (steps 7+) is a push there.
@@ -329,6 +338,7 @@ make login                    # Opens the browser for Keycloak sign-in
 make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
+#     Set CREDENTIAL_PROXY_IMAGE to a published saw-credential-proxy@sha256:...
 #     Keys come from files so they stay out of the shell history.
 #     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
 #     web-search Secret), saw-create disables the Brave Search provider.
@@ -339,6 +349,7 @@ make whoami                   # Verify identity
 # export WEB_SEARCH_API_KEY
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
+export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 make saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
@@ -453,7 +464,7 @@ user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
 `IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
 CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
+`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. Set `CREDENTIAL_PROXY_IMAGE` to the published image digest, or provide it through `SAW_VALUES_FILE`. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
@@ -472,7 +483,7 @@ will not stop the other process.
 The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
-`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
+`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`, `CREDENTIAL_PROXY_IMAGE`,
 `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
 and owner access checks described in the deployment guide. The repo supplies
 the second-user denial check by default. Set `WEB_SEARCH_API_KEY` to test
@@ -514,13 +525,21 @@ disabled by default. To add either to the existing notebook with Option A:
    `model` override. The Secret's `model` overrides that provider's model in
    the sandbox's `inference.models`; defaults are `gpt-6-luna` for OpenAI and
    `claude-sonnet-4-6` for Anthropic. Official APIs need no URL.
+4. Run `uv run --locked scripts/saw-profile-catalog.py`, then commit and push
+   the updated profiles and catalogs. The generated credential bindings attach
+   each API Secret to its provider's allowed hosts. ESO creates the full Secrets
+   for the namespace proxy and `inference-openai-meta` /
+   `inference-anthropic-meta` for the VM, containing only the nonsecret
+   `provider`, `model` and `url` fields. The sandbox sends a nonsecret marker;
+   the namespace proxy injects the real key only for the bound HTTPS host on
+   port 443.
 
 Select the provider's model in the notebook chat's model picker. These optional
 providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. OpenShell 0.1.x has no inference routing: the agent calls the endpoint itself with a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider's **profile** names. The pattern cannot know your host, so you add a profile for it: a plain OpenShell profile file in `overrides/governance-profiles/` (copy `charts/governance-policy/profiles/examples/custom-inference.yaml` and set its host), served to every gateway by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile uses it (`type: custom-inference`), reads the URL and model from the `inference` Secret, and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The key stays in the namespace credential proxy; the VM and sandbox use a nonsecret marker. A keyed endpoint must use HTTPS on port 443 with a publicly trusted certificate. The proxy binds the key to the host of `url` in the `inference` Secret. Add a governance profile under `overrides/governance-profiles/` for the same host, served by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile reads the URL and model through the sandbox's typed `inference:` block and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
 
 **Option A (Validated Pattern)** — four files in your fork, one Secret:
 
@@ -536,13 +555,13 @@ Then `git push`, `./pattern.sh make load-secrets`, wait for Argo CD (`governance
 ```bash
 make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
   PROVIDER=custom-inference MODEL=<served model> \
-  ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
-  API_KEY=<key>          # use API_KEY='' if the server needs no key
+  ENDPOINT_URL=https://<publicly-trusted-host>/v1 \
+  API_KEY=<key>
 ```
 
 Notes:
 
-- The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
+- The namespace credential proxy reaches keyed HTTPS endpoints; the VM reaches keyless HTTP endpoints. `ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1` is supported only with `API_KEY=''`. `localhost` and keyed HTTPS ports other than 443 are refused.
 - Governance must be on: the `custom-inference` profile reaches the gateway through the governance catalog. The installer refuses the apply, naming `overrides/governance-profiles`, until the profile is served.
 - Self-hosted models can be slow; the profile sets a 300-second inference timeout (`inference.timeoutSeconds`).
 
@@ -689,7 +708,7 @@ make test
 # Tool-action gate tests (needs node; not part of CI)
 make test-tool-gate
 
-# Run offline template validation (43 checks)
+# Run offline template validation (48 checks)
 ./tests/test-oidc-templates.sh
 
 # NetworkPolicy chart checks run offline; name two test SAWs for live checks
@@ -735,6 +754,7 @@ make quickstart-delete
 │   ├── openshell-saw/            # Per-user sandbox VM + gateway + agent
 │   ├── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
 │   └── saw-users/                    # Turns the user list into namespaces and Argo apps
+├── credential-proxy/                 # Per-namespace TLS proxy that injects provider keys
 ├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
 │   └── helm/
 │       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig
@@ -776,7 +796,7 @@ The system implements layered isolation:
 2. **OIDC authentication** — Keycloak provides SSO with PKCE and device code flow support
 3. **Per-user access control** — Dashboard and sandbox UI proxies allow the owner and explicit support users by `preferred_username`. Each gateway also checks workspace membership for list and create operations.
 4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
-5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+5. **Secret management** — Provider keys stay in namespace Secrets mounted into the credential proxy. The VM stores markers and metadata, and its platform admin mTLS identity exists only during an installer apply in tmpfs. The user's SSH private key never touches the cluster. See [Credential isolation](docs/credential-isolation.md).
 6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
 7. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
 
@@ -936,7 +956,7 @@ a private CA, set `KEYCLOAK_CA=<ca-bundle.pem>`. For a Keycloak CR not named
 
 | Namespace | Contents |
 |---|---|
-| `saw-<name>` (one per sandbox) | The gateway VM, its installer inputs and provider Secrets |
+| `saw-<name>` (one per sandbox) | The gateway VM, metadata inputs, credential proxy, and provider Secrets mounted only into that proxy |
 | `openshell-agents` | Golden VM image, image builds, governance interceptor |
 | `saw-keycloak` | Keycloak (RHBK) |
 

@@ -11,7 +11,8 @@ helm() {
   local arg
   for arg in "$@"; do
     if [[ "${arg}" == "${CHARTS_DIR}/openshell-saw" ]]; then
-      command helm "$@" -f "${REPO_ROOT}/tests/fixtures/saw-network-topology.yaml"
+      command helm "$@" -f "${REPO_ROOT}/tests/fixtures/saw-network-topology.yaml" \
+        -f "${REPO_ROOT}/tests/fixtures/credential-proxy-values.yaml"
       return
     fi
   done
@@ -87,10 +88,14 @@ assert_contains "${KC_OUTPUT}" "kind: KeycloakRealmImport" "KeycloakRealmImport 
 assert_contains "${KC_OUTPUT}" "openshell-cli" "CLI client configured"
 assert_contains "${KC_OUTPUT}" "openshell-user" "user role defined"
 assert_contains "${KC_OUTPUT}" "openshell-admin" "admin role defined"
-assert_contains "${KC_OUTPUT}" "developer@openshell.local" "test user 'developer' present"
-assert_contains "${KC_OUTPUT}" "admin@openshell.local" "test user 'admin' present"
-assert_contains "${KC_OUTPUT}" "alice@openshell.local" "test user 'alice' present"
-assert_contains "${KC_OUTPUT}" "bob@openshell.local" "test user 'bob' present"
+KC_DEMO_OUTPUT="$(helm template openshell-keycloak "${CHARTS_DIR}/openshell-keycloak" --namespace openshell-agents --set demo.enabled=true 2>&1)"
+for user in developer admin alice bob; do
+  assert_not_contains "${KC_OUTPUT}" "${user}@openshell.local" "production has no demo user '${user}'"
+done
+assert_contains "${KC_DEMO_OUTPUT}" "developer@openshell.local" "test user 'developer' present"
+assert_contains "${KC_DEMO_OUTPUT}" "admin@openshell.local" "test user 'admin' present"
+assert_contains "${KC_DEMO_OUTPUT}" "alice@openshell.local" "test user 'alice' present"
+assert_contains "${KC_DEMO_OUTPUT}" "bob@openshell.local" "test user 'bob' present"
 assert_contains "${KC_OUTPUT}" "pkce.code.challenge.method" "PKCE configured"
 assert_contains "${KC_OUTPUT}" "device.authorization.grant.enabled" "device code flow enabled"
 assert_contains "${KC_OUTPUT}" "registrationAllowed: false" "user registration is off"
@@ -126,7 +131,7 @@ run_test "renders without OIDC" \
 
 assert_contains "${SB_DEFAULT}" "name: my-sandbox-installer" "installer ConfigMap rendered"
 assert_contains "${SB_DEFAULT}" "apply_bom.py" "in-guest installer shipped on the installer disk"
-assert_contains "${SB_DEFAULT}" "secretName: inference" "inference Secret attached to the VM"
+assert_contains "${SB_DEFAULT}" "secretName: inference-meta" "inference metadata Secret attached to the VM"
 assert_contains "${SB_DEFAULT}" "name: saw-bom-profiles" "SAW-BOM profiles attached to the VM"
 assert_not_contains "${SB_DEFAULT}" "name: my-sandbox-setup" "no SSH-based setup Job"
 assert_not_contains "${SB_DEFAULT}" "OIDC_TOKEN" "no OIDC token anywhere in the rendered chart"
@@ -158,8 +163,8 @@ SB_SECRETS="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
   --set inference.secretName=gemini \
   --set 'additionalProviderSecrets[0]=web-search' 2>&1)"
-assert_contains "${SB_SECRETS}" "secretName: gemini" "provider Secret attached as a VM disk"
-assert_contains "${SB_SECRETS}" "secretName: web-search" "additional provider Secret attached"
+assert_contains "${SB_SECRETS}" "secretName: gemini-meta" "provider metadata Secret attached as a VM disk"
+assert_contains "${SB_SECRETS}" "secretName: web-search-meta" "additional provider metadata Secret attached"
 # Profiles ConfigMap stays optional. Provider Secrets do not: the VM must not
 # boot, and freeze an empty iso9660 disk, before those Secrets exist.
 assert_contains "${SB_SECRETS}" "optional: true" "profiles ConfigMap is optional"

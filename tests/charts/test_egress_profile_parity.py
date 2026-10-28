@@ -50,7 +50,8 @@ def test_every_exact_profile_host_is_allowed():
 def test_profile_ports_match_firewall_and_network_policy():
     result = subprocess.run(
         [HELM, "template", "saw-test", str(SAW_CHART), "-n", "saw-test",
-         "-f", str(TOPOLOGY_FIXTURE)], capture_output=True, text=True)
+         "-f", str(TOPOLOGY_FIXTURE),
+         "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     rendered = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
     firewall = next(doc for doc in rendered if doc["kind"] == "EgressFirewall")

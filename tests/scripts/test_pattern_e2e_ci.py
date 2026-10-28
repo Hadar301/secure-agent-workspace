@@ -809,13 +809,14 @@ def test_build_waits_for_terminal_phase_before_digest(runner, monkeypatch):
     runner.build()
     assert waited == ["governance-interceptor build terminal phase"]
     assert runner.report["image_digests"]["governance-interceptor"] == digest
+    assert runner.report["image_digests"]["saw-credential-proxy"] == digest
 
 
 def test_install_options_use_guest_registry_and_base64_public_ca(runner, tmp_path):
     digest = "sha256:" + "a" * 64
     runner.report["image_digests"] = {name: digest for name in (
         "nemoclaw-sandbox", "nemoclaw-cli", "openshell-gateway",
-        "governance-interceptor")}
+        "governance-interceptor", "saw-credential-proxy")}
     runner.home = tmp_path / "home"
     runner.home.mkdir()
     pem = b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
@@ -827,6 +828,8 @@ def test_install_options_use_guest_registry_and_base64_public_ca(runner, tmp_pat
     options = runner.install_options(topology)
     assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-cli@{digest}" in options
     assert f"{pattern_e2e.REGISTRY_HOST}/{pattern_e2e.NAMESPACE}/nemoclaw-sandbox@{digest}" in options
+    assert "defaults.openshellSaw.credentialProxy.image" in options
+    assert f"/saw-credential-proxy@{digest}" in options
     assert "defaults.openshellSaw.registry.authSecret" in options
     assert "defaults.openshellSaw.registry.caBundleBase64" in options
     assert base64.b64encode(pem).decode("ascii") in options
@@ -1397,3 +1400,17 @@ def test_prepare_rejects_pr_targeting_another_repository(monkeypatch):
     })
     with pytest.raises(RuntimeError, match="does not target this repository"):
         e2e_control.prepare()
+
+
+def test_verify_images_refuses_a_stale_credential_proxy(runner, monkeypatch):
+    digest = "sha256:" + "a" * 64
+    runner.report["image_digests"] = {name: digest for name in (
+        "governance-interceptor", "saw-credential-proxy")}
+    registry = f"image-registry.openshift-image-registry.svc:5000/{pattern_e2e.NAMESPACE}"
+    def fake_oc_json(*args):
+        image = (f"{registry}/governance-interceptor@{digest}" if args[2] == "governance-interceptor"
+                 else f"{registry}/saw-credential-proxy:old")
+        return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}
+    monkeypatch.setattr(runner, "oc_json", fake_oc_json)
+    with pytest.raises(pattern_e2e.E2EError, match="credential proxy does not use the new build digest"):
+        runner.verify_images()

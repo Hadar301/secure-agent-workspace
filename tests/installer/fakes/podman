@@ -142,6 +142,22 @@ elif cmd == "inspect":
         print(f"Error: no such object: {args[-1]}", file=sys.stderr)
         sys.exit(125)
     mounts = []
+    if not sb.get("noSandboxVolume"):
+        import shutil
+        key = next(k for k in sandboxes() if container_name(k) == args[-1])
+        volume = "openshell-sandbox-" + key.replace("/", "-")
+        root = state / "volumes" / volume
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True)
+        files = dict(sb.get("files", {}))
+        if "openclawConfig" in sb:
+            files[".openclaw/openclaw.json"] = json.dumps(sb["openclawConfig"])
+        for rel, content in files.items():
+            dest = root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content)
+        mounts.append({"Type": "volume", "Name": volume, "Destination": "/sandbox",
+                       "Source": str(root), "RW": True})
     for m in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
         if m["type"] == "image":
             mounts.append({"Type": "image", "Source": m["source"],
@@ -213,6 +229,8 @@ elif cmd == "volume":
         labels_file.write_text(json.dumps(all_labels))
 elif cmd == "unshare":
     # No user namespace in tests: run the command as is.
+    if (state / "unshare-fails").exists():
+        sys.exit(125)
     if args[1] == "chown":
         sys.exit(0)  # The fake volume is already accessible to the test user.
     sys.exit(subprocess.run(args[1:]).returncode)

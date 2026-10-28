@@ -1,5 +1,9 @@
 """Official APIs use native onboarding; explicit endpoint URLs remain custom."""
+from copy import deepcopy
+
 import pytest
+
+from conftest import TEST_PROXY, marker, resolve
 
 
 def test_attached_models_resolve_and_register_without_changing_default(
@@ -13,7 +17,7 @@ def test_attached_models_resolve_and_register_without_changing_default(
         "openai": "gpt-6-luna", "anthropic": "claude-sonnet-4-6"}
     # Disabled providers neither require Secrets nor appear in chat configuration.
     ab.validate_profiles(profiles)
-    ab.resolve_credentials(profiles, secrets_dir)
+    resolve(ab, profiles, secrets_dir)
     assert sb.inference_values["models"] == {}
     for p in ws.providers:
         if p.name in sb.inference["models"]:
@@ -21,10 +25,10 @@ def test_attached_models_resolve_and_register_without_changing_default(
             sb.providers.append(p.name)
             secret = secrets_dir / p.credential_secret
             secret.mkdir()
-            (secret / "api_key").write_text("test-key")
+
     (secrets_dir / "inference-openai" / "model").write_text("selected-openai")
     ab.validate_profiles(profiles)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = resolve(ab, profiles, secrets_dir)
     assert sb.inference_values["models"] == {
         "openai": "selected-openai", "anthropic": "claude-sonnet-4-6"}
     sb.harness_ref = {}
@@ -54,14 +58,14 @@ def attached_model_catalog(ab, fake_env, config, secrets_dir):
     for kind in ("openai", "anthropic"):
         secret = secrets_dir / f"inference-{kind}"
         secret.mkdir()
-        (secret / "api_key").write_text("test-key")
+
         providers.append(ab.Provider(name=kind, type=kind, credential_secret=secret.name))
     sb = ab.Sandbox(name="chat", type="openclaw", providers=[p.name for p in providers],
                     inference={"providerRef": "nvidia", "model": "nvidia/test",
                                "models": {"openai": "old", "anthropic": "old"}})
     ws = ab.Workspace(name="default", providers=providers, sandboxes=[sb])
     profiles = [ab.Profile(name="test", workspaces=[ws])]
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = resolve(ab, profiles, secrets_dir)
     applier = ab.ProfileApplier(ab.Shell(), config, creds)
     applier.apply(profiles)
     state = fake_env.openshell_state()
@@ -88,7 +92,7 @@ def test_profile_model_changes_remove_only_managed_choices(
     else:
         sb.inference["models"] = {"openai": "new"}
     ab.validate_profiles(profiles)
-    ab.resolve_credentials(profiles, secrets_dir)
+    resolve(ab, profiles, secrets_dir)
     applier.apply(profiles)
     choices = fake_env.openshell_state()["sandboxes"]["default/chat"]["openclawConfig"]["agents.defaults.models"]
     expected = {"nvidia/test", "other/user-choice", "openai/user-choice"}
@@ -109,7 +113,7 @@ def test_existing_profile_choices_are_tracked_on_upgrade(
     fake_env.set_openshell_state(state)
     applier.apply(profiles)
     sb.inference.pop("models")
-    ab.resolve_credentials(profiles, secrets_dir)
+    resolve(ab, profiles, secrets_dir)
     applier.apply(profiles)
     choices = fake_env.openshell_state()["sandboxes"]["default/chat"]["openclawConfig"]["agents.defaults.models"]
     assert set(choices) == {"nvidia/test", "other/user-choice", "openai/user-choice"}
@@ -248,13 +252,14 @@ def test_shipped_optional_apis_do_not_require_keys_by_default(ab, secrets_dir):
     # The model is the sandbox's (inference.model); the provider holds credentials only.
     assert nvidia.model == ""
     assert nvidia.credential_secret_key == "api_key"
-    assert set(ab.resolve_credentials(profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
+    assert set(resolve(ab, profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
     assert ab.sandbox_model(workspace.sandboxes[0], nvidia) == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_each_official_api_reads_its_own_secret(ab, secrets_dir):
     from conftest import profile_files
 
+    proxy = deepcopy(TEST_PROXY)
     profiles = ab.parse_profiles(profile_files())
     workspace = next(ws for ws in profiles[0].workspaces if ws.name == "default")
     for kind in ("openai", "anthropic"):
@@ -264,13 +269,15 @@ def test_each_official_api_reads_its_own_secret(ab, secrets_dir):
         secret = secrets_dir / f"inference-{kind}"
         secret.mkdir()
         (secret / "provider").write_text(kind)
-        (secret / "api_key").write_text(f"test-{kind}-key")
+        proxy["secrets"].append({"name": f"inference-{kind}", "key": "api_key",
+                                 "providers": [kind]})
         (secret / "model").write_text(f"test-{kind}-model")
     ab.validate_profiles(profiles)
-    credentials = ab.resolve_credentials(profiles, secrets_dir)
+    credentials = ab.resolve_credentials(profiles, secrets_dir, proxy)
     assert credentials["default"] == {
-        "nvidia": "nvapi-TEST-KEY-123", "brave": "brave-TEST-KEY-456",
-        "openai": "test-openai-key", "anthropic": "test-anthropic-key"}
+        "nvidia": "saw-cred.inference.api_key", "brave": "saw-cred.web-search.api_key",
+        "openai": "saw-cred.inference-openai.api_key",
+        "anthropic": "saw-cred.inference-anthropic.api_key"}
     assert credentials["cuda-dev"]["nvidia"] == credentials["default"]["nvidia"]
     for kind in ("openai", "anthropic"):
         provider = next(p for p in workspace.providers if p.name == kind)
@@ -300,15 +307,15 @@ def test_shipped_native_provider_model_is_selected_by_sandbox_inference(
     }
     secret = secrets_dir / f"inference-{kind}"
     secret.mkdir()
-    (secret / "api_key").write_text(f"test-{kind}-key")
+
     ab.validate_profiles(profiles)
-    credentials = ab.resolve_credentials(profiles, secrets_dir)
-    assert credentials["default"][kind] == f"test-{kind}-key"
+    credentials = resolve(ab, profiles, secrets_dir)
+    assert credentials["default"][kind] == marker(f"inference-{kind}")
     assert sandbox.inference_values["providerRef"] == kind
     assert ab.sandbox_model(sandbox, provider) == default_model
     # Model inputs belong to the sandbox; changing one never changes the provider.
     (secret / "model").write_text("selected-model")
-    ab.resolve_credentials(profiles, secrets_dir)
+    resolve(ab, profiles, secrets_dir)
     assert ab.sandbox_model(sandbox, provider) == "selected-model"
     assert provider.model == "" and provider.model_secret_key == ""
 
@@ -324,13 +331,13 @@ def test_configured_model_replaces_the_main_agents_onboarding_selection(
 
     secret = tmp_path / "model-key"
     secret.mkdir()
-    (secret / "api_key").write_text("test-model-key")
+
     provider = ab.Provider(name=kind, type=kind, credential_secret="model-key")
     sandbox = ab.Sandbox(name="chat", type="openclaw", providers=[kind], inference={
         "providerRef": kind, "model": model})
     workspace = ab.Workspace(name="default", providers=[provider], sandboxes=[sandbox])
     profiles = [ab.Profile(name="test", workspaces=[workspace])]
-    creds = ab.resolve_credentials(profiles, tmp_path)
+    creds = resolve(ab, profiles, tmp_path)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     state = fake_env.openshell_state()
     saved = state["sandboxes"]["default/chat"].setdefault("openclawConfig", {})

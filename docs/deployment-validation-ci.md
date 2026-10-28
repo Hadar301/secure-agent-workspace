@@ -79,7 +79,7 @@ container for that run before it starts cluster cleanup. Cleanup checks for
 leftover run-labeled utility containers and stops if it cannot remove them.
 
 Use a fresh cluster for each run. The E2E test builds the sandbox, CLI,
-Podman gateway, and governance interceptor images. It installs two ordinary
+Podman gateway, governance interceptor, and credential proxy images. It installs two ordinary
 users, checks Argo application health and revision, waits for both VMs to run,
 checks the built image digest references, requires both guest installer phases
 to finish, tests two-user access, makes a real NVIDIA inference request,
@@ -122,12 +122,12 @@ or any PR that targets it, including a fork PR, before merge.
 | Cluster preflight | Check cluster capacity and storage | The cluster has a Ready node with at least 4 CPU and 8 GiB, valid CNV webhook state when present, and the selected StorageClass exists. |
 | Cluster preflight | Set a temporary default StorageClass | The selected class becomes the only default for this run; the lock records prior annotations for cleanup and recovery. |
 | Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, selected target, SHA, and run link. |
-| Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, and governance interceptor builds complete and produce image digests. |
+| Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, governance interceptor, and credential proxy builds complete and produce image digests. |
 | Registry setup | Prepare guest image pulls | A short-lived, scoped registry token is added to private CI inputs for the guest VMs. |
-| Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests and CI network settings. |
+| Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests (including the namespace credential proxy) and CI network settings. |
 | Deployment readiness | Check Argo applications | At least six selected applications become healthy at the tested SHA; allowed parent drift must be healthy child applications at that SHA. |
 | Deployment readiness | Check virtual machines | Both CI user VMs reach `Running`. |
-| Deployment readiness | Check image digests | The interceptor deployment, each user BOM and profile, and each VM gateway disk use the images built in this run. |
+| Deployment readiness | Check image digests | The interceptor and per-user credential proxy deployments, each user BOM and profile, and each VM gateway disk use the images built in this run. |
 | Guest installer | Check installer phases | Both users report `install` and `apply` phases as `Done`; either phase failing stops the run. |
 | Live cluster | Authenticate both users | Keycloak issues usable OIDC tokens for the owner and second user. |
 | Live cluster | List the sandbox | The owner can list the `notebook` sandbox through OpenShell. |
@@ -137,6 +137,7 @@ or any PR that targets it, including a fork PR, before merge.
 | Live cluster | Block undeclared egress | A request from the sandbox to `example.org` fails. |
 | Cleanup | Uninstall Pattern | The cleanup stage runs Pattern uninstall twice to check repeat behavior. |
 | Cleanup | Verify resource removal | Test namespaces and VMs, the Pattern, and repository Argo applications are gone; only namespaces created by the run are removed. |
+| Cleanup | Remove private credentials | The runner removes its temporary credential directory, including files with restricted permissions. |
 | Cleanup | Restore cluster storage settings | Cleanup restores prior StorageClass annotations before it releases the cluster lock. |
 | Manual recovery | Clean a stopped run | The default-branch workflow requires the run ID and releases only the matching lock after cleanup checks pass. |
 | Cleanup | Release the lock and source ref | The cluster lock and temporary Git ref are removed only after cleanup verification; otherwise both remain for recovery. |

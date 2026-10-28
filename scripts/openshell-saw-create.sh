@@ -41,11 +41,22 @@ if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
   echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
   exit 1
 fi
+CREDENTIAL_PROXY_IMAGE="${CREDENTIAL_PROXY_IMAGE:-}"
+if [[ -z "${CREDENTIAL_PROXY_IMAGE}" && -n "${SAW_VALUES_FILE}" ]]; then
+  CREDENTIAL_PROXY_IMAGE="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get("credentialProxy") or {}).get("image") or "")' "${SAW_VALUES_FILE}")"
+fi
+if [[ ! "${CREDENTIAL_PROXY_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  echo "Error: set CREDENTIAL_PROXY_IMAGE or credentialProxy.image in SAW_VALUES_FILE to a published image digest." >&2
+  exit 1
+fi
 PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
 ENDPOINT_URL="${ENDPOINT_URL:-}"
 PROFILES="${PROFILES:-}"
+# The catalog decides which nonsecret fields a -meta Secret may carry.
+PROFILE_CATALOG="${PROFILE_CATALOG:-$(cd "$(dirname "$0")/.." && pwd)/charts/saw-users/files/profile-catalog.json}"
+[[ -f "${PROFILE_CATALOG}" ]] || { echo "Error: profile catalog not found: ${PROFILE_CATALOG}" >&2; exit 1; }
 WEB_SEARCH="${WEB_SEARCH:-}"
 GCP_SA_JSON="${GCP_SA_JSON:-}"
 OIDC_ISSUER="${OIDC_ISSUER:-}"
@@ -75,6 +86,14 @@ fi
 if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   echo "Error: python3 with PyYAML is required for network topology discovery." >&2
   exit 1
+fi
+proxy_bindings='[]'
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  proxy_bindings="$(python3 -c 'import json,sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print(json.dumps((d.get("credentialProxy") or {}).get("secrets") or []))' "${SAW_VALUES_FILE}")"
+fi
+additional_provider_secrets=()
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  mapfile -t additional_provider_secrets < <(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")
 fi
 if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
   echo "Error: DASHBOARD must be true or false." >&2
@@ -234,8 +253,7 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
 fi
 
 # --- Provider credential Secret ---
-# The VM's installer reads provider keys only from mounted Secrets, so the
-# key goes into the "inference" Secret instead of the Helm release values.
+# Provider keys stay in cluster Secrets; the VM receives metadata-only copies.
 if [[ -n "${API_KEY}" || -n "${MODEL}" || -n "${PROVIDER}" || -n "${ENDPOINT_URL}" ||
       "${inference_exists}" == false ]]; then
   umask 077
@@ -278,6 +296,47 @@ if [[ -n "${API_KEY}" || -n "${MODEL}" || -n "${PROVIDER}" || -n "${ENDPOINT_URL
   fi
 fi
 
+# A -meta Secret carries only nonsecret fields, the rule saw-users applies to the
+# pattern-secrets ExternalSecrets (metaKeys): `provider` plus the selected
+# profiles' catalog fields whose kind is not `secret`, or provider/model/url for
+# a Secret no selected profile lists. Bound keys and api_key are never copied.
+metadata_keys() {
+  python3 - "$1" "${PROFILE_CATALOG}" "${PROFILES:-data-science}" "${proxy_bindings}" <<'PY'
+import json, sys
+name, catalog, profiles, bindings = sys.argv[1:]
+known = json.load(open(catalog)).get("profiles", {})
+keys, listed = {"provider"}, False
+for profile in filter(None, (p.strip() for p in profiles.split(","))):
+    entry = known.get(profile, {}).get("secrets", {}).get(name)
+    if entry is not None:
+        listed = True
+        keys.update(f["key"] for f in entry.get("fields", []) if f.get("kind") != "secret")
+if not listed:
+    keys.update(("model", "url"))
+keys -= {b.get("key") for b in json.loads(bindings) if b.get("name") == name}
+keys.discard("api_key")
+print(json.dumps(sorted(keys)))
+PY
+}
+
+sync_provider_metadata() {
+  local name="$1" allowed
+  allowed="$(metadata_keys "${name}")"
+  oc get secret "${name}" -n "${DEPLOY_NS}" -o json |
+    jq --argjson allowed "${allowed}" --arg name "${name}-meta" \
+      '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:((.data // {}) | with_entries(select(.key as $k | $allowed | index($k))))}' |
+    oc apply -f - >/dev/null
+}
+if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+  sync_provider_metadata inference
+fi
+for name in "${additional_provider_secrets[@]}"; do
+  [[ -n "${name}" && "${name}" != web-search ]] || continue
+  if [[ -n "$(oc get secret "${name}" -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+    sync_provider_metadata "${name}"
+  fi
+done
+
 if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   umask 077
   web_search_key_file="$(mktemp)"
@@ -289,6 +348,10 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   web_search_key_file=""
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
+if [[ -n "$(oc get secret web-search -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+  oc create secret generic web-search-meta -n "${DEPLOY_NS}" \
+    --from-literal=provider=brave --dry-run=client -o yaml | oc apply -f - >/dev/null
+fi
 
 # Only mount available Secrets; disable web-search providers in the BOM too
 # when the optional web-search Secret is absent.
@@ -299,7 +362,8 @@ if ! grep -qx 'secret/inference' <<<"${secret_names}"; then
   SECRET_SET+=(--set "inference.secretName=")
 fi
 if ! grep -qx 'secret/web-search' <<<"${secret_names}"; then
-  SECRET_SET+=(--set "additionalProviderSecrets=null")
+  extra_secrets="$(printf '%s\n' "${additional_provider_secrets[@]}" | jq -Rsc 'split("\n") | map(select(length > 0 and . != "web-search"))')"
+  SECRET_SET+=(--set-json "additionalProviderSecrets=${extra_secrets}")
   web_search_enabled=false
 fi
 
@@ -324,6 +388,7 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 helm_opts=(
   --set-string "sandboxName=${OPENSHELL_SAW_NAME}"
+  --set-string "credentialProxy.image=${CREDENTIAL_PROXY_IMAGE}"
   --set "oidc.enabled=${oidc_enabled}"
   --set-string "accessControl.owner=${OWNER}"
   --set-string "oidc.keycloakNamespace=${KEYCLOAK_NS}"
@@ -369,6 +434,21 @@ if [[ "${dashboard_enabled}" == true ]]; then
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
 helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
+if grep -qx 'secret/inference' <<<"${secret_names}"; then
+  proxy_bindings="$(jq -c --arg provider "${PROVIDER}" 'if any(.[]; .name == "inference" and .key == "api_key") then . else . + [{name:"inference",key:"api_key",providers:(["nvidia","build","openai","anthropic","custom-inference",$provider] | map(select(length > 0)) | unique)}] end' <<<"${proxy_bindings}")"
+fi
+if grep -qx 'secret/web-search' <<<"${secret_names}"; then
+  proxy_bindings="$(jq -c 'if any(.[]; .name == "web-search" and .key == "api_key") then . else . + [{name:"web-search",key:"api_key",providers:["brave"]}] end' <<<"${proxy_bindings}")"
+fi
+for name in "${additional_provider_secrets[@]}"; do
+  [[ -n "${name}" && "${name}" != web-search ]] || continue
+  if grep -qx "secret/${name}" <<<"${secret_names}"; then
+    if jq -e --arg name "${name}" 'any(.[]; .name == $name)' <<<"${proxy_bindings}" >/dev/null; then continue; fi
+    provider="$(oc get secret "${name}" -n "${DEPLOY_NS}" -o json | jq -er '.data.provider | @base64d | select(length > 0)')"
+    proxy_bindings="$(jq -c --arg name "${name}" --arg provider "${provider}" 'if any(.[]; .name == $name) then . else . + [{name:$name,key:"api_key",providers:[$provider]}] end' <<<"${proxy_bindings}")"
+  fi
+done
+helm_opts+=(--set-json "credentialProxy.secrets=${proxy_bindings}")
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   "${helm_opts[@]}"
@@ -377,6 +457,7 @@ echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' resources created. Wait for the VM installer before connecting."
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
+echo "  Credential proxy: $(oc get deploy "${OPENSHELL_SAW_NAME}-credential-proxy" -n "${DEPLOY_NS}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)/1 ready (check again after the CA hook and Secrets sync)"
 
 GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
 if [[ -n "${GW_URL}" ]]; then

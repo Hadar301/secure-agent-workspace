@@ -5,6 +5,7 @@ Both are exercised for real in a scratch git repository holding the
 generator, the profiles and the generated files.
 """
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,6 +53,8 @@ def test_attached_model_fields_follow_enabled_sandbox_providers(scratch, enabled
     for name, model in [("openai", "gpt-6-luna"), ("anthropic", "claude-sonnet-4-6")]:
         if enabled:
             fields = {f["key"]: f for f in secrets[f"inference-{name}"]["fields"]}
+            assert fields["model"]["kind"] == "text"
+            assert fields["api_key"]["kind"] == "secret"
             assert fields["model"]["default"] == model
             assert fields["model"]["required"] is False
         else:
@@ -89,7 +92,11 @@ def scratch(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("python", "python3"):
-        (bin_dir / name).symlink_to(sys.executable)
+        # Relocating a venv executable via a symlink loses pyvenv.cfg and
+        # its site-packages. Execute its original path instead.
+        interpreter = bin_dir / name
+        interpreter.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+        interpreter.chmod(0o755)
     env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com")

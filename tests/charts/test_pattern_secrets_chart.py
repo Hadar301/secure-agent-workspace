@@ -27,7 +27,9 @@ def keys(*args):
 
 def test_defaults_sync_everything_from_the_hub():
     assert keys() == {"inference": {"secret/data/hub/inference"},
+                      "inference-meta": {"secret/data/hub/inference"},
                       "web-search": {"secret/data/hub/web-search"},
+                      "web-search-meta": {"secret/data/hub/web-search"},
                       "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
                       "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
@@ -36,6 +38,22 @@ def test_inference_only_renders_no_web_search_external_secret():
     got = keys("--set", "secrets={inference}")
     assert "inference" in got
     assert "web-search" not in got
+    assert "web-search-meta" not in got
+
+
+def test_metadata_fields_are_configurable_and_never_require_provider():
+    out = subprocess.run([HELM, "template", "x", str(CHART),
+                          "--set", "metaKeys.inference={provider,model,cuda_model}"],
+                         capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    for doc in docs:
+        if not doc["metadata"]["name"].endswith("-meta"):
+            continue
+        data = doc["spec"]["target"]["template"]["data"]
+        assert "api_key" not in data
+        assert data["provider"] == '{{ index . "provider" | default "" }}'
+    meta = next(d for d in docs if d["metadata"]["name"] == "inference-meta")
+    assert "cuda_model" in meta["spec"]["target"]["template"]["data"]
 
 
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
@@ -44,6 +62,7 @@ def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
                                       "sshVaultPrefix": "secret/data/hub", "secrets": ["inference"]}))
     got = keys("-f", str(values))
     assert got == {"inference": {"secret/data/hub/saw-bob/inference"},
+                   "inference-meta": {"secret/data/hub/saw-bob/inference"},
                    "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
                    "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
@@ -96,6 +115,10 @@ def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
         "secrets": ["inference", "web-search", "inference-openai", "inference-anthropic"]}))
     assert keys("-f", str(values)) == {
         "inference": {"secret/data/hub/saw-alice/inference"},
+        "inference-meta": {"secret/data/hub/saw-alice/inference"},
+        "web-search-meta": {"secret/data/hub/saw-alice/web-search"},
+        "inference-openai-meta": {"secret/data/hub/saw-alice/inference-openai"},
+        "inference-anthropic-meta": {"secret/data/hub/saw-alice/inference-anthropic"},
         "web-search": {"secret/data/hub/saw-alice/web-search"},
         "inference-openai": {"secret/data/hub/saw-alice/inference-openai"},
         "inference-anthropic": {"secret/data/hub/saw-alice/inference-anthropic"},

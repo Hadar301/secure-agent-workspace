@@ -1,0 +1,27 @@
+{{- $reserved := list "inference-meta" "web-search-meta" "openshell-ssh-pubkey" "openshell-aap-ssh" (.Values.clusterCaSecret | default "") }}
+{{- range $name := .Values.secrets | default list | uniq }}
+{{- if not (has $name $reserved) }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ printf "%s-meta" $name | quote }}
+spec:
+  refreshInterval: {{ $.Values.refreshInterval }}
+  secretStoreRef:
+    name: {{ $.Values.secretStoreRef.name }}
+    kind: {{ $.Values.secretStoreRef.kind }}
+  target:
+    name: {{ printf "%s-meta" $name | quote }}
+    template:
+      type: Opaque
+      engineVersion: v2
+      data:
+        {{- range (index $.Values.metaKeys $name) | default (list "provider" "model" "url") | uniq }}
+        {{ . | quote }}: {{ printf "{{ index . %q | default \"\" }}" . | quote }}
+        {{- end }}
+  dataFrom:
+    - extract:
+        key: {{ printf "%s/%s" $.Values.vaultPrefix $name | quote }}
+{{- end }}
+{{- end }}

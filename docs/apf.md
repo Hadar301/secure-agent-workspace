@@ -217,8 +217,9 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
   schema accepts only `type`, `endpoints`, `binaries` and `credentials` (name, envVars, required,
   style, header, source), so OpenShell's `inference_capable`, `category`, `discovery` and
   `query_param` are not in the bundle. OpenShell 0.1.x has no inference routing: the agent calls
-  the provider's endpoint with a placeholder key, which needs the profile's `endpoints` and
-  `binaries` (kept).
+  the provider's endpoint with a nonsecret marker through the sandbox proxy; the
+  namespace credential proxy injects the real key only at the bound HTTPS host.
+  This still needs the profile's `endpoints` and `binaries` (kept).
 - **Expiring tokens.** A credential's `source` says where APF gets it. `host-env` is a static value,
   so a token that expires (a Google access token, after about an hour) stops working. A profile
   credential with an OAuth2 `refresh` therefore becomes `source: {kind: oauth2, grant:
@@ -239,7 +240,9 @@ audit volume at `/sandbox/.saw/audit`. An OpenClaw sandbox with a harness bundle
 ([harness-bundles.md](harness-bundles.md)) also mounts that volume read-only at `/sandbox/harness`.
 The installer sends these exact combinations through `CreateSandbox` driver config. The gateway
 sets `allow_driver_config = true`; APF admits only the installer's podman volume mounts from its
-admin mTLS identity, using this signed `SandboxPolicy` block from `scripts/apf-bundle.py`:
+per-run admin mTLS identity, using this signed `SandboxPolicy` block from `scripts/apf-bundle.py`.
+That identity and its CA live only in tmpfs during apply; long-running forwards
+use the `saw-relay` user certificate. See [Credential isolation](credential-isolation.md).
 
 ```yaml
 driver_config:

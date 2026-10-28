@@ -44,7 +44,7 @@ def restore(ab, tmp_path):
         if command[:2] == ["sh", "-c"]:
             script = command[-1].replace("/sandbox", str(fresh))
             if tamper:
-                script = script.replace("tar -tzf", tamper[0] + "; tar -tzf", 1)
+                script = script.replace("diffs=$(", tamper[0] + "; diffs=$(", 1)
             command[-1] = "umask 027; " + script
         else:
             command = [c.replace("/sandbox", str(fresh)) for c in command]
@@ -105,3 +105,45 @@ def test_a_stamp_for_another_archive_does_not_skip_restore(restore):
     applier.restore_sandbox(ws, sb, record)
     assert (fresh / ".bashrc").read_text() == "payload"
     assert (fresh / ".saw-preserve.sha256").read_text() == record["sha256"]
+
+
+@pytest.mark.parametrize("fault", [None, "contents", "mode", "image-conflict"])
+def test_real_restore_allows_runtime_ownership_but_verifies_data_and_modes(ab, restore, fault):
+    applier, ws, sb, record, fresh, archive, _, tamper = restore
+    content = b"echo preserved\n"
+    with tarfile.open(archive, "w:gz") as packed:
+        for name, data, mode in [("project.sh", content, 0o750),
+                                  ("image/fixed", b"image version\n", 0o444),
+                                  ("image/config", b"user changes\n", 0o644)]:
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(data), mode
+            member.uid, member.gid = os.getuid() + 12345, os.getgid() + 12346
+            packed.addfile(member, io.BytesIO(data))
+    record["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    image = fresh / "image"
+    image.mkdir()
+    (image / "fixed").write_bytes(b"different image\n" if fault == "image-conflict"
+                                 else b"image version\n")
+    (image / "fixed").chmod(0o444)
+    os.utime(image / "fixed", (0, 0))
+    (image / "config").write_bytes(b"image default\n")
+    image.chmod(0o555)
+    if fault in ("contents", "mode"):
+        tamper.append("printf changed > project.sh" if fault == "contents"
+                      else "chmod 600 project.sh")
+    try:
+        if fault:
+            with pytest.raises(ab.InstallerError, match="could not restore"):
+                applier.restore_sandbox(ws, sb, record)
+            assert archive.exists() and (fresh / ".saw-preserve.tar.gz").exists()
+            assert not (fresh / ".saw-preserve.sha256").exists()
+        else:
+            applier.restore_sandbox(ws, sb, record)
+            assert (fresh / "project.sh").read_bytes() == content
+            assert (fresh / "project.sh").stat().st_mode & 0o777 == 0o750
+            assert (fresh / "project.sh").stat().st_uid == os.getuid()
+            assert (image / "config").read_bytes() == b"user changes\n"
+            assert image.stat().st_mode & 0o777 == 0o555
+            assert not (fresh / ".saw-preserve.tar.gz").exists()
+    finally:
+        image.chmod(0o755)

@@ -29,9 +29,13 @@ def archive_bytes(content):
     return gzip.compress(raw.getvalue(), mtime=0)
 
 state_dir = Path(os.environ["FAKE_STATE"])
-args = sys.argv[1:]
+raw_args = sys.argv[1:]
+args = raw_args[2:] if raw_args[:1] == ["--gateway"] else raw_args
 with open(state_dir / "openshell.log", "a") as log:
     log.write(json.dumps(args) + "\n")
+with open(state_dir / "openshell-env.log", "a") as log:
+    log.write(json.dumps({"args": raw_args, "xdg": os.environ.get("XDG_CONFIG_HOME", ""),
+                          "gateway": os.environ.get("OPENSHELL_GATEWAY", "")}) + "\n")
 
 state_file = state_dir / "openshell.json"
 state = json.loads(state_file.read_text()) if state_file.exists() else {
@@ -85,9 +89,18 @@ if op in deny:
 if op == "workspace create" and (state_dir / "rbac").exists():
     # OIDC RBAC: platform-admin methods need the admin role; an mTLS caller's
     # roles come from its certificate's OU.
-    selected = next((g for g in state["gateways"] if g["name"] == state["selected"]), {})
+    selected = (state.get("admin_gateway") if os.environ.get("OPENSHELL_GATEWAY") == "saw-installer"
+                else next((g for g in state["gateways"] if g["name"] == state["selected"]), {})) or {}
     if "openshell-admin" not in selected.get("roles", []):
         fail("Error: permission denied (requires platform admin)")
+    tls_dir = selected.get("tls_dir")
+    if tls_dir:
+        import subprocess
+        bundle = Path(os.environ["HOME"]) / ".local/state/openshell/tls/client-ca.pem"
+        if subprocess.run(["openssl", "verify", "-CAfile", str(bundle),
+                           str(Path(tls_dir) / "client/tls.crt")],
+                          capture_output=True).returncode:
+            fail("Error: admin certificate issuer is not trusted")
 ws = opt("--workspace", "default")
 
 def label_key(kind, workspace, name):
@@ -138,6 +151,9 @@ if head[0] == "gateway":
         roles = cert_roles(tls_dir) if tls_dir else ["openshell-user"]
         state["gateways"].append({"name": opt("--name"), "endpoint": head[2], "local": "--local" in head,
                                   "roles": roles})
+        if opt("--name") == "saw-installer" and tls_dir:
+            state["admin_gateway"] = {"roles": roles, "tls_dir": tls_dir,
+                                      "config_home": os.environ.get("XDG_CONFIG_HOME", "")}
     elif head[1] == "remove":
         state["gateways"] = [g for g in state["gateways"] if g["name"] != head[2]]
     elif head[1] == "select":
@@ -337,7 +353,7 @@ elif op == "sandbox download":
     sb = state["sandboxes"].get(key)
     if not sb:
         fail(f"Error: sandbox '{head[2]}' not found")
-    remote, local = head[3], head[4]
+    remote, local = head[-2], head[-1]
     # Like the gateway (0.1.2): only paths inside the working directory
     # (/sandbox) are served; anything else is refused before any transfer.
     if not remote.startswith("/sandbox/"):
@@ -361,7 +377,7 @@ elif op == "sandbox upload":
     if not remote.startswith("/sandbox/"):
         fail(f"Error: upload destination {remote!r} escapes the sandbox working directory")
     with tarfile.open(local, "r:gz") as archive:
-        content = {member.name: archive.extractfile(member).read().decode()
+        content = {member.name.removeprefix("./"): archive.extractfile(member).read().decode()
                    for member in archive if member.isfile()}
     sb.setdefault("archives", {})[remote] = content
     sb.setdefault("archiveDigests", {})[remote] = hashlib.sha256(Path(local).read_bytes()).hexdigest()
@@ -373,6 +389,8 @@ elif op == "sandbox delete":
     else:
         state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    if (state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}).get("execBroken"):
+        fail("Error: supervisor transport unavailable after gateway CA rotation")
     script = args[-1] if args[-3:-1] == ["sh", "-c"] else ""
 
     def archive_digest(content):

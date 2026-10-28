@@ -88,6 +88,7 @@ while :; do
 done
 
 ssh_args=(-n "${SAW_NS}" ssh "cloud-user@vm/${VM_NAME}" --identity-file="${SSH_KEY_PATH}"
+  --local-ssh-opts=-oGSSAPIAuthentication=no
   --local-ssh-opts=-oStrictHostKeyChecking=no --local-ssh-opts=-oUserKnownHostsFile=/dev/null
   --local-ssh-opts=-oLogLevel=ERROR)
 
