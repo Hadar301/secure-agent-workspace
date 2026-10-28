@@ -35,7 +35,10 @@ BOB = {
 
 
 def helm(*args):
-    return subprocess.run([HELM, *args], capture_output=True, text=True)
+    command = [HELM, *args]
+    if str(SAW_CHART) in command:
+        command += ["-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 def render_file(tmp_path, users, extra=None):
@@ -64,6 +67,31 @@ def app(docs, name):
 def helm_values(application):
     return yaml.safe_load(application["spec"]["source"]["helm"]["values"])
 
+
+def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{"name": "alice", "profiles": ["data-science"]}]))
+    values = helm_values(app(docs, "saw-alice-secrets"))
+    assert set(values["metaKeys"]["inference"]) == {"provider", "model", "cuda_model"}
+    assert all("api_key" not in keys for keys in values["metaKeys"].values())
+    path = tmp_path / "metadata-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    result = helm("template", "secrets", str(ROOT / "charts/pattern-secrets"), "-f", str(path))
+    rendered = docs_from(result)
+    meta = next(d for d in rendered if d["metadata"]["name"] == "inference-meta")
+    data = meta["spec"]["target"]["template"]["data"]
+    assert set(data) == {"provider", "model", "cuda_model"}
+    assert data["provider"] == '{{ index . "provider" | default "" }}'
+    assert data["cuda_model"] == '{{ index . "cuda_model" | default "" }}'
+
+
+
+def test_ci_nvidia_binds_both_aliases_and_projects_only_provider(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{"name": "ciowner", "profiles": ["ci-nvidia"]}]))
+    values = helm_values(app(docs, "saw-ciowner"))
+    assert values["credentialProxy"]["secrets"] == [
+        {"name": "inference", "key": "api_key", "providers": ["nvidia", "build"]}]
+    secrets = helm_values(app(docs, "saw-ciowner-secrets"))
+    assert secrets["metaKeys"] == {"inference": ["provider"]}
 
 def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
@@ -134,12 +162,15 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
                                     "sshVaultPrefix": "secret/data/hub",
                                     "secrets": ["inference", "web-search"],
+                                    "metaKeys": {"inference": ["cuda_model", "model", "provider"],
+                                                 "web-search": ["provider"]},
                                     "clusterCaSecret": "saw-ingress-ca"}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
     assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
                            "sshVaultPrefix": "secret/data/hub",
                            "secrets": ["inference", "web-search"],
+                           "metaKeys": {},
                            "clusterCaSecret": "saw-ingress-ca"}
 
     bom = app(docs, "saw-alice-bom")
@@ -401,8 +432,8 @@ def validate_rendered_user(tmp_path, docs, secrets):
 def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     result, installer = validate_rendered_user(tmp_path, docs, {
-        "inference": {"api_key": "k1", "provider": "build"},
-        "web-search": {"api_key": "k2"},
+        "inference": {"provider": "build"},
+        "web-search": {"provider": "brave"},
     })
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
@@ -411,6 +442,8 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""
+    assert {(b["name"], b["key"]) for b in config["credentialProxy"]["secrets"]} == {
+        ("inference", "api_key"), ("web-search", "api_key")}
 
 
 @pytest.mark.parametrize("global_enabled,user_enabled,enabled", [
@@ -435,6 +468,18 @@ def test_web_search_switch_controls_all_child_apps(
         (["inference", "web-search"] if enabled else ["inference"])
     assert helm_values(app(docs, "saw-alice"))["additionalProviderSecrets"] == \
         (["web-search"] if enabled else [])
+    machine = helm_values(app(docs, "saw-alice"))
+    child_values = tmp_path / "machine.yaml"
+    child_values.write_text(yaml.safe_dump(machine))
+    child_docs = docs_from(helm("template", "alice", str(SAW_CHART), "-f", str(child_values)))
+    installer = next(d for d in child_docs if d["kind"] == "ConfigMap"
+                     and d["metadata"]["name"] == "alice-installer")
+    proxy = json.loads(installer["data"]["config.json"])["credentialProxy"]
+    assert [b["name"] for b in proxy["secrets"]] == \
+        (["inference", "web-search"] if enabled else ["inference"])
+    if profile == "data-science":
+        inference = next(b for b in proxy["secrets"] if b["name"] == "inference")
+        assert "build" in inference["providers"]
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": [profile], **({} if enabled else {"webSearch": {"enabled": False}}),
         "imageOverrides": {},
@@ -445,9 +490,10 @@ def test_web_search_off_validates_without_a_web_search_secret(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {
         "global": {"webSearch": {"enabled": False}},
     }))
-    result, _ = validate_rendered_user(tmp_path, docs, {
-        "inference": {"api_key": "k1", "provider": "build"},
+    result, installer = validate_rendered_user(tmp_path, docs, {
+        "inference": {"provider": "build"},
     })
+    assert [b["name"] for b in json.loads(installer["data"]["config.json"])["credentialProxy"]["secrets"]] == ["inference"]
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
     assert "2 credential(s)" in result.stdout
@@ -498,10 +544,10 @@ def test_pattern_override_preserves_the_boolean_install_knob(tmp_path, enabled):
 def test_web_search_on_without_its_secret_reproduces_the_installer_failure(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE]))
     result, _ = validate_rendered_user(tmp_path, docs, {
-        "inference": {"api_key": "k1", "provider": "build"},
+        "inference": {"provider": "build"},
     })
     assert result.returncode != 0
-    assert "credential for provider 'brave' in workspace 'default' not found" in \
+    assert "metadata Secret 'web-search-meta' is not mounted" in \
         result.stdout + result.stderr
 
 

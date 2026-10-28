@@ -117,6 +117,12 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $extra := list -}}
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
+{{- $proxy := deepCopy (index $base "credentialProxy" | default dict) -}}
+{{- $bindings := include "saw-users.credentialBindings" . | fromJsonArray -}}
+{{- if $bindings -}}
+{{- $_ := set $proxy "secrets" $bindings -}}
+{{- end -}}
+{{- $_ := set $base "credentialProxy" $proxy -}}
 {{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
      uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
 {{- $oidc := deepCopy (index $base "oidc" | default dict) -}}
@@ -230,6 +236,33 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- toJson (keys $names | sortAlpha) -}}
 {{- end -}}
 
+{{/* Only fields marked kind=secret become proxy bindings. */}}
+{{- define "saw-users.credentialBindings" -}}
+{{- $bindings := dict -}}
+{{- $secretNames := include "saw-users.secretNames" . | fromJsonArray -}}
+{{- $known := include "saw-users.userCatalog" . | fromJsonArray -}}
+{{- range $profile := $known -}}
+  {{- range $secret, $entry := $profile.secrets | default dict -}}
+    {{- range $field := $entry.fields | default list -}}
+      {{- if and (has $secret $secretNames) (eq $field.kind "secret") -}}
+        {{- $id := printf "%s/%s" $secret $field.key -}}
+        {{- $previous := index $bindings $id | default (dict "name" $secret "key" $field.key "providers" (list)) -}}
+        {{- $providers := $previous.providers -}}
+        {{- range $entry.providers | default list -}}
+          {{- if not (has . $providers) -}}{{- $providers = append $providers . -}}{{- end -}}
+          {{- if and (eq . "nvidia") (not (has "build" $providers)) -}}{{- $providers = append $providers "build" -}}{{- end -}}
+        {{- end -}}
+        {{- $_ := set $previous "providers" $providers -}}
+        {{- $_ := set $bindings $id $previous -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $out := list -}}
+{{- range keys $bindings | sortAlpha -}}{{- $out = append $out (index $bindings .) -}}{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
 {{- define "saw-users.profiles" -}}
 {{- $user := .user -}}
 {{- $root := .root -}}
@@ -262,9 +295,26 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- $saw := deepCopy ($root.Values.defaults.openshellSaw | default dict) -}}
 {{- $saw = mergeOverwrite $saw (deepCopy ($user.values | default dict)) -}}
 {{- $registry := index $saw "registry" | default dict -}}
+{{- $metaKeys := dict -}}
+{{- $credentialKeys := dict -}}
+{{- range (include "saw-users.credentialBindings" . | fromJsonArray) -}}
+{{- $_ := set $credentialKeys (printf "%s/%s" .name .key) true -}}
+{{- end -}}
+{{- range (include "saw-users.userCatalog" . | fromJsonArray) -}}
+{{- range $secret, $entry := .secrets | default dict -}}
+{{- $keys := index $metaKeys $secret | default (list "provider") -}}
+{{- range $entry.fields | default list -}}
+{{- if and (ne .kind "secret") (not (hasKey $credentialKeys (printf "%s/%s" $secret .key))) -}}
+{{- $keys = append $keys .key -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $metaKeys $secret ($keys | uniq | sortAlpha) -}}
+{{- end -}}
+{{- end -}}
 {{- $values := dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
       "secrets" (include "saw-users.secretNames" . | fromJsonArray)
+      "metaKeys" $metaKeys
       "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
 {{- if $registry.authSecret -}}
 {{- $_ := set $values "registryPullSecret" $registry.authSecret -}}

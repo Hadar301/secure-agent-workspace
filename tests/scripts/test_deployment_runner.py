@@ -162,3 +162,35 @@ def test_request_evidence_uses_actual_protocol(tmp_path, expected, response, val
         assert detail in evidence.read_text()
     else:
         assert "invalid request result" in evidence.read_text()
+
+
+@pytest.mark.parametrize("failure", ["", "metadata", "binding", "unavailable"])
+def test_web_search_absence_checks_metadata_bindings_and_proxy(tmp_path, failure):
+    source = (ROOT / "scripts/test-deployment.sh").read_text()
+    function = source.split("check_web_search_absent() {", 1)[1].split('\necho "Testing commit', 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable(bindir / "oc", '''
+case "$*" in
+  "get "*)
+    if [[ "$2" == configmap ]]; then
+      if [[ "$FAILURE" == binding ]]; then
+        printf '%s\\n' '{"data":{"config.json":"{\\"bindings\\":[{\\"secret\\":\\"web-search\\"}]}"}}'
+      else
+        printf '%s\\n' '{"data":{"config.json":"{\\"bindings\\":[{\\"secret\\":\\"inference\\"}]}"}}'
+      fi
+    elif [[ "$FAILURE" == metadata && "$2" == secret && "$3" == web-search-meta ]]; then
+      printf 'secret/web-search-meta\\n'
+    fi ;;
+  "wait "*) [[ "$FAILURE" != unavailable ]] ;;
+  *) exit 9 ;;
+esac
+''')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAILURE=failure)
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n"
+                             'record() { printf "%s\\n" "$*"; }\n'
+                             'pattern_namespace=saw-alice\nTEST_PATTERN_SAW_NAME=alice\n'
+                             "check_web_search_absent() {" + function +
+                             'check_web_search_absent test\n'],
+                            env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (not failure), result.stdout + result.stderr

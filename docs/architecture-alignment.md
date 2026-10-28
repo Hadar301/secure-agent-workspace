@@ -13,7 +13,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | GitOps control plane | ArgoCD for policy and config | Red Hat Validated Patterns with ArgoCD | Implemented |
 | Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | Namespaced default-deny NetworkPolicy for pod ingress and egress, plus EgressFirewall with an explicit hostname allowlist in Git. No EgressIP | Partial |
 | Agent runtime | OpenShell or equivalent runtime sandbox | OpenShell Gateway + OpenClaw/NemoClaw agents | Implemented |
-| Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator | Implemented |
+| Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator; a per-namespace credential proxy injects provider keys; the VM holds markers and metadata only | Implemented |
 | Policy distribution | Signed policy bundles via NFS | Signed APF bundle (Ed25519, monotonic `policy_revision`), served in-cluster as the optional `apf` governance engine; no NFS transport | Partial |
 | OCSF-compatible audit | Lifecycle events, broker sessions, tool events | Governance decisions are logged (interceptor audit log; APF JSONL audit trail); no unified OCSF pipeline | Partial |
 | Operator kill switch | Stop VM, remove route, revoke SSO, rotate policy | VM lifecycle via OpenShift API; SSO revocation via Keycloak | Implemented |
@@ -64,7 +64,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - TLS passthrough on the gateway route preserves gRPC/HTTP2
 - Auth proxy restricts dashboard access to the sandbox owner
 - Each sandbox namespace gets an OpenShift `EgressFirewall` named `default`. The VM uses masquerade, so traffic leaving the guest is traffic leaving that pod. Undeclared internet hosts are denied. The allowlist is `egress.allow` plus `egress.extraAllow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml), and the Keycloak route host from the OIDC issuer. See [Deployment guide](deployment-guide.md#egress-from-the-vm).
-- An enabled sandbox namespace gets four `NetworkPolicy` objects: default-deny, a narrow VM allow policy, CDI importer access, and exact API egress for the pre-delete cleanup hook. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
+- An enabled sandbox namespace keeps five `NetworkPolicy` objects: default-deny, a narrow VM allow policy, CDI importer access, `saw-credential-proxy`, and (when cleanup is enabled) exact API egress for the pre-delete cleanup hook. A separate PreSync CA-hook policy allows API access while initializing the proxy CA and is removed after the hook succeeds. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
 
 **Residual risk:** NetworkPolicy and EgressFirewall cannot filter by Route host. Cluster Routes on TCP 443 remain reachable behind their own authentication. A fixed source address still needs EgressIP; an optional AdminNetworkPolicy could add a cluster-level guardrail.
 
@@ -78,7 +78,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Largely implemented. Phase II runtime enforcement is configured through the governance layer. A governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. The in-VM sandbox proxy injects provider credentials at request time, so the real keys never enter the sandbox. A unified, cluster-wide OCSF audit pipeline is still absent. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
+**Alignment:** Largely implemented. Phase II runtime enforcement is configured through the governance layer. A governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. Provider credentials are injected at request time by the per-namespace credential proxy; the sandbox and the VM hold only nonsecret markers, so the real keys never enter the VM ([Credential isolation](credential-isolation.md)). A unified, cluster-wide OCSF audit pipeline is still absent. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
 
 ### 6. Secret Management
 
@@ -87,12 +87,12 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 **Implementation:**
 - HashiCorp Vault as the backing store
 - External Secrets Operator syncs secrets from Vault into k8s Secrets
-- ExternalSecret resources for each inference provider (anthropic, gemini, openai, nvidia, openrouter, vertex) and search providers (tavily, brave-search)
+- ExternalSecret resources for configured inference and search providers, plus `-meta` companions that expose only nonsecret provider metadata to the VM
 - SSH private/public keys managed through Vault
 - `values-secret.yaml.template` defines the secret schema
-- The in-guest installer reads provider Secrets from the VM (iso9660 disks, or virtiofs when `vm.liveInputs` is true) and passes each key to the OpenShell CLI in the environment, not in argv
+- The proxy pod alone mounts the full provider Secrets. The VM mounts only their `-meta` companions; the installer passes nonsecret markers to OpenShell and NemoClaw. The proxy binds markers to profile hosts and injects keys into allowed HTTPS requests.
 
-**Alignment:** Full. API keys and SSH keys flow through Vault and ESO, keeping credentials out of Git, helm values, and ArgoCD state.
+**Alignment:** Full for VM-root key isolation. API keys stay outside the VM, as described in [Credential isolation](credential-isolation.md). VM root can still use a bound key through the proxy while it controls the VM.
 
 ### 7. Policy Distribution
 
@@ -141,7 +141,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), credential proxying, and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
+| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), per-namespace credential proxying (provider keys never enter the VM), and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
 
 ## Recommendations for Closing Gaps
 

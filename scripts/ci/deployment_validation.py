@@ -28,6 +28,7 @@ OWN_IMAGES = {
     "openshell-gateway",
     "openshell-gateway-docker",
     "governance-interceptor",
+    "saw-credential-proxy",
 }
 SCHEMA_LOCATIONS = (
     str(ROOT / "scripts/ci/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"),
@@ -72,6 +73,7 @@ def chart_args(chart: Path) -> list[str]:
     name = chart.name
     if name == "openshell-saw":
         return ["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
                 "--set", "sandboxName=ciowner"]
     if name == "saw-users":
         return ["-f", str(ROOT / "tests/fixtures/deployment-validation-users.yaml")]

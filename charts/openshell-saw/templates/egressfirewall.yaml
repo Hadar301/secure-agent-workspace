@@ -10,17 +10,7 @@
 {{- end }}
 {{- end }}
 {{- if .Values.egress.enabled }}
-{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) | uniq }}
-{{- if .Values.allowDriverConfig }}
-{{- range (.Values.egress.harnessAllow | default list) }}
-{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
-{{- end }}
-{{- end }}
-{{- if eq (.Values.signing.mode | default "warn") "enforce" }}
-{{- range (.Values.egress.signingAllow | default list) }}
-{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
-{{- end }}
-{{- end }}
+{{- $hosts := include "openshell-sandbox.egressHosts" . | fromJsonArray }}
 {{- range $hosts }}
 {{- include "openshell-sandbox.validateEgressHost" . }}
 {{- end }}
@@ -34,6 +24,8 @@ apiVersion: k8s.ovn.org/v1
 kind: EgressFirewall
 metadata:
   name: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 spec:
@@ -51,9 +43,8 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
-    {{- /* The pre-delete hook must call the API. Keep this exception through
-           a temporary NetworkPolicy rollback so uninstall remains possible. */}}
-    {{- if .Values.cleanupOnDelete }}
+    {{- /* The cleanup and credential-proxy CA hooks call the API. Keep this
+           exception even when cleanupOnDelete or NetworkPolicy is disabled. */}}
     {{- if $apiTargets }}
     {{- range $apiTargets }}
     - type: Allow
@@ -74,7 +65,6 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
-    {{- end }}
     {{- end }}
     {{- range $hosts }}
     - type: Allow

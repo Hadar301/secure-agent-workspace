@@ -13,8 +13,9 @@ import pytest
 import yaml
 
 from conftest import profile_files
+from conftest import marker, resolve
 
-URL = "https://vllm.models.svc.cluster.local:8443/v1"
+URL = "https://vllm.models.svc.cluster.local/v1"
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 ROOT = Path(__file__).resolve().parents[2]
 EXTRA_PROFILE = ROOT / "overrides/governance-profiles/custom-inference.yaml"
@@ -34,7 +35,7 @@ def governed_catalog(fake_env):
 @pytest.fixture
 def custom_secrets(secrets_dir):
     inference = secrets_dir / "inference"
-    for key, value in {"provider": "custom-inference", "api_key": "sk-CUSTOM-TEST-KEY",
+    for key, value in {"provider": "custom-inference",
                        "url": URL + "/", "model": MODEL}.items():
         (inference / key).write_text(value + "\n")
     return secrets_dir
@@ -55,11 +56,11 @@ def test_profile_is_valid_and_reads_url_and_model_from_the_secret(ab, profiles, 
     ab.validate_profiles(profiles, governed=True)
     with pytest.raises(ab.InstallerError, match="unsupported type 'custom-inference'"):
         ab.validate_profiles(profiles)
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     custom = next(p for p in profiles[0].workspaces[0].providers if p.name == "custom-inference")
     # The provider is only the credential...
     assert (custom.type, custom.base_url, custom.model) == ("custom-inference", "", "")
-    assert creds["default"]["custom-inference"] == "sk-CUSTOM-TEST-KEY"
+    assert creds["default"]["custom-inference"] == marker("inference")
     # ...the endpoint and model are the sandbox's (the URL normalised).
     sb = notebook(profiles)
     assert sb.inference_values == {"providerRef": "custom-inference", "protocol": "openai",
@@ -69,13 +70,13 @@ def test_profile_is_valid_and_reads_url_and_model_from_the_secret(ab, profiles, 
 
 def test_apply_creates_the_provider_from_the_governed_profile_and_onboards_on_its_endpoint(
         ab, fake_env, config, profiles, custom_secrets, governed_catalog):
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     state = fake_env.openshell_state()
     # The credential env var is the governed profile's, not a built-in one;
     # no provider --config (not part of OpenShell 0.1.2's provider CLI).
     assert state["providers"]["default/custom-inference"] == {
-        "type": "custom-inference", "credential": "CUSTOM_INFERENCE_API_KEY=sk-CUSTOM-TEST-KEY"}
+        "type": "custom-inference", "credential": "CUSTOM_INFERENCE_API_KEY=" + marker("inference")}
     assert "env" not in state["sandboxes"]["default/notebook"]     # inference is not env
     # The shipped profile's timeoutSeconds: 300 reaches OpenClaw's provider config.
     assert state["sandboxes"]["default/notebook"]["openclawConfig"][
@@ -90,11 +91,11 @@ def test_apply_creates_the_provider_from_the_governed_profile_and_onboards_on_it
 
 
 def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secrets, governed_catalog):
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     (custom_secrets / "inference" / "url").write_text("http://ollama.models.svc:11434/v1\n")
     profiles2 = ab.parse_profiles(profile_files("custom-inference"))
-    creds = ab.resolve_credentials(profiles2, custom_secrets)
+    creds = resolve(ab, profiles2, custom_secrets)
     before = len(fake_env.openshell_calls())
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles2)
     calls = fake_env.openshell_calls()[before:]
@@ -112,7 +113,7 @@ def test_rerun_updates_the_base_url(ab, fake_env, config, profiles, custom_secre
 def test_bad_base_urls_are_refused_without_echoing_them(ab, profiles, custom_secrets, url):
     (custom_secrets / "inference" / "url").write_text(url)
     with pytest.raises(ab.InstallerError) as err:
-        ab.resolve_credentials(profiles, custom_secrets)
+        resolve(ab, profiles, custom_secrets)
     assert url not in str(err.value) and "base URL" in str(err.value)
 
 
@@ -121,7 +122,7 @@ def test_a_secret_for_another_provider_still_fails(ab, profiles, custom_secrets)
     Secret is still an error, never a silent skip."""
     (custom_secrets / "inference" / "provider").write_text("gemini\n")
     with pytest.raises(ab.InstallerError, match="is for 'gemini'"):
-        ab.resolve_credentials(profiles, custom_secrets)
+        resolve(ab, profiles, custom_secrets)
 
 
 def test_the_secret_names_the_provider_type_or_nothing(ab, profiles, custom_secrets):
@@ -130,9 +131,9 @@ def test_the_secret_names_the_provider_type_or_nothing(ab, profiles, custom_secr
     it out."""
     (custom_secrets / "inference" / "provider").write_text("custom\n")
     with pytest.raises(ab.InstallerError, match="expects a custom-inference credential"):
-        ab.resolve_credentials(profiles, custom_secrets)
+        resolve(ab, profiles, custom_secrets)
     (custom_secrets / "inference" / "provider").write_text("")
-    ab.resolve_credentials(profiles, custom_secrets)
+    resolve(ab, profiles, custom_secrets)
 
 
 def test_base_url_only_for_types_the_router_supports(ab):
@@ -150,7 +151,7 @@ def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_di
     """No url/model keys in the Secret: the sandbox keeps its profile model;
     the provider carries credentials only."""
     profiles = ab.parse_profiles(shipped_profile_files)
-    ab.resolve_credentials(profiles, secrets_dir)
+    resolve(ab, profiles, secrets_dir)
     ws = next(w for w in profiles[0].workspaces if w.name == "default")
     nvidia = next(p for p in ws.providers if p.name == "nvidia")
     assert (nvidia.base_url, nvidia.model) == ("", "")
@@ -164,7 +165,7 @@ def test_without_the_profile_in_the_catalog_the_apply_fails_before_creating_anyt
     profile under overrides/governance-profiles: the error names the fix.
     (Earlier, with `type: openai`, the provider was skipped with a warning
     and OpenClaw was onboarded without it - found live.)"""
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     applier = ab.ProfileApplier(ab.Shell(), config, creds)
     with pytest.raises(ab.InstallerError, match="overrides/governance-profiles") as err:
         applier.apply(profiles)
@@ -178,7 +179,7 @@ def test_a_governed_profile_without_a_credential_env_var_is_refused(
     record = dict(governed_catalog)
     record["credentials"] = [{"name": "api_key"}]
     fake_env.set_catalog({**DEFAULT_CATALOG, "custom-inference": record})
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     with pytest.raises(ab.InstallerError, match="declares no credential env var"):
         ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
 
@@ -188,7 +189,7 @@ def test_the_profile_arriving_later_makes_the_next_apply_succeed(
     """Boot 1 before the governance-extra-profiles app synced: the apply
     fails (nothing half-built); boot 2, with the profile in the catalog,
     creates the provider and the sandbox with it."""
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     with pytest.raises(ab.InstallerError):
         ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     fake_env.set_catalog({**DEFAULT_CATALOG,
@@ -222,7 +223,7 @@ def test_a_replaced_openclaw_credential_is_activated(ab, fake_env, config, profi
     """Found live: re-onboarding the existing notebook for the custom
     endpoint left OpenClaw on its previous connection."""
     (fake_env.state / "exec-output.json").write_text(json.dumps({"openclaw onboard": REPLACED}))
-    creds = ab.resolve_credentials(profiles, custom_secrets)
+    creds = resolve(ab, profiles, custom_secrets)
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     calls = [" ".join(c) for c in fake_env.openshell_calls()]
     assert any("openclaw models auth activate openai:setup-df67c47c-d3f2-46f5-b698-c42390c67b5d --agent main"

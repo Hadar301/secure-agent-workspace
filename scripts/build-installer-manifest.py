@@ -10,7 +10,7 @@ Usage: build-installer-manifest.py <rendered-chart.yaml> <out-manifest.txt>
 Must match charts/openshell-saw/files/guest/verify-bundle's manifest_text()
 exactly: the same file set (installer-bom.yaml, apply_bom.py,
 setup-dashboard.sh, every provider-profile-*.yaml, and all three tool-gate
-files, sorted), the same "<sha256>  <path>\n" line
+files and both gateway PKI files, sorted), the same "<sha256>  <path>\n" line
 format. Any drift between this script and verify-bundle makes a genuine,
 unmodified installer fail signing.mode: enforce for no reason (PR #54 review,
 3). installer-tests.yml's drift-check step catches that: it fails if the
@@ -24,6 +24,7 @@ import yaml
 
 FIXED_FILES = ["installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"]
 TOOL_GATE_FILES = ["tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs"]
+PKI_FILES = ["saw-gateway-pki", "openshell-gateway-pki.conf"]
 
 
 def build_manifest(data):
@@ -31,6 +32,7 @@ def build_manifest(data):
         FIXED_FILES
         + [name for name in data if name.startswith("provider-profile-") and name.endswith(".yaml")]
         + TOOL_GATE_FILES
+        + PKI_FILES
     )
     lines = []
     for name in covered:

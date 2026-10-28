@@ -54,7 +54,7 @@ container for that run before it starts cluster cleanup. Cleanup checks for
 leftover run-labeled utility containers and stops if it cannot remove them.
 
 Use a fresh cluster for each run. The E2E test builds the sandbox, CLI,
-Podman gateway, and governance interceptor images. It installs two ordinary
+Podman gateway, governance interceptor, and credential proxy images. It installs two ordinary
 users, checks Argo application health and revision, waits for both VMs to run,
 checks the built image digest references, requires both guest installer phases
 to finish, tests two-user access, makes a real NVIDIA inference request,
@@ -93,12 +93,12 @@ before merge.
 | Cluster preflight | Check cluster identity and freshness | The API URL and cluster UID match; no Pattern, VM, build, or test namespace from an earlier run exists. |
 | Cluster preflight | Check cluster capacity | The cluster has a default StorageClass, a Ready node with at least 4 CPU and 8 GiB, and valid CNV webhook state when present. |
 | Cluster preflight | Reserve the cluster | An atomic lock blocks concurrent runs and records the repository, PR, SHA, and run link. |
-| Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, and governance interceptor builds complete and produce image digests. |
+| Build | Build runtime images | The discovery runtime, sandbox, CLI, Podman gateway, governance interceptor, and credential proxy builds complete and produce image digests. |
 | Registry setup | Prepare guest image pulls | A short-lived, scoped registry token is added to private CI inputs for the guest VMs. |
-| Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests and CI network settings. |
+| Install | Install the tested revision | Pattern installs the PR SHA for two CI users with the built image digests (including the namespace credential proxy) and CI network settings. |
 | Deployment readiness | Check Argo applications | At least six selected applications become healthy at the tested SHA; allowed parent drift must be healthy child applications at that SHA. |
 | Deployment readiness | Check virtual machines | Both CI user VMs reach `Running`. |
-| Deployment readiness | Check image digests | The interceptor deployment, each user BOM and profile, and each VM gateway disk use the images built in this run. |
+| Deployment readiness | Check image digests | The interceptor and per-user credential proxy deployments, each user BOM and profile, and each VM gateway disk use the images built in this run. |
 | Guest installer | Check installer phases | Both users report `install` and `apply` phases as `Done`; either phase failing stops the run. |
 | Live cluster | Authenticate both users | Keycloak issues usable OIDC tokens for the owner and second user. |
 | Live cluster | List the sandbox | The owner can list the `notebook` sandbox through OpenShell. |

@@ -27,7 +27,8 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice"):
-    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")]
+    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                 "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
                 if Path(chart) == CHART else [])
     return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
                            *topology, *args],
@@ -105,6 +106,19 @@ def test_registry_config_mounts_pull_secret_without_exposing_token():
         written(cloud_config(docs), "/etc/openshell/gateway.env")
 
 
+    volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+    sources = {v["secret"]["secretName"] for v in volumes if "secret" in v}
+    assert {"registry-pull", "inference-meta", "web-search-meta"} <= sources
+    assert not {"registry-pull-meta", "inference", "web-search"} & sources
+
+
+@pytest.mark.parametrize("name", ["inference", "web-search", "inference-meta"])
+def test_registry_pull_secret_cannot_alias_a_provider_secret(name):
+    assert "dedicated pull-token Secret" in render_error(
+        "--set-string", "registry.host=registry.example.test:5000",
+        "--set-string", f"registry.authSecret={name}")
+
+
 def test_registry_ca_bundle_base64_decodes_for_installer():
     host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
     pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
@@ -134,9 +148,9 @@ def default_docs():
 def test_no_setup_job_and_no_ssh_provisioning(default_docs):
     kinds = {k for k, _ in default_docs}
     assert not [k for k, _ in default_docs if k in ("Job", "CronJob")], "nothing runs in the namespace but the VM"
-    # Only the pre-delete cleanup hook (helm uninstall / app deletion) has an identity.
+    # The proxy has a tokenless identity; only hooks have API credentials.
     assert [n for (k, n), d in default_docs.items() if k == "ServiceAccount"
-            and "helm.sh/hook" not in (d["metadata"].get("annotations") or {})] == []
+            and "helm.sh/hook" not in (d["metadata"].get("annotations") or {})] == ["saw-test-credential-proxy"]
     assert "VirtualMachine" in kinds
     text = yaml.safe_dump(list(default_docs.values()))
     for forbidden in ("virtctl", "guest_ssh", "guest_scp", "portforward", "openshell-aap-ssh"):
@@ -178,7 +192,7 @@ def test_vm_attaches_inputs_as_serial_disks(default_docs):
     assert volumes["saw-installer"]["configMap"] == {"name": "saw-test-installer"}
     assert volumes["saw-profiles"]["configMap"] == {"name": "saw-bom-profiles", "optional": True}
     secret_volumes = {v["secret"]["secretName"]: n for n, v in volumes.items() if "secret" in v}
-    assert secret_volumes == {"inference": "saw-sec-0", "web-search": "saw-sec-1"}
+    assert secret_volumes == {"inference-meta": "saw-sec-0", "web-search-meta": "saw-sec-1"}
     for name in secret_volumes.values():
         assert disks[name] == name
         # Required, so virt-launcher waits for the Secret. An optional iso9660
@@ -199,7 +213,7 @@ def test_unlisted_provider_secrets_are_not_attached():
 def test_duplicate_secret_names_attach_once():
     docs = render("--set", "inference.secretName=web-search")
     volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
-    assert [v["secret"]["secretName"] for v in volumes if "secret" in v] == ["web-search"]
+    assert [v["secret"]["secretName"] for v in volumes if "secret" in v] == ["web-search-meta"]
 
 
 def test_cloud_init_ships_the_guest_files_unchanged(default_docs):
@@ -221,7 +235,7 @@ def test_secret_disk_order_matches_config_json(default_docs):
     spec = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     by_disk = {v["name"]: v["secret"]["secretName"] for v in spec["volumes"] if "secret" in v}
     config = json.loads(installer_data(default_docs)["config.json"])
-    assert by_disk == {f"saw-sec-{i}": name for i, name in enumerate(config["secrets"])}
+    assert by_disk == {f"saw-sec-{i}": name + "-meta" for i, name in enumerate(config["secrets"])}
 
 
 def test_gateway_files_identical_on_cloud_init_and_installer_disk(default_docs):
@@ -387,7 +401,15 @@ def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert toml["openshell"]["drivers"]["podman"]["supervisor_image"] == \
         values["bom"]["spec"]["openshell"]["supervisor"]["image"]
+    assert toml["openshell"]["drivers"]["podman"]["proxy_ca_bundle"] == \
+        "/home/cloud-user/.config/openshell/credential-proxy-ca.pem"
     assert "oidc" not in toml["openshell"].get("gateway", {})   # no issuer configured
+    jwt = toml["openshell"]["gateway"]["gateway_jwt"]
+    assert jwt == {
+        "signing_key_path": "/home/cloud-user/.local/state/openshell/tls/jwt/signing.pem",
+        "public_key_path": "/home/cloud-user/.local/state/openshell/tls/jwt/public.pem",
+        "kid_path": "/home/cloud-user/.local/state/openshell/tls/jwt/kid",
+    }
 
 
 def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
@@ -794,8 +816,8 @@ def test_rendered_inputs_validate_in_the_shipped_installer(tmp_path, default_doc
     for key, value in render_bom_chart()["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "build"},
-                         "web-search": {"api_key": "k2"}}.items():
+    for secret, data in {"inference": {"provider": "build"},
+                         "web-search": {"provider": "brave"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
         for key, value in data.items():
             (run_saw / "secrets" / secret / key).write_text(value)
@@ -1087,9 +1109,9 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     for key, value in cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "custom-inference", "model": "m",
-                                       "url": "https://vllm.models.svc:8443/v1"},
-                         "web-search": {"api_key": "k2"}}.items():
+    for secret, data in {"inference": {"provider": "custom-inference", "model": "m",
+                                       "url": "https://vllm.models.svc/v1"},
+                         "web-search": {"provider": "brave"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
         for key, value in data.items():
             (run_saw / "secrets" / secret / key).write_text(value)
@@ -1127,7 +1149,7 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     disks = {d["name"] for d in spec["domain"]["devices"]["disks"]}
     filesystems = {f["name"] for f in spec["domain"]["devices"]["filesystems"]}
     assert disks == {"rootdisk", "cloudinitdisk"}
-    assert filesystems == {"saw-installer", "saw-profiles", "saw-sec-0", "saw-sec-1"}
+    assert filesystems == {"saw-installer", "saw-profiles", "saw-proxy-ca", "saw-sec-0", "saw-sec-1"}
     assert all(item["virtiofs"] == {} for item in spec["domain"]["devices"]["filesystems"])
     annotations = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["annotations"]
     assert "openshell.pattern/installer-checksum" not in annotations

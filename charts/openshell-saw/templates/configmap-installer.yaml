@@ -34,6 +34,10 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if and (or $registryCa $registrySecret) (not $registryHost) }}
 {{- fail "registry.host is required when registry.caBundle or registry.authSecret is set" }}
 {{- end }}
+{{- $providerNames := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact }}
+{{- if and $registrySecret (or (has $registrySecret $providerNames) (hasSuffix "-meta" $registrySecret)) }}
+{{- fail "registry.authSecret must name a dedicated pull-token Secret, not a provider Secret or its -meta copy" }}
+{{- end }}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
 {{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
 {{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
@@ -58,11 +62,22 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- fail "signing.mode enforce requires signing.trustKeys or both signing.identity and signing.issuer" }}
 {{- end }}
 {{- $trusted := .Values.sandboxUiProxy.trustedProxy | default dict }}
+{{- $bindings := list }}
+{{- $attached := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact }}
+{{- range .Values.credentialProxy.secrets }}
+{{- if has .name $attached }}{{- $bindings = append $bindings . }}{{- end }}
+{{- end }}
 {{- $config := dict
       "vmName" (include "openshell-sandbox.fullname" .)
       "namespace" .Release.Namespace
       "runtimeUser" "cloud-user"
       "mtlsGateway" "saw-installer"
+      "relayGateway" "saw-relay"
+      "credentialProxy" (dict
+          "url" (printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace)
+          "markerPrefix" "saw-cred"
+          "secrets" $bindings)
+      "gatewayPki" (dict "generation" .Values.gatewayPki.generation)
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "ownerSubjectSource" (.Values.accessControl.ownerSubjectSource | default "")
       "oidcIssuer" $oidcIssuer
@@ -122,6 +137,10 @@ data:
 {{ include "openshell-sandbox.gatewayEnv" . | indent 4 }}
   gateway.toml: |
 {{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
+  saw-gateway-pki: |
+{{ .Files.Get "files/guest/saw-gateway-pki" | indent 4 }}
+  openshell-gateway-pki.conf: |
+{{ .Files.Get "files/guest/openshell-gateway-pki.conf" | indent 4 }}
   apply_bom.py: |
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
   tool-actions.yaml: |

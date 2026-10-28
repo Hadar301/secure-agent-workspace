@@ -1,6 +1,6 @@
 # Network troubleshooting
 
-Each `saw-<name>` namespace has two outbound controls. The namespaced `NetworkPolicy` selects the VM's `virt-launcher` pod and limits in-cluster peers and outside TCP ports. The OVN-Kubernetes `EgressFirewall` named `default` limits outside destinations by hostname and also evaluates API traffic on the test cluster. A connection must pass both layers. The sandbox proxy and governance profile are another decision point inside the VM.
+Each `saw-<name>` namespace has two outbound controls. The VM's `saw-vm` NetworkPolicy limits in-cluster peers and outside TCP ports, while `saw-credential-proxy` separately permits the proxy's DNS and HTTPS egress. The OVN-Kubernetes `EgressFirewall` named `default` limits outside destinations by hostname and also evaluates API traffic on the test cluster. A connection must pass both layers. The sandbox proxy and governance profile are another decision point inside the VM.
 
 Use the affected SAW namespace in every command. Check the current context before probing a cluster:
 
@@ -21,17 +21,43 @@ SAW_NS=saw-<name> VM_NAME=<name> \
 
 Compare it with a known allowed destination from the same VM. A `000` HTTP code only means no HTTP response arrived; the curl exit code and error distinguish name resolution, refusal, and timeout. In the 2026-10-11 test cluster, `kubernetes.default.svc` gave curl exit 6 because the short name did not resolve in the guest. The fully qualified `kubernetes.default.svc.cluster.local` and API ClusterIP timed out with exit 28. `169.254.169.254:80` refused the connection with exit 7 when the NetworkPolicy was off. These signatures are observations from that cluster, not a universal way to identify which layer denied a packet. Check policy objects and compare a positive control before concluding which layer is responsible.
 
+## Provider call fails through the credential proxy
+
+Check `oc get deploy,pod,svc -n saw-<name> -l openshell.pattern/role=credential-proxy`
+and the proxy's `/healthz` Service port 8081. Inspect `saw-credential-proxy`
+NetworkPolicy for DNS, HTTPS and any scoped in-cluster peers; the CA hook has
+a separate API-egress policy during PreSync. Its logs report host, binding,
+and status without keys. An `unknown or unbound credential marker` 502 means
+the marker, Secret provider type, and profile endpoint do not agree. A missing
+mounted key makes `/healthz` fail. A proxy outage cannot cause a key fallback
+in the VM; restore the Deployment or Secret and retry the request.
+
+## Installer reports a credential key on a VM disk
+
+The VM is still mounting a full provider Secret. Replace its volume source
+with `<name>-meta`, create that metadata Secret, and put the full Secret only
+on the credential proxy Deployment. The installer stops before applying the
+profile to avoid persisting the live key. For custom providers, also add the
+binding in `credentialProxy.secrets`.
+
+## Relay forward is refused
+
+Confirm that `saw-relay` is registered with a `OU=openshell-user` certificate
+and is a user member of the target workspace. Forward and keepalive units use
+`--gateway saw-relay`; the temporary `saw-installer` admin entry exists only
+during apply. Re-run `saw-apply` after correcting workspace membership.
+
 ## Supervisor approved, but the connection fails
 
 The governance profile can become live through the interceptor before the `openshell-saw` release receives its matching EgressFirewall and NetworkPolicy update. A persistent version of this problem occurs when a profile is added without its exact outside host in `egress.allow` or `egress.extraAllow`, or without a narrow `networkPolicy.extraEgress` rule for an in-cluster Service. Custom provider URLs held only in Vault cannot be inferred by the chart.
 
-Compare the destination and port in the active profile with the `EgressFirewall` and `saw-vm` NetworkPolicy. Probe its hostname from the VM and a known allowed host from the same VM. For an outside host, add it to `egress.extraAllow` and sync the SAW; for an in-cluster Service, add its namespace, pod selector, and port to `networkPolicy.extraEgress` and sync. Keep the profile and allowlist changes together. CI checks the shipped profile hosts and ports against the chart's default allowlist and outside ports; site-specific additions still need review.
+Compare the destination and port in the active profile with the `EgressFirewall`, `saw-vm` and `saw-credential-proxy` NetworkPolicies. Probe its hostname from the VM and a known allowed host from the same VM. For an outside host, add it to `egress.extraAllow` and sync the SAW; for an in-cluster Service, add its namespace, pod selector, and port to `networkPolicy.extraEgress` and sync. Keep the profile and allowlist changes together. CI checks the shipped profile hosts and ports against the chart's default allowlist and outside ports; site-specific additions still need review.
 
 In the 2026-10-11 test, the live NVIDIA profile still listed `integrate.api.nvidia.com`. A credential-free request from the notebook sandbox returned HTTP 404 with the firewall rule present, timed out after eight seconds when that one hostname was removed from the EgressFirewall, and returned HTTP 404 again after rollback. The sandbox image lacked curl, so the probe used Node `fetch` and reported `TimeoutError` on the denied request. No supervisor log line was captured; the unchanged live profile and reversible firewall rule establish the configuration skew observed here.
 
 ## Routes return 503 or 504
 
-Check that the gateway `virt-launcher` pod has `openshell.pattern/role=gateway` and that `saw-vm` admits the Route's backend port. Check the `openshift-ingress` namespace label `policy-group.network.openshift.io/ingress` and the ingress controller publishing strategy. For OVN with host-network routers, allow both the ingress namespace selector with an empty `podSelector` and the `policy-group.network.openshift.io/host-network` namespace selector. Test from routers on the VM's node and on other nodes; a same-node request can hide a missing host-network rule. Also check that the VM and its service endpoints are ready. The test cluster's webui and sandbox UI Routes answered with HTTP 302 after NetworkPolicy was enabled.
+Check that the gateway `virt-launcher` pod has `openshell.pattern/role=gateway` and that `saw-vm` admits the Route's backend port. Check the `openshift-ingress` namespace label `policy-group.network.openshift.io/ingress` and the ingress controller publishing strategy. Keep the ingress router peer namespace-only, as in the [OpenShift allow-from-router example](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/network_security/network-policy), and, for OVN with host-network routers, also allow the `policy-group.network.openshift.io/host-network` namespace selector. On the tested OpenShift 4.22 OVN-Kubernetes cluster, adding a peer `podSelector: {}` without the host-network peer excluded routers on other nodes. Test from routers on the VM's node and on other nodes; a same-node request can hide a missing host-network rule. Also check that the VM and its service endpoints are ready.
 
 ## Disk import or clone is stuck
 

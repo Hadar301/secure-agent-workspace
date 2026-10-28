@@ -8,11 +8,11 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
   `model`, `api_key`). The `custom-inference` SAW-BOM profile reads them
   through the sandbox's `inference:` block; the installer validates the URL
   and onboards OpenClaw against it.
-- The key never enters the sandbox: the sandbox holds a placeholder, and
-  the gateway's proxy replaces it only on requests to a host the provider's
-  **profile** names, from a binary the profile lists. So the endpoint's host
-  must be in a provider profile; with governance on (the default) that
-  catalog is the governance interceptor's.
+- The key never enters the VM or sandbox. The namespace credential proxy
+  replaces a marker only for the host of `url` in the credential Secret.
+  Keyed endpoints require HTTPS on port 443 with a publicly trusted
+  certificate. The gateway's governance profile separately permits the
+  sandbox binary to reach that host.
 - The pattern ships no profile for a host it cannot know. **You add one**,
   as a plain OpenShell profile file under `overrides/governance-profiles/`,
   and the `governance-extra-profiles` application serves it next to the
@@ -32,15 +32,16 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    id: custom-inference
    ...
    endpoints:
-     - host: vllm.models.svc        # the host of the url below
-       port: 8000                   # its port (443 for https without one)
+     - host: models.example.com    # the host of the url below
+       port: 443                   # keyed HTTPS only
        protocol: rest
        enforcement: enforce
        access: read-write
    ```
 
-   Several hosts that share one key (a Service and its Route) go in one
-   profile; a second server with its own key is a second file with its own
+   The proxy binds a deployment-owned provider only to the Secret's `url`
+   host, even if its governance profile lists more hosts. A second server
+   with its own key is a second file with its own
    `id`, used by a provider with that `type` **and that name**: the
    governance interceptor matches a sandbox's providers by profile id, so a
    governed provider is always named after its type (the installer refuses
@@ -65,8 +66,14 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    |---|---|
    | `url` | the OpenAI-compatible base URL, ending in `/v1` |
    | `model` | the model name the server serves |
-   | `api_key` | the server's key; any non-empty value if it needs none |
+   | `api_key` | the server's key, mounted only by the namespace proxy; for keyless HTTP use `API_KEY=''` in quickstart |
    | `provider` | optional: `custom-inference` (the installer refuses a key labelled for another service); leave it out of a Secret shared with other profiles |
+
+   The VM mounts `inference-meta`, containing every non-credential field
+   selected by the profile catalog (including `url`, `model`, and optional
+   `provider`), with no `api_key`. A deployment-owned keyed provider's
+   `inference.baseUrl` must reference `{secretKeyRef: {name: inference, key: url}}`
+   so the installer and proxy use the same host.
 
 5. Commit and push steps 1-3, wait for Argo CD, then restart the VM
    (`make saw-restart`) so the installer applies the Secret.
@@ -96,11 +103,15 @@ stated (`openai`): the installer cannot infer it for a profile of your own.
 
 ## Requirements
 
-- The **gateway VM** must reach the URL, not your laptop: a cluster Service
-  (`http://vllm.<ns>.svc:8000/v1`) or a Route/host the firewall allows.
+- The **credential proxy** must reach keyed HTTPS endpoints; the **VM**
+  must reach keyless HTTP endpoints such as `http://vllm.<ns>.svc:8000/v1`.
   `localhost` is refused.
 - `url` must be `http(s)://host[:port][/path]` without credentials, query or
   fragment. The installer rejects anything else without logging the value.
+- A keyed HTTPS endpoint must use port 443 and a publicly trusted
+  certificate. Other HTTPS ports are refused. HTTP bypasses credential
+  injection and sends only a marker, so use it only for a keyless server.
+  Custom keyed ports and in-cluster service-CA trust are follow-up work.
 - `inferenceTimeout` on a provider is no longer used: there is no gateway
   router to time out. Use the sandbox's `inference.timeoutSeconds`.
 

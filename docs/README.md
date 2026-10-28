@@ -18,6 +18,7 @@ quickstart, and the supported-provider and secrets tables.
 | Doc | What it covers |
 |---|---|
 | [Architecture alignment](architecture-alignment.md) | How this implementation maps to NVIDIA's Secure Agent Workspace reference design — implemented, partial, and gaps |
+| [Credential isolation](credential-isolation.md) | How provider keys and admin mTLS keys stay out of VM root: namespace credential proxy, `-meta` Secrets, per-apply admin CA, saw-relay, migration and rotation |
 | [BOM architecture](bom-architecture.md) | Visual overview of how a SAW is assembled from its Bill of Materials |
 | [Versioned BOM installer](versioned-bom-installer.md) | The in-VM installer: what runs where, namespaces, upgrading, live inputs, signing, pruning |
 | [Provider and driver support matrix](provider-driver-support-matrix.md) | SAW TP validation results for OpenAI, Anthropic, and NVIDIA with Podman and Kubernetes drivers |
@@ -45,7 +46,7 @@ quickstart, and the supported-provider and secrets tables.
 
 | Doc | What it covers |
 |---|---|
-| [Network troubleshooting](troubleshooting.md) | Debugging egress, NetworkPolicy, EgressFirewall, routes and cleanup |
+| [Network troubleshooting](troubleshooting.md) | Debugging egress, NetworkPolicy, EgressFirewall, routes, the credential proxy, relay access and cleanup |
 
 ## Common tasks
 
@@ -60,6 +61,7 @@ quickstart, and the supported-provider and secrets tables.
 | Switch podman ↔ docker | [container-runtime](container-runtime.md) |
 | Apply a new installer / OpenShell version to a VM | [versioned-bom-installer → Upgrading](versioned-bom-installer.md#upgrading) |
 | Turn on signed policy, or switch governance engine | [apf](apf.md) + [governance-interceptor](governance-interceptor.md) |
+| Rotate a provider key, the proxy CA or gateway PKI | [credential-isolation → Migration and rotation](credential-isolation.md#rotation-operations) |
 | Sign images, bundles and policy | [signing](signing.md) |
 | Debug egress / NetworkPolicy / routes | [troubleshooting](troubleshooting.md) |
 | See how this maps to NVIDIA's reference design | [architecture-alignment](architecture-alignment.md) |

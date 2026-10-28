@@ -752,11 +752,11 @@ class Runner:
         self.build_attempted = True
         self.update_lock_data({"build-attempted": "true"})
         for target in ("sandbox-build", "cli-build", "gateway-build-podman",
-                       "governance-interceptor-build"):
+                       "governance-interceptor-build", "credential-proxy-build"):
             print(f"{now()} build {target}", flush=True)
             self.call(["make", target], timeout=7200)
         names = ("nemoclaw-discovery-runtime", "nemoclaw-sandbox", "nemoclaw-cli",
-                 "openshell-gateway", "governance-interceptor")
+                 "openshell-gateway", "governance-interceptor", "saw-credential-proxy")
         for name in names:
             builds = self.oc_json("get", "builds", "-n", NAMESPACE,
                                   "-l", f"buildconfig={name}")
@@ -797,6 +797,9 @@ class Runner:
         self.call(["oc", "create", "serviceaccount", REGISTRY_PULLER, "-n", NAMESPACE])
         self.call(["oc", "adm", "policy", "add-role-to-user", "registry-viewer",
                    "-z", REGISTRY_PULLER, "-n", NAMESPACE])
+        for user in USERS:
+            self.call(["oc", "policy", "add-role-to-group", "system:image-puller",
+                       f"system:serviceaccounts:saw-{user}", "-n", NAMESPACE])
         token = self.call(["oc", "create", "token", REGISTRY_PULLER, "-n", NAMESPACE,
                            "--duration=4h"]).stdout.strip()
         if not token or any(char.isspace() for char in token):
@@ -827,6 +830,8 @@ class Runner:
              f"{guest_registry}/nemoclaw-cli@{digests['nemoclaw-cli']}"),
             ("defaults.openshellSaw.source.registryURL",
              f"docker://{registry}/openshell-gateway@{digests['openshell-gateway']}"),
+            ("defaults.openshellSaw.credentialProxy.image",
+             f"{registry}/saw-credential-proxy@{digests['saw-credential-proxy']}"),
             ("defaults.openshellSaw.registry.host", REGISTRY_HOST),
             ("defaults.openshellSaw.registry.caBundleBase64", registry_ca),
             ("defaults.openshellSaw.registry.authSecret", "registry-pull"),
@@ -1127,6 +1132,10 @@ class Runner:
             raise E2EError("governance deployment does not use the new build digest")
         for user in USERS:
             namespace = f"saw-{user}"
+            proxy = self.oc_json("get", "deployment", f"{user}-credential-proxy", "-n", namespace)
+            actual = proxy["spec"]["template"]["spec"]["containers"][0]["image"]
+            if actual != f"{registry}/saw-credential-proxy@{digests['saw-credential-proxy']}":
+                raise E2EError(f"{user} credential proxy does not use the new build digest")
             config = self.oc_json("get", "configmap", f"{user}-installer", "-n", namespace)
             bom = yaml.safe_load(config["data"]["installer-bom.yaml"])
             cli_image = bom["spec"]["nemoclaw"]["cliImage"]
