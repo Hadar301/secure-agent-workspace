@@ -14,7 +14,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  shared-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: credential-proxy/go.mod
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - name: Install test dependencies
+        run: python -m pip install -r tests/requirements.txt -e ./cli
+      - name: Static lint
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          make lint-static 2>&1 | tee test-results/lint.log
+      - name: External tool and static asset tests
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          make test-installer PYTHON=python PYTEST_ARGS='-m ci_external -n 2 --dist=load --durations=40 -ra --junitxml=test-results/external.xml' 2>&1 | tee test-results/external.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-shared
+          path: test-results/
+
   test:
+    needs: shared-checks
+    if: always()
     runs-on: ubuntu-24.04
     # Leave time for pytest to print failures even if a gateway test stalls.
     timeout-minutes: 30
@@ -24,6 +61,16 @@ jobs:
         # 3.14 matches the Fedora 44 guest that runs apply_bom.py.
         python: ["3.12", "3.14"]
     steps:
+      # Keep the existing matrix check names required by branch rules.
+      # A skipped dependency must not produce a successful matrix check.
+      - name: Require successful shared checks
+        env:
+          SHARED_RESULT: ${{ needs.shared-checks.result }}
+        run: |
+          if [ "$SHARED_RESULT" != success ]; then
+            echo "Shared checks did not pass: $SHARED_RESULT" >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -39,10 +86,16 @@ jobs:
           version: v3.17.3
       - name: Install test dependencies
         run: python -m pip install -r tests/requirements.txt -e ./cli
-      - name: Lint charts
-        run: make lint
-      - name: Installer, chart and CLI tests
-        run: make test-installer PYTHON=python
+      - name: Python behavior and integration tests
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          make test-installer PYTHON=python PYTEST_ARGS='-m "not ci_external" -n 2 --dist=load --durations=40 -ra --junitxml=test-results/python.xml' 2>&1 | tee test-results/python.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-python-${{ matrix.python }}
+          path: test-results/
 
   bundle-drift-check:
     # If a signed installer bundle is committed, it must still verify

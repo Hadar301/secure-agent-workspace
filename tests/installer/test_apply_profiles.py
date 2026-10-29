@@ -38,8 +38,8 @@ def cli_ops(fake_env):
     return [" ".join(c[:2]) for c in fake_env.openshell_calls()]
 
 
-def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
-    applier = make_applier(ab, config, creds)
+def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys):
+    applier = applier_with_shipped_profiles(ab, config, creds)
     applier.apply(profiles)
     state = fake_env.openshell_state()
 
@@ -63,59 +63,60 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     # Enabled sandboxes only.
     assert set(state["sandboxes"]) == {"default/notebook", "cuda-dev/cuda-sandbox"}
     assert state["sandboxes"]["default/notebook"]["providers"] == ["nvidia"]
+    before_verify = len(fake_env.openshell_calls())
     assert applier.verify(profiles) == []
+    checks = [c for c in fake_env.openshell_calls()[before_verify:]
+              if c[:2] == ["sandbox", "exec"] and c[-1] == "openclaw --version"]
+    assert sorted(c[c.index("-n") + 1] for c in checks) == ["cuda-sandbox", "notebook"]
+    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "profile"]]
+    name = ab.harness_volume_name("default", "notebook")
+    notebook = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert notebook["driverConfig"]["podman"]["mounts"][0] == {
+        "type": "volume", "source": name,
+        "target": "/sandbox/harness", "read_only": True}
+    assert len(notebook["driverConfig"]["podman"]["mounts"]) == 3
+    volume = fake_env.state / "volumes" / name
+    assert (volume / "skills" / "pattern-author" / "SKILL.md").is_file()
+    scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
+    assert "base64 -d" not in scripts
+    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
+    # The bundle and its native plugin, each enabled (2026.9.x keeps them off).
+    assert "openclaw plugins enable ds-default --accept-capabilities" in scripts
+    assert "openclaw plugins enable saw-echo --accept-capabilities" in scripts
+    # The bundle's MCP server, re-declared where OpenClaw expands ${VAR}.
+    cfg = fake_env.openshell_state()["sandboxes"]["default/notebook"]["openclawConfig"]
+    echo = cfg["mcp.servers.saw-mcp-echo"]
+    assert echo["args"] == ["/sandbox/harness/mcp/echo-server.mjs"]
+    assert echo["env"]["NODE_EXTRA_CA_CERTS"] == "${NODE_EXTRA_CA_CERTS}"
 
-
-def test_openclaw_calls_the_native_endpoint_with_the_placeholder_key(
-        ab, fake_env, config, profiles, creds):
-    """0.1.x removed https://inference.local: OpenClaw calls NVIDIA directly,
-    with the placeholder the sandbox holds in NVIDIA_API_KEY (expanded inside
-    the sandbox, never by the installer)."""
-
-
-def test_system_inference_skipped_without_default_workspace_model(ab, fake_env, config, profiles, creds):
-    for _, ws in ab.enabled_workspaces(profiles):
-        if ws.name == "default":
-            for p in ws.providers:
-                p.model = None
-    make_applier(ab, config, creds).apply(profiles)
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and "notebook" in c)
     assert '--custom-base-url https://integrate.api.nvidia.com/v1 ' in onboard
     assert 'CUSTOM_API_KEY="$NVIDIA_API_KEY"' in onboard
-    assert "inference.local" not in onboard and "nvapi-TEST-KEY-123" not in onboard
-
-
-def test_nemoclaw_gets_the_provider_key_via_environment(ab, fake_env, config, profiles, creds):
-    make_applier(ab, config, creds).apply(profiles)
+    assert "inference.local" not in onboard
     calls = fake_env.other_calls("nemoclaw")
     assert len(calls) == 1
     assert calls[0]["args"][:2] == ["onboard", "--fresh"] and "cuda-sandbox" in calls[0]["args"]
     assert calls[0]["has_key"]
-
-
-def test_keepalive_units_are_written_for_agent_sandboxes(ab, fake_env, config, profiles, creds):
-    make_applier(ab, config, creds).apply(profiles)
     tees = [c for c in fake_env.other_calls("sudo") if c["args"][:2] == ["-n", "tee"]]
     units = {c["args"][2]: c["stdin"] for c in tees}
     assert set(units) == {"/etc/systemd/system/openshell-sandbox-notebook.service",
                           "/etc/systemd/system/openshell-sandbox-cuda-sandbox.service"}
     cuda = units["/etc/systemd/system/openshell-sandbox-cuda-sandbox.service"]
     assert "--workspace cuda-dev" in cuda and "User=cloud-user" in cuda
+    # Credential arguments name environment variables; provider state contains markers only.
+    credential_args = [c[i + 1] for c in fake_env.openshell_calls()
+                       for i, arg in enumerate(c[:-1]) if arg == "--credential"]
+    assert set(credential_args) == {"NVIDIA_API_KEY", "BRAVE_API_KEY"}
+    assert "--credential NVIDIA_API_KEY" in capsys.readouterr().out
 
-
-def test_second_apply_is_idempotent(ab, fake_env, config, profiles, creds):
-    make_applier(ab, config, creds).apply(profiles)
     before = fake_env.openshell_state()
     make_applier(ab, config, creds).apply(profiles)
     after = fake_env.openshell_state()
-    assert after["workspaces"] == before["workspaces"]
-    assert after["providers"] == before["providers"]
-    assert after["sandboxes"] == before["sandboxes"]
+    for field in ("workspaces", "providers", "sandboxes"):
+        assert after[field] == before[field]
     creates = [c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]]
-    assert len(creates) == 2          # existing Ready sandboxes are not recreated
-    # Live: on a reboot `nemoclaw onboard --fresh` refused the running gateway
-    # (gateway.port.uncontested). A running sandbox is onboarded only once.
+    assert len(creates) == 2
     assert len(fake_env.other_calls("nemoclaw")) == 1
 
 
@@ -204,7 +205,6 @@ def test_gateway_unreachable_fails_before_any_change(ab, fake_env, config, profi
     assert "workspace create" not in cli_ops(fake_env)
 
 
-
 @pytest.mark.parametrize("failure", ["connection was not ready", "TLS handshake: UnknownIssuer",
                                      "received fatal alert: UnknownCA",
                                      "transport error: stream closed because of a broken pipe"])
@@ -252,13 +252,6 @@ def test_provider_failure_stops_the_apply(ab, fake_env, config, profiles, creds)
     assert "sandbox create" not in cli_ops(fake_env)
 
 
-def test_credentials_never_appear_in_logs(ab, fake_env, config, profiles, creds, capsys):
-    make_applier(ab, config, creds).apply(profiles)
-    out = capsys.readouterr().out
-    assert "nvapi-TEST-KEY-123" not in out and "brave-TEST-KEY-456" not in out
-    assert "--credential NVIDIA_API_KEY" in out      # the CLI reads the key from $NVIDIA_API_KEY
-
-
 def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds, monkeypatch):
     monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
     make_applier(ab, config, creds).apply(profiles)
@@ -272,8 +265,8 @@ def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds, mon
 
 
 @pytest.fixture
-def fast_polls(ab, monkeypatch):
-    monkeypatch.setattr(ab.ProfileApplier, "POLL_SECONDS", 0)
+def fast_polls(fake_clock):
+    return fake_clock
 
 
 def test_a_sandbox_that_recovers_is_not_recreated(ab, fake_env, config, profiles, creds, fast_polls):
@@ -435,21 +428,9 @@ def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fa
     assert applier.verify(profiles) == []
     imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
     assert len(imports) == 1 and "--workspace" not in imports[0]      # default workspace
-
-
-def test_profile_is_imported_once_across_applies(ab, fake_env, config, profiles, creds):
-    fake_env.without_profiles("brave")
-    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
     applier_with_shipped_profiles(ab, config, creds).apply(profiles)
     imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
     assert len(imports) == 1
-
-
-def test_no_import_when_the_gateway_has_the_profile(ab, fake_env, config, profiles, creds):
-    """Governance on: the interceptor serves 'brave'; nothing is imported."""
-    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
-    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "profile"]]
-    assert "default/brave" in fake_env.openshell_state()["providers"]
 
 
 def test_failed_profile_import_stops_the_apply(ab, fake_env, config, profiles, creds):
@@ -472,16 +453,6 @@ def test_verify_fails_when_openclaw_cannot_run_in_the_sandbox(ab, fake_env, conf
     applier = make_applier(ab, config, creds)
     with pytest.raises(ab.InstallerError, match="could not enable saw-tool-gate"):
         applier.apply(profiles)
-
-
-def test_verify_runs_openclaw_in_agent_sandboxes_only(ab, fake_env, config, profiles, creds):
-    applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
-    before = len(fake_env.openshell_calls())
-    assert applier.verify(profiles) == []
-    checks = [c for c in fake_env.openshell_calls()[before:]
-              if c[:2] == ["sandbox", "exec"] and c[-1] == "openclaw --version"]
-    assert sorted(c[c.index("-n") + 1] for c in checks) == ["cuda-sandbox", "notebook"]
 
 
 # -- the installer's mTLS identity is platform admin --------------------------
@@ -516,14 +487,14 @@ def test_gateways_own_user_certificate_is_refused_under_rbac(ab, fake_env, confi
     fake_env.rbac()
     fake_env.set_openshell_state({"gateways": [{"name": "saw-installer", "roles": ["openshell-user"]}],
                                   "selected": "saw-installer", "workspaces": ["default"], "members": [],
-                                  "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None})
+                                  "providers": {}, "sandboxes": {}})
     applier = make_applier(ab, config, creds)
     with pytest.raises(ab.InstallerError, match="openshell-admin"):
         applier.apply_workspace(next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "cuda-dev"))
 
 
-def test_admin_certificate_uses_a_separate_ca_in_tmpfs(ab, fake_env, config, profiles, creds):
-    make_applier(ab, config, creds).register_gateway()
+def test_admin_certificate_uses_a_separate_ca_in_tmpfs(ab, fake_env, real_admin_config, profiles, creds):
+    make_applier(ab, real_admin_config, creds).register_gateway()
     crt = fake_env.admin_cert()
     gateway_ca = fake_env.home / ".local/state/openshell/tls/ca.crt"
     assert subprocess.run(["openssl", "verify", "-CAfile", str(gateway_ca), str(crt)],
@@ -546,34 +517,6 @@ def test_key_never_appears_in_argv_or_logs(ab, fake_env, config, profiles, creds
     key = (fake_env.admin_cert().parent / "tls.key").read_text()
     body = "".join(l for l in key.splitlines() if not l.startswith("-----"))
     assert body[:40] not in capsys.readouterr().err
-
-
-def test_full_apply_mounts_the_harness_into_notebook(ab, fake_env, config, profiles, creds):
-    """A full apply fills the notebook's harness volume, creates the sandbox
-    with it mounted read-only at /sandbox/harness, points OpenClaw at it, and
-    never copies bundle files with `sandbox exec`."""
-    applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
-    name = ab.harness_volume_name("default", "notebook")
-    notebook = fake_env.openshell_state()["sandboxes"]["default/notebook"]
-    assert notebook["driverConfig"]["podman"]["mounts"][0] == {
-        "type": "volume", "source": name,
-        "target": "/sandbox/harness", "read_only": True}
-    assert len(notebook["driverConfig"]["podman"]["mounts"]) == 3
-    volume = fake_env.state / "volumes" / name
-    assert (volume / "skills" / "pattern-author" / "SKILL.md").is_file()
-    scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
-    assert "base64 -d" not in scripts
-    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
-    # The bundle and its native plugin, each enabled (2026.9.x keeps them off).
-    assert "openclaw plugins enable ds-default --accept-capabilities" in scripts
-    assert "openclaw plugins enable saw-echo --accept-capabilities" in scripts
-    # The bundle's MCP server, re-declared where OpenClaw expands ${VAR}.
-    cfg = fake_env.openshell_state()["sandboxes"]["default/notebook"]["openclawConfig"]
-    echo = cfg["mcp.servers.saw-mcp-echo"]
-    assert echo["args"] == ["/sandbox/harness/mcp/echo-server.mjs"]
-    assert echo["env"]["NODE_EXTRA_CA_CERTS"] == "${NODE_EXTRA_CA_CERTS}"
-    assert applier.verify(profiles) == []
 
 
 # -- keyless (in-cluster MCP) providers ---------------------------------------
@@ -686,7 +629,7 @@ def test_a_keyless_provider_does_not_reuse_a_keyed_one_of_the_same_name(
     fake_env.set_openshell_state({
         "gateways": [], "selected": None, "workspaces": ["default"], "members": [],
         "providers": {"default/local-mcp": {"type": "local-mcp", "credential": "api_key"}},
-        "sandboxes": {}, "inference": {}, "system_inference": None})
+        "sandboxes": {}})
     with pytest.raises(ab.InstallerError, match="already has credentials"):
         make_applier(ab, config, creds).apply(with_keyless(ab, profiles))
 

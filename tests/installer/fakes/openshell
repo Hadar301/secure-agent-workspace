@@ -40,7 +40,7 @@ with open(state_dir / "openshell-env.log", "a") as log:
 state_file = state_dir / "openshell.json"
 state = json.loads(state_file.read_text()) if state_file.exists() else {
     "gateways": [], "selected": None, "workspaces": ["default"], "members": [],
-    "providers": {}, "sandboxes": {}, "inference": {}, "system_inference": None}
+    "providers": {}, "sandboxes": {}}
 deny = json.loads((state_dir / "deny.json").read_text()) if (state_dir / "deny.json").exists() else []
 no_profiles = (json.loads((state_dir / "no-profiles.json").read_text())
                if (state_dir / "no-profiles.json").exists() else [])
@@ -272,19 +272,6 @@ elif op == "provider delete":
         if owner == ws and name in sb.get("providers", []):
             fail(f"Error: provider '{name}' is attached to a sandbox")
     state["providers"].pop(f"{ws}/{name}", None)
-elif op == "inference set":
-    if "--system" in head:
-        # Like the real gateway: the system route's provider must exist in 'default'.
-        if f"default/{opt('--provider')}" not in state["providers"]:
-            fail(f"Error: provider '{opt('--provider')}' not found in workspace 'default'")
-        state["system_inference"] = [opt("--provider"), opt("--model")]
-    else:
-        state["inference"][ws] = [opt("--provider"), opt("--model")]
-elif op == "inference delete":
-    if "--system" in head:
-        state["system_inference"] = None
-    else:
-        state["inference"].pop(ws, None)
 elif op == "sandbox list":
     print("NAME PHASE")
     for key in sorted(state["sandboxes"]):

@@ -78,9 +78,12 @@ def test_install_then_apply_reaches_ready(world):
     copy = world.state / "installer" / "apply_bom.py"
     assert copy.read_text() == (world.inputs / "installer" / "apply_bom.py").read_text()
     assert oct(copy.stat().st_mode & 0o777) == "0o644"
-    # Credentials never reach logs or status.
-    for text in (result.stdout, result.stderr, json.dumps(status)):
-        assert "nvapi-TEST-KEY-123" not in text
+    # Metadata-only inputs produce markers, and argv names only credential variables.
+    credential_args = [call[i + 1] for call in world.fake.openshell_calls()
+                       for i, arg in enumerate(call[:-1]) if arg == "--credential"]
+    assert set(credential_args) == {"NVIDIA_API_KEY", "BRAVE_API_KEY"}
+    assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
+        "BRAVE_API_KEY=saw-cred.web-search.api_key"
 
 
 def test_apply_writes_the_ledger_for_the_runtime_user(world):
@@ -326,22 +329,15 @@ def test_legacy_gateway_ca_key_triggers_rotation(world):
 def test_vm_rejects_a_rotated_key_file_on_its_disk(world):
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0
-    (world.inputs / "secrets" / "inference" / "api_key").write_text("nvapi-ROTATED-999\n")
+    sentinel = "synthetic-rejected-vm-key"
+    (world.inputs / "secrets" / "inference" / "api_key").write_text(sentinel + "\n")
     result = world.run("apply")
     assert result.returncode == 1
     assert "provider keys belong only to the credential proxy" in result.stdout
+    assert sentinel not in result.stdout + result.stderr + json.dumps(world.status())
     providers = world.fake.openshell_state()["providers"]
     assert providers["default/nvidia"]["credential"] == "NVIDIA_API_KEY=saw-cred.inference.api_key"
     assert providers["cuda-dev/nvidia"]["credential"] == "NVIDIA_API_KEY=saw-cred.inference.api_key"
-
-
-def test_credentials_never_appear_in_argv(world):
-    assert world.run("install").returncode == 0
-    assert world.run("apply").returncode == 0
-    argv = json.dumps(world.fake.openshell_calls())
-    assert "nvapi-TEST-KEY-123" not in argv and "brave-TEST-KEY-456" not in argv
-    assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
-        "BRAVE_API_KEY=saw-cred.web-search.api_key"
 
 
 def test_owed_gateway_restart_survives_a_failed_attempt(ab, world, monkeypatch):

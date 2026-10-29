@@ -516,6 +516,8 @@ def test_a_ui_sandbox_trusts_the_proxy(ab):
 
 
 def run_gateway_script(tmp_path, script, refuse):
+    from process_helpers import isolate_process_scan
+    script = isolate_process_scan(script, tmp_path)
     """Runs the script with fake `openclaw` (refusing a trustedProxy value
     that contains `refuse`) and `node`; returns the config calls and the
     gateway's environment."""

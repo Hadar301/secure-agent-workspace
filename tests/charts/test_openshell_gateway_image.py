@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def render(*args):
-    result = subprocess.run(
+    result = run_helm(
         [HELM, "template", "gw-test", str(CHART), "--namespace", "openshell-agents", *args],
         capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -29,6 +30,7 @@ def dockerfile(*args):
     return build["spec"]["source"]["dockerfile"]
 
 
+@pytest.mark.ci_external
 def test_cosign_download_is_checksum_verified():
     """A curl with no integrity check would let a compromised release URL
     bake a malicious cosign into every image; cosign is what verify-bundle
@@ -46,6 +48,7 @@ def test_cosign_download_is_checksum_verified():
     assert text.index("sha256sum -c") < text.index("/build/saw/cosign:/usr/local/bin/")
 
 
+@pytest.mark.ci_external
 def test_the_base_image_matches_the_build_architecture():
     """KubeVirt runs only guests of the host's architecture: an arm64 cluster
     builds from the aarch64 Fedora Cloud image."""
@@ -57,6 +60,7 @@ def test_the_base_image_matches_the_build_architecture():
     assert 'unsupported architecture' in text
 
 
+@pytest.mark.ci_external
 def test_ci_picks_fedora_and_cosign_by_runner_architecture():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
     params = next(s["run"] for s in workflow["jobs"]["build"]["steps"] if s.get("id") == "params")
@@ -66,6 +70,7 @@ def test_ci_picks_fedora_and_cosign_by_runner_architecture():
         assert key in params
 
 
+@pytest.mark.ci_external
 def test_ci_builds_podman_on_both_architectures_and_docker_on_amd64():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
     build = workflow["jobs"]["build"]
@@ -85,6 +90,7 @@ def test_ci_builds_podman_on_both_architectures_and_docker_on_amd64():
     assert workflow["jobs"]["merge"]["strategy"]["matrix"]["image_name"] == ["openshell-gateway"]
 
 
+@pytest.mark.ci_external
 def test_podman_signed_pull_and_static_enforce_policy_are_gone():
     """Replaced by apply_bom.py generating a per-pull policy.json from the
     BOM's own signature field: the old static, single-registry enforce.json
@@ -96,6 +102,7 @@ def test_podman_signed_pull_and_static_enforce_policy_are_gone():
     assert "/etc/saw/policy" not in text
 
 
+@pytest.mark.ci_external
 def test_verify_bundle_and_trust_dir_are_still_baked_in():
     text = dockerfile()
     assert "/usr/libexec/saw/verify-bundle" in text
@@ -103,6 +110,7 @@ def test_verify_bundle_and_trust_dir_are_still_baked_in():
     assert "/etc/containers/registries.d" in text
 
 
+@pytest.mark.ci_external
 def test_no_signing_floor_by_default():
     """Empty signing.floor (the chart default) must not bake anything into
     /etc/saw/signing-mode: absent = no floor, matching config.json alone
@@ -111,6 +119,7 @@ def test_no_signing_floor_by_default():
     assert "signing-mode" not in text
 
 
+@pytest.mark.ci_external
 def test_signing_floor_is_baked_in_when_set():
     """The golden image can pin a minimum signing.mode at
     /etc/saw/signing-mode; config.json (in the namespace-editable installer
@@ -123,8 +132,9 @@ def test_signing_floor_is_baked_in_when_set():
     assert text.index("signing-mode") < text.index("--copy-in /build/saw/signing-mode")
 
 
+@pytest.mark.ci_external
 def test_invalid_signing_floor_fails_the_render():
-    result = subprocess.run(
+    result = run_helm(
         [HELM, "template", "gw-test", str(CHART), "--namespace", "openshell-agents",
          "--set", "containerRuntime=podman", "--set", "signing.floor=bogus"],
         capture_output=True, text=True)
@@ -132,6 +142,7 @@ def test_invalid_signing_floor_fails_the_render():
     assert "signing.floor must be off, warn, enforce, or empty" in result.stderr
 
 
+@pytest.mark.ci_external
 def test_the_two_verify_bundle_copies_are_identical():
     """verify-bundle exists twice: charts/openshell-saw/files/guest (cloud-init
     delivered, used by the offline installer tests) and this chart's files/
@@ -149,6 +160,7 @@ def test_the_two_verify_bundle_copies_are_identical():
         "only the first never actually ships")
 
 
+@pytest.mark.ci_external
 def test_ci_installs_verification_tools_in_both_runtime_images():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
     customizers = [s for s in workflow["jobs"]["build"]["steps"]

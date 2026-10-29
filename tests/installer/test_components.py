@@ -9,6 +9,12 @@ import pytest
 
 
 @pytest.fixture
+def fake_env(fake_commands):
+    """Component extraction needs commands and files, not gateway PKI."""
+    return fake_commands
+
+
+@pytest.fixture
 def installer(ab, tmp_path, fake_env):
     shell = ab.Shell()
     bin_dir = tmp_path / "usr-local-bin"
@@ -206,12 +212,11 @@ def test_ensure_gateway_starts_or_restarts(ab, listening_port, restart, verb):
                      [verb, "openshell-gateway.service"]]
 
 
-def test_ensure_gateway_fails_when_port_never_opens(ab, monkeypatch):
+def test_ensure_gateway_fails_when_port_never_opens(ab, monkeypatch, fake_clock):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         free_port = s.getsockname()[1]
     monkeypatch.setattr(ab, "GATEWAY_PORT", free_port)
-    monkeypatch.setattr(ab.time, "sleep", lambda _: None)
     shell = RecordingShell()
     with pytest.raises(ab.InstallerError, match="did not listen"):
         ab.ensure_gateway(shell, "cloud-user", {}, restart=False, timeout=0.5)
@@ -271,8 +276,7 @@ def test_user_manager_is_started_and_awaited(ab, tmp_path):
     assert shell.commands == [["systemctl", "start", "user@1000.service"]]
 
 
-def test_user_manager_timeout_is_an_error(ab, tmp_path, monkeypatch):
-    monkeypatch.setattr(ab.time, "sleep", lambda _: None)
+def test_user_manager_timeout_is_an_error(ab, tmp_path, fake_clock):
     runtime = tmp_path / "run-user" / "1000"
     runtime.mkdir(parents=True)
     with pytest.raises(ab.InstallerError, match="uid 1000 did not start"):

@@ -82,8 +82,10 @@ def test_apply_creates_the_provider_from_the_governed_profile_and_onboards_on_it
     assert state["sandboxes"]["default/notebook"]["openclawConfig"][
         "models.providers.custom-inference.timeoutSeconds"] == 300
     assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
-    # The key only ever travels in the environment.
-    assert not any("sk-CUSTOM-TEST-KEY" in " ".join(c) for c in fake_env.openshell_calls())
+    credential_args = [c[i + 1] for c in fake_env.openshell_calls()
+                       for i, arg in enumerate(c[:-1]) if arg == "--credential"]
+    assert "CUSTOM_INFERENCE_API_KEY" in credential_args
+    assert all("=" not in arg for arg in credential_args)
     onboard = next(" ".join(c) for c in fake_env.openshell_calls() if "onboard" in " ".join(c))
     assert f'--custom-base-url {URL} ' in onboard and "inference.local" not in onboard
     assert 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY"' in onboard

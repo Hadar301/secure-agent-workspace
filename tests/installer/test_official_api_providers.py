@@ -192,33 +192,53 @@ def test_existing_custom_settings_are_cleared_only_for_native_apis(
         assert cleanup < onboard
 
 
-@pytest.mark.parametrize("kind,endpoint,choice,model", [
-    ("openai", "", "openai-api-key", "gpt-4o"),
-    ("anthropic", "", "apiKey", "claude-sonnet-4-6"),
-    ("openai", "http://ollama.models.svc:11434/v1", "custom-api-key", "llama3"),
-    ("openai", "https://api.openai.com/v1", "custom-api-key", "gpt-4o"),
-    ("nvidia", "", "custom-api-key", "nvidia/nemotron-3.5-lightning-30b-a3b"),
+@pytest.mark.parametrize("source,kind,endpoint,choice,model,protocol", [
+    pytest.param("legacy", "openai", "", "openai-api-key", "gpt-4o", "openai", id="legacy-openai-native"),
+    pytest.param("legacy", "anthropic", "", "apiKey", "claude-sonnet-4-6", "anthropic", id="legacy-anthropic-native"),
+    pytest.param("legacy", "openai", "http://ollama.models.svc:11434/v1", "custom-api-key", "llama3", "openai", id="legacy-ollama"),
+    pytest.param("legacy", "openai", "https://api.openai.com/v1", "custom-api-key", "gpt-4o", "openai", id="legacy-explicit-official-url"),
+    pytest.param("legacy", "nvidia", "", "custom-api-key", "nvidia/m", "openai", id="legacy-nvidia"),
+    pytest.param("typed", "nvidia", "", "custom-api-key", "nvidia/m", "openai", id="typed-nvidia"),
+    pytest.param("typed", "openai", "", "openai-api-key", "gpt-4o", "openai", id="typed-openai-native"),
+    pytest.param("typed", "anthropic", "https://gateway.example/anthropic", "custom-api-key", "claude-sonnet-4-6", "anthropic", id="typed-anthropic-custom"),
 ])
 def test_onboarding_uses_the_provider_protocol(
-        ab, fake_env, config, kind, endpoint, choice, model):
-    provider = ab.Provider(name="inference", type=kind, model=model, base_url=endpoint)
+        ab, fake_env, config, tmp_path, capsys, source, kind, endpoint, choice, model, protocol):
+    provider = ab.Provider(name="inference", type=kind, credential_secret="inference")
     sandbox = ab.Sandbox(name="chat", type="openclaw", providers=[provider.name])
     workspace = ab.Workspace(name="default", providers=[provider], sandboxes=[sandbox])
-    applier = ab.ProfileApplier(ab.Shell(), config,
-                                {"default": {provider.name: "test-secret-key"}})
-    applier.apply([ab.Profile(name="test", workspaces=[workspace])])
+    profiles = [ab.Profile(name="test", workspaces=[workspace])]
+    if source == "typed":
+        sandbox.inference = {"providerRef": provider.name, "protocol": protocol, "model": model}
+        if endpoint:
+            sandbox.inference["baseUrl"] = endpoint
+        (tmp_path / "inference").mkdir()
+        credentials = resolve(ab, profiles, tmp_path)
+    else:
+        provider.model, provider.base_url = model, endpoint
+        # Explicit synthetic data makes the redaction assertion effective.
+        credentials = {"default": {provider.name: "test-secret-key"}}
+    ab.ProfileApplier(ab.Shell(), config, credentials).apply(profiles)
     calls = fake_env.openshell_calls()
     scripts = [c[-1] for c in calls if c[:2] == ["sandbox", "exec"]]
     onboard = next(s for s in scripts if "openclaw onboard " in s)
     assert f"--auth-choice {choice} " in onboard
     if choice == "custom-api-key":
         assert f"--custom-model-id {model}" in onboard
-        if endpoint:
-            assert f"--custom-base-url {endpoint} " in onboard
+        expected_endpoint = endpoint or "https://integrate.api.nvidia.com/v1"
+        assert f"--custom-base-url {expected_endpoint} " in onboard
+        assert f"--custom-compatibility {protocol}" in onboard
     else:
         assert "--custom-" not in onboard
         assert any(f"openclaw models set {kind}/{model}" in s for s in scripts)
-    assert not any("test-secret-key" in " ".join(c) for c in calls)
+    if source == "legacy":
+        assert not any("test-secret-key" in " ".join(c) for c in calls)
+        output = capsys.readouterr()
+        assert "test-secret-key" not in output.out + output.err
+    else:
+        credential_args = [c[i + 1] for c in calls for i, arg in enumerate(c[:-1])
+                           if arg == "--credential"]
+        assert credential_args and all("=" not in arg for arg in credential_args)
 
 
 def test_optional_openai_uses_openclaw_runtime_when_nvidia_is_default(ab, fake_env, config):

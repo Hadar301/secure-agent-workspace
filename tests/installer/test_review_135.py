@@ -93,7 +93,12 @@ def _apply(ab, config, tmp_path, profiles):
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
 
 
-def test_a_changed_env_recreates_the_sandbox_with_its_files(ab, fake_env, config, tmp_path):
+@pytest.mark.parametrize("env,expected,recreated", [
+    pytest.param({"HF_HUB_OFFLINE": {"value": "0"}}, ["HF_HUB_OFFLINE=0"], True, id="changed"),
+    pytest.param({}, None, True, id="removed"),
+    pytest.param({"HF_HUB_OFFLINE": {"value": "1"}}, ["HF_HUB_OFFLINE=1"], False, id="unchanged"),
+])
+def test_env_update_preserves_files(ab, fake_env, config, tmp_path, env, expected, recreated):
     _, sandbox, profiles = _env_sandbox(ab, {"HF_HUB_OFFLINE": {"value": "1"}})
     _secret(tmp_path, "inference", api_key="k")
     _apply(ab, config, tmp_path, profiles)
@@ -105,39 +110,21 @@ def test_a_changed_env_recreates_the_sandbox_with_its_files(ab, fake_env, config
     first["files"] = {"notes.md": "keep me"}
     fake_env.set_openshell_state(state)
 
-    sandbox.env = {"HF_HUB_OFFLINE": {"value": "0"}}
+    sandbox.env = env
     _apply(ab, config, tmp_path, profiles)
     state = fake_env.openshell_state()
     second = state["sandboxes"]["default/chat"]
-    assert second["env"] == ["HF_HUB_OFFLINE=0"]                       # every process sees it
+    assert second.get("env") == expected                       # every process sees it
     assert second["files"] == {"notes.md": "keep me"}                 # carried over
     assert "archives" not in second or not second["archives"]         # cleaned up
     new_label = next(l for l in state["labels"]["sandbox/default/chat"]
                      if l.startswith("saw.redhat.com/env="))
-    assert new_label != label
+    assert (new_label != label) == recreated
     ops = [" ".join(c[:2]) for c in fake_env.openshell_calls()]
-    assert ops.count("sandbox create") == 2 and ops.count("sandbox delete") == 1
-    assert "sandbox download" in ops and "sandbox upload" in ops
-
-
-def test_removing_a_variable_recreates_too(ab, fake_env, config, tmp_path):
-    _, sandbox, profiles = _env_sandbox(ab, {"HF_HUB_OFFLINE": {"value": "1"}})
-    _secret(tmp_path, "inference", api_key="k")
-    _apply(ab, config, tmp_path, profiles)
-    sandbox.env = {}
-    _apply(ab, config, tmp_path, profiles)
-    second = fake_env.openshell_state()["sandboxes"]["default/chat"]
-    assert "env" not in second                                       # no stale value left
-    assert [" ".join(c[:2]) for c in fake_env.openshell_calls()].count("sandbox create") == 2
-
-
-def test_an_unchanged_env_leaves_the_sandbox_alone(ab, fake_env, config, tmp_path):
-    _, _, profiles = _env_sandbox(ab, {"HF_HUB_OFFLINE": {"value": "1"}})
-    _secret(tmp_path, "inference", api_key="k")
-    _apply(ab, config, tmp_path, profiles)
-    _apply(ab, config, tmp_path, profiles)
-    ops = [" ".join(c[:2]) for c in fake_env.openshell_calls()]
-    assert ops.count("sandbox create") == 1 and "sandbox delete" not in ops
+    assert ops.count("sandbox create") == 1 + int(recreated)
+    assert ops.count("sandbox delete") == int(recreated)
+    assert ("sandbox download" in ops) == recreated
+    assert ("sandbox upload" in ops) == recreated
 
 
 def test_a_failed_backup_never_deletes_the_sandbox(ab, fake_env, config, tmp_path):

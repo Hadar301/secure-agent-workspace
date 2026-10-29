@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -27,7 +28,25 @@ import time
 import pytest
 import yaml
 
-from test_apply_profiles import creds, make_applier, profiles  # noqa: F401 (fixtures)
+from process_helpers import isolate_process_scan
+
+from test_apply_profiles import creds, make_applier, profiles as shipped_profiles  # noqa: F401
+
+
+@pytest.fixture
+def profiles(shipped_profiles):
+    """One harness sandbox; multi-sandbox contracts request shipped_profiles."""
+    for profile in shipped_profiles:
+        profile.workspaces = [ws for ws in profile.workspaces if ws.name == "default"]
+        for workspace in profile.workspaces:
+            workspace.sandboxes = [sb for sb in workspace.sandboxes if sb.name == "notebook"]
+    return shipped_profiles
+
+
+@pytest.fixture
+def shipped_creds(ab, shipped_profiles, secrets_dir):
+    from conftest import resolve
+    return resolve(ab, shipped_profiles, secrets_dir)
 
 IMAGE_V1 = "ghcr.io/example/saw-harness-demo@sha256:" + "1" * 64
 IMAGE_V2 = "ghcr.io/example/saw-harness-demo@sha256:" + "2" * 64
@@ -897,7 +916,7 @@ def test_the_catalog_is_read_once_per_workspace(ab, fake_env, config, profiles, 
     applier.apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
     calls = [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "list-profiles"]]
     assert calls == [["provider", "list-profiles", "-o", "json"]]
-    cuda = next(ws for p in profiles for ws in p.workspaces if ws.name == "cuda-dev")
+    cuda = ab.Workspace(name="cuda-dev")
     applier.governance_catalog(cuda)
     applier.governance_catalog(cuda)
     calls = [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "list-profiles"]]
@@ -949,7 +968,7 @@ class FakeGateway:
     def start_running(self):
         """A gateway already up before the script runs."""
         proc = subprocess.Popen([str(self.bin / "openclaw"), "gateway", "run", "--port", "18789"],
-                                env=self.env)
+                                env=self.env, start_new_session=True)
         self.procs.append(proc)
         time.sleep(0.3)
         return proc
@@ -965,9 +984,14 @@ class FakeGateway:
         script = script.replace("/sandbox", str(home))
         script = script.replace("tail -n 0 -f", "tail -n 0")
         script = script.replace("/proc/1/fd/2", shlex.quote(str(self.log)))
-        result = subprocess.run(["sh", "-c", script], env=self.env, timeout=30)
+        script = isolate_process_scan(script, self.bin.parent)
+        # The supervisor and its gateway inherit this process group. Keep the
+        # group even after the launch shell exits so teardown can stop both.
+        process = subprocess.Popen(["sh", "-c", script], env=self.env, start_new_session=True)
+        self.procs.append(process)
+        returncode = process.wait(timeout=30)
         time.sleep(1.5)
-        return result.returncode
+        return returncode
 
     def running(self):
         return [pid for pid in self.started() if os.path.exists(f"/proc/{pid}")
@@ -978,8 +1002,11 @@ class FakeGateway:
 
     def stop(self):
         for proc in self.procs:
-            proc.kill()
-        subprocess.run(["pkill", "-f", f"{self.bin}/openclaw"], check=False)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # The entire test process group has already exited.
+            proc.wait(timeout=5)
 
 
 @pytest.fixture
@@ -991,7 +1018,7 @@ def gateway(tmp_path):
 
 @pytest.mark.parametrize("sandbox", ["notebook", "cuda-sandbox"])
 def test_every_openclaw_sandbox_ends_up_with_a_gateway(
-        ab, fake_env, config, profiles, creds, gateway, sandbox):
+        ab, fake_env, config, shipped_profiles, shipped_creds, gateway, sandbox):
     """Regression (found in review): the script also contains the text
     `openclaw gateway run`, so `pkill -f`/`pgrep -f` patterns, bracketed or
     not, matched the script's own shell. The harness sandbox (refilled)
@@ -999,7 +1026,7 @@ def test_every_openclaw_sandbox_ends_up_with_a_gateway(
     gateway was already running. Neither got a gateway. This runs the exact
     script start_openclaw sends with a real sh, nothing running yet."""
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
-    make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
+    make_applier(ab, config, shipped_creds).apply(use_ref(shipped_profiles, {"image": IMAGE_V1}))
     script = next(c[-1] for c in fake_env.openshell_calls()
                   if c[:2] == ["sandbox", "exec"] and c[3] == sandbox
                   and "saw-gateway-supervise.sh" in c[-1])
@@ -1014,11 +1041,17 @@ def gateway_script(ab, home, refilled=False, cfg=None):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
-def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
-    assert gateway.run(gateway_script(ab, tmp_path)) == 0
-    assert len(gateway.started()) == 1
-    assert gateway.run(gateway_script(ab, tmp_path)) == 0
-    assert len(gateway.started()) == 1, "a live gateway (and its sessions) is left alone"
+def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path, tmp_path_factory):
+    other = FakeGateway(tmp_path_factory.mktemp("other-sandbox"))
+    foreign_process = other.start_running()
+    try:
+        assert gateway.run(gateway_script(ab, tmp_path)) == 0
+        assert len(gateway.started()) == 1
+        assert gateway.run(gateway_script(ab, tmp_path)) == 0
+        assert len(gateway.started()) == 1, "a live gateway (and its sessions) is left alone"
+        assert foreign_process.poll() is None, "another test's sandbox must remain running"
+    finally:
+        other.stop()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
@@ -1112,13 +1145,13 @@ def test_relabelling_checks_governance_before_deleting_the_sandbox(
 
 
 def test_a_harness_failure_does_not_stop_other_sandboxes_or_cleanup(
-        ab, fake_env, config, profiles, creds):
+        ab, fake_env, config, shipped_profiles, shipped_creds):
     """A failed sandbox must not abort the whole apply: siblings, prune and
     harness-volume cleanup still run; the apply still fails overall."""
-    use_ref(profiles, {"name": "unknown-bundle"})
-    applier = make_applier(ab, config, creds)
+    use_ref(shipped_profiles, {"name": "unknown-bundle"})
+    applier = make_applier(ab, config, shipped_creds)
     with pytest.raises(ab.InstallerError, match="unknown-bundle"):
-        applier.apply(profiles)
+        applier.apply(shipped_profiles)
     state = fake_env.openshell_state()
     assert "default/notebook" not in state["sandboxes"], "the broken sandbox is not created"
     assert "cuda-dev/cuda-sandbox" in state["sandboxes"], "a sibling sandbox still applies"

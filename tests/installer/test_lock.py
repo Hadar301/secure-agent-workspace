@@ -18,6 +18,12 @@ def test_two_locked_commands_do_not_overlap(tmp_path):
     cmd = ["bash", str(script), "bash", "-c", inner]
     first = subprocess.Popen(cmd, env=env)
     second = subprocess.Popen(cmd, env=env)
-    assert first.wait(timeout=10) == 0
-    assert second.wait(timeout=10) == 0
-    assert log.read_text().split() == ["start", "end", "start", "end"]
+    try:
+        assert first.wait(timeout=10) == 0
+        assert second.wait(timeout=10) == 0
+        assert log.read_text().split() == ["start", "end", "start", "end"]
+    finally:
+        for process in (first, second):
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)

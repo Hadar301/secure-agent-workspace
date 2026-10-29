@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,7 @@ CLI_CHART = ROOT / "image-builder-charts/helm/nemoclaw-cli-imagestream"
 HELM = shutil.which("helm")
 
 
+@pytest.mark.ci_external
 def test_github_supplies_the_same_reviewed_runtime(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-nemoclaw-sandbox.yml").read_text())
     injection = next(s["run"] for s in workflow["jobs"]["build"]["steps"]
@@ -31,6 +33,7 @@ def test_github_supplies_the_same_reviewed_runtime(tmp_path):
         assert (target / name).read_bytes() == (RUNTIME / name).read_bytes()
 
 
+@pytest.mark.ci_external
 def test_ci_aligns_the_upstream_curl_pin_before_building(tmp_path):
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-nemoclaw-sandbox.yml").read_text())
     steps = workflow["jobs"]["build"]["steps"]
@@ -48,6 +51,7 @@ def test_ci_aligns_the_upstream_curl_pin_before_building(tmp_path):
     assert "deb13u5" not in dockerfile.read_text()
 
 
+@pytest.mark.ci_external
 def test_reviewed_lock_contains_fixed_dependencies():
     manifest = json.loads((RUNTIME / "package.json").read_text())
     lock = json.loads((RUNTIME / "package-lock.json").read_text())
@@ -61,6 +65,7 @@ def test_reviewed_lock_contains_fixed_dependencies():
         assert tuple(map(int, version.split("."))) >= minimum
 
 
+@pytest.mark.ci_external
 def test_discovery_lock_contains_fixed_dependencies():
     runtime = CHART / "files/discovery-runtime"
     manifest = json.loads((runtime / "package.json").read_text())
@@ -73,6 +78,7 @@ def test_discovery_lock_contains_fixed_dependencies():
         assert tuple(map(int, version.split("."))) >= minimum
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_openshift_supplies_the_reviewed_runtime_to_the_upstream_dockerfile():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
@@ -92,6 +98,7 @@ def test_openshift_supplies_the_reviewed_runtime_to_the_upstream_dockerfile():
     assert args["TARGETARCH"] == "arm64"
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_cli_builds_share_one_dockerfile_and_values():
     values = yaml.safe_load((CLI_CHART / "values.yaml").read_text())
@@ -109,6 +116,7 @@ def test_cli_builds_share_one_dockerfile_and_values():
                     "SOURCE_REVISION": values["source"]["git"]["ref"]}
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_discovery_build_generates_artifacts_and_sandbox_consumes_digest():
     image = "image-registry.example/build/nemoclaw-discovery-runtime@sha256:" + "a" * 64
@@ -147,26 +155,29 @@ def test_discovery_build_generates_artifacts_and_sandbox_consumes_digest():
     assert not (CHART / "files/discovery-runtime/bundle").exists()
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_sandbox_build_is_not_created_without_a_discovery_digest():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART)], text=True)
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     assert not any(d["kind"] == "BuildConfig" and d["metadata"]["name"] == "nemoclaw-sandbox" for d in docs)
     for image in ("image-registry.example/build/discovery:latest", "image-registry.example/build/discovery@sha256:"):
-        result = subprocess.run([HELM, "template", "image", str(CHART), "--set-string", f"source.discoveryImage={image}"], capture_output=True, text=True)
+        result = run_helm([HELM, "template", "image", str(CHART), "--set-string", f"source.discoveryImage={image}"], capture_output=True, text=True)
         assert result.returncode != 0
         assert "digest" in result.stderr
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_sandbox_build_requires_an_explicit_target_architecture():
     image = "image-registry.example/build/discovery@sha256:" + "a" * 64
-    result = subprocess.run([HELM, "template", "image", str(CHART),
+    result = run_helm([HELM, "template", "image", str(CHART),
         "--set-string", f"source.discoveryImage={image}"], capture_output=True, text=True)
     assert result.returncode != 0
     assert "build.targetArch must be amd64 or arm64" in result.stderr
 
 
+@pytest.mark.ci_external
 def test_ci_generates_discovery_before_building_from_the_same_recipe():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-nemoclaw-sandbox.yml").read_text())
     steps = workflow["jobs"]["build"]["steps"]
@@ -183,6 +194,7 @@ def test_ci_generates_discovery_before_building_from_the_same_recipe():
     assert values["build"]["discoveryNodeVersion"] == "24.19.0"
 
 
+@pytest.mark.ci_external
 def test_discovery_runtime_keeps_vulnerability_and_integrity_checks():
     script = (CHART / "files/install-reviewed-runtime.sh").read_text()
     assert "npm audit --audit-level=high" in script
@@ -190,6 +202,7 @@ def test_discovery_runtime_keeps_vulnerability_and_integrity_checks():
     assert "skipping npm audit" not in script
 
 
+@pytest.mark.ci_external
 def test_nemoclaw_sources_and_base_image_are_pinned():
     sandbox = yaml.safe_load((CHART / "values.yaml").read_text())
     cli = yaml.safe_load((CLI_CHART / "values.yaml").read_text())
@@ -202,6 +215,7 @@ def test_nemoclaw_sources_and_base_image_are_pinned():
     assert sandbox["build"]["baseImage"] == f"ghcr.io/nvidia/nemoclaw/sandbox-base:v{version}"
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_discovery_typecheck_scope_is_shared_by_ci_and_openshift():
     runtime = CHART / "files/discovery-runtime"
@@ -217,6 +231,7 @@ def test_discovery_typecheck_scope_is_shared_by_ci_and_openshift():
     assert "files/discovery-runtime/tsconfig.json" in workflow
 
 
+@pytest.mark.ci_external
 def test_cli_build_identity_uses_the_pinned_release_and_commit():
     recipe = (CLI_CHART / "files/Dockerfile").read_text()
     assert "printf '%s\\n' \"$NEMOCLAW_VERSION\" > .version" in recipe

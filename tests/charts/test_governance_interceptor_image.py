@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,29 +29,33 @@ PATCH_LINES = [
 
 
 def inline_dockerfile():
-    out = subprocess.run([HELM, "template", "img", str(CHART)],
+    out = run_helm([HELM, "template", "img", str(CHART)],
                          capture_output=True, text=True, check=True).stdout
     bc = next(d for d in yaml.safe_load_all(out) if d and d["kind"] == "BuildConfig")
     return bc["spec"]["source"]["dockerfile"]
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("line", PATCH_LINES)
 def test_dockerfile_carries_every_source_patch(line):
     assert line in DOCKERFILE.read_text()
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 @pytest.mark.parametrize("line", PATCH_LINES)
 def test_buildconfig_carries_every_source_patch(line):
     assert line in inline_dockerfile()
 
 
+@pytest.mark.ci_external
 def test_the_guard_runs_before_the_build():
     """A patch appended after `cargo build` would never reach the binary."""
     text = DOCKERFILE.read_text()
     assert text.index("validate_driver_config") < text.index("RUN cargo test")
 
 
+@pytest.mark.ci_external
 def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
     """The guard hardcodes the role name; the gateway takes it from values
     (oidc.adminRole, and the OU of the installer's mTLS certificate). They
@@ -62,6 +67,7 @@ def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
     assert f'ADMIN_CERT_SUBJECT = "/O=openshell/OU={role}/CN=saw-installer"' in installer
 
 
+@pytest.mark.ci_external
 def test_openshift_builder_check_runs_in_every_platform_build():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-governance-interceptor.yml").read_text())
     names = [s.get("name") for s in workflow["jobs"]["build"]["steps"]]
@@ -71,9 +77,10 @@ def test_openshift_builder_check_runs_in_every_platform_build():
     assert merge_uses == ["actions/checkout@v4", "./.github/actions/merge-image"]
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_gateway_allows_driver_guard_without_noninterceptable_template_rpc():
-    out = subprocess.run(
+    out = run_helm(
         [HELM, "template", "guard-test", str(ROOT / "charts/openshell-saw"),
          "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
          "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
@@ -118,6 +125,7 @@ def test_exact_embedded_guard_behavior(builder, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.ci_external
 def test_builder_pins_and_runs_embedded_tests():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["source"]["git"]["ref"] == "v0.1.2"
@@ -131,6 +139,7 @@ def test_builder_pins_and_runs_embedded_tests():
         assert "cargo build --locked --release --target-dir /out" in text
 
 
+@pytest.mark.ci_external
 def test_pr_builds_are_unauthenticated_and_check_pin():
     action = yaml.safe_load((ROOT / ".github/actions/build-push-image/action.yml").read_text())
     steps = action["runs"]["steps"]
@@ -146,6 +155,7 @@ def test_pr_builds_are_unauthenticated_and_check_pin():
     assert "push: false" in workflow
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_both_builds_share_recipe_with_configurable_inputs():
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-governance-interceptor.yml").read_text())
@@ -163,6 +173,7 @@ def test_both_builds_share_recipe_with_configurable_inputs():
         "BUILDER_IMAGE": "rust:test", "RUNTIME_IMAGE": "ubi:test", "CONTEXT_DIR": "examples/test"}
 
 
+@pytest.mark.ci_external
 def test_shared_recipe_preserves_both_runtime_variants():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["build"]["runtimeImage"] == "registry.access.redhat.com/ubi9-micro:latest"
@@ -174,6 +185,7 @@ def test_shared_recipe_preserves_both_runtime_variants():
     assert "--platform=linux/amd64" not in text
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_default_build_output_is_internal_and_push_requires_explicit_destination():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART)], text=True)

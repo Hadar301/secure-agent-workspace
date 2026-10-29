@@ -6,11 +6,13 @@ PATH. No cluster, VM, network or credentials are used.
 """
 
 import base64
+import copy
 import hashlib
 import importlib.util
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -141,8 +143,8 @@ def tree_digest_of_shipped_bundle():
 
 
 @pytest.fixture
-def fake_env(tmp_path, monkeypatch):
-    """Put fake executables first on PATH and give them a state directory."""
+def fake_commands(tmp_path, monkeypatch):
+    """Isolate commands, state and HOME without creating any certificates."""
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir()
     for fake in FAKES.iterdir():
@@ -154,6 +156,19 @@ def fake_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_STATE", str(state))
     monkeypatch.setenv("FAKE_PYTHON", sys.executable)
+    home = tmp_path / "home"
+    home.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("SAW_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("HOME", str(home))
+    return FakeWorld(state, home)
+
+
+@pytest.fixture(scope="session")
+def gateway_pki(tmp_path_factory):
+    """Generate once per worker; expose only immutable certificate bytes."""
+    tmp_path = tmp_path_factory.mktemp("gateway-pki")
     # Gateway PKI after the tmpfs generator: the CA private key is gone;
     # persistent client and relay certificates have only the user role.
     home = tmp_path / "home"
@@ -189,11 +204,48 @@ def fake_env(tmp_path, monkeypatch):
     for name in ("signing.pem", "public.pem", "kid"):
         (ca_dir / "jwt" / name).write_text("test-jwt-" + name)
     ca_key.unlink()
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    monkeypatch.setenv("SAW_RUNTIME_DIR", str(runtime))
-    monkeypatch.setenv("HOME", str(home))
-    return FakeWorld(state, home)
+    return tuple((str(p.relative_to(ca_dir)), p.read_bytes())
+                 for p in sorted(ca_dir.rglob("*")) if p.is_file())
+
+
+def copy_pki(material, destination):
+    for name, content in material:
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(0o600)
+
+
+@pytest.fixture
+def fake_env(fake_commands, gateway_pki):
+    """Give each test a private copy of the persistent gateway identities."""
+    copy_pki(gateway_pki, fake_commands.home / ".local/state/openshell/tls")
+    return fake_commands
+
+
+@pytest.fixture(scope="session")
+def admin_pki(tmp_path_factory, ab):
+    """Identity for command tests. Real admin-session tests bypass this fixture."""
+    root = tmp_path_factory.mktemp("admin-pki")
+
+    def openssl(*args):
+        subprocess.run(["openssl", *map(str, args)], cwd=root,
+                       check=True, capture_output=True)
+
+    openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-nodes", "-keyout", "ca.key", "-out", "ca.crt", "-days", "1",
+            "-subj", "/O=openshell/OU=SAW-apply/CN=saw-test-admin-ca",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign")
+    openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-nodes", "-keyout", "tls.key", "-out", "client.csr", "-subj", ab.ADMIN_CERT_SUBJECT)
+    (root / "ext.cnf").write_text("basicConstraints=critical,CA:FALSE\n"
+                                  "keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n")
+    openssl("x509", "-req", "-in", "client.csr", "-CA", "ca.crt", "-CAkey", "ca.key",
+            "-set_serial", "0x" + secrets.token_hex(16), "-days", "1",
+            "-extfile", "ext.cnf", "-out", "tls.crt")
+    (root / "ca.key").unlink()
+    return tuple((name, (root / name).read_bytes()) for name in ("ca.crt", "tls.crt", "tls.key"))
 
 
 class FakeWorld:
@@ -287,14 +339,28 @@ def secrets_dir(tmp_path):
 
 
 @pytest.fixture
-def config(ab, fake_env):
-    with ab.admin_session({}, fake_env.home, None, as_current_user=True) as (tls, config_home):
-        fake_env.admin_tls = tls
+def config(fake_env, admin_pki, tmp_path):
+    """Copy a test admin identity; keep every writable path local to this test."""
+    root = tmp_path / "admin-session"
+    tls, config_home = root / "tls", root / "config"
+    root.mkdir(mode=0o700)
+    tls.mkdir(mode=0o700)
+    config_home.mkdir(mode=0o700)
+    material = dict(admin_pki)
+    copy_pki((("client/tls.crt", material["tls.crt"]),
+              ("client/tls.key", material["tls.key"])), tls)
+    gateway_tls = fake_env.home / ".local/state/openshell/tls"
+    gateway_ca = (gateway_tls / "ca.crt").read_bytes()
+    (tls / "ca.crt").write_bytes(gateway_ca)
+    bundle = gateway_tls / "client-ca.pem"
+    bundle.write_bytes(gateway_ca.rstrip() + b"\n" + material["ca.crt"])
+    fake_env.admin_tls = tls
+    try:
         yield {"vmName": "saw-test", "namespace": "openshell-agents",
             "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
             "relayGateway": "saw-relay", "adminTlsDir": str(tls),
             "adminConfigHome": str(config_home),
-            "credentialProxy": TEST_PROXY,
+            "credentialProxy": copy.deepcopy(TEST_PROXY),
             "gatewayPki": {"generation": 1, "caFingerprint": "test-gateway-ca"},
             "ownerSubject": "subject-alice", "oidcIssuer": "", "sandboxDashboardRoute": "",
             "dashboard": {"enabled": False, "owner": "alice"},
@@ -302,6 +368,41 @@ def config(ab, fake_env):
                 "cacheTtlSeconds": 0,
                 "identity": "https://github.com/example/saw/.github/workflows/harness-bundles.yml@refs/heads/main",
                 "issuer": "https://token.actions.githubusercontent.com"}}}
+    finally:
+        bundle.write_bytes(gateway_ca)
+        shutil.rmtree(root)
+
+
+@pytest.fixture
+def real_admin_config(config, ab, fake_env):
+    """Use production certificate creation and cleanup for PKI contracts."""
+    with ab.admin_session({}, fake_env.home, None, as_current_user=True) as (tls, home):
+        fake_env.admin_tls = tls
+        yield {**config, "adminTlsDir": str(tls), "adminConfigHome": str(home)}
+
+
+@pytest.fixture
+def fake_clock(monkeypatch, ab):
+    """Advance retry deadlines without a busy loop or real sleep."""
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    # Replace only the installer's reference; other modules keep the real clock.
+    from types import SimpleNamespace
+    import time
+    monkeypatch.setattr(ab, "time", SimpleNamespace(
+        **{name: getattr(time, name) for name in dir(time) if not name.startswith("_")},
+    ))
+    monkeypatch.setattr(ab.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(ab.time, "sleep", clock.sleep)
+    return clock
 
 
 @pytest.fixture

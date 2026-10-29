@@ -705,7 +705,7 @@ make saw-vm-ssh
 make lint
 make test
 
-# Tool-action gate tests (needs node; not part of CI)
+# Tool-action gate tests (needs node; also included in the CI suite)
 make test-tool-gate
 
 # Run offline template validation (48 checks)
@@ -717,9 +717,9 @@ SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
   PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
-For local Python tests, `uv` creates the ignored `.venv` from the locked
-project dependencies. `tests/requirements.txt` remains for the existing CI
-workflow, which still uses Python and pip.
+See the [test-writing and test-running guide](docs/testing.md) for local tools,
+selection commands, CI coverage, and fixture rules. `make test` and
+`make test-installer` both run the complete pytest suite.
 
 ### Delete
 

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,12 +16,13 @@ HELM = shutil.which("helm")
 
 
 def render(chart, *args):
-    result = subprocess.run([HELM, "template", "saw-test", str(chart), "-n", "saw-test", *args],
+    result = run_helm([HELM, "template", "saw-test", str(chart), "-n", "saw-test", *args],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return [d for d in yaml.safe_load_all(result.stdout) if d]
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_proxy_policy_matches_all_keyed_profile_copies():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
@@ -45,10 +47,11 @@ def test_proxy_policy_matches_all_keyed_profile_copies():
                     assert host in policy["allowHosts"], (typ, host)
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_proxy_image_requires_digest():
     for image in ("", "quay.io/example/proxy:latest"):
-        result = subprocess.run([HELM, "template", "saw-test", str(SAW), "-n", "saw-test",
+        result = run_helm([HELM, "template", "saw-test", str(SAW), "-n", "saw-test",
                                  "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
                                  "--set-string", "credentialProxy.image=" + image],
                                 capture_output=True, text=True)
@@ -56,6 +59,7 @@ def test_proxy_image_requires_digest():
         assert "credentialProxy.image must be a published repo@sha256" in result.stderr
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_provider_metadata_external_secrets_contain_no_key():
     docs = render(ROOT / "charts/pattern-secrets", "--set",
@@ -70,6 +74,7 @@ def test_provider_metadata_external_secrets_contain_no_key():
         assert "api_key" not in names[name]["spec"]["target"]["template"]["data"]
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_unattached_search_secret_has_no_proxy_binding_or_mount():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
@@ -85,6 +90,7 @@ def test_unattached_search_secret_has_no_proxy_binding_or_mount():
     assert not any(v.get("secret", {}).get("secretName") == "web-search" for v in volumes)
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_gitops_ca_hook_has_a_bounded_failure():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
@@ -96,6 +102,7 @@ def test_gitops_ca_hook_has_a_bounded_failure():
     assert hook["spec"]["activeDeadlineSeconds"] == 120
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_gitops_updates_legacy_firewall_before_bootstrapping_the_ca():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
@@ -111,6 +118,7 @@ def test_gitops_updates_legacy_firewall_before_bootstrapping_the_ca():
         assert firewall_wave < int(annotations["argocd.argoproj.io/sync-wave"]) < -1
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_public_issuer_ca_stays_in_the_guest_mount_list():
     docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),

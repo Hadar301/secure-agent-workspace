@@ -146,15 +146,20 @@ exec /bin/bash "$@"
     bash_stub.chmod(0o755)
     env = dict(os.environ, CI="true", MARKER=str(marker),
                PATH=f"{bindir}:{os.environ['PATH']}")
-    result = run_make("lint", env=env)
-    assert result.returncode == 0, result.stderr
-    calls = marker.read_text().splitlines()
-    shell_files = [call.removeprefix("bash ") for call in calls if call.startswith("bash ")]
-    assert len(shell_files) >= 42 and len(shell_files) == len(set(shell_files))
-    assert "charts/openshell-saw/files/prepare.sh" not in shell_files
-    assert "scripts/test-deployment.sh" in shell_files
-    assert "python scripts/lint-rendered-shell.py" in calls
-    assert any(call.startswith("python -m pytest") for call in calls)
+    for target, static, interface in (
+        ("lint", True, True), ("lint-static", True, False), ("lint-interface", False, True),
+    ):
+        marker.write_text("")
+        result = run_make(target, env=env)
+        assert result.returncode == 0, result.stderr
+        calls = marker.read_text().splitlines()
+        shell_files = [call.removeprefix("bash ") for call in calls if call.startswith("bash ")]
+        assert (len(shell_files) >= 42) == static
+        assert len(shell_files) == len(set(shell_files))
+        assert "charts/openshell-saw/files/prepare.sh" not in shell_files
+        assert ("scripts/test-deployment.sh" in shell_files) == static
+        assert ("python scripts/lint-rendered-shell.py" in calls) == static
+        assert sum(call.startswith("python -m pytest") for call in calls) == int(interface)
 
 
 def test_saw_create_preserves_special_characters_in_environment(tmp_path):

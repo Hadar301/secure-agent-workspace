@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm(*args):
-    return subprocess.run([HELM, "template", "openshell-keycloak", str(CHART), "-n", "keycloak", *args],
+    return run_helm([HELM, "template", "openshell-keycloak", str(CHART), "-n", "keycloak", *args],
                           capture_output=True, text=True)
 
 
@@ -30,6 +31,7 @@ def realm_of(docs):
     return realm
 
 
+@pytest.mark.ci_external
 def test_default_deploys_keycloak_database_and_realm():
     docs = render()
     kinds = {d["kind"] for d in docs}
@@ -38,6 +40,7 @@ def test_default_deploys_keycloak_database_and_realm():
     assert realm["spec"]["keycloakCRName"] == "openshell-keycloak"
 
 
+@pytest.mark.ci_external
 def test_existing_mode_imports_only_the_realm_into_that_keycloak():
     docs = render("--set", "keycloak.existing=keycloak", "--set", "keycloak.realm=openshell")
     assert not {"Keycloak", "StatefulSet", "Service", "PersistentVolumeClaim"} & {d["kind"] for d in docs}
@@ -51,6 +54,7 @@ def test_existing_mode_imports_only_the_realm_into_that_keycloak():
     assert {"openshell-admin", "openshell-user"} <= {r["name"] for r in spec["realm"]["roles"]["realm"]}
 
 
+@pytest.mark.ci_external
 def test_client_lists_are_never_null(tmp_path):
     """Found live (Helm 4, server-side apply): the dashboard client's empty
     redirectUris/webOrigins rendered as null and the CRD rejected the import."""
@@ -67,6 +71,7 @@ def test_client_lists_are_never_null(tmp_path):
     assert dash["redirectUris"] == ["https://a.example.com/oauth2/callback"]
 
 
+@pytest.mark.ci_external
 def test_no_test_users_and_users_without_roles_render_valid_lists(tmp_path):
     values = tmp_path / "users.yaml"
     values.write_text("keycloak:\n  users:\n    - username: nobody\n")
@@ -80,12 +85,14 @@ def test_no_test_users_and_users_without_roles_render_valid_lists(tmp_path):
 
 # -- passwords: generated, never guessable defaults ---------------------------------
 
+@pytest.mark.ci_external
 def test_no_demo_user_has_a_password_in_values():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["demo"]["users"]
     assert not [u["username"] for u in values["demo"]["users"] if "password" in u]
 
 
+@pytest.mark.ci_external
 def test_passwords_come_from_the_secret_as_placeholders():
     spec = realm_of(render("--set", "demo.enabled=true"))["spec"]
     users = spec["realm"]["users"]
@@ -96,6 +103,7 @@ def test_passwords_come_from_the_secret_as_placeholders():
             "secret": {"name": "openshell-keycloak-user-passwords", "key": user["username"]}}
 
 
+@pytest.mark.ci_external
 def test_the_realm_enforces_strong_passwords_and_locks_out_guessing():
     realm = realm_of(render())["spec"]["realm"]
     policy = realm["passwordPolicy"]
@@ -109,6 +117,7 @@ def test_the_realm_enforces_strong_passwords_and_locks_out_guessing():
     assert realm["failureFactor"] == 5
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("password", ["alice", "alicealicealice1A!", "short1A!", "nouppercase12345!",
                                       "NoSpecialChars12345"])
 def test_a_weak_explicit_password_fails_the_render(tmp_path, password):
@@ -129,6 +138,7 @@ def strong_password():
     return "".join(chars)
 
 
+@pytest.mark.ci_external
 def test_a_strong_explicit_password_is_used(tmp_path):
     password = strong_password()
     values = tmp_path / "strong.yaml"
@@ -139,6 +149,7 @@ def test_a_strong_explicit_password_is_used(tmp_path):
     assert "placeholders" not in spec
 
 
+@pytest.mark.ci_external
 def test_the_pattern_reads_the_passwords_from_vault():
     assert not [d for d in render("--set", "keycloak.userPasswords.externalSecret.enabled=true")
                 if d["kind"] == "ExternalSecret"]
@@ -150,11 +161,13 @@ def test_the_pattern_reads_the_passwords_from_vault():
     assert not [d for d in render() if d["kind"] == "ExternalSecret"]
 
 
+@pytest.mark.ci_external
 def test_values_secret_has_no_implicit_demo_passwords():
     template = yaml.safe_load((ROOT / "values-secret.yaml.template").read_text())
     assert not [s for s in template["secrets"] if s["name"] == "keycloak-users"]
 
 
+@pytest.mark.ci_external
 def test_production_has_no_demo_users_or_password_placeholders():
     spec = realm_of(render("--set", "keycloak.userPasswords.externalSecret.enabled=true"))["spec"]
     assert spec["realm"]["users"] == []
@@ -162,6 +175,7 @@ def test_production_has_no_demo_users_or_password_placeholders():
     assert "placeholders" not in spec
 
 
+@pytest.mark.ci_external
 def test_demo_owners_have_no_platform_admin_role():
     users = {u["username"]: u for u in realm_of(render("--set", "demo.enabled=true"))["spec"]["realm"]["users"]}
     assert "openshell-admin" in users["admin"]["realmRoles"]
@@ -169,6 +183,7 @@ def test_demo_owners_have_no_platform_admin_role():
         assert users[name]["realmRoles"] == ["openshell-user"]
 
 
+@pytest.mark.ci_external
 def test_owner_resolver_has_read_only_cluster_role_and_separate_client():
     docs = render("--set", "ownerResolver.enabled=true")
     role = next(d for d in docs if d["kind"] == "ClusterRole" and
@@ -182,6 +197,7 @@ def test_owner_resolver_has_read_only_cluster_role_and_separate_client():
     assert {m["name"] for m in pod["initContainers"][0]["volumeMounts"]} == {"script", "run", "admin"}
 
 
+@pytest.mark.ci_external
 def test_the_registrar_is_on_by_default_and_can_be_turned_off():
     """On by default, in plain and existing-Keycloak mode alike. Off: nothing
     in Keycloak's namespace registers redirect URIs or holds cluster-wide
@@ -206,6 +222,7 @@ def env_of(container):
     return {e["name"]: e["value"] for e in container.get("env", [])}
 
 
+@pytest.mark.ci_external
 def test_the_registrar_runs_in_keycloaks_namespace_with_its_own_client():
     pod = registrar(render("--set", "redirectRegistrar.enabled=true"))
     (init,), (main,) = pod["initContainers"], pod["containers"]
@@ -216,6 +233,7 @@ def test_the_registrar_runs_in_keycloaks_namespace_with_its_own_client():
     assert env_of(main)["ROUTE_SELECTOR"] == "saw.redhat.com/oidc-redirect=true"
 
 
+@pytest.mark.ci_external
 def test_only_the_init_container_sees_the_master_admin():
     pod = registrar(render("--set", "redirectRegistrar.enabled=true"))
     (admin,) = [v for v in pod["volumes"] if "secret" in v]
@@ -230,6 +248,7 @@ def test_only_the_init_container_sees_the_master_admin():
     assert next(m for m in main["volumeMounts"] if m["name"] == "run")["readOnly"] is True
 
 
+@pytest.mark.ci_external
 def test_the_registrar_may_only_read_routes_and_namespaces():
     docs = render("--set", "redirectRegistrar.enabled=true")
     (role,) = [d for d in docs if d["kind"] == "ClusterRole"]
@@ -242,6 +261,7 @@ def test_the_registrar_may_only_read_routes_and_namespaces():
     assert not [d for d in docs if d["kind"] in ("Role", "RoleBinding")]
 
 
+@pytest.mark.ci_external
 def test_an_existing_keycloak_is_reached_by_its_own_name():
     pod = registrar(render("--set", "redirectRegistrar.enabled=true", "--set", "keycloak.existing=sso"))
     assert env_of(pod["containers"][0])["KC_URL"] == "http://sso-service.keycloak.svc:8080"
@@ -252,6 +272,7 @@ def test_an_existing_keycloak_is_reached_by_its_own_name():
     assert any(v.get("secret", {}).get("secretName") == "sso-admin" for v in pod["volumes"])
 
 
+@pytest.mark.ci_external
 def test_the_registrar_script_is_shipped_byte_for_byte():
     docs = render("--set", "redirectRegistrar.enabled=true")
     (cm,) = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-redirect-registrar"]

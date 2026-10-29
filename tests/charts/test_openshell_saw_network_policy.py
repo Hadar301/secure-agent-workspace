@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(*args):
-    return subprocess.run(
+    return run_helm(
         [HELM, "template", "saw-test", str(CHART), "-n", "saw-alice",
          "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
          "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
@@ -52,6 +53,7 @@ def only_peer(rule):
     return rule["to"][0]
 
 
+@pytest.mark.ci_external
 def test_default_deny_and_policy_scopes():
     docs = render()
     ps = policies(docs)
@@ -94,6 +96,7 @@ def test_default_deny_and_policy_scopes():
     assert shell.returncode == 0, shell.stderr
 
 
+@pytest.mark.ci_external
 def test_json_number_api_port_renders_as_integer():
     docs = render("--set-json", 'cleanupApi.endpoints=[{"ip":"192.0.2.10","port":6443}]')
     assert {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
@@ -101,6 +104,7 @@ def test_json_number_api_port_renders_as_integer():
                 docs[("EgressFirewall", "default")]["spec"]["egress"])
 
 
+@pytest.mark.ci_external
 def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
     api_rule = {"type": "Allow", "to": {"cidrSelector": "192.0.2.10/32"},
         "ports": [{"protocol": "TCP", "port": 6443}]}
@@ -116,8 +120,9 @@ def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
         "ports": [{"protocol": "TCP", "port": 6443}]} in fallback
 
 
+@pytest.mark.ci_external
 def test_topology_is_required_for_standalone_chart(tmp_path):
-    bare = subprocess.run([HELM, "template", "saw-test", str(CHART), "-n", "saw-alice",
+    bare = run_helm([HELM, "template", "saw-test", str(CHART), "-n", "saw-alice",
                            "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")],
                           capture_output=True, text=True)
     assert bare.returncode != 0
@@ -139,6 +144,7 @@ def test_topology_is_required_for_standalone_chart(tmp_path):
                                "--set-json", "cleanupApi.endpoints=[]"))
 
 
+@pytest.mark.ci_external
 def test_hosted_api_on_tcp_443_is_exactly_scoped(tmp_path):
     path = tmp_path / "hosted.yaml"
     path.write_text(yaml.safe_dump({"cleanupApi": {
@@ -158,6 +164,7 @@ def test_hosted_api_on_tcp_443_is_exactly_scoped(tmp_path):
             "ports": [{"protocol": "TCP", "port": 443}]} in policies(docs)["saw-cleanup-hook"]["spec"]["egress"]
 
 
+@pytest.mark.ci_external
 def test_governance_selector_tracks_engine():
     expected = {"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "openshell-agents"}},
@@ -169,6 +176,7 @@ def test_governance_selector_tracks_engine():
         assert only_peer(by_port(vm["egress"], 18081)[0]) == expected
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("source,expected", [
     ({}, None),
     ({"httpURL": "http://images.example.net:8081/disk.qcow2"}, ("images.example.net", 8081)),
@@ -196,6 +204,7 @@ def test_cdi_outside_rule_follows_selected_disk_source(tmp_path, source, expecte
                 "ports": [{"protocol": "TCP", "port": port}]} in firewall
 
 
+@pytest.mark.ci_external
 def test_vm_egress_is_exact_and_cdi_import_has_minimum_peers():
     ps = policies(render())
     vm = ps["saw-vm"]["spec"]
@@ -224,6 +233,7 @@ def test_vm_egress_is_exact_and_cdi_import_has_minimum_peers():
     assert not any("ipBlock" in peer for rule in cdi["egress"] for peer in rule["to"])
 
 
+@pytest.mark.ci_external
 def test_no_high_risk_allow_peers_or_ports():
     for spec in (policies(render())[name]["spec"] for name in ("saw-vm", "saw-cdi-import")):
         for direction, peer_key in (("egress", "to"), ("ingress", "from")):
@@ -252,6 +262,7 @@ def test_no_high_risk_allow_peers_or_ports():
         "172.30.0.1/32", "192.0.2.10/32"}
 
 
+@pytest.mark.ci_external
 def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
     path = tmp_path / "ui.yaml"
     path.write_text(yaml.safe_dump({"sandboxUi": [
@@ -274,6 +285,7 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
     assert 22 not in ports
 
 
+@pytest.mark.ci_external
 def test_toggles_and_custom_namespaces():
     assert not policies(render("--set", "networkPolicy.enabled=false"))
     assert set(policies(render("--set", "egress.enabled=false"))) == {
@@ -299,6 +311,7 @@ def test_toggles_and_custom_namespaces():
     assert not by_port(vm["egress"], 8443)
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("value,message", [
     ({"clusterNetworkCIDRs": []}, "clusterNetworkCIDRs must be a non-empty list"),
     ({"serviceNetworkCIDRs": []}, "serviceNetworkCIDRs must be a non-empty list"),
@@ -322,6 +335,7 @@ def test_render_guards(tmp_path, value, message):
     rejected(tmp_path, value, message)
 
 
+@pytest.mark.ci_external
 def test_extra_rules_and_cidrs_render(tmp_path):
     path = tmp_path / "safe.yaml"
     path.write_text(yaml.safe_dump({"networkPolicy": {
@@ -345,6 +359,7 @@ def test_extra_rules_and_cidrs_render(tmp_path):
     assert {p["port"] for p in outside["ports"]} == {443, 80, 8443}
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("args", [
     (),
     ("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/x"),
