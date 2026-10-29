@@ -208,7 +208,10 @@ OpenClaw loads `saw-tool-gate` from `/sandbox/.saw/trusted/plugin` through `plug
 
 The mounted plugin and policy are read-only to the agent. The installer recreates an existing agent sandbox missing its gate or audit mount; OpenShell deletes that sandbox's `/sandbox` volume during recreation, so preserve needed files before applying. The writable `openclaw.json` can still be changed between applies; the next apply checks the loaded plugin again. This is not a cluster OCSF pipeline.
 
-The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs` and `tests/installer/test_tool_gate.py`. They run in `make test` and installer CI (Node on `PATH`); `make test-tool-gate` runs them alone.
+The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs`
+and `tests/installer/test_tool_gate.py`. They run in `make test` and CI.
+`make test-tool-gate` runs the Node unit tests alone. See the
+[testing guide](testing.md) for required tools and CI coverage.
 
 ## Audit Trail
 

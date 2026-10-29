@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +39,7 @@ def helm(*args):
     command = [HELM, *args]
     if str(SAW_CHART) in command:
         command += ["-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
-    return subprocess.run(command, capture_output=True, text=True)
+    return run_helm(command, capture_output=True, text=True)
 
 
 def render_file(tmp_path, users, extra=None):
@@ -68,6 +69,7 @@ def helm_values(application):
     return yaml.safe_load(application["spec"]["source"]["helm"]["values"])
 
 
+@pytest.mark.ci_external
 def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "alice", "profiles": ["data-science"]}]))
     values = helm_values(app(docs, "saw-alice-secrets"))
@@ -85,6 +87,7 @@ def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
 
 
 
+@pytest.mark.ci_external
 def test_ci_nvidia_binds_both_aliases_and_projects_only_provider(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "ciowner", "profiles": ["ci-nvidia"]}]))
     values = helm_values(app(docs, "saw-ciowner"))
@@ -93,6 +96,7 @@ def test_ci_nvidia_binds_both_aliases_and_projects_only_provider(tmp_path):
     secrets = helm_values(app(docs, "saw-ciowner-secrets"))
     assert secrets["metaKeys"] == {"inference": ["provider"]}
 
+@pytest.mark.ci_external
 def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     namespaces = {doc["metadata"]["name"]: doc for doc in by_kind(docs, "Namespace")}
@@ -131,6 +135,7 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
 
 
+@pytest.mark.ci_external
 def test_agent_apps_ignore_only_kubevirt_vm_defaults(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
     pointers = [
@@ -151,6 +156,7 @@ def test_agent_apps_ignore_only_kubevirt_vm_defaults(tmp_path):
         assert "ignoreDifferences" not in app(docs, name)["spec"]
 
 
+@pytest.mark.ci_external
 def test_waves_release_names_and_value_overrides(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
 
@@ -204,6 +210,7 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
 
 
+@pytest.mark.ci_external
 def test_registry_pull_secret_uses_shared_vault_entry(tmp_path):
     extra = {"defaults": {"openshellSaw": {"registry": {
         "host": "image-registry.openshift-image-registry.svc.cluster.local:5000",
@@ -221,6 +228,7 @@ def test_registry_pull_secret_uses_shared_vault_entry(tmp_path):
         "key": "secret/data/hub/registry-pull", "property": "token"}
 
 
+@pytest.mark.ci_external
 def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {
         "global": {"governance": {"engine": "apf"}}}))
@@ -255,6 +263,7 @@ def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
         for rule in vm_policy["spec"]["egress"] for peer in rule["to"])
 
 
+@pytest.mark.ci_external
 def test_empty_global_values_are_left_out(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"originURL": "", "repoURL": "https://example.com/repo.git",
@@ -268,6 +277,7 @@ def test_empty_global_values_are_left_out(tmp_path):
     assert namespace["metadata"]["labels"]["argocd.argoproj.io/managed-by"] == "gitops-ns"
 
 
+@pytest.mark.ci_external
 def test_demo_harness_turns_on_allow_driver_config(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "alice", "harnessEnabled": True}]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
@@ -277,17 +287,20 @@ def test_demo_harness_turns_on_allow_driver_config(tmp_path):
     assert helm_values(app(docs, "saw-alice"))["allowDriverConfig"] is True
 
 
+@pytest.mark.ci_external
 def test_demo_harness_off_leaves_allow_driver_config_unset(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE]))
     assert "allowDriverConfig" not in helm_values(app(docs, "saw-alice"))
 
 
+@pytest.mark.ci_external
 def test_a_user_can_override_allow_driver_config_off(tmp_path):
     user = {"name": "alice", "harnessEnabled": True, "values": {"allowDriverConfig": False}}
     docs = docs_from(render_file(tmp_path, [user]))
     assert helm_values(app(docs, "saw-alice"))["allowDriverConfig"] is False
 
 
+@pytest.mark.ci_external
 def test_prune_on_remove_adds_the_foreground_finalizer(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={"pruneOnRemove": True}))
     for application in by_kind(docs, "Application"):
@@ -296,6 +309,7 @@ def test_prune_on_remove_adds_the_foreground_finalizer(tmp_path):
     assert "argocd.argoproj.io/sync-options" not in namespace["metadata"]["annotations"]
 
 
+@pytest.mark.ci_external
 def test_prune_on_remove_can_be_set_per_user(tmp_path):
     """Set it on the one entry about to be removed, not for everyone: while it
     is on, deleting the apps (or the saw-users app) deletes that user's VM."""
@@ -309,6 +323,7 @@ def test_prune_on_remove_can_be_set_per_user(tmp_path):
     assert namespaces["saw-alice"]["argocd.argoproj.io/sync-options"] == "Prune=false"
 
 
+@pytest.mark.ci_external
 def test_the_vm_cleanup_hook_follows_prune_on_remove(tmp_path):
     """Found live: Argo CD runs openshell-saw's Helm pre-delete hook when the
     Application is deleted, so without this a removed user lost their VM even
@@ -318,6 +333,7 @@ def test_the_vm_cleanup_hook_follows_prune_on_remove(tmp_path):
     assert helm_values(app(docs, "saw-bob"))["cleanupOnDelete"] is True
 
 
+@pytest.mark.ci_external
 def test_a_user_can_opt_out_of_the_chart_wide_prune(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob", "pruneOnRemove": False}],
                                  extra={"pruneOnRemove": True}))
@@ -325,6 +341,7 @@ def test_a_user_can_opt_out_of_the_chart_wide_prune(tmp_path):
     assert "finalizers" not in app(docs, "saw-bob")["metadata"]
 
 
+@pytest.mark.ci_external
 def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"repoURL": "https://example.com/repo.git", "targetRevision": "main",
@@ -336,6 +353,7 @@ def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
         "governance": {"engine": "apf"}}
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("name,message", [
     ("Alice", "lowercase DNS label"),
     ("alice_bob", "lowercase DNS label"),
@@ -350,12 +368,14 @@ def test_bad_names_fail_at_render(tmp_path, name, message):
     assert message in result.stderr
 
 
+@pytest.mark.ci_external
 def test_duplicate_names_fail_at_render(tmp_path):
     result = render_file(tmp_path, [{"name": "alice"}, {"name": "alice"}])
     assert result.returncode != 0, result.stdout
     assert 'duplicate user name "alice"' in result.stderr
 
 
+@pytest.mark.ci_external
 def test_nineteen_character_name_is_accepted(tmp_path):
     """The user name is the VM name, as with make openshell-saw-create."""
     name = "a" * 19
@@ -365,6 +385,7 @@ def test_nineteen_character_name_is_accepted(tmp_path):
     assert app(docs, f"saw-{name}")["spec"]["source"]["helm"]["releaseName"] == name
 
 
+@pytest.mark.ci_external
 def test_shipped_override_renders_alice(tmp_path):
     result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"))
     docs = docs_from(result)
@@ -373,6 +394,7 @@ def test_shipped_override_renders_alice(tmp_path):
         "profiles": ["data-science"], "imageOverrides": {}}
 
 
+@pytest.mark.ci_external
 def test_owner_resolution_writes_only_a_dedicated_input():
     result = helm("template", "saw-users", str(CHART), "-f", str(ROOT / "overrides" / "saw-users-demo.yaml"),
                   "--set", "ownerResolution.enabled=true")
@@ -387,6 +409,7 @@ def test_owner_resolution_writes_only_a_dedicated_input():
     assert saw_values["accessControl"]["ownerSubjectSource"] == "resolved"
 
 
+@pytest.mark.ci_external
 def test_missing_repo_url_fails(tmp_path):
     result = render_file(tmp_path, [ALICE], extra={
         "global": {"repoURL": "", "targetRevision": "main", "vpArgoNamespace": "vp-gitops"}})
@@ -446,6 +469,7 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
         ("inference", "api_key"), ("web-search", "api_key")}
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("global_enabled,user_enabled,enabled", [
     (False, None, False),
     ("false", None, False),
@@ -499,6 +523,7 @@ def test_web_search_off_validates_without_a_web_search_secret(tmp_path):
     assert "2 credential(s)" in result.stdout
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("enabled", [False, True])
 def test_pattern_override_preserves_the_boolean_install_knob(tmp_path, enabled):
     """Reproduce clustergroup 0.9's parameter handoff offline.
@@ -561,6 +586,7 @@ def test_the_profile_catalog_is_current():
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.ci_external
 def test_ui_routes_come_from_the_profiles(tmp_path):
     """data-science flags the default workspace's notebook and the cuda-dev
     workspace's NemoClaw sandbox (ui.route: true)."""
@@ -571,6 +597,7 @@ def test_ui_routes_come_from_the_profiles(tmp_path):
                                     "proxyPort": 4202, "forwardPort": 14202}]
 
 
+@pytest.mark.ci_external
 def test_ui_routes_are_sorted_and_numbered(tmp_path):
     user = {"name": "carol", "sandboxUi": [{"workspace": "zeta", "sandbox": "b"},
                                             {"workspace": "alpha", "sandbox": "a"}]}
@@ -579,12 +606,14 @@ def test_ui_routes_are_sorted_and_numbered(tmp_path):
         ("alpha", 4201, 14201), ("zeta", 4202, 14202)]
 
 
+@pytest.mark.ci_external
 def test_too_many_ui_routes_fail_the_render(tmp_path):
     user = {"name": "carol", "sandboxUi": [{"workspace": "w", "sandbox": f"s{i}"} for i in range(9)]}
     result = render_file(tmp_path, [user])
     assert result.returncode != 0 and "at most 8" in result.stderr
 
 
+@pytest.mark.ci_external
 def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
     """custom-inference reads inference (with url and model) and web-search."""
     user = {"name": "dave", "profiles": ["custom-inference"]}
@@ -596,6 +625,7 @@ def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
     assert vm["sandboxUi"] == []
 
 
+@pytest.mark.ci_external
 def test_ci_nvidia_profile_uses_only_the_available_key(tmp_path):
     user = {"name": "ciowner", "profiles": ["ci-nvidia"]}
     docs = docs_from(render_file(tmp_path, [user]))
@@ -606,6 +636,7 @@ def test_ci_nvidia_profile_uses_only_the_available_key(tmp_path):
     assert helm_values(app(docs, "saw-ciowner-bom"))["profiles"] == ["ci-nvidia"]
 
 
+@pytest.mark.ci_external
 def test_namespace_labels_are_added(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], {"namespaceLabels": {"saw.redhat.com/portal": "true"}}))
     [ns] = [d for d in docs if d["kind"] == "Namespace"]
@@ -613,6 +644,7 @@ def test_namespace_labels_are_added(tmp_path):
     assert ns["metadata"]["labels"]["openshell.pattern/saw"] == "true"
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("name", ["alice-bom", "alice-secrets"])
 def test_names_that_would_take_another_users_apps_are_refused(tmp_path, name):
     """saw-<u>-bom is user u's BOM app, and the VM app of a user named u-bom."""
@@ -620,6 +652,7 @@ def test_names_that_would_take_another_users_apps_are_refused(tmp_path, name):
     assert result.returncode != 0 and "ends in -bom or -secrets" in result.stderr
 
 
+@pytest.mark.ci_external
 def test_a_user_can_opt_into_the_demo_harness(tmp_path):
     docs = docs_from(render_file(tmp_path, [dict(ALICE, harnessEnabled=True)]))
     assert helm_values(app(docs, "saw-alice-bom")) == {

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
+import pytest
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -64,6 +66,7 @@ def _health(port):
         return exc.code
 
 
+@pytest.mark.ci_external
 def test_built_proxy_refuses_unknown_marker_and_unready_secret(tmp_path):
     binary = tmp_path / "saw-credential-proxy"
     subprocess.run([os.environ.get("GO", "go"), "build", "-o", str(binary),

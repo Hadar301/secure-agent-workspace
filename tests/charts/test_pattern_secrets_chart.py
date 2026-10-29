@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,7 +15,7 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def keys(*args):
-    result = subprocess.run([HELM, "template", "x", str(CHART), *args], capture_output=True, text=True)
+    result = run_helm([HELM, "template", "x", str(CHART), *args], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     out = {}
     for d in yaml.safe_load_all(result.stdout):
@@ -25,6 +26,7 @@ def keys(*args):
     return out
 
 
+@pytest.mark.ci_external
 def test_defaults_sync_everything_from_the_hub():
     assert keys() == {"inference": {"secret/data/hub/inference"},
                       "inference-meta": {"secret/data/hub/inference"},
@@ -34,6 +36,7 @@ def test_defaults_sync_everything_from_the_hub():
                       "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
 
+@pytest.mark.ci_external
 def test_inference_only_renders_no_web_search_external_secret():
     got = keys("--set", "secrets={inference}")
     assert "inference" in got
@@ -41,8 +44,9 @@ def test_inference_only_renders_no_web_search_external_secret():
     assert "web-search-meta" not in got
 
 
+@pytest.mark.ci_external
 def test_metadata_fields_are_configurable_and_never_require_provider():
-    out = subprocess.run([HELM, "template", "x", str(CHART),
+    out = run_helm([HELM, "template", "x", str(CHART),
                           "--set", "metaKeys.inference={provider,model,cuda_model}"],
                          capture_output=True, text=True, check=True).stdout
     docs = [d for d in yaml.safe_load_all(out) if d]
@@ -56,6 +60,7 @@ def test_metadata_fields_are_configurable_and_never_require_provider():
     assert "cuda_model" in meta["spec"]["target"]["template"]["data"]
 
 
+@pytest.mark.ci_external
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
     values = tmp_path / "v.yaml"
     values.write_text(yaml.safe_dump({"vaultPrefix": "secret/data/hub/saw-bob",
@@ -67,6 +72,7 @@ def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
                    "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
 
+@pytest.mark.ci_external
 def test_the_inference_template_needs_only_what_every_workspace_has():
     """Found live: a portal workspace (data-science) has no `model` in Vault,
     and the template's `{{ .model }}` failed the ExternalSecret, so the VM
@@ -74,7 +80,7 @@ def test_the_inference_template_needs_only_what_every_workspace_has():
     be required; the others go through `index … | default`."""
     import json
     import re
-    out = subprocess.run([HELM, "template", "x", str(CHART)], capture_output=True, text=True, check=True).stdout
+    out = run_helm([HELM, "template", "x", str(CHART)], capture_output=True, text=True, check=True).stdout
     docs = [d for d in yaml.safe_load_all(out) if d]
     (es,) = [d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "inference"]
     required = set()
@@ -92,6 +98,7 @@ def test_the_inference_template_needs_only_what_every_workspace_has():
             assert required <= keys, name
 
 
+@pytest.mark.ci_external
 def test_the_cluster_ca_comes_from_the_shared_prefix(tmp_path):
     """saw-users sets clusterCaSecret: the cluster's ingress CA, which the
     saw-ingress-ca imperative job writes once for the whole hub, not per user."""
@@ -101,13 +108,14 @@ def test_the_cluster_ca_comes_from_the_shared_prefix(tmp_path):
                                       "clusterCaSecret": "saw-ingress-ca"}))
     got = keys("-f", str(values))
     assert got["saw-ingress-ca"] == {"secret/data/hub/cluster-ingress-ca"}
-    out = subprocess.run([HELM, "template", "x", str(CHART), "-f", str(values)],
+    out = run_helm([HELM, "template", "x", str(CHART), "-f", str(values)],
                          capture_output=True, text=True, check=True).stdout
     (es,) = [d for d in yaml.safe_load_all(out) if d and d["metadata"]["name"] == "saw-ingress-ca"]
     assert es["spec"]["data"] == [{"secretKey": "ca-bundle.crt", "remoteRef": {
         "key": "secret/data/hub/cluster-ingress-ca", "property": "ca-bundle.crt"}}]
 
 
+@pytest.mark.ci_external
 def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
     values = tmp_path / "providers.yaml"
     values.write_text(yaml.safe_dump({

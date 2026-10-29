@@ -1,0 +1,653 @@
+{
+  "recorded_at": "2026-10-29T12:33:00Z",
+  "baseline_commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+  "implementation_commit": "002b77de9405e03cba632105c15c597333ccb55e",
+  "case_counts": {
+    "baseline": 1688,
+    "final": 1682,
+    "external": 364,
+    "python_per_version": 1318,
+    "baseline_ci_executions": 3540,
+    "final_ci_executions": 3000
+  },
+  "ci_runner": "GitHub-hosted ubuntu-24.04, public repositories",
+  "ci_measurement": "Job start to completion; total runner time sums all workflow jobs; elapsed includes queue and dependencies.",
+  "ci": {
+    "before": {
+      "samples": [
+        {
+          "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40856364059",
+          "commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+          "conclusion": "success",
+          "jobs": {
+            "bundle-drift-check": {
+              "seconds": 6.0,
+              "conclusion": "success"
+            },
+            "test (3.14)": {
+              "seconds": 1289.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 1715.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 1720.0,
+          "longest_test_job_seconds": 1715.0,
+          "total_runner_seconds": 3010.0
+        },
+        {
+          "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40860148096",
+          "commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+          "conclusion": "success",
+          "jobs": {
+            "test (3.14)": {
+              "seconds": 1632.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 1585.0,
+              "conclusion": "success"
+            },
+            "bundle-drift-check": {
+              "seconds": 6.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 1637.0,
+          "longest_test_job_seconds": 1632.0,
+          "total_runner_seconds": 3223.0
+        },
+        {
+          "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40868375115",
+          "commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+          "conclusion": "success",
+          "jobs": {
+            "bundle-drift-check": {
+              "seconds": 7.0,
+              "conclusion": "success"
+            },
+            "test (3.14)": {
+              "seconds": 1220.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 1757.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 1763.0,
+          "longest_test_job_seconds": 1757.0,
+          "total_runner_seconds": 2984.0
+        }
+      ],
+      "medians": {
+        "elapsed_seconds": 1720.0,
+        "longest_test_job_seconds": 1715.0,
+        "total_runner_seconds": 3010.0
+      }
+    },
+    "after": {
+      "samples": [
+        {
+          "url": "https://github.com/Hadar301/secure-agent-workspace/actions/runs/40868798998",
+          "commit": "002b77de9405e03cba632105c15c597333ccb55e",
+          "conclusion": "success",
+          "jobs": {
+            "bundle-drift-check": {
+              "seconds": 9.0,
+              "conclusion": "success"
+            },
+            "shared-checks": {
+              "seconds": 67.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 540.0,
+              "conclusion": "success"
+            },
+            "test (3.14)": {
+              "seconds": 707.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 780.0,
+          "longest_test_job_seconds": 707.0,
+          "total_runner_seconds": 1323.0
+        },
+        {
+          "url": "https://github.com/Hadar301/secure-agent-workspace/actions/runs/40870520645",
+          "commit": "002b77de9405e03cba632105c15c597333ccb55e",
+          "conclusion": "success",
+          "jobs": {
+            "shared-checks": {
+              "seconds": 71.0,
+              "conclusion": "success"
+            },
+            "bundle-drift-check": {
+              "seconds": 8.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 646.0,
+              "conclusion": "success"
+            },
+            "test (3.14)": {
+              "seconds": 671.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 748.0,
+          "longest_test_job_seconds": 671.0,
+          "total_runner_seconds": 1396.0
+        },
+        {
+          "url": "https://github.com/Hadar301/secure-agent-workspace/actions/runs/40872207552",
+          "commit": "002b77de9405e03cba632105c15c597333ccb55e",
+          "conclusion": "success",
+          "jobs": {
+            "shared-checks": {
+              "seconds": 79.0,
+              "conclusion": "success"
+            },
+            "bundle-drift-check": {
+              "seconds": 9.0,
+              "conclusion": "success"
+            },
+            "test (3.12)": {
+              "seconds": 584.0,
+              "conclusion": "success"
+            },
+            "test (3.14)": {
+              "seconds": 687.0,
+              "conclusion": "success"
+            }
+          },
+          "elapsed_seconds": 771.0,
+          "longest_test_job_seconds": 687.0,
+          "total_runner_seconds": 1359.0
+        }
+      ],
+      "medians": {
+        "elapsed_seconds": 771.0,
+        "longest_test_job_seconds": 687.0,
+        "total_runner_seconds": 1359.0
+      }
+    },
+    "reduction_percent": {
+      "elapsed_seconds": 55.2,
+      "longest_test_job_seconds": 59.9,
+      "total_runner_seconds": 54.9
+    }
+  },
+  "ci_junit_reports": [
+    {
+      "sample": 1,
+      "report": "test-results-shared/external.xml",
+      "tests": 364,
+      "skipped": 0,
+      "failures": 0,
+      "elapsed_seconds": 45.911
+    },
+    {
+      "sample": 1,
+      "report": "test-results-python-3.12/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 522.429
+    },
+    {
+      "sample": 1,
+      "report": "test-results-python-3.14/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 688.532
+    },
+    {
+      "sample": 2,
+      "report": "test-results-shared/external.xml",
+      "tests": 364,
+      "skipped": 0,
+      "failures": 0,
+      "elapsed_seconds": 46.741
+    },
+    {
+      "sample": 2,
+      "report": "test-results-python-3.12/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 630.435
+    },
+    {
+      "sample": 2,
+      "report": "test-results-python-3.14/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 649.238
+    },
+    {
+      "sample": 3,
+      "report": "test-results-shared/external.xml",
+      "tests": 364,
+      "skipped": 0,
+      "failures": 0,
+      "elapsed_seconds": 58.105
+    },
+    {
+      "sample": 3,
+      "report": "test-results-python-3.12/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 565.784
+    },
+    {
+      "sample": 3,
+      "report": "test-results-python-3.14/python.xml",
+      "tests": 1318,
+      "skipped": 3,
+      "failures": 0,
+      "elapsed_seconds": 666.502
+    }
+  ],
+  "excluded_ci_runs": [
+    {
+      "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40863763611",
+      "commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+      "conclusion": "cancelled",
+      "reason": "Baseline Python 3.14 exceeded the job timeout; replaced by a completed sample."
+    },
+    {
+      "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40860774916",
+      "commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "conclusion": "success",
+      "reason": "Initial implementation, before the shared backup-directory isolation fix."
+    },
+    {
+      "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40862543327",
+      "commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "conclusion": "failure",
+      "reason": "Initial implementation, before the shared backup-directory isolation fix."
+    },
+    {
+      "url": "https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40864201516",
+      "commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "conclusion": "success",
+      "reason": "Initial implementation, before the shared backup-directory isolation fix."
+    }
+  ],
+  "local_environment": {
+    "os": "Ubuntu 24.04",
+    "architecture": "arm64",
+    "vm_cpus": 6,
+    "python": [
+      "3.12.16",
+      "3.14.10"
+    ],
+    "pytest": "9.2.0",
+    "pytest_xdist": "3.8.0",
+    "helm": "3.17.3",
+    "cryptography": "46.0.3",
+    "constraint": "The 50.0.2 arm64 wheel failed to import in this VM; both comparison sides use 46.0.3."
+  },
+  "local_runs": [
+    {
+      "run": "main-312",
+      "tests": 1688,
+      "source_commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 733.224,
+      "phase_seconds": {
+        "call": 176.26
+      },
+      "complete_phase_report": false,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 57,
+          "elapsed_seconds": 106.291
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 229.705
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 68.151
+        }
+      }
+    },
+    {
+      "run": "main-314",
+      "tests": 1688,
+      "source_commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 730.766,
+      "phase_seconds": {
+        "call": 178.76
+      },
+      "complete_phase_report": false,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 57,
+          "elapsed_seconds": 95.515
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 234.709
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 71.578
+        }
+      }
+    },
+    {
+      "run": "clean-312-n0",
+      "tests": 1682,
+      "source_commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 556.268,
+      "phase_seconds": {
+        "call": 481.33,
+        "setup": 17.56,
+        "teardown": 53.68
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 72.992
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 141.046
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 23.888
+        }
+      }
+    },
+    {
+      "run": "clean-312-n2",
+      "tests": 1682,
+      "source_commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 290.961,
+      "phase_seconds": {
+        "call": 499.95,
+        "setup": 18.5,
+        "teardown": 53.48
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 76.526
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 154.058
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 23.844
+        }
+      }
+    },
+    {
+      "run": "clean-314-n0",
+      "tests": 1682,
+      "source_commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 605.937,
+      "phase_seconds": {
+        "call": 529.05,
+        "setup": 19.16,
+        "teardown": 53.81
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 84.285
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 158.775
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 28.621
+        }
+      }
+    },
+    {
+      "run": "clean-314-n2",
+      "tests": 1682,
+      "source_commit": "f782adf267ec3c74ffb0d28794aa417d2662a463",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 305.128,
+      "phase_seconds": {
+        "call": 531.56,
+        "setup": 19.04,
+        "teardown": 53.95
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 82.217
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 161.878
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 26.347
+        }
+      }
+    },
+    {
+      "run": "main-phases-312",
+      "tests": 1688,
+      "source_commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 727.198,
+      "phase_seconds": {
+        "call": 633.32,
+        "setup": 36.74,
+        "teardown": 53.77
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 57,
+          "elapsed_seconds": 93.677
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 236.717
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 68.839
+        }
+      }
+    },
+    {
+      "run": "main-phases-314",
+      "tests": 1688,
+      "source_commit": "533be02ec02a69bd1bf9b20274bf9ce8bbef6668",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 737.65,
+      "phase_seconds": {
+        "call": 643.51,
+        "setup": 36.59,
+        "teardown": 54.04
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 57,
+          "elapsed_seconds": 95.163
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 237.917
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 71.837
+        }
+      }
+    },
+    {
+      "run": "final-312-n0",
+      "tests": 1682,
+      "source_commit": "002b77de9405e03cba632105c15c597333ccb55e",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 567.799,
+      "phase_seconds": {
+        "call": 492.1,
+        "setup": 18.28,
+        "teardown": 53.77
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 80.252
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 148.611
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 22.801
+        }
+      }
+    },
+    {
+      "run": "final-312-n2",
+      "tests": 1682,
+      "source_commit": "002b77de9405e03cba632105c15c597333ccb55e",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 283.05,
+      "phase_seconds": {
+        "call": 485.98,
+        "setup": 18.03,
+        "teardown": 53.46
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 73.955
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 147.659
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 24.036
+        }
+      }
+    },
+    {
+      "run": "final-314-n0",
+      "tests": 1682,
+      "source_commit": "002b77de9405e03cba632105c15c597333ccb55e",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 575.293,
+      "phase_seconds": {
+        "call": 499.57,
+        "setup": 18.17,
+        "teardown": 53.73
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 77.527
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 151.491
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 24.316
+        }
+      }
+    },
+    {
+      "run": "final-314-n2",
+      "tests": 1682,
+      "source_commit": "002b77de9405e03cba632105c15c597333ccb55e",
+      "skipped": 3,
+      "failures": 0,
+      "exit_code": 0,
+      "elapsed_seconds": 304.635,
+      "phase_seconds": {
+        "call": 529.89,
+        "setup": 19.69,
+        "teardown": 53.46
+      },
+      "complete_phase_report": true,
+      "selected_test_files": {
+        "test_apply_profiles.py": {
+          "cases": 47,
+          "elapsed_seconds": 80.998
+        },
+        "test_harness_mount.py": {
+          "cases": 84,
+          "elapsed_seconds": 161.064
+        },
+        "test_prune.py": {
+          "cases": 25,
+          "elapsed_seconds": 27.315
+        }
+      }
+    }
+  ],
+  "local_skipped_cases": [
+    "tests.charts.test_governance_apf::test_committed_bundle_is_signed_and_current",
+    "tests.charts.test_governance_interceptor_image::test_exact_embedded_guard_behavior[buildconfig]",
+    "tests.charts.test_governance_interceptor_image::test_exact_embedded_guard_behavior[dockerfile]"
+  ],
+  "ci_selection": {
+    "overlap": 0,
+    "uncovered": 0
+  }
+}

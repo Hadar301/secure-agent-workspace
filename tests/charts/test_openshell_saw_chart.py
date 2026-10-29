@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +31,7 @@ def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice")
     topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
                  "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
                 if Path(chart) == CHART else [])
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
+    return run_helm([HELM, "template", release, str(chart), "--namespace", namespace,
                            *topology, *args],
                           capture_output=True, text=True)
 
@@ -73,6 +74,7 @@ def render_error(*args):
     return result.stderr
 
 
+@pytest.mark.ci_external
 def test_release_notes_do_not_advertise_dashboard_route():
     notes = (CHART / "templates/NOTES.txt").read_text()
     assert "Dashboard URL" not in notes
@@ -94,6 +96,7 @@ def installer_data(docs, name="saw-test"):
     return docs[("ConfigMap", f"{name}-installer")]["data"]
 
 
+@pytest.mark.ci_external
 def test_registry_config_mounts_pull_secret_without_exposing_token():
     host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
     docs = render("--set-string", f"registry.host={host}",
@@ -112,6 +115,7 @@ def test_registry_config_mounts_pull_secret_without_exposing_token():
     assert not {"registry-pull-meta", "inference", "web-search"} & sources
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("name", ["inference", "web-search", "inference-meta"])
 def test_registry_pull_secret_cannot_alias_a_provider_secret(name):
     assert "dedicated pull-token Secret" in render_error(
@@ -119,6 +123,7 @@ def test_registry_pull_secret_cannot_alias_a_provider_secret(name):
         "--set-string", f"registry.authSecret={name}")
 
 
+@pytest.mark.ci_external
 def test_registry_ca_bundle_base64_decodes_for_installer():
     host = "image-registry.openshift-image-registry.svc.cluster.local:5000"
     pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
@@ -145,6 +150,7 @@ def default_docs():
 
 # -- no SSH provisioning --------------------------------------------------------
 
+@pytest.mark.ci_external
 def test_no_setup_job_and_no_ssh_provisioning(default_docs):
     kinds = {k for k, _ in default_docs}
     assert not [k for k, _ in default_docs if k in ("Job", "CronJob")], "nothing runs in the namespace but the VM"
@@ -166,6 +172,7 @@ def assert_gateway_service_ports(docs, extra=()):
     assert all(p["port"] != 22 and p["targetPort"] != 22 for p in ports)
 
 
+@pytest.mark.ci_external
 def test_gateway_service_has_application_ports_without_ssh(default_docs):
     assert_gateway_service_ports(default_docs)
     vm = default_docs[("VirtualMachine", "saw-test")]
@@ -173,6 +180,7 @@ def test_gateway_service_has_application_ports_without_ssh(default_docs):
     assert {"name": "ssh", "port": 22, "protocol": "TCP"} in ports
 
 
+@pytest.mark.ci_external
 def test_pattern_settings_gateway_service_has_no_ssh():
     docs = render(*PATTERN_SAW_SETTINGS)
     assert_gateway_service_ports(docs)
@@ -184,6 +192,7 @@ def test_pattern_settings_gateway_service_has_no_ssh():
 
 # -- VM wiring -------------------------------------------------------------
 
+@pytest.mark.ci_external
 def test_vm_attaches_inputs_as_serial_disks(default_docs):
     spec = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     disks = {d["name"]: d.get("serial") for d in spec["domain"]["devices"]["disks"]}
@@ -203,6 +212,7 @@ def test_vm_attaches_inputs_as_serial_disks(default_docs):
     assert volumes["cloudinitdisk"]["cloudInitNoCloud"]["secretRef"]["name"] == "saw-test-cloudinit"
 
 
+@pytest.mark.ci_external
 def test_unlisted_provider_secrets_are_not_attached():
     """Quickstart omits a Secret it did not create, so the VM does not wait for it."""
     docs = render("--set", "inference.secretName=", "--set", "additionalProviderSecrets=null")
@@ -210,12 +220,14 @@ def test_unlisted_provider_secrets_are_not_attached():
     assert [v["name"] for v in volumes if v["name"].startswith("saw-sec")] == []
 
 
+@pytest.mark.ci_external
 def test_duplicate_secret_names_attach_once():
     docs = render("--set", "inference.secretName=web-search")
     volumes = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
     assert [v["secret"]["secretName"] for v in volumes if "secret" in v] == ["web-search-meta"]
 
 
+@pytest.mark.ci_external
 def test_cloud_init_ships_the_guest_files_unchanged(default_docs):
     cfg = cloud_config(default_docs)
     guest = CHART / "files" / "guest"
@@ -224,6 +236,7 @@ def test_cloud_init_ships_the_guest_files_unchanged(default_docs):
     assert written(cfg, "/etc/systemd/system/saw-apply.service") == (guest / "saw-apply.service").read_text()
 
 
+@pytest.mark.ci_external
 def test_cloud_init_does_not_depend_on_the_secret_list(default_docs):
     """cloud-init runs once per VM; the Secret list must come from the
     installer disk (re-read every boot), not from cloud-init."""
@@ -231,6 +244,7 @@ def test_cloud_init_does_not_depend_on_the_secret_list(default_docs):
     assert cloud_config(default_docs) == cloud_config(other)
 
 
+@pytest.mark.ci_external
 def test_secret_disk_order_matches_config_json(default_docs):
     spec = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     by_disk = {v["name"]: v["secret"]["secretName"] for v in spec["volumes"] if "secret" in v}
@@ -238,12 +252,14 @@ def test_secret_disk_order_matches_config_json(default_docs):
     assert by_disk == {f"saw-sec-{i}": name + "-meta" for i, name in enumerate(config["secrets"])}
 
 
+@pytest.mark.ci_external
 def test_gateway_files_identical_on_cloud_init_and_installer_disk(default_docs):
     cfg, data = cloud_config(default_docs), installer_data(default_docs)
     assert written(cfg, "/etc/openshell/gateway.env").strip() == data["gateway.env"].strip()
     assert written(cfg, "/etc/openshell/gateway.toml").strip() == data["gateway.toml"].strip()
 
 
+@pytest.mark.ci_external
 def test_runcmd_is_valid_bash_and_enables_units_first(default_docs, tmp_path):
     run = cloud_config(default_docs)["runcmd"][0]
     path = tmp_path / "runcmd.sh"
@@ -256,6 +272,7 @@ def test_runcmd_is_valid_bash_and_enables_units_first(default_docs, tmp_path):
     assert "set -e" not in run.replace("set -uo", "")
 
 
+@pytest.mark.ci_external
 def test_installer_units_run_install_then_apply(default_docs, tmp_path):
     cfg = cloud_config(default_docs)
     install = written(cfg, "/etc/systemd/system/saw-install.service")
@@ -342,6 +359,7 @@ def ordering_cycle(units):
     return None
 
 
+@pytest.mark.ci_external
 def test_ordering_cycle_detector_catches_the_live_boot_failure():
     """The units as first shipped: systemd deleted saw-install at boot."""
     units = {
@@ -352,6 +370,7 @@ def test_ordering_cycle_detector_catches_the_live_boot_failure():
     assert ordering_cycle(units)
 
 
+@pytest.mark.ci_external
 def test_installer_units_have_no_boot_ordering_cycle(default_docs):
     """Live bug: saw-install was After= the golden image's setup unit, which
     is After=multi-user.target, while WantedBy=multi-user.target made the
@@ -370,6 +389,7 @@ def test_installer_units_have_no_boot_ordering_cycle(default_docs):
     assert "saw-install.service" in units["saw-apply.service"]["After"]
 
 
+@pytest.mark.ci_external
 def test_readiness_probe_is_opt_in(default_docs):
     assert "readinessProbe" not in default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     docs = render("--set", "vm.readinessProbe=true")
@@ -377,6 +397,7 @@ def test_readiness_probe_is_opt_in(default_docs):
     assert probe["exec"]["command"] == ["test", "-f", "/var/lib/saw/ready"]
 
 
+@pytest.mark.ci_external
 def test_bom_change_changes_vm_template(default_docs):
     before = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["annotations"]
     docs = render("--set", "bom.metadata.name=openshell-next")
@@ -393,6 +414,7 @@ def gateway_files(docs):
     return env, toml
 
 
+@pytest.mark.ci_external
 def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     env, toml = gateway_files(default_docs)
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env
@@ -412,6 +434,7 @@ def test_gateway_uses_mtls_and_bom_supervisor(default_docs):
     }
 
 
+@pytest.mark.ci_external
 def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     """OpenShell 0.1.x rejects a gateway.toml without version 2 and wants the
     compute driver and the sandbox runtime image named."""
@@ -425,12 +448,14 @@ def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     assert "OPENSHELL_DRIVERS" not in env
 
 
+@pytest.mark.ci_external
 def test_driver_config_is_on_for_agent_gate_mounts(default_docs):
     """Every agent sandbox needs the trusted gate and audit volume mounts."""
     _, toml = gateway_files(default_docs)
     assert toml["openshell"]["drivers"]["podman"]["allow_driver_config"] is True
 
 
+@pytest.mark.ci_external
 def test_gateway_allows_caller_driver_config_for_agent_mounts():
     """0.1.x refuses --driver-config-json unless allow_driver_config is set;
     resource admission and the bind-mount switch keep their safe defaults."""
@@ -441,6 +466,7 @@ def test_gateway_allows_caller_driver_config_for_agent_mounts():
     assert "enable_bind_mounts" not in podman
 
 
+@pytest.mark.ci_external
 def test_gateway_oidc_for_users_with_roles():
     docs = render("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")
     env, toml = gateway_files(docs)
@@ -452,6 +478,7 @@ def test_gateway_oidc_for_users_with_roles():
     assert "OPENSHELL_ENABLE_MTLS_AUTH=true" in env      # installer still uses mTLS
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("issuer", ["", "https://id.example.test/realms/test"])
 def test_disabled_oidc_cannot_be_restored_by_chart_defaults(issuer):
     docs = render("--set", "oidc.enabled=false", "--set",
@@ -468,6 +495,7 @@ def test_disabled_oidc_cannot_be_restored_by_chart_defaults(issuer):
                    name.endswith("-webui")) for kind, name in docs)
 
 
+@pytest.mark.ci_external
 def test_disabled_oidc_suppresses_sandbox_ui_routes(tmp_path):
     values = tmp_path / "ui.yaml"
     values.write_text(yaml.safe_dump({"sandboxUi": [{"workspace": "default",
@@ -480,11 +508,13 @@ def test_disabled_oidc_suppresses_sandbox_ui_routes(tmp_path):
     assert config["dashboard"]["enabled"] is False
 
 
+@pytest.mark.ci_external
 def test_governance_can_be_disabled():
     _, toml = gateway_files(render("--set", "governance.enabled=false"))
     assert "interceptors" not in toml["openshell"].get("gateway", {})
 
 
+@pytest.mark.ci_external
 def test_governance_endpoint_is_the_shared_namespace(default_docs):
     # The SAW runs in saw-alice; the interceptor stays in openshell-agents.
     _, toml = gateway_files(default_docs)
@@ -496,6 +526,7 @@ def test_governance_endpoint_is_the_shared_namespace(default_docs):
         "http://governance-interceptor.gov.svc.cluster.local:18081"
 
 
+@pytest.mark.ci_external
 def test_cluster_domain_fills_routes_issuer_and_dashboard():
     docs = render("--set", "global.clusterDomain=example.com")
     config = json.loads(installer_data(docs)["config.json"])
@@ -571,6 +602,7 @@ def _assert_safe_order(rules):
             assert rule["to"]["cidrSelector"] not in {"0.0.0.0/0", "::/0"}
 
 
+@pytest.mark.ci_external
 def test_egress_firewall_denies_undeclared_hosts(default_docs):
     rules, allowed = _egress_names(default_docs)
     _assert_safe_order(rules)
@@ -581,6 +613,7 @@ def test_egress_firewall_denies_undeclared_hosts(default_docs):
     assert all(h.strip() and "*" not in h and "/" not in h for h in allowed)
 
 
+@pytest.mark.ci_external
 def test_egress_firewall_allows_keycloak_and_extra_hosts():
     docs = render("--set", "global.clusterDomain=example.com",
                   "--set-string", "egress.extraAllow[0]=vllm.example.net")
@@ -591,6 +624,7 @@ def test_egress_firewall_allows_keycloak_and_extra_hosts():
     assert "example.com" not in allowed
 
 
+@pytest.mark.ci_external
 def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
     host = "openshell-keycloak-ingress-saw-keycloak.apps.example.com"
     docs = render("--set", "global.clusterDomain=example.com",
@@ -610,6 +644,7 @@ def _host_ports(rules):
     return [(r["to"]["dnsName"], r["ports"][0]["port"]) for r in rules if "dnsName" in r["to"]]
 
 
+@pytest.mark.ci_external
 def test_egress_allows_an_external_golden_image_url():
     docs = render("--set-string", "source.goldenImageURL=https://images.example.net/disk.qcow2")
     rules, _ = _egress_names(docs)
@@ -621,6 +656,7 @@ def test_egress_allows_an_external_golden_image_url():
     assert ("images.example.net", 80) not in _host_ports(rules)
 
 
+@pytest.mark.ci_external
 def test_egress_does_not_repeat_a_disk_host_already_allowed():
     docs = render("--set-string", "source.httpURL=https://quay.io/openshell-gateway.qcow2")
     rules, _ = _egress_names(docs)
@@ -647,6 +683,7 @@ def test_egress_does_not_repeat_a_disk_host_already_allowed():
     assert not any("image-registry" in host for host in allowed)
 
 
+@pytest.mark.ci_external
 def test_egress_keeps_a_custom_keycloak_port_when_the_host_is_already_listed():
     """allow and extraAllow are TCP 443. Skipping on hostname alone would drop 8443."""
     docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell",
@@ -662,6 +699,7 @@ def test_egress_keeps_a_custom_keycloak_port_when_the_host_is_already_listed():
     assert _host_ports(rules).count(("id.example.net", 443)) == 1
 
 
+@pytest.mark.ci_external
 def test_egress_keycloak_port_comes_from_the_issuer():
     docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
     rules, allowed = _egress_names(docs)
@@ -671,6 +709,7 @@ def test_egress_keycloak_port_comes_from_the_issuer():
     assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
 
 
+@pytest.mark.ci_external
 def test_egress_covers_every_bom_and_profile_image(default_docs):
     """Guest pulls must work with harness bundles disabled."""
     values = yaml.safe_load((CHART / "values.yaml").read_text())
@@ -699,12 +738,14 @@ def test_egress_covers_every_bom_and_profile_image(default_docs):
     assert "pkg-containers.githubusercontent.com" in allowed
 
 
+@pytest.mark.ci_external
 def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
     rules, allowed = _egress_names(default_docs)
     assert all(allowed)
     assert not any(rule["to"] == {} for rule in rules)
 
 
+@pytest.mark.ci_external
 def test_egress_custom_allow_list_cannot_drop_the_deny():
     docs = render("--set-string", "egress.allow[0]=only.example.net")
     rules, allowed = _egress_names(docs)
@@ -712,12 +753,14 @@ def test_egress_custom_allow_list_cannot_drop_the_deny():
     assert "only.example.net" in allowed
 
 
+@pytest.mark.ci_external
 def test_egress_firewall_can_be_disabled():
     docs = render("--set", "egress.enabled=false")
     assert not any(kind == "EgressFirewall" for kind, _ in docs)
     assert any(kind == "VirtualMachine" for kind, _ in docs)
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("host", [
     "*.quay.io",
     "quay.io.*",
@@ -755,6 +798,7 @@ def test_installer_configmap_ships_the_real_files(default_docs, ab):
     assert config["runtimeUser"] == "cloud-user" and config["secrets"] == ["inference", "web-search"]
 
 
+@pytest.mark.ci_external
 def test_owner_subject_is_passed_to_installer():
     docs = render("--set", "accessControl.ownerSubject=3f2c-subject")
     assert json.loads(installer_data(docs)["config.json"])["ownerSubject"] == "3f2c-subject"
@@ -769,19 +813,23 @@ def test_pattern_override_renders_with_nemoclaw(ab):
 
 # -- render-time guards ---------------------------------------------------------
 
+@pytest.mark.ci_external
 def test_tag_pinned_bom_fails_at_render():
     err = render_error("--set", "bom.spec.openshell.gateway.image=quay.io/x/gateway:v1")
     assert "must be pinned by digest" in err
 
 
+@pytest.mark.ci_external
 def test_docker_runtime_is_rejected():
     assert "podman only" in render_error("--set", "containerRuntime=docker")
 
 
+@pytest.mark.ci_external
 def test_long_sandbox_name_is_rejected():
     assert "19-character" in render_error("--set", "sandboxName=a-very-long-sandbox-name")
 
 
+@pytest.mark.ci_external
 def test_invalid_secret_name_is_rejected():
     assert "invalid secret name" in render_error("--set", "inference.secretName=Bad_Name")
 
@@ -795,6 +843,7 @@ def render_bom_chart():
     return cm
 
 
+@pytest.mark.ci_external
 def test_saw_bom_chart_ships_data_only_no_executables():
     cm = render_bom_chart()
     assert cm["metadata"]["name"] == "saw-bom-profiles"
@@ -842,6 +891,7 @@ def root_source(docs):
     return vm["spec"]["dataVolumeTemplates"][0]["spec"]
 
 
+@pytest.mark.ci_external
 def test_the_root_disk_is_imported_from_the_golden_image_by_default():
     """No Job bootstraps a DataSource: the VM's disk template imports the
     golden image from the internal registry, which the namespace may pull."""
@@ -857,6 +907,7 @@ def test_the_root_disk_is_imported_from_the_golden_image_by_default():
                                       "name": "system:serviceaccounts:saw-alice"}]
 
 
+@pytest.mark.ci_external
 def test_a_registry_image_needs_nothing_in_the_shared_namespace():
     docs = all_docs("--set", "source.registryURL=docker://quay.io/x/disk@sha256:" + "a" * 64,
                     "--set", "source.pullMethod=pod")
@@ -867,6 +918,7 @@ def test_a_registry_image_needs_nothing_in_the_shared_namespace():
     assert root_source(docs)["source"]["registry"]["url"] == "docker://quay.io/x/old:1"
 
 
+@pytest.mark.ci_external
 def test_a_datasource_is_cloned_when_named():
     docs = all_docs("--set", "source.dataSource=openshell-gateway")
     assert root_source(docs)["sourceRef"] == {"kind": "DataSource", "name": "openshell-gateway",
@@ -884,6 +936,7 @@ def test_a_datasource_is_cloned_when_named():
         {"apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes/source"], "verbs": ["create"]}]
 
 
+@pytest.mark.ci_external
 def test_nothing_in_another_namespace_when_sharing_the_golden_namespace():
     for args in ((), ("--set", "source.dataSource=openshell-gateway")):
         docs = all_docs(*args, namespace="openshell-agents")
@@ -893,6 +946,7 @@ def test_nothing_in_another_namespace_when_sharing_the_golden_namespace():
     assert not [d for d in docs if "golden-image" in d["metadata"]["name"]]
 
 
+@pytest.mark.ci_external
 def test_no_user_namespace_gets_keycloak_admin_access():
     """The redirect registrar in Keycloak's namespace registers the web UI
     callbacks; this chart grants nothing outside its own namespace for it and
@@ -903,6 +957,7 @@ def test_no_user_namespace_gets_keycloak_admin_access():
         assert "initial-admin" not in json.dumps(docs)
 
 
+@pytest.mark.ci_external
 def test_the_webui_route_asks_for_its_redirect_uri():
     route = next(d for d in all_docs() if d["kind"] == "Route" and d["metadata"]["name"] == "saw-test-webui")
     assert route["metadata"]["labels"]["saw.redhat.com/oidc-redirect"] == "true"
@@ -911,6 +966,7 @@ def test_the_webui_route_asks_for_its_redirect_uri():
     assert "saw.redhat.com/oidc-redirect" not in route["metadata"]["labels"]
 
 
+@pytest.mark.ci_external
 def test_cluster_scoped_names_include_the_namespace():
     """Two SAWs with the same name in different namespaces must not collide."""
     def names(ns, *args):
@@ -927,8 +983,9 @@ def test_cluster_scoped_names_include_the_namespace():
 GOV_CHART = ROOT / "charts" / "governance-interceptor"
 
 
+@pytest.mark.ci_external
 def test_governance_interceptor_admits_labelled_saw_namespaces():
-    result = subprocess.run([HELM, "template", "gov", str(GOV_CHART), "--namespace", "openshell-agents"],
+    result = run_helm([HELM, "template", "gov", str(GOV_CHART), "--namespace", "openshell-agents"],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     policy = next(d for d in yaml.safe_load_all(result.stdout) if d and d["kind"] == "NetworkPolicy")
@@ -938,6 +995,7 @@ def test_governance_interceptor_admits_labelled_saw_namespaces():
             "podSelector": {"matchLabels": {"kubevirt.io": "virt-launcher"}}} in sources
 
 
+@pytest.mark.ci_external
 def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     values = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]
     namespaces, apps, subs = values["namespaces"], values["applications"], values["subscriptions"]
@@ -962,6 +1020,7 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
         assert apps[app]["namespace"] == "openshell-agents", app
 
 
+@pytest.mark.ci_external
 def test_vm_logs_its_serial_console(default_docs):
     """The installer logs to the console; make it visible in the pod even when
     the cluster default leaves serial console logging off."""
@@ -978,6 +1037,7 @@ def access_credentials(docs):
 AGENT_CREDS = {"propagationMethod": {"qemuGuestAgent": {"users": ["cloud-user"]}}}
 
 
+@pytest.mark.ci_external
 def test_empty_ssh_key_secret_by_default(default_docs):
     """No key at deploy time: `make openshell-saw-vm-ssh` adds one on demand.
     The chart must not own `data`, or upgrades would wipe keys added later."""
@@ -990,11 +1050,13 @@ def test_empty_ssh_key_secret_by_default(default_docs):
     assert "setsebool -P virt_qemu_ga_manage_ssh on" in cloud_config(default_docs)["runcmd"][0]
 
 
+@pytest.mark.ci_external
 def test_ssh_key_value_seeds_the_secret():
     docs = render("--set", "sshPublicKey=ssh-ed25519 AAAAtest operator")
     assert docs[("Secret", "saw-test-ssh-pubkey")]["stringData"] == {"key1": "ssh-ed25519 AAAAtest operator"}
 
 
+@pytest.mark.ci_external
 def test_existing_ssh_key_secret_takes_precedence():
     docs = render("--set", "sshPublicKeySecret=openshell-ssh-pubkey",
                   "--set", "sshPublicKey=ssh-ed25519 AAAAignored")
@@ -1002,6 +1064,7 @@ def test_existing_ssh_key_secret_takes_precedence():
     assert ("Secret", "saw-test-ssh-pubkey") not in docs
 
 
+@pytest.mark.ci_external
 def test_pattern_uses_the_on_demand_ssh_key_secret():
     docs = render(*PATTERN_SAW_SETTINGS)
     assert access_credentials(docs)[0]["sshPublicKey"]["source"]["secret"]["secretName"] == "saw-test-ssh-pubkey"
@@ -1014,6 +1077,7 @@ GOVERNANCE_PROFILES = ROOT / "charts" / "governance-policy" / "profiles"
 SAW_PROFILES = CHART / "files" / "provider-profiles"
 
 
+@pytest.mark.ci_external
 def test_governance_profiles_carry_their_id():
     """OpenShell's profile parser requires `id` (missing field `id` otherwise),
     so the files are only importable with it. The interceptor derives the id
@@ -1024,6 +1088,7 @@ def test_governance_profiles_carry_their_id():
         assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", doc["id"]), path.name
 
 
+@pytest.mark.ci_external
 def test_every_profile_names_its_binaries():
     """OpenShell 0.1.x: a profile whose endpoints list no binaries allows
     nothing, and removed fields (provider_type) must not linger."""
@@ -1034,6 +1099,7 @@ def test_every_profile_names_its_binaries():
             assert doc.get("binaries"), path.name
 
 
+@pytest.mark.ci_external
 def test_tool_actions_copy_matches_governance_policy():
     """The installer cannot read another chart, so the consequential-tool
     list is copied. The two files are the same policy."""
@@ -1043,6 +1109,7 @@ def test_tool_actions_copy_matches_governance_policy():
     assert yaml.safe_load(gov.read_text())["defaultAction"] == "deny"
 
 
+@pytest.mark.ci_external
 def test_installer_disk_ships_the_tool_gate(default_docs):
     data = installer_data(default_docs)
     assert data["tool-actions.yaml"] == (CHART / "files" / "installer" / "tool-actions.yaml").read_text()
@@ -1050,6 +1117,7 @@ def test_installer_disk_ships_the_tool_gate(default_docs):
     assert "parsePolicy" in data["tool-gate.mjs"]
 
 
+@pytest.mark.ci_external
 def test_governance_policy_configmap_ships_tool_actions():
     result = helm_template(ROOT / "charts" / "governance-policy",
                            release="governance-policy", namespace="openshell-agents")
@@ -1070,11 +1138,13 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert set(ab.provider_profiles(tmp_path)) == shipped
 
 
+@pytest.mark.ci_external
 def test_create_script_passes_the_keycloak_it_finds():
     text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
     assert "oidc.keycloakName=${KC_NAME}" in text and "oidc.realm=${KEYCLOAK_REALM}" in text
 
 
+@pytest.mark.ci_external
 def test_secret_template_matches_the_default_profile():
     """The pattern's values-secret template must give the default profile's
     providers keys of the right type, or the installer refuses them."""
@@ -1121,6 +1191,7 @@ def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):
     assert "1 workspace(s) ['default']" in result.stdout
 
 
+@pytest.mark.ci_external
 def test_inference_secret_carries_an_optional_url():
     """The ExternalSecret reads every key of the Vault entry; `url` is
     optional so cloud-provider entries without it keep working."""
@@ -1134,6 +1205,7 @@ def test_inference_secret_carries_an_optional_url():
     assert tmpl["url"] == '{{ index . "url" | default "" }}'
 
 
+@pytest.mark.ci_external
 def test_cleanup_hook_can_be_turned_off():
     """helm uninstall (and deleting the Argo CD app) deletes the VM through a
     pre-delete hook unless cleanupOnDelete is false."""
@@ -1143,6 +1215,7 @@ def test_cleanup_hook_can_be_turned_off():
     assert hooks(render("--set", "cleanupOnDelete=false")) == []
 
 
+@pytest.mark.ci_external
 def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     docs = render("--set", "vm.liveInputs=true")
     spec = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
@@ -1158,6 +1231,7 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
     assert "systemctl enable --now saw-inputs.path saw-inputs.timer" in cfg["runcmd"][0]
 
 
+@pytest.mark.ci_external
 def test_signing_mode_defaults_to_warn(default_docs):
     config = json.loads(installer_data(default_docs)["config.json"])
     assert config["signing"]["mode"] == "warn"
@@ -1173,6 +1247,7 @@ def test_signing_mode_defaults_to_warn(default_docs):
     assert unit.index("saw-stage-installer") < unit.index("apply_bom.py install")
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("ttl", [0, 120, 300])
 def test_harness_signature_cache_ttl_reaches_installer(ttl):
     docs = render("--set", f"harness.cosign.cacheTtlSeconds={ttl}")
@@ -1180,6 +1255,7 @@ def test_harness_signature_cache_ttl_reaches_installer(ttl):
     assert cfg["harness"]["cosign"]["cacheTtlSeconds"] == ttl
 
 
+@pytest.mark.ci_external
 def test_enforce_without_trust_material_fails_at_render():
     err = render_error("--set", "signing.mode=enforce")
     assert "signing.mode enforce requires" in err
@@ -1197,6 +1273,7 @@ def _with_ui(tmp_path, entries, *args):
 UI = [{"workspace": "default", "sandbox": "notebook", "proxyPort": 4201, "forwardPort": 14201}]
 
 
+@pytest.mark.ci_external
 def test_a_sandbox_ui_gets_a_route_a_service_port_and_a_vm_port(tmp_path):
     docs = _with_ui(tmp_path, UI)
     route = docs[("Route", "saw-test-default-notebook-ui")]
@@ -1211,6 +1288,7 @@ def test_a_sandbox_ui_gets_a_route_a_service_port_and_a_vm_port(tmp_path):
     assert {"name": "ui-4201", "port": 4201, "protocol": "TCP"} in ports
 
 
+@pytest.mark.ci_external
 def test_the_installer_gets_the_route_and_the_owner(tmp_path):
     cfg = json.loads(_with_ui(tmp_path, UI)[("ConfigMap", "saw-test-installer")]["data"]["config.json"])
     assert cfg["sandboxUi"] == [{"workspace": "default", "sandbox": "notebook",
@@ -1223,6 +1301,7 @@ def test_the_installer_gets_the_route_and_the_owner(tmp_path):
         "enabled": True, "cidrs": ["127.0.0.1/32", "::1/128"], "deviceAutoApprove": True}
 
 
+@pytest.mark.ci_external
 def test_trusted_proxy_can_be_turned_off(tmp_path):
     off = tmp_path / "off.yaml"
     off.write_text(yaml.safe_dump({"sandboxUiProxy": {"trustedProxy": {"enabled": False}}}))
@@ -1231,6 +1310,7 @@ def test_trusted_proxy_can_be_turned_off(tmp_path):
     assert cfg["sandboxUiProxy"]["trustedProxy"]["enabled"] is False
 
 
+@pytest.mark.ci_external
 def test_sandbox_ui_routes_ask_for_their_redirect_uri(tmp_path):
     docs = _with_ui(tmp_path, UI)
     routes = [d for (kind, _), d in docs.items() if kind == "Route"
@@ -1239,12 +1319,14 @@ def test_sandbox_ui_routes_ask_for_their_redirect_uri(tmp_path):
     assert {r["spec"]["host"] for r in routes} == {"saw-test-default-notebook-ui.apps.example.com"}
 
 
+@pytest.mark.ci_external
 def test_no_sandbox_ui_changes_nothing(tmp_path):
     docs = render()
     assert not [k for k in docs if k[0] == "Route" and k[1].endswith("-ui")]
     assert not [p for p in docs[("Service", "saw-test-gateway")]["spec"]["ports"] if p["name"].startswith("ui-")]
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("entry, message", [
     ({"workspace": "Default", "sandbox": "notebook", "proxyPort": 4201, "forwardPort": 14201}, "DNS labels"),
     ({"workspace": "default", "sandbox": "notebook"}, "needs proxyPort and forwardPort"),
@@ -1256,6 +1338,7 @@ def test_bad_sandbox_ui_entries_fail_the_render(tmp_path, entry, message):
     assert result.returncode != 0 and message in result.stderr
 
 
+@pytest.mark.ci_external
 def test_the_ca_bundle_reaches_the_installer(tmp_path):
     pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
     values = tmp_path / "v.yaml"
@@ -1265,6 +1348,7 @@ def test_the_ca_bundle_reaches_the_installer(tmp_path):
     assert json.loads(installer_data(render())["config.json"])["caBundle"] == ""
 
 
+@pytest.mark.ci_external
 def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path):
     """oidc.clusterCaSecret: the VM mounts that Secret like a provider Secret
     (it waits for it) and the installer trusts its ca-bundle.crt. Not for an
@@ -1292,6 +1376,7 @@ def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path
     assert json.loads(installer_data(render())["config.json"])["caBundleSecret"] == ""
 
 
+@pytest.mark.ci_external
 def test_the_imperative_jobs_run_playbooks_that_exist():
     """values-prod's imperative jobs, including saw-ingress-ca (the cluster's
     ingress CA into Vault for the users' saw-ingress-ca Secret)."""
@@ -1305,6 +1390,7 @@ def test_the_imperative_jobs_run_playbooks_that_exist():
     assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
 
 
+@pytest.mark.ci_external
 def test_ingress_ca_job_waits_for_vault_initialization_without_logging_secret():
     (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
     vault_task = next(task for task in play["tasks"]
@@ -1315,6 +1401,7 @@ def test_ingress_ca_job_waits_for_vault_initialization_without_logging_secret():
     assert vault_task["no_log"] is True
 
 
+@pytest.mark.ci_external
 def test_the_installer_configmap_needs_server_side_apply(default_docs):
     """Found live: with client-side apply Argo CD copies an object into its
     last-applied-configuration annotation, which may hold at most 262144
@@ -1326,6 +1413,7 @@ def test_the_installer_configmap_needs_server_side_apply(default_docs):
     assert size < 768 * 1024, size
 
 
+@pytest.mark.ci_external
 def test_a_ca_bundle_with_a_private_key_does_not_render(tmp_path):
     """Pasting the TLS Secret instead of its ca-bundle.crt would put the key
     into the installer ConfigMap's config.json."""
@@ -1336,6 +1424,7 @@ def test_a_ca_bundle_with_a_private_key_does_not_render(tmp_path):
     assert "private key" in render_error("-f", str(values))
 
 
+@pytest.mark.ci_external
 def test_the_ca_job_verifies_vault_before_sending_the_root_token():
     (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
     calls = [t["ansible.builtin.uri"] for t in play["tasks"] if "ansible.builtin.uri" in t]
@@ -1344,6 +1433,7 @@ def test_the_ca_job_verifies_vault_before_sending_the_root_token():
     assert play["vars"]["vault_ca"].endswith("/serviceaccount/service-ca.crt")
 
 
+@pytest.mark.ci_external
 def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
     """Live on the GB200 the service CA was there (the Vault calls passed with
     validate_certs); without it the play stops before it reads the token."""
@@ -1359,6 +1449,7 @@ def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
 HARNESS_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
 
 
+@pytest.mark.ci_external
 def test_egress_allows_sigstore_only_when_harness_bundles_are_on(default_docs):
     """The installer re-verifies a harness image's cosign signature on every
     apply and removes the harness when that fails; without these hosts every
@@ -1378,6 +1469,7 @@ def test_egress_allows_sigstore_only_when_harness_bundles_are_on(default_docs):
 SIGSTORE_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
 
 
+@pytest.mark.ci_external
 def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
     """warn only logs. enforce checks signatures, including keyless ones,
     so Rekor and the TUF root have to be reachable or the install stops."""
@@ -1394,11 +1486,13 @@ def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
     assert allowed.count("rekor.sigstore.dev") == 1
 
 
+@pytest.mark.ci_external
 def test_egress_allows_the_gmail_api():
     _, allowed = _egress_names(render())
     assert "gmail.googleapis.com" in allowed
 
 
+@pytest.mark.ci_external
 def test_egress_allows_an_outside_registry_only_for_pod_pulls():
     image = "docker://registry.example.net:5000/x/disk@sha256:" + "a" * 64
     _, allowed = _egress_names(render("--set-string", "source.registryURL=" + image))
@@ -1418,6 +1512,7 @@ def test_egress_allows_an_outside_registry_only_for_pod_pulls():
                     ("image-registry.openshift-image-registry.svc", "fedora")], url
 
 
+@pytest.mark.ci_external
 def test_the_vm_runs_on_arm64_too(default_docs):
     """UEFI without Secure Boot, and no smm: smm is x86-only (only needed for
     Secure Boot), and KubeVirt on arm64 refuses it."""

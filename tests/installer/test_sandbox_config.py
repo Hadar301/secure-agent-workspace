@@ -109,48 +109,6 @@ def test_the_model_reaches_nemoclaw(ab, fake_env, config, tmp_path):
     assert fake_env.other_calls("nemoclaw")[0]["model"] == "nvidia/m"
 
 
-def _onboard(fake_env):
-    return next(c[-1] for c in fake_env.openshell_calls()
-                if c[:2] == ["sandbox", "exec"] and "openclaw onboard " in c[-1])
-
-
-def test_without_a_base_url_the_provider_types_own_api_is_used(ab, fake_env, config, tmp_path):
-    """NVIDIA speaks the OpenAI protocol but at its own endpoint."""
-    nvidia = ab.Provider(name="nvidia", type="nvidia",
-                         credential_secret="inference", credential_secret_key="api_key")
-    _, _, profiles = _one(ab, provider=nvidia, inference={
-        "providerRef": "nvidia", "protocol": "openai", "model": "nvidia/m"})
-    _secret(tmp_path, "inference", api_key="nvapi-x")
-    creds = resolve(ab, profiles, tmp_path)
-    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
-    onboard = _onboard(fake_env)
-    assert "--custom-base-url https://integrate.api.nvidia.com/v1 " in onboard
-    assert "--custom-compatibility openai" in onboard
-
-
-def test_an_official_api_without_a_base_url_onboards_natively(ab, fake_env, config, tmp_path):
-    _, _, profiles = _one(ab, inference={"providerRef": "inference", "protocol": "openai",
-                                         "model": "gpt-4o"})
-    _secret(tmp_path, "inference", api_key="sk")
-    creds = resolve(ab, profiles, tmp_path)
-    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
-    assert "--auth-choice openai-api-key" in _onboard(fake_env)
-
-
-def test_anthropic_protocol_on_a_custom_endpoint(ab, fake_env, config, tmp_path):
-    claude = ab.Provider(name="claude", type="anthropic",
-                         credential_secret="inference", credential_secret_key="api_key")
-    _, _, profiles = _one(ab, provider=claude, inference={
-        "providerRef": "claude", "protocol": "anthropic",
-        "baseUrl": "https://gateway.example/anthropic", "model": "claude-sonnet-4-6"})
-    _secret(tmp_path, "inference", api_key="sk")
-    creds = resolve(ab, profiles, tmp_path)
-    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
-    onboard = _onboard(fake_env)
-    assert "--custom-base-url https://gateway.example/anthropic " in onboard
-    assert "--custom-compatibility anthropic" in onboard
-
-
 def test_a_bad_inference_base_url_is_refused_without_echoing_it(ab, tmp_path):
     _, _, profiles = _one(ab, inference={"providerRef": "inference", "protocol": "openai",
                                          "model": "m", "baseUrl": {

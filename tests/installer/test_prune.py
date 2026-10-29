@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import harness_files, profile_files
+from conftest import profile_files
 from test_custom_endpoint import custom_secrets as _custom_secrets  # noqa: F401  (reused fixture)
 
 def _harness(ab):
-    return {"bundles": ab.parse_harness_files(harness_files())}
+    return {"bundles": {}}
 
 
 SHIPPED_OPENAI_PROFILE = (
@@ -20,8 +20,16 @@ SHIPPED_OPENAI_PROFILE = (
 
 
 @pytest.fixture
-def profiles(ab, shipped_profile_files):
-    return ab.parse_profiles(shipped_profile_files)
+def profiles(ab):
+    """Only the objects whose ownership and removal these tests inspect."""
+    def workspace(name, sandbox, brave=False):
+        providers = [ab.Provider(name="nvidia", type="nvidia", credential_secret="inference")]
+        if brave:
+            providers.append(ab.Provider(name="brave", type="brave", credential_secret="web-search"))
+        return ab.Workspace(name=name, providers=providers, sandboxes=[
+            ab.Sandbox(name=sandbox, image="test-image", providers=["nvidia"])])
+    return [ab.Profile(name="data-science", workspaces=[
+        workspace("default", "notebook", brave=True), workspace("cuda-dev", "cuda-sandbox")])]
 
 
 @pytest.fixture
@@ -175,7 +183,12 @@ def custom_inference_profiles(ab):
     files = profile_files("custom-inference")
     key = next(k for k in files if k.endswith("providers.yaml"))
     files[key] = files[key].replace("type: custom-inference", "type: openai")
-    return ab.parse_profiles(files)
+    parsed = ab.parse_profiles(files)
+    for profile in parsed:
+        for workspace in profile.workspaces:
+            workspace.sandboxes = [ab.Sandbox(name=sb.name, image="test-image", providers=sb.providers)
+                                   for sb in workspace.sandboxes]
+    return parsed
 
 
 def _apply_on(ab, config, creds, profiles, ledger, docs=None):
@@ -218,12 +231,11 @@ def test_skipped_provider_is_not_pruned_on_a_transient_catalog_gap(
     assert "default/custom-inference" in state["providers"]
 
 
-def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_profile_files,
+def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, profiles,
                                                   secrets_dir, tmp_path):
     """6c: removing a workspace from the profile deleted the providers (and
     inference route) of a sandbox that prune.sandboxes: false is keeping,
     even though the sandbox object itself was correctly left alone."""
-    profiles = ab.parse_profiles(shipped_profile_files)
     creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     _apply_on(ab, config, creds, profiles, ledger)
@@ -515,12 +527,11 @@ def test_failed_provider_delete_stays_in_the_ledger(
 
 
 def test_kept_sandbox_providers_are_protected_when_listing_fails(
-        ab, fake_env, config, shipped_profile_files, secrets_dir, tmp_path):
+        ab, fake_env, config, profiles, secrets_dir, tmp_path):
     """A failed `sandbox provider list` must not make kept_sandbox_providers
     think a kept sandbox uses nothing, or every provider in its workspace
     becomes prunable -- fail safe the same direction workspace_contents
     already does for a failed listing (PR #54 review round 2, 3)."""
-    profiles = ab.parse_profiles(shipped_profile_files)
     creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     _apply_on(ab, config, creds, profiles, ledger)

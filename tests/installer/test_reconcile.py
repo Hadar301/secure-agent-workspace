@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 
+import pytest
 import yaml
 
 
@@ -50,14 +51,18 @@ def test_reconcile_backoff_only_applies_to_the_same_failed_hash(ab):
     assert ab.reconcile_backoff_remaining(data, changed) == 0
 
 
-def test_reconcile_does_not_retry_a_freshly_failed_input(ab, tmp_path, monkeypatch):
+@pytest.mark.parametrize("current,expected_rc,expected_calls", [
+    pytest.param("a", 0, [], id="same-failed-input"),
+    pytest.param("a2", 1, ["install"], id="changed-input"),
+])
+def test_reconcile_failed_input_backoff(ab, tmp_path, monkeypatch, current, expected_rc, expected_calls):
     state = tmp_path / "state"
     state.mkdir()
     ab.write_inputs_failure(state, {"installer": "a"}, "install failed")
     calls = []
     monkeypatch.setattr(ab, "cmd_install", lambda args: calls.append("install") or 1)
     monkeypatch.setattr(ab, "reconcile_actions", lambda *a: ["install", "apply"])
-    monkeypatch.setattr(ab, "input_hashes", lambda inputs: {"installer": "a"})
+    monkeypatch.setattr(ab, "input_hashes", lambda inputs: {"installer": current})
 
     class Args:
         inputs = str(tmp_path / "run-saw")
@@ -66,28 +71,8 @@ def test_reconcile_does_not_retry_a_freshly_failed_input(ab, tmp_path, monkeypat
         as_current_user = True
         installer_dir = None
 
-    assert ab.cmd_reconcile(Args()) == 0
-    assert calls == []          # backed off: install was never even attempted
-
-
-def test_reconcile_retries_immediately_once_the_input_changes_again(ab, tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    state.mkdir()
-    ab.write_inputs_failure(state, {"installer": "a"}, "install failed")
-    calls = []
-    monkeypatch.setattr(ab, "cmd_install", lambda args: calls.append("install") or 1)
-    monkeypatch.setattr(ab, "reconcile_actions", lambda *a: ["install", "apply"])
-    monkeypatch.setattr(ab, "input_hashes", lambda inputs: {"installer": "a2"})   # changed since the failure
-
-    class Args:
-        inputs = str(tmp_path / "run-saw")
-        state_dir = str(state)
-        dry_run = False
-        as_current_user = True
-        installer_dir = None
-
-    assert ab.cmd_reconcile(Args()) == 1
-    assert calls == ["install"]   # a new change always gets a fresh attempt
+    assert ab.cmd_reconcile(Args()) == expected_rc
+    assert calls == expected_calls
 
 
 def test_tree_hash_ignores_configmap_dot_dirs(ab, tmp_path):

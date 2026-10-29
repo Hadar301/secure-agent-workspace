@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,7 @@ def ab():
 
 
 def helm_template(chart=CHART, *args, release="saw-bom-test", namespace="saw-alice"):
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace, *args],
+    return run_helm([HELM, "template", release, str(chart), "--namespace", namespace, *args],
                           capture_output=True, text=True)
 
 
@@ -72,6 +73,7 @@ def ds_default_digest(ab):
     return ab.tree_digest(files)
 
 
+@pytest.mark.ci_external
 def test_demo_harness_is_off_by_default():
     """With harnessEnabled off, no sandbox gets a harnessRef and nothing harness-
     shaped is shipped, so an upgrade with defaults never recreates a sandbox."""
@@ -81,12 +83,14 @@ def test_demo_harness_is_off_by_default():
     assert "harness-index.yaml" not in data
 
 
+@pytest.mark.ci_external
 def test_web_search_on_preserves_original_profile_bytes():
     data = bom_data()
     for path in (CHART / "profiles" / "data-science").rglob("*.yaml"):
         assert data[str(path.relative_to(CHART)).replace("/", "__")] == path.read_text()
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("harness_enabled", [True, False])
 def test_web_search_off_disables_only_its_providers(harness_enabled):
     result = helm_template(CHART, "--set", "webSearch.enabled=false",
@@ -112,6 +116,7 @@ def test_web_search_off_disables_only_its_providers(harness_enabled):
                 assert sandbox.get("harnessRef") == (harnesses[sandbox["name"]] if harness_enabled else None)
 
 
+@pytest.mark.ci_external
 def test_web_search_off_removes_provider_names_only_in_their_workspace(tmp_path):
     copy = tmp_path / "saw-bom"
     shutil.copytree(CHART, copy)
@@ -139,6 +144,7 @@ def test_web_search_off_removes_provider_names_only_in_their_workspace(tmp_path)
     assert cm["data"]["profiles__data-science__cuda-dev__sandbox.yaml"] == other.read_text()
 
 
+@pytest.mark.ci_external
 def test_demo_harness_true_ships_the_bundle_and_ref():
     data = bom_data(demo_harness=True)
     assert "harnessRef" in data["profiles__data-science__default__sandbox.yaml"]
@@ -147,6 +153,7 @@ def test_demo_harness_true_ships_the_bundle_and_ref():
     assert "harness-index.yaml" in data
 
 
+@pytest.mark.ci_external
 def test_no_governance_list_is_kept_in_the_chart():
     """Governance is checked in the guest against the gateway's live catalog;
     a copy of the profile names here would only drift."""
@@ -156,6 +163,7 @@ def test_no_governance_list_is_kept_in_the_chart():
     assert "enrolledGovernanceProfiles" not in index
 
 
+@pytest.mark.ci_external
 def test_configmap_ships_the_harness_manifest_byte_for_byte():
     data = bom_data()
     key = harness_key("ds-default", "harness.yaml")
@@ -170,6 +178,7 @@ def test_harness_index_digest_matches_tree_digest(ab):
     assert index["bundles"]["ds-default"] == ds_default_digest(ab)
 
 
+@pytest.mark.ci_external
 def test_harness_ref_digest_mismatch_fails_the_render(tmp_path):
     copy = tmp_path / "saw-bom"
     shutil.copytree(CHART, copy)
@@ -181,6 +190,7 @@ def test_harness_ref_digest_mismatch_fails_the_render(tmp_path):
     assert "harnessRef digest mismatch" in err
 
 
+@pytest.mark.ci_external
 def test_harness_ref_without_a_digest_renders(tmp_path):
     """The digest pin is optional: bundle and pin ship in the same chart."""
     docs = render()
@@ -197,6 +207,7 @@ def _with_ref(tmp_path, ref):
     return copy
 
 
+@pytest.mark.ci_external
 def test_an_oci_harness_ref_renders_without_shipping_the_bundle(tmp_path):
     image = "ghcr.io/example/saw-harness-ds-default@sha256:" + "a" * 64
     docs = render(_with_ref(tmp_path, {"image": image}))
@@ -205,11 +216,13 @@ def test_an_oci_harness_ref_renders_without_shipping_the_bundle(tmp_path):
     assert "harness-index.yaml" in data
 
 
+@pytest.mark.ci_external
 def test_an_unpinned_oci_harness_ref_fails_the_render(tmp_path):
     err = render_error(_with_ref(tmp_path, {"image": "ghcr.io/example/saw-harness-ds-default:latest"}))
     assert "pinned by digest" in err
 
 
+@pytest.mark.ci_external
 def test_a_long_bundle_name_over_the_joliet_limit_fails_the_render(tmp_path):
     """Keys are content-addressed (harness__<bundle>__<hash>), so a deep or
     long path no longer matters; only a long bundle *name* can still overflow
@@ -228,6 +241,7 @@ def test_a_long_bundle_name_over_the_joliet_limit_fails_the_render(tmp_path):
     assert "Joliet" in err
 
 
+@pytest.mark.ci_external
 def test_a_deep_bundle_path_under_the_joliet_limit_renders(tmp_path):
     """A path that would have overflowed the old path-derived key now fits,
     since the ConfigMap key is a hash of the relpath, not the relpath."""
@@ -240,6 +254,7 @@ def test_a_deep_bundle_path_under_the_joliet_limit_renders(tmp_path):
     assert harness_key("ds-default", f"skills/{'x' * 40}/SKILL.md") in data
 
 
+@pytest.mark.ci_external
 def test_a_bundle_name_with_a_double_underscore_fails_the_render(tmp_path):
     """The bundle name is still a flat-key segment (harness__<bundle>__<hash>);
     parse_harness_files requires exactly 3 "__"-separated parts, so a bundle

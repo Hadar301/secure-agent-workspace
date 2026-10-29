@@ -36,6 +36,7 @@ quickstart, and the supported-provider and secrets tables.
 | Doc | What it covers |
 |---|---|
 | [Harness bundles](harness-bundles.md) | Ship skills, MCP servers and tool plugins into a sandbox |
+| [Testing](testing.md) | Run tests, choose fixtures, control runtime, and select CI coverage |
 | [Custom inference](custom-inference.md) | Point a SAW at your own OpenAI-compatible server (vLLM, Ollama, …) |
 | [Container runtime](container-runtime.md) | Rootless podman (default) vs. docker (legacy) |
 | [Container images](container-images.md) | CI-published images, mirroring, registries, retained Quay dependencies |

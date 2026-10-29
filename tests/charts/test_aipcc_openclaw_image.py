@@ -13,6 +13,8 @@ image added is now covered elsewhere:
 """
 from pathlib import Path
 
+import pytest
+
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +28,7 @@ def openclaw_sandboxes():
                 yield path, sb
 
 
+@pytest.mark.ci_external
 def test_openclaw_sandboxes_use_the_aipcc_image():
     found = list(openclaw_sandboxes())
     assert found
@@ -33,6 +36,7 @@ def test_openclaw_sandboxes_use_the_aipcc_image():
         assert sb["image"].startswith(AIPCC), f"{path}: {sb['image']}"
 
 
+@pytest.mark.ci_external
 def test_the_policy_lets_the_sandbox_read_openclaw_under_opt():
     policy = yaml.safe_load((ROOT / "charts" / "governance-policy" / "policy.yaml").read_text())
     fs = policy["filesystem_policy"]
@@ -41,6 +45,7 @@ def test_the_policy_lets_the_sandbox_read_openclaw_under_opt():
     assert not any(p.startswith("/opt") for p in fs["read_write"])
 
 
+@pytest.mark.ci_external
 def test_no_image_of_our_own_is_built():
     assert not (ROOT / "image-builder-charts" / "helm" / "openclaw-openshell-image").exists()
     assert "openclaw-openshell" not in (ROOT / "Makefile-quickstart").read_text()

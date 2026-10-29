@@ -544,7 +544,10 @@ test-pattern-e2e-live: ## Run live behavior checks on the installed E2E deployme
 test-pattern-e2e-cleanup: ## Clean an E2E run when ready (set CI_RECOVERY_RUN_ID)
 	@uv run --locked scripts/ci/pattern_e2e_cleanup.py
 
-lint: ## Lint charts, shell syntax, and the Make interface
+.PHONY: lint-static lint-interface
+lint: lint-static lint-interface ## Lint charts, shell syntax, and the Make interface
+
+lint-static: ## Lint charts and shell syntax without running pytest
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
@@ -560,12 +563,15 @@ lint: ## Lint charts, shell syntax, and the Make interface
 		done
 	@if [ "$${CI:-}" = true ]; then \
 		python scripts/lint-rendered-shell.py || exit; \
-		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
-			python -m pytest -q -p no:cacheprovider tests/scripts/test_make_interface.py || exit; \
 	else \
 		uv run --locked scripts/lint-rendered-shell.py || exit; \
-		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
-			uv run --locked pytest -q -p no:cacheprovider tests/scripts/test_make_interface.py || exit; \
+	fi
+
+lint-interface: ## Test the public Make interface
+	@if [ "$${CI:-}" = true ]; then \
+		$(MAKE) test-installer PYTHON="$(or $(PYTHON),python)" TEST_PATHS=tests/scripts/test_make_interface.py; \
+	else \
+		$(MAKE) test-installer TEST_PATHS=tests/scripts/test_make_interface.py; \
 	fi
 
 test-harness-e2e: .check-saw-name ## Verify one SAW's harness bundle on the cluster
@@ -590,6 +596,7 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 
 # --- Local Python tests (no cluster needed) ---
 TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal tests/credential_proxy cli/tests
+PYTEST_ARGS ?=
 .PHONY: test-installer test-tool-gate test-credential-proxy credential-proxy-image test-credential-isolation
 GO ?= go
 test-credential-proxy: ## Race-enabled credential proxy tests
@@ -604,11 +611,11 @@ test-credential-isolation: ## Verify credential isolation on a live SAW
 test-installer: ## Run the complete local Python test suite with uv
 	@if [ -n "$(PYTHON)" ]; then \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest \
-		-q -p no:cacheprovider $(TEST_PATHS); \
+		-q -p no:cacheprovider $(PYTEST_ARGS) $(TEST_PATHS); \
 	else \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
 		uv run --locked pytest -q -p no:cacheprovider \
-			$(TEST_PATHS); \
+			$(PYTEST_ARGS) $(TEST_PATHS); \
 	fi
 
 test-tool-gate: ## Tool-action gate tests (needs node on PATH)

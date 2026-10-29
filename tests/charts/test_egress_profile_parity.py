@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,10 +36,12 @@ def allowlist():
     return yaml.safe_load(SAW_VALUES.read_text())["egress"]["allow"]
 
 
+@pytest.mark.ci_external
 def test_profile_directory_is_not_empty():
     assert list(PROFILES.glob("*.yaml")), "governance profiles disappeared"
 
 
+@pytest.mark.ci_external
 def test_every_exact_profile_host_is_allowed():
     hosts = {endpoint["host"] for endpoints in profile_endpoints().values()
              for endpoint in endpoints if "*" not in endpoint["host"]}
@@ -46,9 +49,10 @@ def test_every_exact_profile_host_is_allowed():
     assert not missing, "add these profile hosts to charts/openshell-saw/values.yaml egress.allow: " + ", ".join(sorted(missing))
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_profile_ports_match_firewall_and_network_policy():
-    result = subprocess.run(
+    result = run_helm(
         [HELM, "template", "saw-test", str(SAW_CHART), "-n", "saw-test",
          "-f", str(TOPOLOGY_FIXTURE),
          "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")], capture_output=True, text=True)
@@ -73,6 +77,7 @@ def test_profile_ports_match_firewall_and_network_policy():
                      "and the VM outside NetworkPolicy ports: " + repr(bad))
 
 
+@pytest.mark.ci_external
 def test_wildcards_are_reviewed_explicitly():
     wild = {endpoint["host"] for endpoints in profile_endpoints().values()
             for endpoint in endpoints if "*" in endpoint["host"]}
@@ -83,6 +88,7 @@ def test_wildcards_are_reviewed_explicitly():
     assert not any("*" in host for host in allowlist())
 
 
+@pytest.mark.ci_external
 def test_allowlist_has_no_unexplained_reverse_drift():
     hosts = {endpoint["host"] for endpoints in profile_endpoints().values()
              for endpoint in endpoints if "*" not in endpoint["host"]}
@@ -94,6 +100,7 @@ def test_allowlist_has_no_unexplained_reverse_drift():
         "document why they are needed in ALLOW_EXCEPTIONS: " + ", ".join(sorted(unexplained)))
 
 
+@pytest.mark.ci_external
 def test_installer_profile_copies_mirror_governance_policy():
     """The installer ships every governance profile (the gateway's catalog
     with governance off), as exact copies kept by scripts/saw-profile-catalog.py
@@ -108,9 +115,10 @@ def test_installer_profile_copies_mirror_governance_policy():
     assert not (SAW_COPIES / "examples").exists()
 
 
+@pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_profile_configmap_keys_match_files():
-    result = subprocess.run([HELM, "template", "policy-test", str(POLICY_CHART)],
+    result = run_helm([HELM, "template", "policy-test", str(POLICY_CHART)],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     config = next(doc for doc in yaml.safe_load_all(result.stdout)
@@ -143,12 +151,14 @@ def extra_profiles():
     return {name: yaml.safe_load((EXTRA_DIR / name).read_text()) for name in files}
 
 
+@pytest.mark.ci_external
 def test_the_shipped_kustomization_serves_nothing_until_a_deployment_lists_a_profile():
     text = (EXTRA_DIR / "kustomization.yaml").read_text()
     assert (yaml.safe_load(text) or {}).get("configMapGenerator") is None
     assert "# configMapGenerator:" in text and "custom-inference.yaml" in text
 
 
+@pytest.mark.ci_external
 def test_extra_profiles_are_complete_and_do_not_shadow_shipped_ones():
     shipped = {p.stem for p in PROFILES.glob("*.yaml")}
     for name, doc in extra_profiles().items():
@@ -160,6 +170,7 @@ def test_extra_profiles_are_complete_and_do_not_shadow_shipped_ones():
             f"{name}: each credential needs env_vars (the installer passes the key through it)")
 
 
+@pytest.mark.ci_external
 def test_the_interceptor_mounts_the_extra_profiles_next_to_the_shipped_ones():
     text = INTERCEPTOR_DEPLOYMENT.read_text()
     assert "projected:" in text and "governance-interceptor-profiles" in text
@@ -168,6 +179,7 @@ def test_the_interceptor_mounts_the_extra_profiles_next_to_the_shipped_ones():
     assert values["extraProfilesConfigMap"] == "governance-interceptor-extra-profiles"
 
 
+@pytest.mark.ci_external
 def test_the_pattern_deploys_the_extra_profiles_directory():
     apps = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["applications"]
     app = apps["governance-extra-profiles"]
@@ -178,6 +190,7 @@ def test_the_pattern_deploys_the_extra_profiles_directory():
 EXAMPLES = PROFILES / "examples"
 
 
+@pytest.mark.ci_external
 def test_the_chart_example_profile_is_not_vended_but_is_what_overrides_copies():
     example = yaml.safe_load((EXAMPLES / "custom-inference.yaml").read_text())
     assert example["id"] == "custom-inference" and example["endpoints"][0]["host"]

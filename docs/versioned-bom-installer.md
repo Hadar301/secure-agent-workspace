@@ -180,11 +180,14 @@ flag on requires recreating the VM. See [Live inputs](#live-inputs).
 ## Testing
 
 ```bash
-make test-installer        # installer + chart tests; chart tests need helm
-make test-tool-gate        # tool-action gate tests; needs node; not run in CI
+make test-installer        # complete pytest suite, including tool-gate checks
+make test-tool-gate        # focused tool-action gate checks; needs Node
 make test-credential-proxy # Go vet and race tests
 SAW_NS=saw-<user> VM_NAME=<user> make test-credential-isolation
 ```
+
+See [Testing](testing.md) for required tools, local commands, fixture rules,
+and CI selection policy.
 
 - `tests/installer`: the real `apply_bom.py` against fake `podman`,
   `openshell`, `nemoclaw` and `sudo` executables: BOM validation, component

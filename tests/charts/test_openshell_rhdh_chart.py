@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def render(*args):
-    result = subprocess.run([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh", *args],
+    result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh", *args],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return [d for d in yaml.safe_load_all(result.stdout) if d]
@@ -32,6 +33,7 @@ def docs():
     return render()
 
 
+@pytest.mark.ci_external
 def test_templates_are_the_generated_form_with_the_provisioner(docs):
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
     create = yaml.safe_load(cm["data"]["create-workspace.yaml"])
@@ -46,6 +48,7 @@ def test_templates_are_the_generated_form_with_the_provisioner(docs):
     assert "__PROVISIONER_SA__" not in cm["data"]["create-workspace.yaml"]
 
 
+@pytest.mark.ci_external
 def test_every_form_field_reaches_the_request(docs):
     """The form asks for what the catalog says each profile needs, and the
     request Secret carries each field under <secret>.<field>."""
@@ -62,6 +65,7 @@ def test_every_form_field_reaches_the_request(docs):
                     assert string_data[f"{secret}.{field['key']}"].startswith("${{ secrets.")
 
 
+@pytest.mark.ci_external
 def test_proxy_endpoints_only_post_to_the_portal_namespace(docs):
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     endpoints = dict(config["proxy"]["endpoints"])
@@ -80,6 +84,7 @@ def test_proxy_endpoints_only_post_to_the_portal_namespace(docs):
     assert "http://saw-workspaces-generator.saw-portal.svc:4355/catalog.yaml" in urls
 
 
+@pytest.mark.ci_external
 def test_rhdh_can_only_create_requests_and_runs(docs):
     role = one(docs, "Role", "rhdh-portal")
     assert role["metadata"]["namespace"] == "saw-portal"
@@ -87,6 +92,7 @@ def test_rhdh_can_only_create_requests_and_runs(docs):
                              {"apiGroups": ["tekton.dev"], "resources": ["pipelineruns"], "verbs": ["create"]}]
 
 
+@pytest.mark.ci_external
 def test_admission_pins_the_pipeline_runs(docs):
     policy = one(docs, "ValidatingAdmissionPolicy", "saw-portal-pipelineruns")
     exprs = " ".join(v["expression"] for v in policy["spec"]["validations"])
@@ -101,6 +107,7 @@ def test_admission_pins_the_pipeline_runs(docs):
     assert "object.spec.taskRunTemplate.all(k, k == 'serviceAccountName')" in exprs
 
 
+@pytest.mark.ci_external
 def test_the_applicationset_renders_saw_users_per_workspace(docs):
     aset = one(docs, "ApplicationSet", "saw-portal-workspaces")
     assert aset["metadata"]["namespace"] == "vp-gitops"
@@ -119,6 +126,7 @@ def test_the_applicationset_renders_saw_users_per_workspace(docs):
     assert generator_token["stringData"]["token"] == token["stringData"]["token"]
 
 
+@pytest.mark.ci_external
 def test_the_generator_gets_valid_saw_users_defaults(docs):
     deploy = one(docs, "Deployment", "saw-workspaces-generator")
     env = {e["name"]: e.get("value") for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
@@ -133,6 +141,7 @@ def generator_defaults(docs):
     return json.loads(env["SAW_USERS_VALUES"])
 
 
+@pytest.mark.ci_external
 def test_portal_workspaces_get_the_governance_engine():
     """A portal workspace's gateway must use the pattern's engine: without
     global.governance, saw-users renders interceptor bindings against APF."""
@@ -141,10 +150,12 @@ def test_portal_workspaces_get_the_governance_engine():
     assert "governance" in yaml.safe_load((ROOT / "charts" / "saw-users" / "values.yaml").read_text())["machineGlobals"]
 
 
+@pytest.mark.ci_external
 def test_portal_workspaces_without_governance_keep_the_default(docs):
     assert "governance" not in generator_defaults(docs)["global"]
 
 
+@pytest.mark.ci_external
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
     step = task["spec"]["steps"][0]
@@ -164,6 +175,7 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
 
+@pytest.mark.ci_external
 def test_rbac_shows_admin_templates_to_admins_only():
     docs = render("--set", "portal.admins[0]=admin")
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
@@ -225,6 +237,7 @@ def test_rbac_shows_admin_templates_to_admins_only():
                                                ["app-config-saw.yaml"])["catalog"].get("providers", {})
 
 
+@pytest.mark.ci_external
 def test_the_provisioner_may_delete_only_portal_applications(docs):
     policy = one(docs, "ValidatingAdmissionPolicy", "saw-portal-application-deletes")
     expr = policy["spec"]["validations"][0]["expression"]
@@ -236,6 +249,7 @@ def test_the_provisioner_may_delete_only_portal_applications(docs):
                                           "verbs": ["get", "delete"]}]
 
 
+@pytest.mark.ci_external
 def test_stale_requests_are_cleaned_up(docs):
     cron = one(docs, "CronJob", "saw-portal-cleanup")
     container = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
@@ -245,6 +259,7 @@ def test_stale_requests_are_cleaned_up(docs):
     assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["list", "delete"]}]
 
 
+@pytest.mark.ci_external
 def test_the_backstage_version_is_the_newest_the_cluster_serves():
     """RHDH operator 1.10 serves v1alpha4 and v1alpha5 only (found live:
     v1alpha3 was refused). Argo CD passes the cluster's API versions."""
@@ -258,6 +273,7 @@ def test_the_backstage_version_is_the_newest_the_cluster_serves():
     assert version("--set", "rhdh.apiVersion=rhdh.redhat.com/v1alpha3") == "rhdh.redhat.com/v1alpha3"
 
 
+@pytest.mark.ci_external
 def test_only_rhdh_and_argo_cd_reach_the_generator(docs):
     """Review (#57): /catalog.yaml has no token, so the pod takes traffic
     only from RHDH's and Argo CD's namespaces."""
@@ -272,6 +288,7 @@ def test_only_rhdh_and_argo_cd_reach_the_generator(docs):
     assert not [d for d in off if d["kind"] == "NetworkPolicy"]
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("name", ["saw-portal-pipelineruns", "saw-portal-requests"])
 def test_admission_checks_updates_too(docs, name):
     """Review (#57): a later Role change must not let RHDH's account edit a
@@ -284,6 +301,7 @@ CREATE_TASKS = ["register", "argo-cd-apps", "vm", "vm-running", "sandboxes"]
 DELETE_TASKS = ["unregister", "argo-cd-removes", "finish"]
 
 
+@pytest.mark.ci_external
 def test_each_stage_is_a_pipeline_task(docs):
     """The Tekton tab draws these: the first task acts, the others wait for
     Argo CD (which still builds and removes the workspace), in order."""
@@ -299,6 +317,7 @@ def test_each_stage_is_a_pipeline_task(docs):
         assert {p["arg"] for p in params[1:]} == {f"$(tasks.{tasks[0]}.results.user)"}
 
 
+@pytest.mark.ci_external
 def test_the_templates_follow_the_pipeline_tasks(docs):
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
     create = yaml.safe_load(cm["data"]["create-workspace.yaml"])
@@ -334,6 +353,7 @@ def test_the_templates_follow_the_pipeline_tasks(docs):
     assert create["spec"]["output"]["text"][0]["content"] == "${{ steps.status.output.body.text }}"
 
 
+@pytest.mark.ci_external
 def test_the_tekton_tab_reads_only_the_portal_namespace(docs):
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     k8s = config["kubernetes"]
@@ -355,6 +375,7 @@ def test_the_tekton_tab_reads_only_the_portal_namespace(docs):
         one(off, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
 
 
+@pytest.mark.ci_external
 def test_the_generator_may_only_read_progress(docs):
     roles = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-workspaces-generator"]
     verbs = {(r["metadata"]["namespace"], g, res, v) for r in roles for rule in r["rules"]
@@ -369,6 +390,7 @@ def test_the_generator_may_only_read_progress(docs):
     assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")
 
 
+@pytest.mark.ci_external
 def test_the_sidebar_hides_what_the_portal_does_not_use(docs):
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     items = config["dynamicPlugins"]["frontend"]["default.main-menu-items"]["menuItems"]
@@ -379,6 +401,7 @@ def test_the_sidebar_hides_what_the_portal_does_not_use(docs):
     assert "dynamicPlugins" not in shown
 
 
+@pytest.mark.ci_external
 def test_the_home_page_has_actions_and_workspaces_only(docs):
     plugins = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-dynamic-plugins")["data"]["dynamic-plugins.yaml"])
     (home,) = [p for p in plugins["plugins"] if "dynamic-home-page" in p["package"]]
@@ -399,6 +422,7 @@ def test_the_home_page_has_actions_and_workspaces_only(docs):
     assert "translations.json" not in one(default, "ConfigMap", "saw-rhdh-templates")["data"]
 
 
+@pytest.mark.ci_external
 def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     import base64
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
@@ -414,6 +438,7 @@ def test_the_portal_is_branded_and_unused_plugins_are_off(docs):
     assert "./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart" in off
 
 
+@pytest.mark.ci_external
 def test_admins_get_templates_for_another_user():
     docs = render("--set", "portal.admins[0]=admin")
     cm = one(docs, "ConfigMap", "saw-rhdh-templates")
@@ -438,6 +463,7 @@ def test_admins_get_templates_for_another_user():
     assert "create-workspace-for-user.yaml" not in one(none, "ConfigMap", "saw-rhdh-templates")["data"]
 
 
+@pytest.mark.ci_external
 def test_no_status_call_outlives_the_router_timeout(docs):
     """The scaffolder reaches RHDH's proxy through RHDH's route; the OpenShift
     router drops a request quiet for 30 s (found live: a delete step waiting
@@ -469,6 +495,7 @@ def tls_settings(docs):
         "generator": generator, "job": job, "task": _envs(task)}
 
 
+@pytest.mark.ci_external
 def test_tls_is_verified_everywhere_by_default(docs):
     s = tls_settings(docs)
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in s["node"]
@@ -490,6 +517,7 @@ def test_tls_is_verified_everywhere_by_default(docs):
     assert s["task"]["VAULT_CACERT"].endswith("/service-ca.crt")
 
 
+@pytest.mark.ci_external
 def test_one_switch_turns_verification_off(docs):
     s = tls_settings(render("--set", "tls.insecureSkipVerify=true"))
     assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0" and s["patch"] is None
@@ -500,6 +528,7 @@ def test_one_switch_turns_verification_off(docs):
     assert s["task"]["VAULT_SKIP_VERIFY"] == "true"
 
 
+@pytest.mark.ci_external
 def test_the_ca_bundle_gets_the_api_ca_without_a_service_account_mount(docs):
     # The RHDH operator's pod has no service account mount: the init
     # container gets the token and the API and service CAs projected.
@@ -516,6 +545,7 @@ def test_the_ca_bundle_gets_the_api_ca_without_a_service_account_mount(docs):
         assert all(m["name"] != "saw-ca-sa" for c in pod["containers"] for m in c.get("volumeMounts", []))
 
 
+@pytest.mark.ci_external
 def test_the_ca_bundle_sources_are_in_each_namespace(docs):
     for ns in ("rhdh", "saw-portal"):
         sources = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-ca-sources"
@@ -533,6 +563,7 @@ def test_the_ca_bundle_sources_are_in_each_namespace(docs):
                               "resourceNames": ["default-ingress-cert"], "verbs": ["get"]}]
 
 
+@pytest.mark.ci_external
 def test_extra_cas_reach_the_bundle(tmp_path):
     pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
     values = tmp_path / "v.yaml"
@@ -542,6 +573,7 @@ def test_extra_cas_reach_the_bundle(tmp_path):
     assert sources["data"]["extra-ca.crt"].strip() == pem
 
 
+@pytest.mark.ci_external
 def test_tekton_resources_compare_with_their_webhook_defaults(docs):
     """Tekton's admission webhook fills in defaults, so a plain diff never
     matches: the app stayed OutOfSync after every successful sync and the

@@ -11,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from helm_cache import run_helm
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,7 @@ INTERCEPTABLE = {
 
 
 def template(chart, *args, namespace="openshell-agents"):
-    return subprocess.run([HELM, "template", "governance-interceptor", str(chart),
+    return run_helm([HELM, "template", "governance-interceptor", str(chart),
                            "--namespace", namespace, *args], capture_output=True, text=True)
 
 
@@ -61,6 +62,7 @@ def apf_chart(tmp_path_factory):
     return chart
 
 
+@pytest.mark.ci_external
 def test_interceptor_is_the_default():
     rendered = docs(GOV_CHART)
     assert ("Deployment", "governance-interceptor") in rendered
@@ -70,11 +72,13 @@ def test_interceptor_is_the_default():
     assert pod == {"matchLabels": {"app.kubernetes.io/name": "governance-interceptor"}}
 
 
+@pytest.mark.ci_external
 def test_the_pattern_sets_the_engine():
     values = yaml.safe_load((ROOT / "values-global.yaml").read_text())
     assert values["global"]["governance"]["engine"] in ("interceptor", "apf")
 
 
+@pytest.mark.ci_external
 def test_apf_needs_a_signed_bundle(tmp_path):
     chart = tmp_path / "governance-interceptor"
     shutil.copytree(GOV_CHART, chart, ignore=shutil.ignore_patterns("files"))
@@ -83,6 +87,7 @@ def test_apf_needs_a_signed_bundle(tmp_path):
     assert "make apf-keys apf-bundle" in result.stderr
 
 
+@pytest.mark.ci_external
 def test_unknown_engine_fails():
     result = template(GOV_CHART, "--set", "engine=opa")
     assert result.returncode != 0
@@ -189,7 +194,7 @@ def test_networkpolicy_selects_the_apf_pod(apf_chart):
 # -- the gateway side (openshell-saw) -----------------------------------------------
 
 def gateway_toml_text(*args):
-    result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--namespace", "saw-alice",
+    result = run_helm([HELM, "template", "saw-test", str(SAW_CHART), "--namespace", "saw-alice",
                              "--set", "sandboxName=saw-test", "-f", str(TOPOLOGY),
                              "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"), *args],
                             capture_output=True, text=True)
@@ -207,6 +212,7 @@ def gateway_toml(*args):
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("golden,args", [
     ("gateway-interceptor.toml", ()),
     ("gateway-interceptor-oidc.toml", ("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")),
@@ -220,6 +226,7 @@ def bindings(interceptor):
     return {b["rpc"].removeprefix("openshell.v1.OpenShell/"): b["phases"] for b in interceptor["bindings"]}
 
 
+@pytest.mark.ci_external
 def test_interceptor_engine_keeps_its_four_bindings():
     [gov] = gateway_toml()["openshell"]["gateway"]["interceptors"]
     assert gov["binding_policy"] == "allowlist"
@@ -228,6 +235,7 @@ def test_interceptor_engine_keeps_its_four_bindings():
                              "SubmitPolicyAnalysis": ["validate"]}
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
 def test_apf_engine_uses_the_bindings_apf_declares(flag):
     """APF declares one binding per phase (three each for CreateSandbox and
@@ -245,6 +253,7 @@ def test_apf_engine_uses_the_bindings_apf_declares(flag):
     assert "bindings" not in gov
 
 
+@pytest.mark.ci_external
 def test_apf_bindings_can_still_be_narrowed(tmp_path):
     values = tmp_path / "narrow.yaml"
     values.write_text("governance:\n  engine: apf\n  bindings:\n    apf:\n"
@@ -255,6 +264,7 @@ def test_apf_bindings_can_still_be_narrowed(tmp_path):
     assert set(bindings(gov)) <= INTERCEPTABLE
 
 
+@pytest.mark.ci_external
 @pytest.mark.parametrize("flag", ["governance.engine=apf", "global.governance.engine=apf"])
 def test_apf_engine_allows_agent_driver_config(flag):
     """Every agent sandbox has gate and audit mounts, with or without a harness."""
@@ -302,13 +312,15 @@ def load_script_rule():
     return mod.AGENT_DRIVER_CONFIG
 
 
+@pytest.mark.ci_external
 def test_interceptor_engine_keeps_agent_driver_config():
     gateway = gateway_toml()["openshell"]["drivers"]["podman"]
     assert gateway["allow_driver_config"] is True
 
 
+@pytest.mark.ci_external
 def test_unknown_engine_fails_in_openshell_saw():
-    result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
+    result = run_helm([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
                              "--set", "governance.engine=opa",
                              "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")], capture_output=True, text=True)
     assert result.returncode != 0

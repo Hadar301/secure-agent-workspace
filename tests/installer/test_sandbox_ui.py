@@ -519,6 +519,8 @@ def run_gateway_script(tmp_path, script, refuse):
     """Runs the script with fake `openclaw` (refusing a trustedProxy value
     that contains `refuse`) and `node`; returns the config calls and the
     gateway's environment."""
+    from process_helpers import isolate_process_scan
+    script = isolate_process_scan(script, tmp_path)
     import os
     import subprocess
     bin_dir = tmp_path / "bin"

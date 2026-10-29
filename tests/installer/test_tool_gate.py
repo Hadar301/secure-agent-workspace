@@ -139,6 +139,7 @@ def test_missing_gate_mount_recreates_the_agent_sandbox(
     assert second.verify(profiles) == []
 
 
+@pytest.mark.ci_external
 def test_tool_gate_decisions():
     node = shutil.which("node")
     assert node, "node is required to test the tool-action gate"
@@ -147,6 +148,7 @@ def test_tool_gate_decisions():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.ci_external
 def test_shipped_tool_actions_yaml_parses_in_node():
     node = shutil.which("node")
     assert node, "node is required to test the tool-action gate"
@@ -167,6 +169,7 @@ process.stdout.write(String(parsePolicy(readFileSync(process.argv[1], "utf8")).r
     assert int(result.stdout) == len(doc["rules"])
 
 
+@pytest.mark.ci_external
 def test_before_tool_call_writes_hash_and_rule(tmp_path):
     node = shutil.which("node")
     assert node, "node is required to test the tool-action gate"
