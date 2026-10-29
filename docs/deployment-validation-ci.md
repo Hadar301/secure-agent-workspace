@@ -107,8 +107,8 @@ or any PR that targets it, including a fork PR, before merge.
 
 | Stage | Test | What was tested |
 | --- | --- | --- |
-| Existing PR tests | Lint charts and project files | `make lint` checks charts and project files in the existing installer test workflow. |
-| Existing PR tests | Run Python test suite | `make test-installer` runs installer, chart, script, portal, and CLI tests under Python 3.12 and 3.14. |
+| Existing PR tests | Lint charts and project files | `make lint-static` runs once in the shared CI job. Make-interface tests run through pytest. |
+| Existing PR tests | Run the pytest suite | Project Python behavior runs on 3.12 and 3.14. Selected external checks run once on 3.14. See the [testing guide](testing.md) for commands and selection rules. |
 | Existing PR tests | Check installer bundle drift | If a signed bundle exists, render the installer and verify its signature; skip this check when no bundle is committed. |
 | Deployment validation | Render charts | All application and image-builder Helm charts render with CI values. |
 | Deployment validation | Validate schemas | Rendered resources pass Kubernetes and vendored CRD schemas; missing or skipped schemas fail. |

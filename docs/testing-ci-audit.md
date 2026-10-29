@@ -37,6 +37,11 @@ the cache, fixture isolation, and shared CI failure handling. The net count
 falls from 1,688 to 1,682. Every existing test file still covers supported
 behavior; no whole file met the removal criteria.
 
+The apply-profile file falls from 57 to 47 cases. Across one CI run, the
+scheduled pytest case executions fall from 3,540 to 3,000 (15.3%): external
+checks run once, and the 82 Make-interface cases no longer run through lint
+as well as pytest in each matrix job. These counts include skipped cases.
+
 The fake no longer implements `inference set` or `inference delete`, and no
 longer stores inference-route state. Contract tests require exit code 2 for
 both commands. No production code uses these removed routes.
@@ -56,6 +61,8 @@ were not used as deletion criteria.
 - Fake command setup is separate from PKI setup. Workers share immutable
   certificate bytes and copy private files for each test. PKI contract and CLI
   tests still create and clean up real certificates.
+- Each test has a private temporary root in Python and child processes. This
+  also isolates the installer's default backup-archive directory.
 - Identical successful Helm renders reuse results within a worker. Chart and
   values-file content changes invalidate the cache. Each caller gets a separate
   result and parses separate documents. Failures are never cached.
@@ -78,10 +85,6 @@ not an acceptance measurement.
 The two reported PR #134 jobs ran a different scope: 1,727 passed and 3 skipped.
 Their pytest steps took 28:27 on 3.12 and 20:46 on 3.14. They are context only.
 
-The [current main run](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40697711577)
-finished its 3.12 pytest step in 27:33. Its 3.14 step was cancelled at 30:00.
-A cancelled job is not a completed timing sample.
-
 Local Ubuntu measurements use a non-root Ubuntu 24.04 arm64 container on the
 same six-CPU Podman VM. Python versions are 3.12.16 and 3.14.10; pytest is 9.2.0,
 pytest-xdist is 3.8.0, and Helm is 3.17.3. The arm64 `cryptography` 50.0.2 wheel
@@ -91,12 +94,128 @@ therefore use 46.0.3. This local-only constraint does not change CI dependencies
 An initial image also lacked `jq`, OpenSSH, and gettext. Its failed run is not
 used for runtime acceptance. The corrected image supplies these tools.
 
+| Local run | Passed | Skipped | Elapsed |
+|---|---:|---:|---:|
+| Main, Python 3.12, serial | 1,685 | 3 | 733.22 s |
+| Main, Python 3.14, serial | 1,685 | 3 | 730.77 s |
+| Final, Python 3.12, serial | 1,679 | 3 | 567.80 s |
+| Final, Python 3.12, two workers | 1,679 | 3 | 283.05 s |
+| Final, Python 3.14, serial | 1,679 | 3 | 575.29 s |
+| Final, Python 3.14, two workers | 1,679 | 3 | 304.64 s |
+
+These elapsed times come from JUnit suite reports. All final runs use the
+test code at `002b77d`. The 3.12 serial run is 22.6% faster. The two-worker run
+is 61.4% faster than the original serial run. The 3.14 reductions are 21.3%
+serial and 58.3% with two workers. These are local measurements, not the CI median.
+The three unchanged skips cover the absent committed APF bundle and two
+embedded Rust cases without Cargo. There are no new skips in these runs.
+
+The largest local savings come from less work per scenario:
+
+| Test file | Original serial total | Revised serial total | Cases before / after |
+|---|---:|---:|---:|
+| `test_apply_profiles.py` | 106.29 s | 80.25 s | 57 / 47 |
+| `test_harness_mount.py` | 229.70 s | 148.61 s | 84 / 84 |
+| `test_prune.py` | 68.15 s | 22.80 s | 25 / 25 |
+
+These Python 3.12 sums come from JUnit case durations, which include fixture
+time. The harness and prune reductions preserve their case counts.
+
+JUnit files include fixture time. Separate serial baseline repetitions recorded
+all phases with `--durations=0 --durations-min=0`. Both passed 1,685 cases with
+the same three skips: 727.20 s on 3.12 and 737.65 s on 3.14.
+
+| Serial phase report | Setup | Test calls | Teardown |
+|---|---:|---:|---:|
+| Main, Python 3.12 | 36.74 s | 633.32 s | 53.77 s |
+| Main, Python 3.14 | 36.59 s | 643.51 s | 54.04 s |
+| Final, Python 3.12 | 18.28 s | 492.10 s | 53.77 s |
+| Final, Python 3.14 | 18.17 s | 499.57 s | 53.73 s |
+
+These totals use pytest's rounded duration lines. The remaining difference
+from wall time includes collection and runner overhead.
+
 Collection selects 364 external cases and 1,318 Python cases, for 1,682 total.
 The selections have zero overlap and zero uncovered cases. Markers are attached
 to individual tests, so new unmarked tests enter both Python jobs.
 
-Full serial and parallel results and the remaining
-performance acceptance work will be recorded after verification. The target
-is a reduction of at least 50% in the median longest test job, with lower total
-runner time, across three comparable before and after CI runs. Do not infer
-that target from parameterization, case counts, or a single local run.
+The following failure checks remain active:
+
+| Fault | Evidence |
+|---|---|
+| Retired inference call | The command-fixture contract sends both operations to the fake and requires exit code 2. |
+| Leaked synthetic value | `test_shell_masks_secrets_in_logs` sends a synthetic value through a real subprocess. A temporary pytest hook disabled `Shell.mask`; the test failed at its output assertion as expected. The hook changed no source file. |
+| Failed backup | `test_a_failed_backup_never_deletes_the_sandbox` checks that a failed download preserves the original sandbox. |
+| Corrupt restore | `test_restore_rejects_corrupted_source_archive_before_upload` rejects a changed archive before upload. The content/mode cases execute real GNU tar and preserve retry data on failure. |
+| Missing proxy binding | `test_named_credentials_have_distinct_markers_and_require_each_binding` removes a required binding and requires an installer error. |
+| Failed shared checks | `test_matrix_check_propagates_shared_result` executes the workflow gate with success, failure, cancellation, and skipped results. Only success returns zero. |
+
+The gateway process scan found no running test gateways or supervisors after
+the revised process tests. The foreign-gateway case also verifies that one
+test cannot stop another test's process. PKI-copy and render-cache contracts
+check that changes to one caller's files or documents do not affect another.
+
+The documented Make commands passed on Ubuntu: aggregate lint, interface lint,
+one file, name selection, one lifecycle test, and complete phase reports.
+The full suite passed serially and with two workers on both Python versions.
+Collection through Make confirmed both CI selections. Documentation checks
+also verified local links and matched all 20 removed functions to this map.
+
+An initial CI sample at `f782adf` exposed a separate archive collision in
+`test_profile_model_changes_remove_only_managed_choices[recreated]`. Two workers
+could use `/tmp/saw-sandbox-archives` with the same sandbox name and timestamp.
+One worker then removed the other worker's backup. The fixture now sets a
+private `TMPDIR` and Python's cached temporary root. Its contract checks the
+parent process, a child process, and the default archive path. Final acceptance
+runs use `002b77d`, which includes this fix. Initial CI samples are not used for
+the final performance claim.
+
+## Three-run CI comparison
+
+The baseline runs use `533be02` in `validatedpatterns-sandbox/secure-agent-workspace`.
+The final runs use `002b77d` in the `Hadar301/secure-agent-workspace` origin fork.
+Both are public repositories and use the same GitHub-hosted `ubuntu-24.04`
+runner label and tool setup. The removed-test map accounts for the scope change
+from 1,688 to 1,682 unique cases. PR #134 tests are excluded on both sides.
+
+All six runs below passed. Times use minutes and seconds. Job time runs from
+job start to completion. Total runner time sums all workflow jobs, including
+shared checks and bundle checks. Workflow elapsed time also includes queue
+time and job dependencies.
+
+| Run | Longest test job | Total runner time | Workflow elapsed |
+|---|---:|---:|---:|
+| [Before 1](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40856364059) | 28:35 | 50:10 | 28:40 |
+| [Before 2](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40860148096) | 27:12 | 53:43 | 27:17 |
+| [Before 3](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/40868375115) | 29:17 | 49:44 | 29:23 |
+| **Before median** | **28:35** | **50:10** | **28:40** |
+| [After 1](https://github.com/Hadar301/secure-agent-workspace/actions/runs/40868798998) | 11:47 | 22:03 | 13:00 |
+| [After 2](https://github.com/Hadar301/secure-agent-workspace/actions/runs/40870520645) | 11:11 | 23:16 | 12:28 |
+| [After 3](https://github.com/Hadar301/secure-agent-workspace/actions/runs/40872207552) | 11:27 | 22:39 | 12:51 |
+| **After median** | **11:27** | **22:39** | **12:51** |
+
+The median longest test job fell by **59.9%**.
+Median total runner time fell by **54.9%**.
+Median workflow elapsed time fell by **55.2%**.
+The change meets the target of at least 50% less time in the median longest
+test job, with lower total runner time. Runner variation remains visible in
+the individual samples; these are measurements, not a runtime guarantee.
+
+All three final runs published JUnit and duration reports. Each shared job
+ran 364 cases with no skips. Each Python job ran 1,318 cases: 1,315 passed and
+the same three cases skipped. The skips cover the absent committed APF bundle
+and two Rust checks whose `serde_json` dependency was not in the Cargo cache.
+The local Linux runs skip those same Rust cases because Cargo is absent.
+No new skipped cases were introduced.
+
+An earlier baseline run exceeded the Python 3.14 job timeout. It was replaced
+by the completed Before 3 sample and remains in the excluded-run record.
+The initial `f782adf` runs are also retained there, including the archive
+collision described above. The failed initial run successfully uploaded its
+JUnit result and duration log.
+
+The [machine-readable results](testing-ci-results.json) contain source commits,
+case counts, individual job times, local phase totals, skipped case IDs, and
+excluded runs. Final CI reports are available from the linked runs. Full local
+logs and JUnit files are retained in the ignored `test-results/ci-test-flow/`
+directory.

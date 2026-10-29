@@ -14,8 +14,8 @@ Update both dependency declarations and run `uv lock` when you add a package.
 For the complete suite, use Ubuntu 24.04 with Python 3.12 or 3.14, GNU Make,
 Bash, Helm 3.17.3, Node 22, Go from `credential-proxy/go.mod`, OpenSSL, Git,
 OpenSSH tools, `jq`, `envsubst` (gettext), GNU coreutils (`shred`, `timeout`,
-`stat`, `install`), GNU tar,
-`flock`, and `pgrep`/`pkill`. Some unit checks also use `systemd-analyze`.
+`stat`, `install`), GNU tar, `flock`, and `pgrep`/`pkill`. Some unit checks also
+use `systemd-analyze`.
 The Go binary check can download Go modules on its first run.
 Embedded Rust checks need Cargo and cached `serde_json` dependencies. They
 report a skip if those dependencies are absent; the image build runs them too.
@@ -31,12 +31,14 @@ Run these commands from the repository root:
 # Install the locked local dependencies.
 uv sync --locked
 
-# Complete suite, serial by default. Both targets are supported.
+# Complete suite, serial by default. Use either supported target.
 make test
 make test-installer
 
-# One file, then one test.
+# One file.
 make test TEST_PATHS=tests/installer/test_profiles.py
+
+# Select cases by name, or run one exact test.
 make test TEST_PATHS=tests/installer/test_profiles.py PYTEST_ARGS='-k bad'
 make test TEST_PATHS=tests/installer/test_apply_profiles.py::test_shipped_profile_lifecycle
 
@@ -48,9 +50,12 @@ make test PYTEST_ARGS='-n 2 --dist=load'
 mkdir -p test-results
 make test PYTEST_ARGS='-n 2 --dist=load --durations=40 -ra --junitxml=test-results/local.xml'
 
+# Inspect every setup, call, and teardown for a focused file.
+make test TEST_PATHS=tests/installer/test_profiles.py PYTEST_ARGS='--durations=0 --durations-min=0'
+
 # CI selections: external checks once; project Python behavior on both versions.
 make lint-static
-make test PYTEST_ARGS='-m ci_external -n 2 --dist=load'
+uv run --python 3.14 --locked make test PYTHON=python PYTEST_ARGS='-m ci_external -n 2 --dist=load'
 uv run --python 3.12 --locked make test PYTHON=python PYTEST_ARGS='-m "not ci_external" -n 2 --dist=load'
 uv run --python 3.14 --locked make test PYTHON=python PYTEST_ARGS='-m "not ci_external" -n 2 --dist=load'
 
@@ -62,7 +67,7 @@ make lint-interface
 `TEST_PATHS` selects files or pytest node IDs. `PYTEST_ARGS` adds pytest
 selection, timing, report, and worker options. `PYTHON` remains an optional
 interpreter override. Without it, Make runs `uv run --locked pytest`.
-Use `--collect-only -q` with either marker selection to inspect membership.
+Use `--collect-only` with either marker selection to inspect membership.
 
 ## Choose the test level
 
@@ -86,7 +91,8 @@ whose ownership or removal they inspect. A harness test usually needs one
 sandbox. Request complete shipped profiles only to check their contract or
 interaction between sandboxes.
 
-In installer tests, `fake_commands` provides isolated command state and HOME.
+In installer tests, `fake_commands` provides isolated command state, HOME,
+and temporary directories for Python and its child processes.
 `fake_env` also copies gateway certificates. `config` adds an admin identity.
 Do not request PKI or full installer inputs when a function test needs neither.
 Session fixtures share immutable certificate bytes; each test owns its files,
@@ -126,9 +132,11 @@ the implementation where practical.
 
 Put mutable state in `tmp_path`. Allocate ports dynamically. Keep sockets open
 until ownership transfers where possible. Avoid fixed port numbers and shared
-repository files. Clean up processes, child processes, sockets, and threads in
-`finally` blocks or fixture teardown. Wait for process exit and thread completion
-with a bound. Tests must work in serial and with `-n 2 --dist=load`.
+repository files. Check default temporary paths too: two tests can use the
+same backup name even when their input files are separate. Clean up processes,
+child processes, sockets, and threads in `finally` blocks or fixture teardown.
+Wait for process exit and thread completion with a bound. Tests must work in
+serial and with `-n 2 --dist=load`.
 
 Use `fake_clock` for installer retry and deadline logic. It advances monotonic
 time when the code sleeps. A no-op sleep with a real clock can create a busy
