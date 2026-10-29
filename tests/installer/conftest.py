@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,12 @@ def tree_digest_of_shipped_bundle():
 @pytest.fixture
 def fake_commands(tmp_path, monkeypatch):
     """Isolate commands, state and HOME without creating any certificates."""
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    monkeypatch.setenv("TMPDIR", str(temporary))
+    # tempfile caches its first directory. Isolate the current process too;
+    # otherwise parallel migrations can share /tmp/saw-sandbox-archives.
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary))
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir()
     for fake in FAKES.iterdir():

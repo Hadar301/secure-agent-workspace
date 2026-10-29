@@ -1,5 +1,8 @@
 """Guard the isolation and strict command contracts used by installer tests."""
 import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
 from conftest import copy_pki
 
@@ -16,8 +19,15 @@ def test_pki_copies_do_not_share_mutable_files(gateway_pki, tmp_path):
     assert not (second / "ca.key").exists()
 
 
-def test_command_fixture_has_no_pki_and_rejects_retired_routes(fake_commands):
+def test_command_fixture_has_no_pki_and_rejects_retired_routes(fake_commands, ab, tmp_path):
     assert not (fake_commands.home / ".local/state/openshell/tls").exists()
+    temporary = tmp_path / "tmp"
+    assert Path(tempfile.gettempdir()) == temporary
+    child = subprocess.run([sys.executable, "-c", "import tempfile; print(tempfile.gettempdir())"],
+                           capture_output=True, text=True, check=True)
+    assert Path(child.stdout.strip()) == temporary
+    applier = ab.ProfileApplier(ab.Shell(), {"mtlsGateway": "test"}, {})
+    assert applier.archive_dir().is_relative_to(temporary)
     for operation in ("set", "delete"):
         result = subprocess.run(["openshell", "inference", operation], capture_output=True, text=True)
         assert result.returncode == 2, operation
