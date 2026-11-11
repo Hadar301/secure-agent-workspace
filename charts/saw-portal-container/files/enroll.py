@@ -26,12 +26,15 @@ def once(x):
     ns,t,hist="saw-"+u,"saw-ctl-"+r,"saw-history-"+r
     def obj(kind,name,namespace=ns):
         if kind=="namespace":return api("/api/v1/namespaces/"+name)
+        if kind=="runtimeclass":return api("/apis/node.k8s.io/v1/runtimeclasses/"+name)
         plural={"persistentvolumeclaim":"persistentvolumeclaims","configmap":"configmaps"}[kind]
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
+    workload_runtime=x.get("workloadRuntimeClass", "")
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode="container",trustedNamespace=t,
-             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
+             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]),
+             workloadRuntimeClass=workload_runtime)
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)
@@ -68,6 +71,9 @@ def once(x):
         slots[key]=slot
     bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode="container",
        gatewayVersion="0.1.2-rhaiv.6",approvedCredentialFreeProviders=[],bindings=slots)
+    if workload_runtime:
+        bindings["workloadRuntimeClass"] = workload_runtime
+        bindings["workloadRuntimeClassUID"] = get(f"/apis/node.k8s.io/v1/runtimeclasses/{workload_runtime}")["metadata"]["uid"]
     if x.get("providerPolicy"):
         bindings["proxyBindings"] = [{"secret": b["secret"], "key": b["key"], "type": typ,
                                       "refresh": bool(b.get("refresh"))}

@@ -1,6 +1,7 @@
 """Read-only checks of the administrator-approved OpenShift installation."""
 import hashlib
 import json
+import re
 
 import yaml
 
@@ -26,7 +27,7 @@ def objects(config):
     apps = "/apis/apps/v1/namespaces"
     net = "/apis/networking.k8s.io/v1/namespaces"
     core = "/api/v1/namespaces"
-    return {
+    refs = {
         "validation": (f"{admission}/validatingadmissionpolicies/{policy}", "spec"),
         "podDeleteGuard": (f"{admission}/validatingadmissionpolicies/{ns}-pods-driver", "spec"),
         "podDeleteBinding": (f"{admission}/validatingadmissionpolicybindings/{ns}-pods-driver", "spec"),
@@ -53,6 +54,10 @@ def objects(config):
         "proxyPolicy": (f"{core}/{trusted}/configmaps/{config['proxyPolicy']}", "data"),
         "publicCA": (f"{core}/{ns}/configmaps/{gateway}-proxy-ca", "data"),
     }
+    runtime = config.get("workloadRuntimeClass", "")
+    if runtime:
+        refs["runtimeClass"] = (f"/apis/node.k8s.io/v1/runtimeclasses/{runtime}", "spec")
+    return refs
 
 
 def complete_list(get, path):
@@ -97,6 +102,12 @@ def verify(config, plan, get):
         if (meta.get("deletionTimestamp") or meta["uid"] != expected["uid"]
                 or fingerprint(obj[field]) != expected["sha256"]):
             raise BoundaryError("ChangedBoundary:" + key)
+        if key == "runtimeClass":
+            handler = obj.get("spec", {}).get("handler", "")
+            if meta.get("labels", {}).get("openshell.ai/sandbox-attachable") != "true":
+                raise BoundaryError("RuntimeClassNotApproved")
+            if not re.fullmatch(r"kata(?:-[a-z0-9]+)*", handler):
+                raise BoundaryError("RuntimeClassNotKata")
         observed[key] = obj
     for workspace in plan.get("workspaces", []):
         for provider in workspace["providers"]:

@@ -20,9 +20,16 @@ def contract(config, get):
     output = {}
     for key,(path,field) in objects(config).items():
         obj=get(path)
+        if key == "runtimeClass" and obj.get("metadata", {}).get("labels", {}).get("openshell.ai/sandbox-attachable") != "true":
+            raise BoundaryError("RuntimeClassNotApproved")
+        if key == "runtimeClass" and not re.fullmatch(r"kata(?:-[a-z0-9]+)*", obj.get("spec", {}).get("handler", "")):
+            raise BoundaryError("RuntimeClassNotKata")
         value=copy.deepcopy(obj[field])
         if key.startswith("governance"):
             # Cluster installation is shared across registrations. Keep both UID and hash.
+            output[key]={"uid":obj["metadata"]["uid"],"sha256":fingerprint(value)}
+            continue
+        if key == "runtimeClass":
             output[key]={"uid":obj["metadata"]["uid"],"sha256":fingerprint(value)}
             continue
         if key=="publicCA":

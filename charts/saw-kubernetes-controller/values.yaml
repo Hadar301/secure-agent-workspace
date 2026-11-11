@@ -3,5 +3,6 @@ image: ""
 configuration: {}
 stateClaim: ""
 claimNames: []
+sandboxNames: []
 trustedEgress: []
 imageBuildNamespace: ""

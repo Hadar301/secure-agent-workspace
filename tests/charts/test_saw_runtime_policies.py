@@ -159,6 +159,12 @@ def test_container_mode_requires_default_runtime_for_both_roles():
                 "object.spec.runtimeClassName == ''") in checks
 
 
+def test_kata_policy_requires_the_selected_workload_runtime_and_default_supervisor():
+    checks = expressions(render("--set", "workloadRuntimeClassName=kata"))
+    assert "variables.role != 'supervisor' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''" in checks
+    assert "variables.role != 'workload' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == \"kata\")" in checks
+
+
 def test_identity_fences_cover_creation_and_label_removal_on_update():
     vap = render()["ValidatingAdmissionPolicy"]["spec"]
     variables = {item["name"]: item["expression"] for item in vap["variables"]}
@@ -189,6 +195,7 @@ def test_empty_global_or_system_namespace_is_rejected(tmp_path, namespace):
     {"kata": {"workloadRuntimeClassName": "kata"}},
     {"kata": {"supervisorRuntimeClassName": "kata"}},
     {"kata": {"kyvernoMutationEnabled": True}},
+    {"workloadRuntimeClassName": "bad/class"},
 ])
 def test_missing_or_unsupported_inputs_fail_closed(tmp_path, values):
     rejected(tmp_path, values)

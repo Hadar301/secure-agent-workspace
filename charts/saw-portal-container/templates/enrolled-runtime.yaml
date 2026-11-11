@@ -7,10 +7,13 @@
 {{- $ctl := printf "saw-ctl-%s" $reg }}
 {{- $history := printf "saw-history-%s" $reg }}
 {{- $b := $e.intent.bindings }}
+{{- $workloadRuntime := include "portal.workloadRuntime" . | fromJson }}
 {{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode "container") (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
+{{- if ne (dig "workloadRuntimeClass" "" $b) $workloadRuntime.runtimeClassName }}{{ fail "enrolled workload runtime differs from the operator site selection" }}{{ end }}
 {{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $e.image) }}{{ fail "pinned controller image required" }}{{ end }}
 {{- $targets := include "portal.targets" . | fromJson }}
 {{- $claims := include "portal.claims" . | fromJsonArray }}
+{{- $sandboxNames := list }}{{- range $slot := $targets }}{{- $sandboxNames = append $sandboxNames (printf "%s--%s" $slot.workspace $slot.sandbox) }}{{- end }}
 {{- if ne (len $b.bindings) (len $targets) }}{{ fail "sandbox slot count mismatch" }}{{- end }}
 {{- $intent := dict "schemaVersion" 1 "generation" .Values.intentGeneration "desiredState" ($site.desiredState | default "Running") "bindings" $b "profileRef" $e.intent.profileRef }}
 {{- if $site.lifecycleVersion }}{{- $_ := set $intent "restartGeneration" $site.restartGeneration }}{{- end }}
@@ -107,6 +110,7 @@ spec:
         stateClaim: portal-ledger
         imageBuildNamespace: {{ $e.buildNamespace }}
         claimNames: {{ $claims | toJson }}
+        sandboxNames: {{ $sandboxNames | toJson }}
         configuration:
           gateway: {{ $u }}
           namespace: {{ $ns }}
@@ -116,6 +120,9 @@ spec:
           ownerID: {{ $b.ownerID }}
           namespaceUID: {{ $b.namespaceUID }}
           mode: container
+          workloadRuntimeClass: {{ $b.workloadRuntimeClass | default "" | quote }}
+          workloadRuntimeClassUID: {{ $b.workloadRuntimeClassUID | default "" | quote }}
+          sandboxNames: {{ $sandboxNames | toJson }}
           intent: saw-runtime-intent
           profile: saw-bom-profiles
           status: saw-runtime-status

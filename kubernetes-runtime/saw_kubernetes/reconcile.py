@@ -100,7 +100,7 @@ class Reconciler:
     providing a no-op in a deployment is not qualification.
     """
 
-    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None):
+    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None, verify_workload=None):
         self.rpc = rpc
         self.store = StateStore(state_directory)
         if not callable(verify_resources):
@@ -110,6 +110,7 @@ class Reconciler:
                                 getattr(verify_resources, "verify_shutdown", verify_resources))
         if not callable(self.verify_shutdown):
             raise ContractError("shutdown identity verifier must be callable")
+        self.verify_workload = verify_workload
 
     def _get(self, method, request, field):
         try:
@@ -185,6 +186,8 @@ class Reconciler:
         with self.store.locked():
             state = self.store.load()
             identity = {key: plan[key] for key in ["ownerID", "namespaceUID", "ownerSubject", "mode"]}
+            if plan["runtimeClass"]["name"]:
+                identity["runtimeClass"] = plan["runtimeClass"]
             if state and state.get("identity") != identity:
                 raise ContractError("workspace identity, owner and deployment mode are immutable")
             previous = state.get("intent", {})
@@ -429,6 +432,20 @@ class Reconciler:
             raise ContractError("sandbox reports an error; inspect through authorized diagnostics")
         target = "SANDBOX_PHASE_READY" if desired_state == "Running" else "SANDBOX_PHASE_STOPPED"
         if phase == target:
+            if desired_state == "Running" and plan["runtimeClass"]["name"]:
+                if not callable(self.verify_workload):
+                    raise ContractError("Kata readiness requires direct workload Pod verification")
+                sandbox_uid = self.verify_workload(plan, ws["name"], sname,
+                                                   existing.get("metadata", {}).get("id", ""))
+                if sandbox_uid is None:
+                    pending.append(ref)
+                    return False
+                identities = state.setdefault("kubernetesSandboxUIDs", {})
+                ref = f"{ws['name']}/{sname}"
+                if ref in identities and identities[ref] != sandbox_uid:
+                    raise ContractError("same-name Kubernetes Sandbox replacement requires explicit recovery")
+                identities[ref] = sandbox_uid
+                self.store.save(state)
             return True
         if desired_state == "Running" and phase == "SANDBOX_PHASE_STOPPED":
             self._mutate("StartSandbox", {**scope, "name": sname}, plan, generation)

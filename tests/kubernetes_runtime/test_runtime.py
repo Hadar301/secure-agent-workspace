@@ -73,6 +73,27 @@ def test_mount_count_respects_governance_envelope(source):
     assert len(compile_profile(*source)["claims"]) == 17
 
 
+def test_kata_runtime_class_is_operator_bound_and_in_desired_revision(source):
+    config = source[1]
+    config["workloadRuntimeClass"] = "kata-remote"
+    config["workloadRuntimeClassUID"] = "runtime-class-uid"
+    plan = compile_profile(*source)
+    sandbox = plan["workspaces"][0]["sandboxes"][0]
+    driver = sandbox["spec"]["template"]["driver_config"]["kubernetes"]
+    assert plan["runtimeClass"] == {"name": "kata-remote", "uid": "runtime-class-uid"}
+    assert "pod" not in driver
+    assert sandbox["annotations"]["saw.redhat.com/desired-sha256"] == digest({
+        "spec": sandbox["spec"], "runtimeClass": plan["runtimeClass"]})
+
+
+@pytest.mark.parametrize("runtime,uid", [("kata", ""), ("", "runtime-class-uid"), ("bad/name", "uid")])
+def test_runtime_class_requires_a_valid_name_and_uid_pair(source, runtime, uid):
+    source[1]["workloadRuntimeClass"] = runtime
+    source[1]["workloadRuntimeClassUID"] = uid
+    with pytest.raises(ContractError, match="RuntimeClass|DNS subdomain"):
+        compile_profile(*source)
+
+
 def flat_profile(source):
     return {f"profiles__developer__default__{path.name}": path.read_text()
             for path in (source[0] / "default").iterdir()}
@@ -615,3 +636,75 @@ def test_frontend_attachment_check_preserves_standalone_boundary_requirement():
     assert reads == [("namespace","saw-one")] and not boundary_calls
     verifier(plan)
     assert len(reads) == 2 and boundary_calls == [plan]
+
+
+def test_workload_readiness_checks_pod_owner_runtime_and_ready_condition():
+    plan = {"namespace": "saw-one", "runtimeClass": {"name": "kata", "uid": "runtime-class-uid"}}
+    sandbox = {"metadata": {"name": "default--toolbox", "uid": "sandbox-uid", "annotations": {
+        "openshell.ai/sandbox-id": "sandbox-id", "openshell.ai/sandbox-name": "toolbox",
+        "openshell.ai/sandbox-workspace": "default"}}}
+    pod = {"metadata": {"name": "default--toolbox", "uid": "pod-uid", "labels": {
+        "openshell.ai/boundary-role": "workload"}, "annotations": {"openshell.ai/sandbox-id": "sandbox-id"},
+        "ownerReferences": [{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+                              "name": "default--toolbox", "uid": "sandbox-uid", "controller": True}]},
+        "spec": {"runtimeClassName": "kata"}, "status": {"phase": "Running", "conditions": [
+            {"type": "Ready", "status": "True"}]}}
+    objects = {("sandbox", "default--toolbox"): sandbox, ("pod", "default--toolbox"): pod}
+    verifier = KubernetesResourceVerifier(lambda kind, name, namespace: objects[(kind, name)], lambda _: None)
+    assert verifier.verify_workload(plan, "default", "toolbox", "sandbox-id") == "sandbox-uid"
+    pod["spec"]["runtimeClassName"] = ""
+    with pytest.raises(ContractError, match="runtime differs"):
+        verifier.verify_workload(plan, "default", "toolbox", "sandbox-id")
+    pod["spec"]["runtimeClassName"] = "kata"
+    pod["status"]["conditions"][0]["status"] = "False"
+    assert verifier.verify_workload(plan, "default", "toolbox", "sandbox-id") is None
+
+
+def test_runtime_class_attachment_requires_an_approved_kata_handler():
+    plan = {"namespace": "saw-one", "namespaceUID": "ns-uid", "ownerID": "owner",
+            "claims": [], "runtimeClass": {"name": "kata", "uid": "runtime-class-uid"}}
+    runtimeclass = {"metadata": {"uid": "runtime-class-uid", "labels": {
+        "openshell.ai/sandbox-attachable": "true"}}, "spec": {"handler": "kata-remote"}}
+
+    def read(kind, name, namespace=None):
+        if kind == "namespace":
+            return {"metadata": {"uid": "ns-uid", "labels": {OWNER: "owner"}}}
+        return runtimeclass
+
+    verifier = KubernetesResourceVerifier(read, lambda _: None)
+    verifier.verify_attachments(plan)
+    runtimeclass["spec"]["handler"] = "runc"
+    with pytest.raises(ContractError, match="RuntimeClass"):
+        verifier.verify_attachments(plan)
+
+
+def test_ready_kata_sandbox_waits_for_real_workload_pod(source, tmp_path):
+    root, config = source
+    config["workloadRuntimeClass"] = "kata"
+    config["workloadRuntimeClassUID"] = "runtime-class-uid"
+    plan = compile_profile(root, config)
+    gateway = FakeGateway()
+    sandbox_uids = ["sandbox-uid"]
+    calls = []
+
+    def verify_workload(observed_plan, workspace, name, sandbox_id):
+        calls.append((workspace, name, sandbox_id))
+        if len(calls) == 1:
+            return None
+        return sandbox_uids[0]
+
+    reconciler = Reconciler(gateway, tmp_path / "kata-state", lambda _: None,
+                            verify_workload=verify_workload)
+    phases = []
+    for _ in range(4):
+        status = reconciler.reconcile(plan, generation=1)
+        phases.append(status["phase"])
+        for sandbox in gateway.sandboxes.values():
+            sandbox["status"]["phase"] = "SANDBOX_PHASE_READY"
+        if status["phase"] == "GenericReady":
+            break
+    assert phases[-2:] == ["Pending", "GenericReady"]
+    assert reconciler.store.load()["kubernetesSandboxUIDs"]["default/toolbox"] == "sandbox-uid"
+    sandbox_uids[0] = "replacement-uid"
+    with pytest.raises(ContractError, match="Kubernetes Sandbox replacement"):
+        reconciler.reconcile(plan, generation=1)

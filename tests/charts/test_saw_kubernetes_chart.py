@@ -95,6 +95,18 @@ def test_existing_claim_is_never_created_or_owned():
     assert next(v for v in volumes if v['name'] == 'data')['persistentVolumeClaim']['claimName'] == 'retained-gateway'
 
 
+def test_operator_selected_workload_runtime_class_does_not_change_gateway_runtime():
+    docs = render('--set', 'kubernetes.workload.runtimeClassName=kata')
+    driver = config(docs)['drivers']['kubernetes']
+    assert driver['default_runtime_class_name'] == 'kata'
+    gateway = docs['StatefulSet', 'saw-test-gateway']['spec']['template']['spec']
+    assert 'runtimeClassName' not in gateway
+    cluster = docs['ClusterRole', 'saw-test-saw-test-gateway']
+    runtime, = [r for r in cluster['rules'] if 'runtimeclasses' in r['resources']]
+    assert runtime == {'apiGroups': ['node.k8s.io'], 'resources': ['runtimeclasses'],
+                       'resourceNames': ['kata'], 'verbs': ['get']}
+
+
 def test_rbac_cannot_read_provider_secrets_or_control_other_namespaces():
     docs = render()
     role = docs['Role', 'saw-test-gateway']
@@ -136,7 +148,7 @@ def test_repeat_renders_have_no_random_keys_or_identity():
     'kubernetes.experimental=false', 'deployment.mode=confidential',
     'deployment.mode=vm', 'kubernetes.gateway.image=repo:latest',
     'kubernetes.identity.serverTlsSecret=', 'kubernetes.storage.className=',
-    'kubernetes.workload.runtimeClassName=kata', 'kubernetes.supervisor.runtimeClassName=kata',
+    'kubernetes.supervisor.runtimeClassName=kata',
     'oidc.issuerUrl=http://issuer.test', 'kubernetes.proxy.caConfigMap=',
     'kubernetes.governance.endpoint=http://outside.example.test:18081',
     'kubernetes.network.reconcilerNamespace=saw-test',

@@ -22,7 +22,7 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- if or (not $secret) (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" $secret)) -}}{{- fail (printf "kubernetes.identity.%s requires an existing retained Secret name" $name) -}}{{- end -}}
 {{- end -}}
 {{- if not $k.storage.className -}}{{- fail "kubernetes.storage.className must be explicit" -}}{{- end -}}
-{{- if $k.workload.runtimeClassName -}}{{- fail "container mode must use the default workload runtime" -}}{{- end -}}
+{{- if and $k.workload.runtimeClassName (or (gt (len $k.workload.runtimeClassName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" $k.workload.runtimeClassName))) -}}{{- fail "kubernetes.workload.runtimeClassName must be a DNS subdomain" -}}{{- end -}}
 {{- if not (regexMatch "^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$" .Values.oidc.issuerUrl) -}}{{- fail "oidc.issuerUrl must be explicit HTTPS without userinfo, query or fragment" -}}{{- end -}}
 {{- if not (or (regexMatch "^https://[^/?#@[:space:]]+/?$" $k.governance.endpoint) (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc(\\.cluster\\.local)?:[0-9]+$" $k.governance.endpoint)) -}}{{- fail "governance endpoint must be HTTPS without userinfo or the explicitly selected in-cluster HTTP gRPC Service" -}}{{- end -}}
 {{- if or (not (regexMatch "^https?://[^/?#@[:space:]]+:[0-9]+$" $k.proxy.url)) (not $k.proxy.caConfigMap) -}}{{- fail "configure the trusted credential proxy URL without userinfo and public CA ConfigMap" -}}{{- end -}}

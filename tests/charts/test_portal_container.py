@@ -85,6 +85,43 @@ def test_automatic_enrollment_cannot_read_secrets_or_mount_history():
     assert (files/"portal_contract.py").read_text()==(ROOT/"kubernetes-runtime/saw_kubernetes/portal_contract.py").read_text().replace("from .boundary import","from saw_kubernetes.boundary import")
 
 
+def test_kata_site_selection_pins_enrollment_reference_and_exact_read():
+    from copy import deepcopy
+    site = deepcopy(SITE)
+    site["workloadRuntime"] = {"kind": "kata", "runtimeClassName": "kata-remote"}
+    site["automaticEnrollment"]["reference"]["runtimeClass"] = {
+        "uid": "runtime-class-uid", "sha256": "a" * 64}
+    docs = render("saw-portal-container", U, "saw-" + U, {
+        "site": site, "owner": U, "registration": REG,
+        "installationID": user()["installationID"], "ownerSubject": SITE["subject"],
+        "vaultPrefix": user()["vaultPrefix"], "global": GLOBAL})
+    runtime_reads = [rule for obj in docs if obj["kind"] == "ClusterRole"
+                     for rule in obj["rules"] if "runtimeclasses" in rule["resources"]]
+    assert runtime_reads == [{"apiGroups": ["node.k8s.io"], "resources": ["runtimeclasses"],
+                              "resourceNames": ["kata-remote"], "verbs": ["get"]}]
+    configmap, = [obj for obj in docs if obj["kind"] == "ConfigMap" and obj["metadata"]["name"].startswith("bootstrap-")]
+    bootstrap = json.loads(configmap["data"]["config.json"])
+    assert bootstrap["workloadRuntimeClass"] == "kata-remote"
+
+
+def test_kata_site_selection_reaches_gateway_and_runtime_policy():
+    from copy import deepcopy
+    site = deepcopy(SITE)
+    site["workloadRuntime"] = {"kind": "kata", "runtimeClassName": "kata-remote"}
+    site["automaticEnrollment"]["reference"]["runtimeClass"] = {
+        "uid": "runtime-class-uid", "sha256": "a" * 64}
+    top = render("saw-users", "portal-ws-" + U, "saw-portal", {
+        "global": GLOBAL, "users": [user()], "containerSites": {U: site}})
+    portal_app, = [obj for obj in top if obj["kind"] == "Application"
+                   and obj["spec"]["source"]["path"] == "charts/saw-portal-container"]
+    resources = child(portal_app)
+    apps = [obj for obj in resources if obj["kind"] == "Application"]
+    gateway, = [obj for obj in apps if obj["spec"]["source"]["path"] == "charts/openshell-saw-kubernetes"]
+    policy, = [obj for obj in apps if obj["spec"]["source"]["path"] == "charts/saw-runtime-policies"]
+    assert gateway["spec"]["source"]["helm"]["valuesObject"]["kubernetes"]["workload"]["runtimeClassName"] == "kata-remote"
+    assert policy["spec"]["source"]["helm"]["valuesObject"]["workloadRuntimeClassName"] == "kata-remote"
+
+
 def test_multiple_catalog_sandboxes_receive_distinct_storage_and_ui_namespaces():
     import importlib.util
     spec = importlib.util.spec_from_file_location("portal_topology",ROOT/"charts/openshell-rhdh/files/portal.py")

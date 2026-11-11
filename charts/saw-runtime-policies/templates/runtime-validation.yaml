@@ -276,8 +276,12 @@ spec:
       message: Stock supervisor Pods must use the default container runtime.
       reason: Forbidden
     - expression: >-
-        variables.role != 'workload' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
-      message: Container-mode workload Pods must use the default container runtime.
+        variables.role != 'workload' || {{ if .Values.workloadRuntimeClassName }}
+        (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
+        {{ else }}
+        !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
+        {{ end }}
+      message: Workload Pods must use the operator-approved runtime class.
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

@@ -46,6 +46,21 @@ def test_unreviewed_differences_rejected(change):
     with pytest.raises(BoundaryError):verify_contract(cfg,live.__getitem__,expected)
 
 
+def test_runtime_class_contract_binds_uid_spec_and_kata_handler():
+    cfg, live, _ = resources()
+    cfg["workloadRuntimeClass"] = "kata-remote"
+    path = "/apis/node.k8s.io/v1/runtimeclasses/kata-remote"
+    live[path] = {"metadata": {"uid": "runtime-class-uid", "labels": {
+        "openshell.ai/sandbox-attachable": "true"}}, "spec": {"handler": "kata-remote"}}
+    approved = contract(cfg, live.__getitem__)
+    assert approved["runtimeClass"]["uid"] == "runtime-class-uid"
+    assert len(approved["runtimeClass"]["sha256"]) == 64
+    verify_contract(cfg, live.__getitem__, approved)
+    live[path]["metadata"]["uid"] = "replacement-uid"
+    with pytest.raises(BoundaryError, match="runtimeClass"):
+        verify_contract(cfg, live.__getitem__, approved)
+
+
 @pytest.mark.parametrize("keys", [["w/a"], ["w/a", "w/b"]])
 def test_admission_rebinds_only_the_same_slot(keys):
     import hashlib

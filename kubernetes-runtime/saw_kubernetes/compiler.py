@@ -21,6 +21,7 @@ OWNER = "saw.redhat.com/runtime-owner"
 REVISION = "saw.redhat.com/desired-sha256"
 MANAGED = "saw.redhat.com/managed-by"
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\Z")
+RUNTIME_CLASS = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*\Z")
 IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}\Z")
 QUANTITY = re.compile(r"[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?\Z")
 
@@ -245,8 +246,12 @@ def compile_profile_files(files, config):
     runtime = config.get("workloadRuntimeClass", "")
     if mode != "container":
         raise ContractError("this adapter only accepts container")
-    if runtime or config.get("workloadRuntimeClassUID"):
-        raise ContractError("container mode must not select a RuntimeClass")
+    runtime_uid = config.get("workloadRuntimeClassUID", "")
+    if (not isinstance(runtime, str) or len(runtime) > 253
+            or (runtime and not RUNTIME_CLASS.fullmatch(runtime))):
+        raise ContractError("workloadRuntimeClass must be a DNS subdomain")
+    if not isinstance(runtime_uid, str) or bool(runtime) != bool(runtime_uid):
+        raise ContractError("workload RuntimeClass name and UID must be bound together")
     approved = config["approvedCredentialFreeProviders"]
     if not isinstance(approved, list) or any(not isinstance(p, str) for p in approved):
         raise ContractError("approvedCredentialFreeProviders must be a list")
@@ -403,7 +408,8 @@ exec openclaw gateway""")
                 # The boundary binary runs before the main command and inherits
                 # image TMPDIR. OpenShift assigns a distinct UID per namespace.
                 spec["template"]["environment"] = {"TMPDIR": "/tmp"}
-            sandboxes.append({"name": sandbox.name, "spec": spec, "annotations": {REVISION: digest(spec)},
+            desired = spec if not runtime else {"spec": spec, "runtimeClass": {"name": runtime, "uid": runtime_uid}}
+            sandboxes.append({"name": sandbox.name, "spec": spec, "annotations": {REVISION: digest(desired)},
                               "labels": {MANAGED: "kubernetes-runtime", OWNER: owner}})
         workspaces.append({"name": ws_name, "providers": sorted(providers, key=lambda p: p["metadata"]["name"]),
                            "sandboxes": sorted(sandboxes, key=lambda s: s["name"])})

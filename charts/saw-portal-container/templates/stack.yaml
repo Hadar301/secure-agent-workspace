@@ -2,6 +2,7 @@
        must never become a Helm program or choose a source, namespace or chart. */ -}}
 {{- $site := .Values.site | default dict }}
 {{- $stack := $site.stack | default dict }}
+{{- $workloadRuntime := include "portal.workloadRuntime" . | fromJson }}
 {{- if $stack }}
 {{- $u := .Values.owner }}
 {{- $reg := .Values.registration }}
@@ -79,6 +80,7 @@ data:
 {{- if eq $key "policy" }}
 {{- $policy := fromJson $values }}
 {{- $gw := $stack.gateway.values.kubernetes }}
+{{- if and $site.enrollment (ne (dig "workloadRuntimeClass" "" $site.enrollment.intent.bindings) $workloadRuntime.runtimeClassName) }}{{ fail "site workload runtime differs from the enrolled runtime binding" }}{{- end }}
 {{- $slots := dict }}
 {{- range $key, $slot := $targets }}
 {{- $binding := dig "enrollment" "intent" "bindings" "bindings" $key dict $site }}
@@ -90,9 +92,16 @@ data:
 {{- $_ := set $policy "serverTLSSecret" (replace "@OWNER@" $u $gw.identity.serverTlsSecret) }}
 {{- $_ := set $policy "supervisorImage" (dig "supervisor" "image" $.Values.driverDefaults.supervisorImage $gw) }}
 {{- $_ := set $policy "runtimeImage" ($gw.workload.runtimeImage | default $.Values.driverDefaults.runtimeImage) }}
+{{- $_ := set $policy "workloadRuntimeClassName" $workloadRuntime.runtimeClassName }}
 {{- $proxyURL := replace "@TRUSTED@" $trusted (replace "@OWNER@" $u $gw.proxy.url) }}
 {{- $_ := set $policy "supervisorCommand" (list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501" "--upstream-proxy" $proxyURL "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/.openshell/supervisor/upstream-proxy-ca.pem") }}
 {{- $values = toJson $policy }}
+{{- end }}
+{{- if eq $key "gateway" }}
+{{- $gateway := fromJson $values }}
+{{- if and $site.enrollment (ne (dig "workloadRuntimeClass" "" $site.enrollment.intent.bindings) $workloadRuntime.runtimeClassName) }}{{ fail "site workload runtime differs from the enrolled runtime binding" }}{{- end }}
+{{- $_ := set $gateway.kubernetes.workload "runtimeClassName" $workloadRuntime.runtimeClassName }}
+{{- $values = toJson $gateway }}
 {{- end }}
 {{- if and (eq $key "proxy") $site.providerPolicy }}
 {{- $proxy := fromJson $values }}

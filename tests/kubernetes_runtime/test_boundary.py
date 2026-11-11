@@ -70,3 +70,29 @@ def test_second_tenant_network_precedence(installation, subject, disjoint):
     else:
         with pytest.raises(BoundaryError, match="EarlierNetworkPolicy"):
             verify(config, config, resources.__getitem__)
+
+
+def test_runtime_class_uid_spec_and_kata_handler_are_approved(installation):
+    config, resources, _, _ = installation
+    config["workloadRuntimeClass"] = "kata-remote"
+    path = "/apis/node.k8s.io/v1/runtimeclasses/kata-remote"
+    resources[path] = {"metadata": {"uid": "runtime-class-uid", "labels": {
+        "openshell.ai/sandbox-attachable": "true"}}, "spec": {"handler": "kata-remote"}}
+    approved = capture(config, resources.__getitem__)
+    verify(approved, approved, resources.__getitem__)
+    resources[path]["spec"]["handler"] = "runc"
+    with pytest.raises(BoundaryError, match="ChangedBoundary:runtimeClass"):
+        verify(approved, approved, resources.__getitem__)
+
+
+def test_runtime_class_must_be_labeled_and_use_a_kata_handler(installation):
+    config, resources, _, _ = installation
+    config["workloadRuntimeClass"] = "kata"
+    path = "/apis/node.k8s.io/v1/runtimeclasses/kata"
+    resources[path] = {"metadata": {"uid": "runtime-class-uid", "labels": {}},
+                       "spec": {"handler": "runc"}}
+    with pytest.raises(BoundaryError, match="RuntimeClassNotApproved"):
+        capture(config, resources.__getitem__)
+    resources[path]["metadata"]["labels"]["openshell.ai/sandbox-attachable"] = "true"
+    with pytest.raises(BoundaryError, match="RuntimeClassNotKata"):
+        capture(config, resources.__getitem__)

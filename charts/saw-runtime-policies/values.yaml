@@ -18,6 +18,7 @@ sandboxControllerUsername: system:serviceaccount:agent-sandbox-system:agent-sand
 slots: {}
 supervisorImage: ""
 runtimeImage: ""
+workloadRuntimeClassName: ""
 serverTLSSecret: ""
 supervisorCommand: []
 preparationImage: ""

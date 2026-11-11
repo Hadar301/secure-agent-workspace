@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 from urllib.parse import urlsplit
 
@@ -157,5 +158,53 @@ class KubernetesResourceVerifier:
         if runtime["name"]:
             obj = self.read("runtimeclass", runtime["name"])
             meta = self._identity(obj, runtime["uid"])
-            if meta.get("labels", {}).get("openshell.ai/sandbox-attachable") != "true":
+            handler = obj.get("spec", {}).get("handler", "")
+            if (meta.get("labels", {}).get("openshell.ai/sandbox-attachable") != "true"
+                    or not re.fullmatch(r"kata(?:-[a-z0-9]+)*", handler)):
                 raise ContractError("RuntimeClass has not been approved")
+
+    def verify_workload(self, plan, workspace, sandbox_name, sandbox_id):
+        """Verify the Ready workload Pod against its Sandbox and approved runtime."""
+        namespace = plan["namespace"]
+        kube_name = workspace + "--" + sandbox_name
+        sandbox = self.read("sandbox", kube_name, namespace)
+        if sandbox is None:
+            return None
+        sandbox_meta = sandbox.get("metadata", {})
+        annotations = sandbox_meta.get("annotations", {})
+        if (sandbox_meta.get("name") != kube_name or not sandbox_meta.get("uid")
+                or sandbox_meta.get("deletionTimestamp")
+                or annotations.get("openshell.ai/sandbox-id") != sandbox_id
+                or annotations.get("openshell.ai/sandbox-name") != sandbox_name
+                or annotations.get("openshell.ai/sandbox-workspace") != workspace):
+            raise ContractError("Sandbox identity changed")
+        pod_name = annotations.get("agents.x-k8s.io/pod-name") or kube_name
+        if pod_name != kube_name:
+            raise ContractError("Sandbox Pod name is outside the approved resource scope")
+        pod = self.read("pod", pod_name, namespace)
+        if pod is None:
+            return None
+        pod_meta = pod.get("metadata", {})
+        if (pod_meta.get("name") != pod_name or not pod_meta.get("uid")
+                or pod_meta.get("deletionTimestamp")):
+            raise ContractError("workload Pod identity changed")
+        owners = pod_meta.get("ownerReferences", [])
+        if (len(owners) != 1 or owners[0].get("controller") is not True
+                or owners[0].get("kind") != "Sandbox"
+                or owners[0].get("apiVersion") not in {"agents.x-k8s.io/v1alpha1", "agents.x-k8s.io/v1beta1"}
+                or owners[0].get("name") != kube_name
+                or owners[0].get("uid") != sandbox_meta.get("uid")):
+            raise ContractError("workload Pod is not owned by its Sandbox")
+        if pod_meta.get("labels", {}).get("openshell.ai/boundary-role") != "workload":
+            raise ContractError("workload Pod has the wrong boundary role")
+        if pod_meta.get("annotations", {}).get("openshell.ai/sandbox-id") != sandbox_id:
+            raise ContractError("workload Pod annotation does not match its Sandbox")
+        conditions = pod.get("status", {}).get("conditions", [])
+        if (pod.get("status", {}).get("phase") != "Running"
+                or not any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)):
+            return None
+        runtime = plan["runtimeClass"]["name"]
+        actual = pod.get("spec", {}).get("runtimeClassName", "")
+        if actual != runtime:
+            raise ContractError("workload Pod runtime differs from the approved RuntimeClass")
+        return sandbox_meta["uid"]

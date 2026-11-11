@@ -15,6 +15,9 @@
 {{- end -}}
 {{- end -}}
 {{- if ne .Values.mode "container" -}}{{- fail "mode must be container" -}}{{- end -}}
+{{- if and .Values.workloadRuntimeClassName (or (gt (len .Values.workloadRuntimeClassName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" .Values.workloadRuntimeClassName))) -}}
+{{- fail "workloadRuntimeClassName must be a DNS subdomain" -}}
+{{- end -}}
 {{- if eq .Values.network.priority nil -}}{{- fail "network.priority must be explicitly allocated by the administrator" -}}{{- end -}}
 {{- $priority := toString .Values.network.priority -}}
 {{- if or (not (regexMatch "^[0-9]+$" $priority)) (gt (int $priority) 99) -}}{{- fail "network.priority must be an integer from 0 to 99" -}}{{- end -}}
