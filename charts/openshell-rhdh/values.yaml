@@ -98,8 +98,8 @@ rhdh:
 portal:
   # Owner-visible catalog links for independently GitOps-managed workspaces.
   linkedWorkspaces: []
-  # Administrator-owned request allowlist. Kata appears only for owners with a
-  # reviewed RuntimeClass and an approved profile. Existing workspace mode is immutable.
+  # Administrator-owned request allowlist. Kata and CoCo appear only for owners
+  # with reviewed runtime placement and an approved profile. Existing mode is immutable.
   deploymentModes: [vm, kata]
   containerSites: {} # Administrator-owned, keyed by login; empty denies all container requests.
   # Use an existing Secret in portal.namespace for owner approvals that must
@@ -107,6 +107,11 @@ portal:
   # containerSites. When set, the form shows enabled modes and profiles; the
   # provisioner still checks the exact owner and profile against the Secret.
   containerSitesSecretName: ""
+  coco:
+    trusteeNamespace: trustee-operator-system
+    attestationPolicyConfigMap: attestation-policy
+    guestPolicyNamespace: imperative
+    guestPolicyConfigMap: initdata
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
   # Python 3 with the standard library is all portal.py needs.

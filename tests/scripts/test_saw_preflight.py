@@ -282,6 +282,91 @@ def test_portal_chart_uses_the_shared_preflight_source():
     assert projector_copy.read_bytes() == MODULE_PATH.read_bytes()
 
 
+def coco_platform():
+    observed, approval = runtime_class()
+    observed["metadata"]["name"] = "approved-remote"
+    observed["handler"] = "kata-remote"
+    observed.pop("scheduling")
+    approval.update(name="approved-remote", sha256=preflight.runtime_placement_digest(observed))
+    policy = {"allow": "reviewed-attestation-rule"}
+    configmap = {"metadata": {"namespace": "attestation-system", "name": "policy"},
+                 "data": policy}
+    guest_data = {"cdh.toml": "image_security_policy_uri = 'kbs:///default/security-policy/redhat-secure-sigstore'\n",
+                  "policy.rego": "package agent_policy\n"}
+    guest_configmap = {"metadata": {"namespace": "platform-system", "name": "initdata"},
+                       "data": guest_data}
+    source = "a" * 40
+    apps = {name: {"status": {"sync": {"status": "Synced", "revisions": [source, version]},
+                             "health": {"status": "Healthy"}}}
+            for name, version in (("sandbox", "0.2.1"),
+                                  ("sandbox-policies", "0.3.0"), ("trustee", "0.10.2"))}
+    site = {"cocoRuntimeClass": approval,
+            "coco": {"platform": "azure", "bypassAttestation": False,
+                     "securityPolicyFlavour": "redhat-secure-sigstore",
+                     "platformRevision": source,
+                     "applications": {name: app["status"]["sync"]["revisions"][1]
+                                      for name, app in apps.items()},
+                     "attestationPolicy": {"namespace": "attestation-system", "name": "policy",
+                                           "sha256": preflight.fingerprint(policy)},
+                     "guestPolicy": {"namespace": "platform-system", "name": "initdata",
+                                     "sha256": preflight.fingerprint(guest_data)}}}
+    kata_configs = [{"spec": {"enablePeerPods": True},
+                     "status": {"kataNodes": {"nodeCount": 2, "readyNodeCount": 2}}}]
+    infra = {"status": {"platformStatus": {"type": "Azure"}}}
+    version = {"status": {"desired": {"version": "4.22.0"},
+                          "conditions": [{"type": "Available", "status": "True"}]}}
+    return site, observed, kata_configs, infra, apps, configmap, guest_configmap, version
+
+
+def test_coco_preflight_accepts_approved_azure_peer_pods():
+    values = coco_platform()
+    assert preflight.verify_coco_platform(*values)
+    facts = {key: True for key in preflight.COMMON_CHECKS + preflight.COCO_CHECKS}
+    assert len(preflight.check_observations("coco", facts)) == len(facts)
+    facts["attestation"] = False
+    with pytest.raises(preflight.PreflightError, match="AttestationPolicyRejected"):
+        preflight.check_observations("coco", facts)
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ("handler", "RuntimeClassHandlerMismatch"),
+    ("uid", "RuntimeClassIdentityMismatch"),
+    ("placement", "RuntimeClassPlacementChanged"),
+    ("peerpods", "PeerPodsNotReady"),
+    ("azure", "CocoPlatformMismatch"),
+    ("trustee", "TrusteeNotReady"),
+    ("policy", "AttestationPolicyRejected"),
+    ("bypass", "AttestationPolicyRejected"),
+    ("guest", "GuestPolicyRejected"),
+    ("guestFlavour", "GuestPolicyInsecure"),
+])
+def test_coco_preflight_rejects_changed_platform(change, reason):
+    values = list(coco_platform())
+    site, runtime, configs, infra, apps, policy, guest, _ = values
+    if change == "handler":
+        runtime["handler"] = "runc"
+    elif change == "uid":
+        runtime["metadata"]["uid"] = "other"
+    elif change == "placement":
+        runtime["overhead"]["podFixed"]["memory"] = "256Mi"
+    elif change == "peerpods":
+        configs[0]["spec"]["enablePeerPods"] = False
+    elif change == "azure":
+        infra["status"]["platformStatus"]["type"] = "AWS"
+    elif change == "trustee":
+        apps["trustee"]["status"]["health"]["status"] = "Degraded"
+    elif change == "policy":
+        policy["data"]["allow"] = "changed"
+    elif change == "bypass":
+        site["coco"]["bypassAttestation"] = True
+    elif change == "guest":
+        guest["data"]["policy.rego"] = "changed"
+    elif change == "guestFlavour":
+        site["coco"]["securityPolicyFlavour"] = "insecure"
+    with pytest.raises(preflight.PreflightError, match=reason):
+        preflight.verify_coco_platform(*values)
+
+
 @pytest.mark.parametrize(("discovery", "available"), [
     ({"groupVersion": "admissionregistration.k8s.io/v1", "resources": [
         {"name": "validatingadmissionpolicies"},

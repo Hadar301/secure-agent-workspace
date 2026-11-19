@@ -9,7 +9,7 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- define "saw-kubernetes.validate" -}}
 {{- $k := .Values.kubernetes -}}
 {{- if not $k.experimental -}}{{- fail "Kubernetes integration is experimental; set kubernetes.experimental=true only for qualification" -}}{{- end -}}
-{{- if not (has .Values.deployment.mode (list "container" "kata")) -}}{{- fail "unsupported Kubernetes workspace mode" -}}{{- end -}}
+{{- if not (has .Values.deployment.mode (list "container" "kata" "coco")) -}}{{- fail "unsupported Kubernetes workspace mode" -}}{{- end -}}
 {{- if or (gt (len .Release.Name) 19) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Name)) -}}{{- fail "release name must be a DNS label of at most 19 characters" -}}{{- end -}}
 {{- $ns := .Release.Namespace -}}
 {{- if or (gt (len $ns) 50) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns)) (eq $ns "default") (hasPrefix "openshift" $ns) (hasPrefix "kube-" $ns) -}}{{- fail "gateway requires a dedicated non-system namespace of at most 50 characters" -}}{{- end -}}
@@ -23,7 +23,7 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- end -}}
 {{- if not $k.storage.className -}}{{- fail "kubernetes.storage.className must be explicit" -}}{{- end -}}
 {{- if and (eq .Values.deployment.mode "container") $k.workload.runtimeClassName -}}{{- fail "container mode must use the default workload runtime" -}}{{- end -}}
-{{- if and (eq .Values.deployment.mode "kata") (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $k.workload.runtimeClassName)) -}}{{- fail "kata requires an approved workload RuntimeClass name" -}}{{- end -}}
+{{- if and (has .Values.deployment.mode (list "kata" "coco")) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $k.workload.runtimeClassName)) -}}{{- fail "isolated mode requires an approved workload RuntimeClass name" -}}{{- end -}}
 {{- if not (regexMatch "^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$" .Values.oidc.issuerUrl) -}}{{- fail "oidc.issuerUrl must be explicit HTTPS without userinfo, query or fragment" -}}{{- end -}}
 {{- if not (or (regexMatch "^https://[^/?#@[:space:]]+/?$" $k.governance.endpoint) (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc(\\.cluster\\.local)?:[0-9]+$" $k.governance.endpoint)) -}}{{- fail "governance endpoint must be HTTPS without userinfo or the explicitly selected in-cluster HTTP gRPC Service" -}}{{- end -}}
 {{- if or (not (regexMatch "^https?://[^/?#@[:space:]]+:[0-9]+$" $k.proxy.url)) (not $k.proxy.caConfigMap) -}}{{- fail "configure the trusted credential proxy URL without userinfo and public CA ConfigMap" -}}{{- end -}}

@@ -10,7 +10,8 @@ from saw_kubernetes.adapters import KubernetesResourceVerifier
 from saw_kubernetes.audit import capture
 from saw_kubernetes.compiler import compile_profile_files, digest
 from saw_kubernetes.intent import build_intent
-from preflight import PreflightError, api_resources_available, crd_established, verify_kata_platform
+from preflight import (PreflightError, api_resources_available, crd_established,
+                       verify_kata_platform, verify_coco_platform)
 from portal_contract import verify_contract
 from receipt import receipt_key
 from gateway_ca import read_public_ca
@@ -29,8 +30,10 @@ def api(path, patch=None):
 def once(x):
     u,r,sub,ident=x["user"],x["registration"],x["subject"],x["installation"]
     ns,t,hist="saw-"+u,"saw-ctl-"+r,"saw-history-"+r
-    runtime=x.get("kataRuntimeClass")
-    mode="kata" if runtime else "container"
+    if x.get("kataRuntimeClass") and x.get("cocoRuntimeClass"):
+        raise PreflightError("RuntimeClassApprovalInvalid")
+    runtime=x.get("kataRuntimeClass") or x.get("cocoRuntimeClass")
+    mode="coco" if x.get("cocoRuntimeClass") else "kata" if runtime else "container"
     def obj(kind,name,namespace=ns):
         if kind=="runtimeclass" and runtime and name==runtime["name"]:
             return api("/apis/node.k8s.io/v1/runtimeclasses/"+name)
@@ -50,7 +53,7 @@ def once(x):
         except urllib.error.HTTPError as exc:
             if exc.code == 404:raise PreflightError("SandboxedContainersUnavailable") from None
             raise
-        nodes=api("/api/v1/nodes")["items"]
+        nodes=api("/api/v1/nodes")["items"] if mode=="kata" else []
         try:
             cluster_version=api("/apis/config.openshift.io/v1/clusterversions/version")
         except urllib.error.HTTPError as exc:
@@ -72,7 +75,20 @@ def once(x):
         api_readiness["admissionregistration.k8s.io/v1"] = api_resources_available(
             admission_discovery, "admissionregistration.k8s.io/v1",
             ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
-        verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
+        if mode=="kata":
+            verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
+        else:
+            coco=x.get("coco") or {}
+            policy=coco.get("attestationPolicy") or {}
+            guest=coco.get("guestPolicy") or {}
+            argo=x["argoNamespace"]
+            applications={name:api(f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/{name}")
+                          for name in ("sandbox","sandbox-policies","trustee")}
+            policy_configmap=api("/api/v1/namespaces/"+policy["namespace"]+"/configmaps/"+policy["name"])
+            guest_configmap=api("/api/v1/namespaces/"+guest["namespace"]+"/configmaps/"+guest["name"])
+            infrastructure=api("/apis/config.openshift.io/v1/infrastructures/cluster")
+            verify_coco_platform(x,runtime_class,configs,infrastructure,applications,
+                                 policy_configmap,guest_configmap,cluster_version)
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
              governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
     if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
@@ -142,7 +158,7 @@ if __name__=="__main__":
     for n in range(100):
         try:once(x);break
         except PreflightError as exc:
-            print("Kata preflight failed: "+exc.reason,flush=True)
+            print("Workspace preflight failed: "+exc.reason,flush=True)
             raise SystemExit(1)
         except Exception as exc:
             # Never log an API body, credential, or other input.

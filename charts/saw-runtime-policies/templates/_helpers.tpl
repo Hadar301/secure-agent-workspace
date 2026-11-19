@@ -14,7 +14,7 @@
 {{- fail (printf "%s must be a DNS label" $key) -}}
 {{- end -}}
 {{- end -}}
-{{- if eq .Values.mode "kata" -}}
+{{- if has .Values.mode (list "kata" "coco") -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .Values.workloadRuntimeClassName) -}}{{- fail "kata requires an approved workload RuntimeClass name" -}}{{- end -}}
 {{- else if or (ne .Values.mode "container") .Values.workloadRuntimeClassName -}}{{- fail "container placement must use the default runtime" -}}{{- end -}}
 {{- if eq .Values.network.priority nil -}}{{- fail "network.priority must be explicitly allocated by the administrator" -}}{{- end -}}

@@ -7,7 +7,8 @@
 {{- $ctl := printf "saw-ctl-%s" $reg }}
 {{- $history := printf "saw-history-%s" $reg }}
 {{- $b := $e.intent.bindings }}
-{{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode (ternary "kata" "container" (not (empty $site.kataRuntimeClass)))) (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
+{{- $mode := ternary "coco" (ternary "kata" "container" (not (empty $site.kataRuntimeClass))) (not (empty $site.cocoRuntimeClass)) }}
+{{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode $mode) (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
 {{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $e.image) }}{{ fail "pinned controller image required" }}{{ end }}
 {{- $targets := include "portal.targets" . | fromJson }}
 {{- $claims := include "portal.claims" . | fromJsonArray }}
@@ -116,7 +117,7 @@ spec:
           ownerID: {{ $b.ownerID }}
           namespaceUID: {{ $b.namespaceUID }}
           mode: {{ $b.mode }}
-{{- with $site.kataRuntimeClass }}
+{{- with ($site.kataRuntimeClass | default $site.cocoRuntimeClass) }}
           workloadRuntimeClass: {{ .name | quote }}
 {{- end }}
           intent: saw-runtime-intent

@@ -184,7 +184,7 @@ class Reconciler:
         body = {k: v for k, v in plan.items() if k != "revision"}
         if plan.get("sourceRevision") != SOURCE_REVISION or plan.get("schemaVersion") != 1 or digest(body) != plan.get("revision"):
             raise ContractError("invalid or modified compiled plan", safe_reason="InvalidPlan")
-        if plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
+        if plan.get("mode") not in ("container", "kata", "coco") or plan.get("requestedPlacement") != {
                 "supervisor": "container", "workload": plan["mode"]}:
             raise ContractError("stock adapter requires an ordinary-container supervisor",
                                 safe_reason="PlacementRejected")

@@ -23,7 +23,9 @@ def main():
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--show-objects", action="store_true", help="print the underlying public specs/data for review")
     output.add_argument("--profile-digest", action="store_true", help="print the rendered public BOM data digest for review")
-    parser.add_argument("--kata-runtime-class", help="review the Kata workload boundary for this class")
+    runtime = parser.add_mutually_exclusive_group()
+    runtime.add_argument("--kata-runtime-class", help="review a local Kata workload boundary")
+    runtime.add_argument("--coco-runtime-class", help="review an Azure CoCo peer-pod workload boundary")
     a = parser.parse_args()
     if not re.fullmatch("[a-z0-9]([-a-z0-9]{0,17}[a-z0-9])?", a.owner) or not re.fullmatch("[a-f0-9]{16}", a.registration):
         parser.error("invalid owner or registration")
@@ -49,10 +51,12 @@ def main():
     config = dict(namespace=ns, namespaceUID=meta["uid"], trustedNamespace="saw-ctl-" + a.registration,
                   ownerID=ident, mode="container", governanceNamespace=a.governance_namespace,
                   gateway=a.owner, proxyPolicy=a.owner + "-proxy-policy")
-    if a.kata_runtime_class:
-        if not re.fullmatch("[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", a.kata_runtime_class):
+    runtime_class = a.kata_runtime_class or a.coco_runtime_class
+    if runtime_class:
+        if not re.fullmatch("[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", runtime_class):
             parser.error("invalid RuntimeClass")
-        config.update(mode="kata", workloadRuntimeClass=a.kata_runtime_class)
+        config.update(mode="coco" if a.coco_runtime_class else "kata",
+                      workloadRuntimeClass=runtime_class)
     capture(config, read)  # same health, admission and network checks as enrollment
     if a.profile_digest:
         print(fingerprint(read(f"/api/v1/namespaces/{ns}/configmaps/saw-bom-profiles")["data"]))

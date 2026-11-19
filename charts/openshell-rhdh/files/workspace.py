@@ -168,15 +168,18 @@ def previous_child(application, appset, owner):
 
 
 def validate_runtime_placement(mode, site):
-    runtime = site.get("kataRuntimeClass")
-    if mode == "kata":
+    field = "cocoRuntimeClass" if mode == "coco" else "kataRuntimeClass"
+    runtime = site.get(field)
+    other = site.get("kataRuntimeClass" if mode == "coco" else "cocoRuntimeClass")
+    if mode in {"kata", "coco"}:
         if (not isinstance(runtime, dict) or set(runtime) != {"name", "uid", "sha256"}
+                or other is not None
                 or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", str(runtime["name"]))
                 or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", str(runtime["uid"]))
                 or not re.fullmatch(r"[a-f0-9]{64}", str(runtime["sha256"]))):
-            raise WorkspaceError("kata requires a reviewed site RuntimeClass")
-    elif runtime is not None:
-        raise WorkspaceError("container registration cannot use a Kata approval")
+            raise WorkspaceError("isolated mode requires one reviewed site RuntimeClass")
+    elif site.get("kataRuntimeClass") is not None or site.get("cocoRuntimeClass") is not None:
+        raise WorkspaceError("container registration cannot use a RuntimeClass approval")
 
 
 def project_workspace(workspace, defaults, site, catalog, read=None, previous=None):
@@ -218,7 +221,7 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     """
     ws = {**workspace, "values": {**workspace.get("values", {})}}
     mode = ws["values"].get("deployment", {}).get("mode", "vm")
-    if mode not in {"vm", "container", "kata"}:
+    if mode not in {"vm", "container", "kata", "coco"}:
         raise WorkspaceError("unsupported workspace deployment mode")
     ws["values"]["deployment"] = {"mode": mode}
     # This map belongs to the operator's installation configuration, never the

@@ -349,6 +349,61 @@ def test_static_kata_projector_can_read_only_approved_platform_metadata():
     assert all("secrets" not in rule.get("resources", []) for rule in role["rules"])
 
 
+def test_coco_render_keeps_gateway_on_default_runtime():
+    from copy import deepcopy
+    site = deepcopy(SITE)
+    site["cocoRuntimeClass"] = {"name": "kata-remote", "uid": "approved-uid",
+                                "sha256": "a" * 64}
+    site["coco"] = {"platform": "azure", "bypassAttestation": False,
+                    "securityPolicyFlavour": "redhat-secure-sigstore",
+                    "attestationPolicy": {"namespace": "attestation-system", "name": "policy",
+                                          "sha256": "b" * 64},
+                    "guestPolicy": {"namespace": "platform-system", "name": "initdata",
+                                    "sha256": "c" * 64}}
+    site["automaticEnrollment"]["reference"].update(
+        sandboxPlacement="a" * 64, sandboxPlacementBinding="b" * 64)
+    entry = user()
+    entry["values"] = {"deployment": {"mode": "coco"}}
+    root = render("saw-users", "portal-ws-" + U, "saw-portal", {
+        "global": GLOBAL, "users": [entry], "containerSites": {U: site}})
+    app, = [item for item in root if item.get("spec", {}).get("source", {}).get("path")
+            == "charts/saw-portal-container"]
+    resources = child(app)
+    gateway_app, = [item for item in resources if item.get("spec", {}).get("source", {}).get("path")
+                    == "charts/openshell-saw-kubernetes"]
+    gateway_values = gateway_app["spec"]["source"]["helm"]["valuesObject"]
+    assert gateway_values["deployment"]["mode"] == "coco"
+    assert gateway_values["kubernetes"]["workload"]["runtimeClassName"] == "kata-remote"
+    gateway_resources = child(gateway_app)
+    gateway_pods = [item for item in gateway_resources if item["kind"] == "StatefulSet"]
+    assert gateway_pods
+    assert all("runtimeClassName" not in item["spec"]["template"]["spec"]
+               for item in gateway_pods)
+    enrollment, = [item for item in resources if item["kind"] == "Job"]
+    assert "runtimeClassName" not in enrollment["spec"]["template"]["spec"]
+
+
+def test_coco_projector_reads_policy_without_secret_access():
+    entry = user()
+    entry["values"] = {"deployment": {"mode": "coco"}}
+    site = {**SITE, "cocoRuntimeClass": {"name": "kata-remote"},
+            "coco": {"attestationPolicy": {"namespace": "attestation-system", "name": "policy"},
+                     "guestPolicy": {"namespace": "platform-system", "name": "initdata"}}}
+    docs = render("saw-users", "workspaces", "saw-installation", {
+        "global": GLOBAL, "users": [entry], "containerSites": {U: site},
+        "projection": {"enabled": True, "applicationSetControllerLabels": {"app": "controller"},
+                       "egress": [{"ports": [{"protocol": "TCP", "port": 443}]}]}})
+    roles = [item for item in docs if item["kind"] in ("Role", "ClusterRole")]
+    assert any(item["metadata"].get("namespace") == "attestation-system"
+               and any(rule.get("resourceNames") == ["policy"] for rule in item["rules"])
+               for item in roles)
+    metadata_readers = [item for item in roles
+                        if item["metadata"].get("namespace") == "attestation-system"
+                        or item["metadata"]["name"].endswith("-preflight")]
+    assert all("secrets" not in rule.get("resources", []) for item in metadata_readers
+               for rule in item["rules"])
+
+
 def test_static_mixed_backends_keep_vm_resolution_in_the_root():
     values = {"global": GLOBAL, "users": [user(), {"name": "bob"}], "containerSites": {U: SITE},
               "ownerResolution": {"enabled": True},

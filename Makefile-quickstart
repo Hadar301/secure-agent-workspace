@@ -433,7 +433,7 @@ check-container-topology: ## Compare the reviewed site network overlay with live
 	@test -n "$${SAW_TOPOLOGY_OVERLAY}" || { echo "Set SAW_TOPOLOGY_OVERLAY" >&2; exit 1; }
 	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py --check "$${SAW_TOPOLOGY_OVERLAY}"
 
-saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm, container or kata
+saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm, container, kata or coco
 	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
 	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
@@ -441,7 +441,7 @@ saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DE
 .PHONY: saw-preflight
 saw-preflight: .check-saw-name .check-deployment-mode ## Check Kubernetes workspace prerequisites without changing the cluster
 	@if [ "$(DEPLOYMENT_MODE)" = vm ]; then \
-		echo "saw-preflight applies to container and kata modes" >&2; exit 1; \
+		echo "saw-preflight applies to container, kata and coco modes" >&2; exit 1; \
 	fi
 	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py preflight
 
@@ -674,7 +674,7 @@ saw-delete: sandbox-pre-delete ## Uninstall one sandbox and its owned namespace
 
 .PHONY: .check-deployment-mode
 .check-deployment-mode:
-	@case "$(DEPLOYMENT_MODE)" in vm|container|kata) ;; *) echo "DEPLOYMENT_MODE must be vm, container or kata" >&2; exit 1 ;; esac
+	@case "$(DEPLOYMENT_MODE)" in vm|container|kata|coco) ;; *) echo "DEPLOYMENT_MODE must be vm, container, kata or coco" >&2; exit 1 ;; esac
 
 .PHONY: .check-vm-deployment
 .check-vm-deployment: .check-deployment-mode

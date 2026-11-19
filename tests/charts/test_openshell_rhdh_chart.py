@@ -713,6 +713,27 @@ def test_invalid_operator_mode_policy_rejects_chart(modes):
     assert not result.stdout.strip()
 
 
+def test_coco_menu_requires_an_approved_owner_profile():
+    site = {"subject": "11111111-1111-4111-8111-111111111111",
+            "cocoRuntimeClass": {"name": "kata-remote",
+                                 "uid": "22222222-2222-4222-8222-222222222222",
+                                 "sha256": "a" * 64},
+            "automaticEnrollment": {"approvedProfiles": {"data-science": "b" * 64}}}
+    docs = render("--set-json", 'portal.deploymentModes=["vm","coco"]',
+                  "--set-json", "portal.containerSites=" + json.dumps({"alice": site}))
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    form = yaml.safe_load(templates["create-workspace.yaml"])
+    step, fields = _deployment_profiles(form)
+    assert step["properties"]["deploymentMode"]["enumNames"] == [
+        "Virtual machine", "Confidential container (CoCo)"]
+    assert fields["coco"]["enum"] == ["data-science"]
+
+    unapproved = render("--set-json", 'portal.deploymentModes=["vm","coco"]')
+    empty = yaml.safe_load(one(unapproved, "ConfigMap", "saw-rhdh-templates")["data"]["create-workspace.yaml"])
+    empty_step, _ = _deployment_profiles(empty)
+    assert empty_step["properties"]["deploymentMode"]["enum"] == ["vm"]
+
+
 def _deployment_profiles(form):
     step = form["spec"]["parameters"][-1]
     assert "profile" not in step["properties"], "a broad base enum would undo UI filtering"
@@ -913,3 +934,27 @@ def test_kata_forms_offer_only_profiles_approved_for_that_placement():
         assert fields["container"]["enum"] == ["custom-inference"]
         assert fields["kata"]["enum"] == ["data-science"]
         assert "site-kata" not in templates[name]
+
+
+def test_coco_forms_offer_only_profiles_approved_for_that_owner():
+    uid = "11111111-1111-1111-1111-111111111111"
+    sites = {
+        "alice": {"subject": uid,
+                  "automaticEnrollment": {"approvedProfiles": {"data-science": "1" * 64}}},
+        "bob": {"subject": "22222222-2222-2222-2222-222222222222",
+                "cocoRuntimeClass": {"name": "kata-remote", "uid": uid, "sha256": "2" * 64},
+                "automaticEnrollment": {"approvedProfiles": {"custom-inference": "3" * 64}}},
+    }
+    docs = render("--set-json", 'portal.deploymentModes=["vm","coco"]',
+                  "--set-json", 'portal.admins=["admin"]',
+                  "--set-json", "portal.containerSites=" + json.dumps(sites))
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        step, fields = _deployment_profiles(yaml.safe_load(templates[name]))
+        assert step["properties"]["deploymentMode"]["enumNames"] == [
+            "Virtual machine", "Confidential container (CoCo)"]
+        assert fields["coco"]["enum"] == ["custom-inference"]
+        assert "kata-remote" not in templates[name]
+    role = one(docs, "ClusterRole", "saw-portal-kata-preflight")
+    assert any(rule.get("apiGroups") == ["node.k8s.io"]
+               and rule.get("resources") == ["runtimeclasses"] for rule in role["rules"])

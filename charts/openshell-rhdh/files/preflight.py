@@ -33,6 +33,10 @@ CHECK_REASONS = {
     "registry": "RegistryUnavailable",
     "providerEgress": "ProviderEgressRejected",
     "revisions": "UnpinnedRevision",
+    "peerPods": "PeerPodsNotReady",
+    "trustee": "TrusteeNotReady",
+    "attestation": "AttestationPolicyRejected",
+    "guestPolicy": "GuestPolicyRejected",
 }
 
 COMMON_CHECKS = (
@@ -40,6 +44,7 @@ COMMON_CHECKS = (
     "storage", "secrets", "registry", "providerEgress", "revisions",
 )
 KATA_CHECKS = ("osc", "kataConfig", "workers", "runtimeClass")
+COCO_CHECKS = ("osc", "kataConfig", "runtimeClass", "peerPods", "trustee", "attestation", "guestPolicy")
 
 # This pinned image has /sandbox mode 0770, owned by 1000:0. The OpenShift
 # namespace UID cannot traverse it. The reviewed notebook build adds o+x.
@@ -135,12 +140,12 @@ def verify_boundary_hash(reference, key, observed):
 
 def verify_boundary_reference(reference, mode):
     """Require every policy approval before a new workspace can be reserved."""
-    if mode not in {"container", "kata"}:
+    if mode not in {"container", "kata", "coco"}:
         raise PreflightError("BoundaryApprovalInvalid")
     if not isinstance(reference, dict):
         raise PreflightError("BoundaryApprovalMissing")
     keys = {"validation", "binding"}
-    if mode == "kata":
+    if mode in {"kata", "coco"}:
         keys.update(("sandboxPlacement", "sandboxPlacementBinding"))
     for key in keys:
         approved = reference.get(key)
@@ -151,7 +156,7 @@ def verify_boundary_reference(reference, mode):
     return True
 
 
-def check_runtime_class(approved, observed):
+def check_runtime_class(approved, observed, *, handler="kata", require_scheduling=True):
     """Check a RuntimeClass and return fixed, safe failure reasons."""
     if not isinstance(approved, dict) or not approved.get("name"):
         raise PreflightError("RuntimeClassApprovalMissing")
@@ -164,14 +169,15 @@ def check_runtime_class(approved, observed):
         raise PreflightError("RuntimeClassNameMismatch")
     if not approved.get("uid") or metadata.get("uid") != approved["uid"]:
         raise PreflightError("RuntimeClassIdentityMismatch")
-    if observed.get("handler") != "kata":
+    if observed.get("handler") != handler:
         raise PreflightError("RuntimeClassHandlerMismatch")
     labels = metadata.get("labels") or {}
     if not isinstance(labels, dict):
         raise PreflightError("RuntimeClassNotAttachable")
     if labels.get("openshell.ai/sandbox-attachable") != "true":
         raise PreflightError("RuntimeClassNotAttachable")
-    if not isinstance(observed.get("scheduling"), dict) or not observed["scheduling"]:
+    if require_scheduling and (not isinstance(observed.get("scheduling"), dict)
+                               or not observed["scheduling"]):
         raise PreflightError("RuntimeClassSchedulingInvalid")
     approved_digest = approved.get("sha256")
     if not isinstance(approved_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", approved_digest):
@@ -187,9 +193,10 @@ def check_observations(mode, observations):
     Values are booleans produced by a read-only cluster adapter. Do not pass
     API responses, exception strings, URLs with credentials, or Secret data.
     """
-    if mode not in {"container", "kata"} or not isinstance(observations, dict):
+    if mode not in {"container", "kata", "coco"} or not isinstance(observations, dict):
         raise PreflightError("InvalidPreflightRequest")
-    required = COMMON_CHECKS + (KATA_CHECKS if mode == "kata" else ())
+    required = COMMON_CHECKS + (KATA_CHECKS if mode == "kata" else
+                                COCO_CHECKS if mode == "coco" else ())
     for check in required:
         if observations.get(check) is not True:
             raise PreflightError(CHECK_REASONS[check])
@@ -475,3 +482,73 @@ def verify_kata_platform(site, runtime_class, kata_configs, nodes, api_readiness
     if api_readiness.get("admissionregistration.k8s.io/v1") is not True:
         raise PreflightError("AdmissionUnavailable")
     return tuple(sorted(eligible))
+
+
+def verify_coco_platform(site, runtime_class, kata_configs, infrastructure,
+                         applications, policy_configmap, guest_policy_configmap,
+                         cluster_version):
+    """Verify approved Azure peer-pod and attestation metadata, never Secrets."""
+    verify_cluster_version(cluster_version)
+    coco = site.get("coco") if isinstance(site, dict) else None
+    if not isinstance(coco, dict) or coco.get("platform") != "azure":
+        raise PreflightError("CocoPlatformUnsupported")
+    if coco.get("bypassAttestation") is not False:
+        raise PreflightError("AttestationPolicyRejected")
+    if coco.get("securityPolicyFlavour") != "redhat-secure-sigstore":
+        raise PreflightError("GuestPolicyInsecure")
+    platform = (infrastructure or {}).get("status", {}).get("platformStatus", {})
+    if not isinstance(platform, dict) or platform.get("type") != "Azure":
+        raise PreflightError("CocoPlatformMismatch")
+    check_runtime_class(site.get("cocoRuntimeClass"), runtime_class,
+                        handler="kata-remote", require_scheduling=False)
+    if not isinstance(kata_configs, list) or not any(
+            isinstance(item, dict) and item.get("spec", {}).get("enablePeerPods") is True
+            and kata_config_ready(item) for item in kata_configs):
+        raise PreflightError("PeerPodsNotReady")
+    approved_apps = coco.get("applications")
+    platform_revision = coco.get("platformRevision")
+    if (not isinstance(approved_apps, dict)
+            or set(approved_apps) != {"sandbox", "sandbox-policies", "trustee"}
+            or not isinstance(platform_revision, str)
+            or not re.fullmatch(r"[a-f0-9]{40}", platform_revision)
+            or not isinstance(applications, dict)):
+        raise PreflightError("TrusteeNotReady")
+    for name, revision in approved_apps.items():
+        app = applications.get(name)
+        revisions = app.get("status", {}).get("sync", {}).get("revisions", []) if isinstance(app, dict) else []
+        if (not isinstance(revision, str) or not revision
+                or not isinstance(app, dict)
+                or not isinstance(revisions, list)
+                or platform_revision not in revisions or revision not in revisions
+                or app.get("status", {}).get("sync", {}).get("status") != "Synced"
+                or app.get("status", {}).get("health", {}).get("status") != "Healthy"):
+            raise PreflightError("TrusteeNotReady")
+    policy = coco.get("attestationPolicy")
+    if (not isinstance(policy, dict) or set(policy) != {"namespace", "name", "sha256"}
+            or not isinstance(policy_configmap, dict)
+            or policy_configmap.get("metadata", {}).get("name") != policy["name"]
+            or policy_configmap.get("metadata", {}).get("namespace") != policy["namespace"]
+            or not isinstance(policy.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", policy["sha256"])
+            or fingerprint(policy_configmap.get("data")) != policy["sha256"]):
+        raise PreflightError("AttestationPolicyRejected")
+    guest = coco.get("guestPolicy")
+    if (not isinstance(guest, dict) or set(guest) != {"namespace", "name", "sha256"}
+            or not isinstance(guest_policy_configmap, dict)
+            or guest_policy_configmap.get("metadata", {}).get("name") != guest["name"]
+            or guest_policy_configmap.get("metadata", {}).get("namespace") != guest["namespace"]
+            or not isinstance(guest.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", guest["sha256"])):
+        raise PreflightError("GuestPolicyRejected")
+    data = guest_policy_configmap.get("data")
+    if not isinstance(data, dict) or fingerprint(data) != guest["sha256"]:
+        raise PreflightError("GuestPolicyRejected")
+    cdh = data.get("cdh.toml")
+    if not isinstance(cdh, str) or not isinstance(data.get("policy.rego"), str):
+        raise PreflightError("GuestPolicyRejected")
+    selected = re.search(
+        r"(?m)^image_security_policy_uri\s*=\s*['\"]kbs:///default/security-policy/([a-z-]+)['\"]\s*$",
+        cdh)
+    if not selected or selected.group(1) != coco["securityPolicyFlavour"]:
+        raise PreflightError("GuestPolicyInsecure")
+    return True

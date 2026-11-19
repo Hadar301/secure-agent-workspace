@@ -101,6 +101,8 @@ def test_make_preflight_rejects_nontraversable_image_before_cluster_reads(monkey
 def test_make_preflight_rejects_a_stale_live_boundary_before_apply(monkeypatch):
     values, user = install.select(inputs(), "alice")
     site = values["containerSites"]["alice"]
+    site["automaticEnrollment"]["reference"].update(
+        sandboxPlacement="a" * 64, sandboxPlacementBinding="a" * 64)
     owner, registration, installation = (
         user["name"], user["registration"], user["installationID"])
     policy = "saw-saw-alice-runtime"
@@ -130,7 +132,7 @@ def test_make_preflight_rejects_a_stale_live_boundary_before_apply(monkeypatch):
     }
     monkeypatch.setattr(install, "get", lambda kind, name, namespace=None: objects.get((kind, name)))
     with pytest.raises(install.InstallError, match="BoundaryApprovalChanged"):
-        install.check_live_boundary_approval(site, "container", user)
+        install.check_live_boundary_approval(site, "coco", user)
 
 
 def test_preflight_fails_without_required_api_and_never_installs_dependency(monkeypatch):

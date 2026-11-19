@@ -155,8 +155,8 @@ from the release is enough and keeps renders stable.
 {{- if not (kindIs "string" $mode) -}}
 {{- fail "portal.deploymentModes must contain only strings" -}}
 {{- end -}}
-{{- if not (has $mode (list "vm" "container" "kata")) -}}
-{{- fail "portal.deploymentModes supports vm, container and kata" -}}
+{{- if not (has $mode (list "vm" "container" "kata" "coco")) -}}
+{{- fail "portal.deploymentModes supports vm, container, kata and coco" -}}
 {{- end -}}
 {{- if hasKey $seen $mode -}}{{- fail "portal.deploymentModes must not contain duplicates" -}}{{- end -}}
 {{- $_ := set $seen $mode true -}}
@@ -194,11 +194,11 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
-{{- $approved := dict "container" (dict) "kata" (dict) -}}
+{{- $approved := dict "container" (dict) "kata" (dict) "coco" (dict) -}}
 {{- if $root.Values.portal.containerSitesSecretName -}}
 {{- /* Secret contents are runtime-only. The pipeline performs owner-specific
       checks; the form can show the enabled site modes and catalog profiles. */ -}}
-{{- range $mode := list "container" "kata" -}}
+{{- range $mode := list "container" "kata" "coco" -}}
 {{- if has $mode $modes -}}
 {{- range $id := $step.properties.profile.enum -}}
 {{- $_ := set (index $approved $mode) $id true -}}
@@ -215,6 +215,13 @@ The server still verifies the authenticated owner's exact profile approval. */ -
 {{- fail "Kata site requires a reviewed RuntimeClass name, UID and placement digest" -}}{{- end -}}
 {{- $mode = "kata" -}}
 {{- end -}}
+{{- if hasKey $site "cocoRuntimeClass" -}}
+{{- if eq $mode "kata" -}}{{- fail "one site cannot select both Kata and CoCo" -}}{{- end -}}
+{{- $class := $site.cocoRuntimeClass -}}
+{{- if not (and (kindIs "map" $class) (eq (len $class) 3) (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($class.name | default ""))) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($class.uid | default ""))) (regexMatch "^[0-9a-f]{64}$" (toString ($class.sha256 | default "")))) -}}
+{{- fail "CoCo site requires a reviewed RuntimeClass name, UID and placement digest" -}}{{- end -}}
+{{- $mode = "coco" -}}
+{{- end -}}
 {{- range $id, $digest := ($site.automaticEnrollment | default dict).approvedProfiles | default dict -}}
 {{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set (index $approved $mode) $id true -}}{{- end -}}
 {{- end -}}
@@ -222,7 +229,7 @@ The server still verifies the authenticated owner's exact profile approval. */ -
 {{- end -}}
 {{- end -}}
 {{- $profilesByMode := dict -}}
-{{- range $mode := list "container" "kata" -}}
+{{- range $mode := list "container" "kata" "coco" -}}
 {{- $ids := list -}}{{- $names := list -}}
 {{- range $i, $id := $step.properties.profile.enum -}}
 {{- if hasKey (index $approved $mode) $id -}}
@@ -233,7 +240,7 @@ The server still verifies the authenticated owner's exact profile approval. */ -
 {{- $_ := set $profilesByMode $mode (dict "enum" $ids "enumNames" $names) -}}
 {{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enum" $modes -}}
-{{- $labels := dict "vm" "Virtual machine" "container" "Container" "kata" "Kata" -}}
+{{- $labels := dict "vm" "Virtual machine" "container" "Container" "kata" "Kata" "coco" "Confidential container (CoCo)" -}}
 {{- $names := list -}}
 {{- range $mode := $modes -}}{{- $names = append $names (index $labels $mode) -}}{{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enumNames" $names -}}

@@ -79,7 +79,7 @@ def select(values, name):
         raise InstallError("the inputs must contain exactly one matching user")
     user = users[0]
     mode = user.get("values", {}).get("deployment", {}).get("mode")
-    if mode not in {"container", "kata"} or mode != os.environ.get("DEPLOYMENT_MODE", "container"):
+    if mode not in {"container", "kata", "coco"} or mode != os.environ.get("DEPLOYMENT_MODE", "container"):
         raise InstallError("the selected user must explicitly select the requested Kubernetes deployment mode")
     config["ownerResolution"] = {**config.get("ownerResolution", {}), "enabled": False}
     for field, pattern in [("registration", r"[a-f0-9]{16}"),
@@ -175,7 +175,7 @@ def check_live_boundary_approval(site, mode, user):
                  policy, "validation", normalize=True)
         resource("validatingadmissionpolicybindings.admissionregistration.k8s.io",
                  policy, "binding")
-        if mode == "kata":
+        if mode in {"kata", "coco"}:
             resource("validatingadmissionpolicies.admissionregistration.k8s.io",
                      policy + "-kata", "sandboxPlacement")
             resource("validatingadmissionpolicybindings.admissionregistration.k8s.io",
@@ -261,6 +261,32 @@ def preflight(config, namespace, user):
             raise InstallError("Kata preflight failed: " + exc.reason) from None
         except (KeyError, TypeError, ValueError):
             raise InstallError("Kata preflight failed: KataPlatformUnavailable") from None
+    if mode == "coco":
+        approval = site.get("cocoRuntimeClass") or {}
+        policy = (site.get("coco") or {}).get("attestationPolicy") or {}
+        guest = (site.get("coco") or {}).get("guestPolicy") or {}
+        if (not approval.get("name") or not policy.get("name") or not policy.get("namespace")
+                or not guest.get("name") or not guest.get("namespace")):
+            raise InstallError("CoCo preflight failed: RuntimeClassApprovalMissing")
+        try:
+            runtime = get("runtimeclass", approval["name"])
+            configs = json.loads(run("oc", "get", "kataconfigs", "-o", "json"))["items"]
+            infrastructure = get("infrastructures.config.openshift.io", "cluster")
+            applications = {name: get("applications.argoproj.io", name, argo)
+                            for name in ("sandbox", "sandbox-policies", "trustee")}
+            policy_configmap = get("configmap", policy["name"], policy["namespace"])
+            guest_configmap = get("configmap", guest["name"], guest["namespace"])
+            preflight_checks.verify_coco_platform(site, runtime, configs, infrastructure,
+                                                  applications, policy_configmap,
+                                                  guest_configmap, version)
+            observations.update(osc=True, kataConfig=True, runtimeClass=True,
+                                peerPods=True, trustee=True, attestation=True,
+                                guestPolicy=True)
+            preflight_checks.check_observations("coco", observations)
+        except preflight_checks.PreflightError as exc:
+            raise InstallError("CoCo preflight failed: " + exc.reason) from None
+        except (KeyError, TypeError, ValueError):
+            raise InstallError("CoCo preflight failed: CocoPlatformUnavailable") from None
     check_live_boundary_approval(site, mode, user)
     return existing, argo
 

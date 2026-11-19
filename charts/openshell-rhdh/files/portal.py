@@ -387,11 +387,11 @@ def check_user(user):
 
 
 # Request policy is operator-owned, never taken from a form or registry entry.
-KUBERNETES_MODES = ("container", "kata")
+KUBERNETES_MODES = ("container", "kata", "coco")
 DEPLOYMENT_MODES = ("vm", *KUBERNETES_MODES)
 # A renderable foundation is not a qualified provisioning/readiness adapter.
 # Expand only when runtime lifecycle, BOM and readiness are implemented.
-PROVISIONABLE_MODES = ("vm",)
+PROVISIONABLE_MODES = ("vm", "coco")
 
 
 def container_site(user):
@@ -446,13 +446,13 @@ def deployment_modes():
     if (not isinstance(modes, list) or not modes or "vm" not in modes
             or any(not isinstance(m, str) or m not in DEPLOYMENT_MODES for m in modes)
             or len(set(modes)) != len(modes)):
-        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container, kata")
+        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container, kata, coco")
     return tuple(modes)
 
 
 def validate_deployment_mode(mode):
     if not isinstance(mode, str) or mode not in DEPLOYMENT_MODES:
-        raise PortalError("deploymentMode must be one of vm, container, kata")
+        raise PortalError("deploymentMode must be one of vm, container, kata, coco")
     return mode
 
 
@@ -808,7 +808,7 @@ def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
     resource(admission + "/validatingadmissionpolicies/" + policy,
              "validation", normalize=True)
     resource(admission + "/validatingadmissionpolicybindings/" + policy, "binding")
-    if mode == "kata":
+    if mode in {"kata", "coco"}:
         resource(admission + "/validatingadmissionpolicies/" + policy + "-kata",
                  "sandboxPlacement")
         resource(admission + "/validatingadmissionpolicybindings/" + policy + "-kata",
@@ -896,6 +896,34 @@ def check_workspace_preflight(k8s, user, site, mode, profile, catalog):
             raise PortalError("Kata preflight failed: " + exc.reason) from None
         except Exception:
             raise PortalError("Kata preflight failed: KataPlatformUnavailable") from None
+    if mode == "coco":
+        approval = site.get("cocoRuntimeClass") if isinstance(site, dict) else None
+        policy = (site.get("coco") or {}).get("attestationPolicy") if isinstance(site, dict) else None
+        guest = (site.get("coco") or {}).get("guestPolicy") if isinstance(site, dict) else None
+        if (not isinstance(approval, dict) or not approval.get("name")
+                or not isinstance(policy, dict) or not isinstance(guest, dict)):
+            raise PortalError("CoCo preflight failed: RuntimeClassApprovalMissing")
+        try:
+            argo = env("ARGO_NAMESPACE")
+            runtime_class = k8s.call("GET", "/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+            configs = k8s.call("GET", "/apis/kataconfiguration.openshift.io/v1/kataconfigs").get("items", [])
+            infrastructure = k8s.call("GET", "/apis/config.openshift.io/v1/infrastructures/cluster")
+            apps = {name: k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/{name}")
+                    for name in ("sandbox", "sandbox-policies", "trustee")}
+            policy_configmap = k8s.call("GET", "/api/v1/namespaces/" + policy["namespace"]
+                                        + "/configmaps/" + policy["name"])
+            guest_configmap = k8s.call("GET", "/api/v1/namespaces/" + guest["namespace"]
+                                       + "/configmaps/" + guest["name"])
+            _preflight.verify_coco_platform(site, runtime_class, configs, infrastructure,
+                                            apps, policy_configmap, guest_configmap,
+                                            cluster_version)
+            observations.update(osc=True, kataConfig=True, runtimeClass=True,
+                                peerPods=True, trustee=True, attestation=True,
+                                guestPolicy=True)
+        except _preflight.PreflightError as exc:
+            raise PortalError("CoCo preflight failed: " + exc.reason) from None
+        except Exception:
+            raise PortalError("CoCo preflight failed: CocoPlatformUnavailable") from None
     try:
         _preflight.check_observations(mode, observations)
     except _preflight.PreflightError as exc:

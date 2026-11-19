@@ -83,6 +83,7 @@ individual workspace must not uninstall this cluster-wide dependency.
 ## Public inputs and credential references
 
 For Kata workload placement, follow the [Kata installation and Developer Hub guide](kata-workspaces.md). Both modes use the same Kubernetes lifecycle and workspace BOM.
+For Azure peer-pod confidential containers, follow the [CoCo installation guide](coco-workspaces.md).
 
 The same site object is used as `containerSites.<owner>` for static installs or
 `portal.containerSites.<owner>` for RHDH. It is administrator-owned, not a form

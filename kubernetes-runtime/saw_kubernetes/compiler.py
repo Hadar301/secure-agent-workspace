@@ -265,20 +265,20 @@ def compile_profile_files(files, config):
     if mode == "container":
         if any(runtime_ref.values()) or "workloadRuntimeClassDigest" in config:
             raise ContractError("container mode must not select a RuntimeClass")
-    elif mode == "kata":
+    elif mode in ("kata", "coco"):
         name(runtime, "workload RuntimeClass", 63)
         try:
             uid = uuid.UUID(runtime_ref["uid"])
             if str(uid) != runtime_ref["uid"] or not uid.int:
                 raise ValueError()
         except (ValueError, AttributeError, TypeError):
-            raise ContractError("kata requires a reviewed RuntimeClass UID") from None
+            raise ContractError("isolated mode requires a reviewed RuntimeClass UID") from None
         sha = config.get("workloadRuntimeClassDigest")
         if not isinstance(sha, str) or not re.fullmatch("[a-f0-9]{64}", sha):
-            raise ContractError("kata requires a reviewed RuntimeClass digest")
+            raise ContractError("isolated mode requires a reviewed RuntimeClass digest")
         runtime_ref["sha256"] = sha
     else:
-        raise ContractError("this adapter only accepts container or kata")
+        raise ContractError("this adapter only accepts container, kata or coco")
     approved = config["approvedCredentialFreeProviders"]
     if not isinstance(approved, list) or any(not isinstance(p, str) for p in approved):
         raise ContractError("approvedCredentialFreeProviders must be a list")

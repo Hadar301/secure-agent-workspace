@@ -76,17 +76,19 @@ data:
 {{- range $k, $v := $map }}
 {{- $values = replace (printf "@%s@" $k) $v $values }}
 {{- end }}
-{{- if and (eq $key "gateway") $site.kataRuntimeClass }}
+{{- if and (eq $key "gateway") (or $site.kataRuntimeClass $site.cocoRuntimeClass) }}
 {{- $gateway := fromJson $values }}
-{{- $_ := set $gateway "deployment" (dict "mode" "kata") }}
-{{- $_ := set $gateway.kubernetes.workload "runtimeClassName" $site.kataRuntimeClass.name }}
+{{- $_ := set $gateway "deployment" (dict "mode" (ternary "coco" "kata" (not (empty $site.cocoRuntimeClass)))) }}
+{{- /* This field sets the driver default for worker Pods in gateway.toml.
+      The gateway StatefulSet PodSpec has no runtimeClassName. */ -}}
+{{- $_ := set $gateway.kubernetes.workload "runtimeClassName" ($site.kataRuntimeClass | default $site.cocoRuntimeClass).name }}
 {{- $values = toJson $gateway }}
 {{- end }}
 {{- if eq $key "policy" }}
 {{- $policy := fromJson $values }}
-{{- if $site.kataRuntimeClass }}
-{{- $_ := set $policy "mode" "kata" }}
-{{- $_ := set $policy "workloadRuntimeClassName" $site.kataRuntimeClass.name }}
+{{- if or $site.kataRuntimeClass $site.cocoRuntimeClass }}
+{{- $_ := set $policy "mode" (ternary "coco" "kata" (not (empty $site.cocoRuntimeClass))) }}
+{{- $_ := set $policy "workloadRuntimeClassName" ($site.kataRuntimeClass | default $site.cocoRuntimeClass).name }}
 {{- end }}
 {{- $gw := $stack.gateway.values.kubernetes }}
 {{- $slots := dict }}

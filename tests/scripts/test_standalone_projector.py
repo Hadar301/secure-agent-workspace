@@ -28,9 +28,16 @@ def projector(monkeypatch):
     return load("projector")
 
 
-def test_gitops_preflight_stops_stale_policy_before_projection(projector):
+def test_gitops_preflight_stops_stale_policy_before_projection(projector, monkeypatch):
     cfg = config()
     owner = cfg["users"][0]
+    owner["values"]["deployment"]["mode"] = "kata"
+    cfg["containerSites"][owner["name"]]["kataRuntimeClass"] = {
+        "name": "approved-kata", "uid": "11111111-1111-4111-8111-111111111111",
+        "sha256": "a" * 64}
+    cfg["containerSites"][owner["name"]]["automaticEnrollment"]["reference"].update(
+        sandboxPlacement="a" * 64, sandboxPlacementBinding="a" * 64)
+    monkeypatch.setattr(projector.preflight, "verify_kata_platform", lambda *args: True)
     ns = "saw-" + owner["name"]
     policy = "saw-" + ns + "-runtime"
 
@@ -97,6 +104,67 @@ def test_gitops_kata_preflight_checks_live_runtime(projector):
     runtime["handler"] = "runc"
     with pytest.raises(projector.preflight.PreflightError, match="RuntimeClassHandlerMismatch"):
         projector.verify_gitops_preflight(owner, site, "kata", read)
+
+
+def test_gitops_coco_preflight_runs_for_static_site(projector, monkeypatch):
+    monkeypatch.setenv("ARGO_NAMESPACE", "vp-gitops")
+    revision = "a" * 40
+    runtime = {"metadata": {"name": "kata-remote", "uid": "runtime-uid",
+                            "labels": {"openshell.ai/sandbox-attachable": "true"}},
+               "handler": "kata-remote", "overhead": {"podFixed": {"memory": "120Mi"}},
+               "scheduling": None}
+    attestation_data = {"default_cpu.rego": "package policy"}
+    guest_data = {"cdh.toml": "image_security_policy_uri = 'kbs:///default/security-policy/redhat-secure-sigstore'\n",
+                  "policy.rego": "package agent_policy"}
+    site = {"cocoRuntimeClass": {"name": "kata-remote", "uid": "runtime-uid",
+                                 "sha256": projector.preflight.runtime_placement_digest(runtime)},
+            "coco": {"platform": "azure", "bypassAttestation": False,
+                     "securityPolicyFlavour": "redhat-secure-sigstore",
+                     "platformRevision": revision,
+                     "applications": {"sandbox": "0.2.1", "sandbox-policies": "0.3.0",
+                                      "trustee": "0.10.2"},
+                     "attestationPolicy": {"namespace": "trustee-system", "name": "attestation-policy",
+                                           "sha256": projector.preflight.fingerprint(attestation_data)},
+                     "guestPolicy": {"namespace": "platform-system", "name": "initdata",
+                                     "sha256": projector.preflight.fingerprint(guest_data)}}}
+    apps = {name: {"status": {"sync": {"status": "Synced", "revisions": [revision, chart]},
+                             "health": {"status": "Healthy"}}}
+            for name, chart in site["coco"]["applications"].items()}
+    crd = {"status": {"conditions": [{"type": "Established", "status": "True"}]}}
+    observed = {
+        "/apis/config.openshift.io/v1/clusterversions/version": {"status": {
+            "conditions": [{"type": "Available", "status": "True"}],
+            "desired": {"version": "4.22.0"}}},
+        "/apis/node.k8s.io/v1/runtimeclasses/kata-remote": runtime,
+        "/apis/kataconfiguration.openshift.io/v1/kataconfigs": {"items": [{
+            "spec": {"enablePeerPods": True},
+            "status": {"kataNodes": {"nodeCount": 2, "readyNodeCount": 2}}}]},
+        "/apis/config.openshift.io/v1/infrastructures/cluster": {
+            "status": {"platformStatus": {"type": "Azure"}}},
+        "/api/v1/namespaces/trustee-system/configmaps/attestation-policy": {
+            "metadata": {"namespace": "trustee-system", "name": "attestation-policy"},
+            "data": attestation_data},
+        "/api/v1/namespaces/platform-system/configmaps/initdata": {
+            "metadata": {"namespace": "platform-system", "name": "initdata"}, "data": guest_data},
+        "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/sandbox": apps["sandbox"],
+        "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/sandbox-policies": apps["sandbox-policies"],
+        "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/trustee": apps["trustee"],
+        "/apis/admissionregistration.k8s.io/v1": {
+            "groupVersion": "admissionregistration.k8s.io/v1",
+            "resources": [{"name": "validatingadmissionpolicies"},
+                          {"name": "validatingadmissionpolicybindings"}]},
+    }
+    for name in ("kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
+                 "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io"):
+        observed["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name] = crd
+
+    projector.verify_gitops_preflight({"name": "alice"}, site, "coco", observed.get)
+    observed["/api/v1/namespaces/platform-system/configmaps/initdata"]["data"]["cdh.toml"] = (
+        "image_security_policy_uri = 'kbs:///default/security-policy/insecure'\n")
+    site["coco"]["guestPolicy"]["sha256"] = projector.preflight.fingerprint(
+        observed["/api/v1/namespaces/platform-system/configmaps/initdata"]["data"])
+    with pytest.raises(projector.preflight.PreflightError, match="GuestPolicyInsecure"):
+        projector.verify_gitops_preflight({"name": "alice"}, site, "coco", observed.get)
 
 
 def test_gitops_preflight_reader_rejects_secret_paths(projector):

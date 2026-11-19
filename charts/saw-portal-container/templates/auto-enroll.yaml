@@ -1,6 +1,6 @@
 {{- $s := .Values.site | default dict }}{{- $a := $s.automaticEnrollment | default dict }}
 {{- if and $a (ne (get $a "enabled" | toString) "false") }}
-{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) (ternary 27 25 (not (empty $s.kataRuntimeClass)))) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
+{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) (ternary 27 25 (or (not (empty $s.kataRuntimeClass)) (not (empty $s.cocoRuntimeClass))))) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
 {{- $observer := $s.observer | default dict }}
 {{- $r := .Values.registration }}{{- $g := .Values.owner }}{{- $n := .Release.Namespace }}
 {{- $t := printf "saw-ctl-%s" $r }}{{- $archive := printf "saw-history-%s" $r }}
@@ -8,9 +8,11 @@
 {{- $bases := list }}{{- range $slot := $targets }}{{- $bases = append $bases $slot.base }}{{- end }}
 {{- $gov := $s.governanceNamespace }}{{- $name := printf "enroll-%s" $r }}{{- $policy := printf "saw-%s-runtime" $n }}
 {{- $gatewayVersion := dig "stack" "gateway" "values" "kubernetes" "gateway" "version" .Values.driverDefaults.gatewayVersion $s -}}
-{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
+{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain "argoNamespace" .Values.global.vpArgoNamespace -}}
 {{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
 {{- with $s.kataRuntimeClass }}{{- $_ := set $bootstrap "kataRuntimeClass" . }}{{- end }}
+{{- with $s.cocoRuntimeClass }}{{- $_ := set $bootstrap "cocoRuntimeClass" . }}{{- end }}
+{{- with $s.coco }}{{- $_ := set $bootstrap "coco" . }}{{- end }}
 {{- $revision := dict "chartVersion" .Chart.Version "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}
 {{- $scriptName := printf "bootstrap-%s" $revision -}}
 apiVersion: v1
@@ -24,15 +26,53 @@ rules:
   - {apiGroups: [""], resources: [namespaces], resourceNames: [{{ $n }}], verbs: [get]}
   - {apiGroups: [""], resources: [nodes], verbs: [list]}
   - {apiGroups: [config.openshift.io], resources: [clusterversions], resourceNames: [version], verbs: [get]}
+{{- if $s.cocoRuntimeClass }}
+  - {apiGroups: [config.openshift.io], resources: [infrastructures], resourceNames: [cluster], verbs: [get]}
+{{- end }}
   - {apiGroups: [kataconfiguration.openshift.io], resources: [kataconfigs], verbs: [list]}
   - {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], resourceNames: [kataconfigs.kataconfiguration.openshift.io, sandboxes.agents.x-k8s.io, externalsecrets.external-secrets.io, adminnetworkpolicies.policy.networking.k8s.io], verbs: [get]}
-{{- with $s.kataRuntimeClass }}
+{{- with ($s.kataRuntimeClass | default $s.cocoRuntimeClass) }}
   - {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: [{{ .name | quote }}], verbs: [get]}
   - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}-kata], verbs: [get]}
 {{- end }}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], verbs: [list]}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], resourceNames: [{{ $policy }}-egress], verbs: [get]}
   - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}, {{ $n }}-pods-driver, {{ $n }}-secrets-driver, {{ $n }}-services-driver], verbs: [get]}
+{{- if $s.cocoRuntimeClass }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-coco-apps, namespace: {{ .Values.global.vpArgoNamespace }}}
+rules: [{apiGroups: [argoproj.io], resources: [applications], resourceNames: [sandbox, sandbox-policies, trustee], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-coco-apps, namespace: {{ .Values.global.vpArgoNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-coco-apps}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-coco-policy, namespace: {{ required "CoCo policy namespace required" $s.coco.attestationPolicy.namespace }}}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: [{{ required "CoCo policy name required" $s.coco.attestationPolicy.name | quote }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-coco-policy, namespace: {{ $s.coco.attestationPolicy.namespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-coco-policy}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-coco-guest, namespace: {{ required "CoCo guest policy namespace required" $s.coco.guestPolicy.namespace }}}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: [{{ required "CoCo guest policy name required" $s.coco.guestPolicy.name | quote }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-coco-guest, namespace: {{ $s.coco.guestPolicy.namespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-coco-guest}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

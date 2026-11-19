@@ -43,11 +43,15 @@ class Publications:
     def preflight_resource(self, path):
         fixed = {
             "/apis/config.openshift.io/v1/clusterversions/version",
+            "/apis/config.openshift.io/v1/infrastructures/cluster",
             "/apis/kataconfiguration.openshift.io/v1/kataconfigs",
             "/api/v1/nodes",
             "/apis/admissionregistration.k8s.io/v1",
         }
         allowed = (path in fixed or re.fullmatch(
+            r"/apis/argoproj.io/v1alpha1/namespaces/[a-z0-9-]+/applications/"
+            r"(?:sandbox|sandbox-policies|trustee)", path) or re.fullmatch(
+            r"/api/v1/namespaces/[a-z0-9-]+/configmaps/[a-z0-9-]+", path) or re.fullmatch(
             r"/api/v1/namespaces/saw-[a-z0-9-]+", path) or re.fullmatch(
             r"/apis/node.k8s.io/v1/runtimeclasses/[a-z0-9-]+", path) or re.fullmatch(
             r"/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"
@@ -86,38 +90,58 @@ class Publications:
 
 
 def verify_gitops_preflight(owner, site, mode, read):
-    """Stop ApplicationSet generation on a changed live Kata boundary."""
-    automatic = site.get("automaticEnrollment", {})
-    if not automatic or automatic.get("enabled") is False:
+    """Gate projected Kata and CoCo entries on their current platform state."""
+    if mode not in {"kata", "coco"}:
         return
+    automatic = site.get("automaticEnrollment") or {}
     reference = automatic.get("reference")
-    preflight.verify_boundary_reference(reference, mode)
-    if mode == "kata":
-        approval = site.get("kataRuntimeClass") or {}
-        if not isinstance(approval, dict) or not approval.get("name"):
-            raise preflight.PreflightError("RuntimeClassApprovalMissing")
-        try:
-            version = read("/apis/config.openshift.io/v1/clusterversions/version")
-            runtime = read("/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
-            configs = read("/apis/kataconfiguration.openshift.io/v1/kataconfigs")
-            nodes = read("/api/v1/nodes")
-            readiness = {}
-            for name in ("kataconfigs.kataconfiguration.openshift.io",
-                         "sandboxes.agents.x-k8s.io",
-                         "externalsecrets.external-secrets.io",
-                         "adminnetworkpolicies.policy.networking.k8s.io"):
-                readiness[name] = preflight.crd_established(read(
-                    "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name))
-            readiness["admissionregistration.k8s.io/v1"] = preflight.api_resources_available(
-                read("/apis/admissionregistration.k8s.io/v1"),
-                "admissionregistration.k8s.io/v1",
-                ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
+    boundary_enabled = bool(automatic) and automatic.get("enabled") is not False
+    if boundary_enabled:
+        preflight.verify_boundary_reference(reference, mode)
+    approval = site.get("cocoRuntimeClass" if mode == "coco" else "kataRuntimeClass") or {}
+    if not isinstance(approval, dict) or not approval.get("name"):
+        raise preflight.PreflightError("RuntimeClassApprovalMissing")
+    try:
+        version = read("/apis/config.openshift.io/v1/clusterversions/version")
+        runtime = read("/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+        configs = read("/apis/kataconfiguration.openshift.io/v1/kataconfigs")
+        nodes = read("/api/v1/nodes") if mode == "kata" else {}
+        readiness = {}
+        for name in ("kataconfigs.kataconfiguration.openshift.io",
+                     "sandboxes.agents.x-k8s.io",
+                     "externalsecrets.external-secrets.io",
+                     "adminnetworkpolicies.policy.networking.k8s.io"):
+            readiness[name] = preflight.crd_established(read(
+                "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name))
+        readiness["admissionregistration.k8s.io/v1"] = preflight.api_resources_available(
+            read("/apis/admissionregistration.k8s.io/v1"),
+            "admissionregistration.k8s.io/v1",
+            ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
+        if mode == "kata":
             preflight.verify_kata_platform(site, runtime, (configs or {}).get("items"),
                                            (nodes or {}).get("items"), readiness, version)
-        except preflight.PreflightError:
-            raise
-        except Exception:
-            raise preflight.PreflightError("KataPlatformUnavailable") from None
+        else:
+            coco = site.get("coco") or {}
+            policy = coco.get("attestationPolicy") or {}
+            guest = coco.get("guestPolicy") or {}
+            argo = os.environ["ARGO_NAMESPACE"]
+            apps = {name: read(f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/{name}")
+                    for name in ("sandbox", "sandbox-policies", "trustee")}
+            policy_obj = read("/api/v1/namespaces/" + policy["namespace"]
+                              + "/configmaps/" + policy["name"])
+            guest_obj = read("/api/v1/namespaces/" + guest["namespace"]
+                             + "/configmaps/" + guest["name"])
+            infra = read("/apis/config.openshift.io/v1/infrastructures/cluster")
+            preflight.verify_coco_platform(site, runtime, (configs or {}).get("items"),
+                                           infra, apps, policy_obj, guest_obj, version)
+    except preflight.PreflightError:
+        raise
+    except Exception:
+        raise preflight.PreflightError("CocoPlatformUnavailable" if mode == "coco"
+                                       else "KataPlatformUnavailable") from None
+
+    if not boundary_enabled:
+        return
 
     name = owner["name"]
     namespace_name = "saw-" + name
@@ -135,7 +159,7 @@ def verify_gitops_preflight(owner, site, mode, read):
     policy = "saw-" + namespace_name + "-runtime"
     resources = [("validation", "validatingadmissionpolicies", policy),
                  ("binding", "validatingadmissionpolicybindings", policy)]
-    if mode == "kata":
+    if mode in {"kata", "coco"}:
         resources.extend((("sandboxPlacement", "validatingadmissionpolicies", policy + "-kata"),
                           ("sandboxPlacementBinding", "validatingadmissionpolicybindings", policy + "-kata")))
     for key, plural, resource_name in resources:
@@ -180,7 +204,7 @@ def parameters(config, catalog, read):
         if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,17}[a-z0-9])?", name) or name in seen:
             raise ProjectionError("workspace names must be unique DNS labels of at most 19 characters")
         seen.add(name)
-        if owner.get("values", {}).get("deployment", {}).get("mode", "vm") not in {"container", "kata"}:
+        if owner.get("values", {}).get("deployment", {}).get("mode", "vm") not in {"container", "kata", "coco"}:
             raise ProjectionError("standalone container projection received another backend")
         site = sites.get(name)
         try:

@@ -27,7 +27,7 @@ def objects(config):
     net = "/apis/networking.k8s.io/v1/namespaces"
     core = "/api/v1/namespaces"
     placement = {}
-    if config.get("mode") == "kata":
+    if config.get("mode") in ("kata", "coco"):
         placement = {
             "sandboxPlacement": (f"{admission}/validatingadmissionpolicies/{policy}-kata", "spec"),
             "sandboxPlacementBinding": (f"{admission}/validatingadmissionpolicybindings/{policy}-kata", "spec"),
@@ -119,7 +119,7 @@ def verify(config, plan, get):
                     raise BoundaryError("OpenAIProxyBindingMismatch" if kind == "openai"
                                         else "ProviderProxyBindingMismatch")
     checks = ["validation", "secretGuard", "serviceGuard", "podDeleteGuard"]
-    if config["mode"] == "kata":
+    if config["mode"] in ("kata", "coco"):
         import tomllib
         driver = tomllib.loads(observed["gatewayConfig"]["data"]["gateway.toml"])["openshell"]["drivers"]["kubernetes"]
         runtime = config.get("workloadRuntimeClass")

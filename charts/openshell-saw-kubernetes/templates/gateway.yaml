@@ -53,7 +53,7 @@ spec:
             - {name: OPENSHELL_PEER_TLS_SERVER_NAME, value: {{ printf "%s-gateway.%s.svc.cluster.local" .Release.Name .Release.Namespace | quote }}}
             - {name: OPENSHELL_PEER_TLS_CA_FILE, value: /etc/openshell-tls/server/ca.crt}
             - {name: OPENSHELL_TELEMETRY_ENABLED, value: "false"}
-            {{- if eq .Values.deployment.mode "kata" }}
+            {{- if has .Values.deployment.mode (list "kata" "coco") }}
             # Use environment overrides so older pinned gateway builds can parse the stock TOML.
             - {name: OPENSHELL_PROVISIONING_REPAIR_WINDOW_SECONDS, value: {{ $k.startupTimeouts.provisioningRepairWindowSeconds | quote }}}
             - {name: OPENSHELL_RUNTIME_BOOTSTRAP_GRACE_SECONDS, value: {{ $k.startupTimeouts.runtimeBootstrapGraceSeconds | quote }}}

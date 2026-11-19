@@ -276,7 +276,7 @@ spec:
       message: Stock supervisor Pods must use the default container runtime.
       reason: Forbidden
     - expression: >-
-{{- if eq .Values.mode "kata" }}
+{{- if has .Values.mode (list "kata" "coco") }}
         variables.role != 'workload' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
       message: Kata workloads require the approved RuntimeClass.
 {{- else }}

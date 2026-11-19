@@ -629,6 +629,30 @@ def test_kata_reuses_container_workload_requests(source):
     assert ordinary["runtimeClass"] == {"name": "", "uid": ""}
 
 
+def test_coco_reuses_container_slots_and_checks_remote_handler(source, resources):
+    profile, config = source
+    ordinary = compile_profile(profile, config)
+    config.update(mode="coco", workloadRuntimeClass="kata-remote",
+                  workloadRuntimeClassUID=str(uuid.uuid4()), workloadRuntimeClassDigest="a" * 64)
+    plan = compile_profile(profile, config)
+    assert plan["workspaces"] == ordinary["workspaces"]
+    assert plan["requestedPlacement"] == {"supervisor": "container", "workload": "coco"}
+
+    live, namespace, pvc, _ = resources
+    placement = {"handler": "kata-remote", "overhead": {"podFixed": {"memory": "128Mi"}},
+                 "scheduling": None}
+    runtime = dict(placement, metadata={"uid": "approved", "labels": {
+        "openshell.ai/sandbox-attachable": "true"}})
+    live.update(mode="coco", runtimeClass={"name": "kata-remote", "uid": "approved",
+                                           "sha256": digest(placement)})
+    observed = {"namespace": namespace, "persistentvolumeclaim": pvc, "runtimeclass": runtime}
+    verifier = KubernetesResourceVerifier(lambda kind, *args: observed[kind], lambda _: None)
+    verifier(live)
+    observed["runtimeclass"] = {**runtime, "handler": "kata"}
+    with pytest.raises(ContractError):
+        verifier(live)
+
+
 @pytest.mark.parametrize("bad", [
     {"workloadRuntimeClass": ""}, {"workloadRuntimeClassUID": ""},
     {"workloadRuntimeClassUID": str(uuid.UUID(int=0))}, {"workloadRuntimeClassDigest": "bad"},

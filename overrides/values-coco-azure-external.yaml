@@ -1,0 +1,23 @@
+# SAW on an Azure cluster with an existing CoCo platform installation.
+# The platform owner keeps its operator and Trustee Applications.
+global:
+  coco:
+    enabled: true
+    platform: azure
+    platformOwnership: external
+    runtimeClassName: kata-remote
+    secured: true
+    securityPolicyFlavour: redhat-secure-sigstore
+    bypassAttestation: false
+
+# The platform owner keeps these three Applications. SAW reads their health
+# and pinned revisions before it accepts a CoCo workspace request.
+clusterGroup:
+  applications:
+    openshell-rhdh:
+      extraValueFiles:
+        - /overrides/saw-users.yaml
+        - /overrides/values-coco-azure-external.yaml
+
+portal:
+  deploymentModes: [vm, kata, coco]

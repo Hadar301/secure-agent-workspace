@@ -1,0 +1,71 @@
+# Azure CoCo platform owned by SAW. Do not use on a cluster where another
+# pattern owns these subscriptions or Applications. Use the external values
+# file for an existing platform installation.
+global:
+  multiSourceRepoUrl: quay.io/validatedpatterns
+  clusterVersion: "4.22"
+  options:
+    useCSV: false
+    syncPolicy: Automatic
+    installPlanApproval: Manual
+    autoApproveManualInstallPlans: false
+  coco:
+    enabled: true
+    platform: azure
+    platformOwnership: saw
+    runtimeClassName: kata-remote
+    secured: true
+    securityPolicyFlavour: redhat-secure-sigstore
+    bypassAttestation: false
+    azure:
+      defaultVMFlavour: Standard_DC2as_v5
+      VMFlavours: Standard_DC2as_v5,Standard_DC4as_v5,Standard_DC8as_v5,Standard_DC16as_v5
+
+clusterGroup:
+  namespaces:
+    openshift-sandboxed-containers-operator:
+    trustee-operator-system:
+  subscriptions:
+    sandbox:
+      name: sandboxed-containers-operator
+      namespace: openshift-sandboxed-containers-operator
+      channel: stable
+      installPlanApproval: Manual
+      csv: sandboxed-containers-operator.v1.13.1
+    trustee:
+      name: trustee-operator
+      namespace: trustee-operator-system
+      channel: stable
+      installPlanApproval: Manual
+      csv: trustee-operator.v1.2.1
+  applications:
+    sandbox:
+      name: sandbox
+      namespace: openshift-sandboxed-containers-operator
+      chart: sandboxed-containers
+      chartVersion: 0.2.1
+    sandbox-policies:
+      name: sandbox-policies
+      namespace: openshift-sandboxed-containers-operator
+      chart: sandboxed-policies
+      chartVersion: 0.3.0
+      overrides:
+        - name: global.coco.azure.rootVolumeSize
+          value: "20"
+    trustee:
+      name: trustee
+      namespace: trustee-operator-system
+      chart: trustee
+      chartVersion: 0.10.2
+      extraValueFiles:
+        - /overrides/values-coco-trustee-azure.yaml
+      overrides:
+        - name: global.coco.secured
+          value: "true"
+    openshell-rhdh:
+      extraValueFiles:
+        - /overrides/saw-users.yaml
+        - /overrides/values-coco-azure-managed.yaml
+
+portal:
+  deploymentModes: [vm, kata, coco]

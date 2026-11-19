@@ -32,7 +32,7 @@ metadata: {name: {{ $t }}-{{ $name }}}
 rules:
   - {apiGroups: [""], resources: [namespaces], resourceNames: [{{ $n }}], verbs: [get]}
   - {apiGroups: [""], resources: [nodes], verbs: [list]}
-  {{- if eq $c.mode "kata" }}
+  {{- if has $c.mode (list "kata" "coco") }}
   - {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: [{{ required "approved RuntimeClass name required" $c.workloadRuntimeClass | quote }}], verbs: [get]}
   - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}-kata], verbs: [get]}
   {{- end }}

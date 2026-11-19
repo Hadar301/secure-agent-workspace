@@ -20,7 +20,8 @@
     "mode": {
       "enum": [
         "container",
-        "kata"
+        "kata",
+        "coco"
       ]
     },
     "workloadRuntimeClassName": {"type": "string"},

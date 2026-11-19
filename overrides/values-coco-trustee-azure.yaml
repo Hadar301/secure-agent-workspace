@@ -1,0 +1,17 @@
+# Trustee chart inputs for SAW-managed Azure CoCo. No credentials are stored
+# here. Review the attestation policy and its digest before owner approval.
+kbs:
+  admin:
+    format: v1.1
+  https:
+    enabled: false
+  azure:
+    # DCasv5 reference values. Review these for a different VM family.
+    snpLaunchMeasurement: qnydpVwThuWxZTsSWXi+2ns/laha6w+d2723g84FaijJ0CHaI5w0pYw6ZXZUJw7v
+    smtEnabled: "true"
+    tsmeEnabled: "true"
+    abiMajor: "0"
+    abiMinor: "31"
+    singleSocket: "false"
+    smtAllowed: "true"
+  extraSecrets: []
