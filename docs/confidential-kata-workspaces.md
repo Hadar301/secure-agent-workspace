@@ -418,3 +418,23 @@ but before the Kata Agent answers its health check. The init-data or guest boot
 path remains the leading area to diagnose. No attestation report, Trustee
 release, or SAW workspace was tested. Capture guest serial/console output and
 verify Azure VM cleanup before another attempt.
+
+## Init-data correction and current stop point (2026-11-23)
+
+The API version endpoint reports Kubernetes `v1.35.9`. Later CAA logs confirmed
+that the probe VMs were deleted. The probe namespaces and PeerPod objects are
+also gone.
+
+Review of the generator found that `aa.toml` placed the certificate under the
+Attestation Agent token settings and omitted the `coco_as` URL. Red Hat's Azure
+init-data example puts both `coco_as.url` and `kbs.url` in `aa.toml`; it puts
+the certificate in `cdh.toml` as `kbs_cert`. The generator and its three chart
+copies now follow this structure. The focused cluster-independent contract
+suite passes 69 tests.
+
+This source correction has not been tested on a live peer pod. Do not retry
+until platform qualification is complete. `deploy/confidential/source-lock.yaml`
+still has no qualified guest image or reference set, and the live Trustee RVPS
+ConfigMap contains no usable reference values. Generate and approve measurements
+from the pinned guest image and exact init-data before another attestation test.
+See the [Red Hat OSC 1.12 Azure init-data guide](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_confidential_containers_on_microsoft_azure/configure-cc-overview_azure-cc).

@@ -121,7 +121,14 @@ def test_approved_public_objects_and_deterministic_initdata(approved):
     assert hashlib.sha256(raw).hexdigest() == result["sha256"]
     parsed=tomllib.loads(raw.decode())
     assert set(parsed["data"])=={"aa.toml","cdh.toml","policy.rego"}
-    assert tomllib.loads(parsed["data"]["cdh.toml"])["kbc"]["kbs_cert"]==site["attestation"]["kbsCA"]
+    aa_config = tomllib.loads(parsed["data"]["aa.toml"])
+    assert aa_config == {"token_configs": {
+        "coco_as": {"url": site["attestation"]["kbsURL"]},
+        "kbs": {"url": site["attestation"]["kbsURL"]},
+    }}
+    cdh_config = tomllib.loads(parsed["data"]["cdh.toml"])
+    assert cdh_config["kbc"]["url"] == site["attestation"]["kbsURL"]
+    assert cdh_config["kbc"]["kbs_cert"]==site["attestation"]["kbsCA"]
     generated_policy=parsed["data"]["policy.rego"]
     assert "__SAW_IDENTITY_JSON__" not in generated_policy
     assert '"saw_identity": '+a.canonical(result["identity"]) in generated_policy
@@ -615,6 +622,19 @@ def test_reapproved_bad_platform_still_fails(approved,key,value,reason):
     ref["sha256"]=a.digest(objects[ref["path"]]["data"])
     with pytest.raises(a.AttestationError,match="^"+reason+"$"):
         a.verify_platform(site,objects.__getitem__)
+
+@pytest.mark.parametrize("reference_data", [
+    {},
+    {"referenceSet": None},
+    {"reference_value": "null"},
+])
+def test_empty_or_unrecognized_reference_values_are_rejected(approved, reference_data):
+    site, objects = approved
+    ref = site["attestation"]["references"]["referenceValues"]
+    objects[ref["path"]]["data"] = reference_data
+    ref["sha256"] = a.digest(reference_data)
+    with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
+        a.verify_platform(site, objects.__getitem__)
 
 @pytest.mark.parametrize("key", ["attestationPolicy", "resourcePolicy"])
 def test_changed_trustee_policy_is_rejected(approved,key):
