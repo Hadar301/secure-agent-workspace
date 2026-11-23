@@ -390,3 +390,31 @@ The 2026-11-23 runtime smoke Pod reached `Running` with `kata-remote`. This
 confirmed the peer-pod runtime launch only. A separate Trustee status probe did
 not start its container and did not return an attestation result. Do not count
 that probe as confidential-workspace qualification.
+
+## Matched image and init-data probe (2026-11-23)
+
+A credential-free UBI 9 baseline Pod without init-data reached `Running` and
+`Ready` on worker `coco-azure-d5ft7-worker-eastus3-wzsl6` with RuntimeClass
+`kata-remote`. Its resolved image digest was
+`sha256:08d4c70f1baf6537a0728656cf7942d561e74a35916509d205b6519861266352`.
+
+A second Pod used the same image digest, worker, and RuntimeClass with the
+existing restrictive init-data annotation. CAA created a peer VM and tunnel,
+and reported the TCP agent proxy ready on port 15150. CRI-O then reported
+`CheckRequest timed out` and `CreateContainer failed: create container timeout`
+at `2026-11-23T10:17:08Z`. The sandbox and container did not start. Kubelet
+retried, and CAA started another peer VM at `2026-11-23T10:18:59Z`.
+
+I deleted the temporary namespace to stop the retries. The namespace and
+PeerPod object are gone, and the two node-debug Pods used for log capture were
+removed. CAA did not report successful deletion of the second Azure VM by
+`2026-11-23T10:21:29Z`; Azure-side cleanup remains unverified because no Azure
+management login is available in this session. Do not start another VM probe
+until cleanup is verified.
+
+This matched test shows that `kata-remote` and the guest image start without
+init-data. The failure occurs after the init-data case opens its network path,
+but before the Kata Agent answers its health check. The init-data or guest boot
+path remains the leading area to diagnose. No attestation report, Trustee
+release, or SAW workspace was tested. Capture guest serial/console output and
+verify Azure VM cleanup before another attempt.
