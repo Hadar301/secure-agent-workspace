@@ -35,10 +35,11 @@ confidential enrollment gate remains closed.
 
 A credential-free PodVM probe on 2026-11-23 first showed the guest policy
 rejecting `CopyFileRequest`. A second probe used the scoped shared-container
-rule. It did not show that policy denial, but the guest check timed out before
-the container started. The kubelet reported `CreateContainer failed: create
-container timeout`. The cloud adaptor deleted the probe VMs. No PeerPods or
-probe namespaces remain. This does not verify attestation or Trustee release.
+rule. It did not show that policy denial, but the Kata runtime logged
+`CheckRequest timed out`, and the kubelet reported `CreateContainer failed:
+create container timeout`. The container did not start. The cloud adaptor
+deleted the probe VMs. No PeerPods or probe namespaces remain. This does not
+verify attestation or Trustee release.
 The feature branch now rejects missing, broad, or additional copy rules before
 deployment. The change has 66 focused contract tests passing; the branch is
 not deployed to the cluster.
