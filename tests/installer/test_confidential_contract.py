@@ -32,6 +32,16 @@ artifact_spec.loader.exec_module(artifacts)
 UID = "11111111-1111-4111-8111-111111111111"
 IMAGE = "registry.example.test/supervisor@sha256:" + "a"*64
 
+def trustee_reference_values(tee):
+    values = {}
+    for index, suffix in enumerate(sorted(a.REFERENCE_VALUE_NAMES), start=1):
+        name = f"{tee}_{suffix}"
+        entry = {"name": name, "expiration": "2099-12-31T00:00:00Z",
+                 "value": [format(index, "x") * 64]}
+        values[name] = base64.b64encode(
+            json.dumps(entry, separators=(",", ":")).encode()).decode()
+    return values
+
 @pytest.fixture
 def approved():
     policy = ("package agent_policy\n"
@@ -53,9 +63,11 @@ def approved():
         .not_valid_before(now-timedelta(minutes=1)).not_valid_after(now+timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True,path_length=None),critical=True)
         .sign(key,hashes.SHA256()).public_bytes(serialization.Encoding.PEM).decode())
+    reference_values = trustee_reference_values("snp")
     cfg = dict(enabled=True, schemaVersion=1, tee="snp", kbsURL="https://trustee.example.test",
                kbsCA=certificate,
-               policyDigest=hashlib.sha256(policy.encode()).hexdigest(), referenceSet="b"*64,
+               policyDigest=hashlib.sha256(policy.encode()).hexdigest(),
+               referenceSet=a.digest(reference_values),
                guestPolicy=policy, imagePolicy={"default":[{"type":"reject"}],"transports":{"docker":{
                    "registry.example.test":[{"type":"sigstoreSigned","keyPath":"/etc/pki/public.pem"}]}}},
                driver=dict(capability=a.CAPABILITY,sourceRevision="c"*40,gatewayImage=IMAGE,supervisorImage=IMAGE))
@@ -67,7 +79,7 @@ def approved():
         "trusteeConfig":{"spec":{"kbsSecretResources":["saw-bob-fedcba9876543210"]}},
         "attestationPolicy":{"data":attestation_policy_data},
         "resourcePolicy":{"data":resource_policy_data},
-        "referenceValues":{"data":{"referenceSet":cfg["referenceSet"]}},
+        "referenceValues":{"data":{"reference_value":json.dumps(reference_values,indent=2)}},
         "qualification":{"data":{"capability":a.CAPABILITY,"tee":"snp","gatewayImage":IMAGE,"supervisorImage":IMAGE,
             "referenceSet":cfg["referenceSet"],"policyDigest":cfg["policyDigest"],"imagePolicyDigest":a.digest(cfg["imagePolicy"]),
             "attestationPolicyDigest":a.digest(attestation_policy_data),
@@ -613,7 +625,6 @@ def test_trustee_membership_retries_conflict_without_losing_concurrent_entries(a
 @pytest.mark.parametrize("key,value,reason",[
     ("peerPods", {"DISABLECVM":"true"}, "ConfidentialRuntimeUnavailable"),
     ("qualification", {"negativeTests":"missing"}, "AttestationQualificationMissing"),
-    ("referenceValues", {"referenceSet":"e"*64}, "ReferenceValuesRejected"),
 ])
 def test_reapproved_bad_platform_still_fails(approved,key,value,reason):
     site,objects=approved
@@ -625,8 +636,9 @@ def test_reapproved_bad_platform_still_fails(approved,key,value,reason):
 
 @pytest.mark.parametrize("reference_data", [
     {},
-    {"referenceSet": None},
     {"reference_value": "null"},
+    {"reference_value": "[]"},
+    {"reference_value": "{}"},
 ])
 def test_empty_or_unrecognized_reference_values_are_rejected(approved, reference_data):
     site, objects = approved
@@ -635,6 +647,70 @@ def test_empty_or_unrecognized_reference_values_are_rejected(approved, reference
     ref["sha256"] = a.digest(reference_data)
     with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
         a.verify_platform(site, objects.__getitem__)
+
+def test_reapproved_reference_values_must_match_the_approved_set(approved):
+    site, objects = approved
+    ref = site["attestation"]["references"]["referenceValues"]
+    data = objects[ref["path"]]["data"]
+    values = json.loads(data["reference_value"])
+    item = json.loads(base64.b64decode(values["snp_pcr03"]))
+    item["value"] = ["f" * 64]
+    values["snp_pcr03"] = base64.b64encode(
+        json.dumps(item, separators=(",", ":")).encode()).decode()
+    data["reference_value"] = json.dumps(values, indent=2)
+    ref["sha256"] = a.digest(data)
+    with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
+        a.verify_platform(site, objects.__getitem__)
+
+@pytest.mark.parametrize("mutate", [
+    lambda values: values.pop("snp_pcr08"),
+    lambda values: values.update({"tdx_pcr08": values.pop("snp_pcr08")}),
+    lambda values: values.update({"snp_pcr08": "not-base64"}),
+])
+def test_invalid_trustee_reference_value_entries_are_rejected(approved, mutate):
+    site, objects = approved
+    cfg = site["attestation"]
+    data = objects[cfg["references"]["referenceValues"]["path"]]["data"]
+    values = json.loads(data["reference_value"])
+    mutate(values)
+    data["reference_value"] = json.dumps(values, indent=2)
+    cfg["references"]["referenceValues"]["sha256"] = a.digest(data)
+    with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
+        a.verify_platform(site, objects.__getitem__)
+
+def test_trustee_tdx_reference_values_use_tdx_names():
+    tdx_values = trustee_reference_values("tdx")
+    assert a.verify_reference_values(
+        {"reference_value": json.dumps(tdx_values)}, a.digest(tdx_values), "tdx") == tdx_values
+
+@pytest.mark.parametrize("field,value", [
+    ("name", "snp_pcr09"),
+    ("expiration", "2000-01-01T00:00:00Z"),
+    ("value", []),
+    ("value", ["not-a-sha256-digest"]),
+])
+def test_invalid_trustee_reference_payload_is_rejected(approved, field, value):
+    site, objects = approved
+    cfg = site["attestation"]
+    data = objects[cfg["references"]["referenceValues"]["path"]]["data"]
+    values = json.loads(data["reference_value"])
+    item = json.loads(base64.b64decode(values["snp_pcr03"]))
+    item[field] = value
+    values["snp_pcr03"] = base64.b64encode(
+        json.dumps(item, separators=(",", ":")).encode()).decode()
+    data["reference_value"] = json.dumps(values, indent=2)
+    cfg["references"]["referenceValues"]["sha256"] = a.digest(data)
+    with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
+        a.verify_platform(site, objects.__getitem__)
+
+def test_preflight_checker_copies_match_runtime_source():
+    source = (ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py").read_bytes()
+    for relative in (
+        "charts/openshell-rhdh/files/attestation.py",
+        "charts/saw-users/files/attestation.py",
+        "charts/saw-portal-container/files/attestation.py",
+    ):
+        assert (ROOT / relative).read_bytes() == source
 
 @pytest.mark.parametrize("key", ["attestationPolicy", "resourcePolicy"])
 def test_changed_trustee_policy_is_rejected(approved,key):

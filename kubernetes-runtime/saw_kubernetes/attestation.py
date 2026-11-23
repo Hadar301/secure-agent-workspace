@@ -7,6 +7,7 @@ import json
 import re
 import ssl
 import uuid
+from datetime import datetime, timezone
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -18,6 +19,8 @@ IDENTITY_MARKER = "__SAW_IDENTITY_JSON__"
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 IMAGE = re.compile(r"[^\s@]+@sha256:[a-f0-9]{64}\Z")
 LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\Z")
+REFERENCE_VALUE_NAMES = frozenset({"pcr03", "pcr08", "pcr09", "pcr11", "pcr12"})
+REFERENCE_SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 POLICY_DATA = re.compile(r"(?m)^[ \t]*policy_data[ \t]*:=[ \t]*\{")
 IDENTITY_MEMBER = re.compile(
     r"(?m)^[ \t]*\"saw_identity\"[ \t]*:[ \t]*" + re.escape(IDENTITY_MARKER) + r"[ \t]*,?[ \t]*$")
@@ -53,6 +56,51 @@ def trustee_config_digest(spec):
         raise AttestationError("TrusteeConfigurationRejected")
     stable = {key: value for key, value in spec.items() if key != "kbsSecretResources"}
     return digest(stable)
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+def verify_reference_values(data, expected_digest, tee):
+    """Check Trustee 1.2 RVPS data and its approved canonical digest."""
+    raw = data.get("reference_value") if isinstance(data, dict) else None
+    if not isinstance(raw, str):
+        raise AttestationError("ReferenceValuesRejected")
+    try:
+        values = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except (ValueError, TypeError):
+        raise AttestationError("ReferenceValuesRejected") from None
+    if not isinstance(values, dict) or not values or tee not in ("snp", "tdx"):
+        raise AttestationError("ReferenceValuesRejected")
+    required_names = {f"{tee}_{suffix}" for suffix in REFERENCE_VALUE_NAMES}
+    if not required_names.issubset(values):
+        raise AttestationError("ReferenceValuesRejected")
+    for name, encoded in values.items():
+        if not isinstance(name, str) or not re.fullmatch(rf"{tee}_[a-z0-9_]+", name):
+            raise AttestationError("ReferenceValuesRejected")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+            if base64.b64encode(decoded).decode("ascii") != encoded:
+                raise ValueError("non-canonical base64")
+            item = json.loads(decoded, object_pairs_hook=_unique_json_object)
+            expiry = datetime.fromisoformat(item["expiration"].replace("Z", "+00:00"))
+            measurements = item["value"]
+        except (ValueError, TypeError, KeyError, UnicodeDecodeError, AttributeError):
+            raise AttestationError("ReferenceValuesRejected") from None
+        if (not isinstance(item, dict) or set(item) != {"name", "expiration", "value"}
+                or item.get("name") != name or expiry.tzinfo is None
+                or expiry.utcoffset() is None or expiry <= datetime.now(timezone.utc)
+                or not isinstance(measurements, list) or not measurements
+                or any(not isinstance(value, str) or not REFERENCE_SHA256.fullmatch(value)
+                       for value in measurements)):
+            raise AttestationError("ReferenceValuesRejected")
+    if digest(values) != expected_digest:
+        raise AttestationError("ReferenceValuesRejected")
+    return values
 
 def enabled(site):
     value = site.get("attestation") if isinstance(site, dict) else None
@@ -234,9 +282,7 @@ def verify_platform(site, read, mode="kata"):
                 "cdhEndpoint": "http://127.0.0.1:8006", "negativeTests": "passed"}
     if any(qualification.get(k) != v for k, v in expected.items()):
         raise AttestationError("AttestationQualificationMissing")
-    refs = observed["referenceValues"]["data"]
-    if refs.get("referenceSet") != cfg["referenceSet"]:
-        raise AttestationError("ReferenceValuesRejected")
+    verify_reference_values(observed["referenceValues"]["data"], cfg["referenceSet"], cfg["tee"])
     return digest(cfg)
 
 def verify_resource_membership(site, owner, registration, read):

@@ -429,12 +429,29 @@ Review of the generator found that `aa.toml` placed the certificate under the
 Attestation Agent token settings and omitted the `coco_as` URL. Red Hat's Azure
 init-data example puts both `coco_as.url` and `kbs.url` in `aa.toml`; it puts
 the certificate in `cdh.toml` as `kbs_cert`. The generator and its three chart
-copies now follow this structure. The focused cluster-independent contract
-suite passes 69 tests.
+copies now follow this structure. The initial cluster-independent contract
+suite passed 69 tests. The suite now also covers Trustee RVPS format validation;
+it passed 79 tests on 2026-11-23.
 
 This source correction has not been tested on a live peer pod. Do not retry
 until platform qualification is complete. `deploy/confidential/source-lock.yaml`
 still has no qualified guest image or reference set, and the live Trustee RVPS
 ConfigMap contains no usable reference values. Generate and approve measurements
 from the pinned guest image and exact init-data before another attestation test.
-See the [Red Hat OSC 1.12 Azure init-data guide](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_confidential_containers_on_microsoft_azure/configure-cc-overview_azure-cc).
+See the [Red Hat OSC 1.13 Azure init-data guide](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13/html/deploying_confidential_containers_on_microsoft_azure/configure-cc-overview_azure-cc).
+
+The pinned `coco-tools` image was inspected locally. Its Veritas command writes
+Trustee BoT 1.2 data under the ConfigMap key `reference_value`. The value is a
+JSON object keyed by TEE-prefixed PCR name. Each map value is base64-encoded
+JSON with `name`, `expiration`, and `value` fields. The shared preflight now
+validates this format, checks the Azure `snp_pcr03`, `snp_pcr08`,
+`snp_pcr09`, `snp_pcr11`, and `snp_pcr12` entries, rejects expired values,
+and compares the SHA-256 digest of the canonical JSON map (sorted keys,
+compact separators) with the approved `referenceSet`.
+The `referenceValues` object approval still pins the ConfigMap UID and complete
+data content.
+
+No measurements were added to Trustee. The no-auth Veritas run stopped because
+`registry.redhat.io` requires authentication. It made no cluster changes. The
+next measurement step needs an approved registry auth source. Do not use test
+measurements or measurements from an untrusted probe Pod as RVPS references.
