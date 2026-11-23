@@ -357,6 +357,46 @@ def test_tampered_plan_and_owner_changes_rejected(runtime):
         reconciler.reconcile(changed, generation=2)
 
 
+def test_confidential_plan_stays_blocked_before_gateway_calls(runtime):
+    plan, gateway, reconciler, _ = runtime
+    confidential = copy.deepcopy(plan)
+    confidential.update(
+        schemaVersion=2,
+        mode="kata",
+        requestedPlacement={"supervisor": "confidential", "workload": "confidential"},
+        attestation={"capability": "saw-confidential-v1"},
+    )
+    confidential["revision"] = digest(
+        {key: value for key, value in confidential.items() if key != "revision"}
+    )
+
+    with pytest.raises(ContractError, match="confidential compute driver is not qualified") as error:
+        reconciler.reconcile(confidential, generation=1)
+
+    assert error.value.safe_reason == "AttestationIntegrationUnavailable"
+    assert gateway.calls == []
+
+
+def test_confidential_plan_rejects_nonconfidential_placement_before_gateway_calls(runtime):
+    plan, gateway, reconciler, _ = runtime
+    confidential = copy.deepcopy(plan)
+    confidential.update(
+        schemaVersion=2,
+        mode="kata",
+        requestedPlacement={"supervisor": "container", "workload": "kata"},
+        attestation={"capability": "saw-confidential-v1"},
+    )
+    confidential["revision"] = digest(
+        {key: value for key, value in confidential.items() if key != "revision"}
+    )
+
+    with pytest.raises(ContractError, match="confidential placement differs") as error:
+        reconciler.reconcile(confidential, generation=1)
+
+    assert error.value.safe_reason == "PlacementRejected"
+    assert gateway.calls == []
+
+
 def test_stopped_new_intent_does_not_briefly_start_workload(runtime):
     plan, gateway, reconciler, _ = runtime
     for _ in range(3):

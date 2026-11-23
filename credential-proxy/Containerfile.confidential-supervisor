@@ -1,0 +1,17 @@
+# Build a supervisor image with the guest-local credential proxy wrapper.
+# Both inputs must be supplied as digest-pinned references at build time.
+ARG SUPERVISOR_IMAGE
+ARG GO_BUILDER_IMAGE
+
+FROM ${SUPERVISOR_IMAGE} AS supervisor
+FROM ${GO_BUILDER_IMAGE} AS builder
+
+WORKDIR /src/credential-proxy
+COPY credential-proxy/go.mod ./go.mod
+COPY credential-proxy/cmd ./cmd
+COPY credential-proxy/internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
+    -o /tmp/saw-credential-proxy ./cmd/saw-credential-proxy
+
+FROM supervisor
+COPY --from=builder /tmp/saw-credential-proxy /usr/local/bin/saw-credential-proxy

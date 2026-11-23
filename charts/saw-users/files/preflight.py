@@ -164,7 +164,7 @@ def check_runtime_class(approved, observed):
         raise PreflightError("RuntimeClassNameMismatch")
     if not approved.get("uid") or metadata.get("uid") != approved["uid"]:
         raise PreflightError("RuntimeClassIdentityMismatch")
-    if observed.get("handler") != "kata":
+    if observed.get("handler") not in {"kata", "kata-remote"}:
         raise PreflightError("RuntimeClassHandlerMismatch")
     labels = metadata.get("labels") or {}
     if not isinstance(labels, dict):
@@ -475,3 +475,20 @@ def verify_kata_platform(site, runtime_class, kata_configs, nodes, api_readiness
     if api_readiness.get("admissionregistration.k8s.io/v1") is not True:
         raise PreflightError("AdmissionUnavailable")
     return tuple(sorted(eligible))
+
+
+def verify_attestation(site, mode, read, probe_kbs=None):
+    """Check approved public objects and Trustee reachability, never Secrets."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("saw_attestation", Path(__file__).with_name("attestation.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        result = module.verify_platform(site, read, mode)
+        if module.enabled(site):
+            module.verify_kbs_reachability(site, probe_kbs)
+            raise PreflightError("AttestationIntegrationUnavailable")
+        return result
+    except module.AttestationError as exc:
+        raise PreflightError(str(exc)) from None

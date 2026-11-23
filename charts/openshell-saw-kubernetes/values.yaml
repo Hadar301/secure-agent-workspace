@@ -23,6 +23,12 @@ kubernetes:
     image: ""
     runtimeImage: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
     runtimeClassName: ""
+  confidential:
+    # This setting remains false until a signed, qualified guest image and
+    # measured Trustee policy are approved by the site.
+    enabled: false
+    supervisors: {}
+    workloads: {}
   identity:
     # Existing, retained identity; generated once outside Helm by its owner.
     # server TLS: tls.crt,tls.key,ca.crt; client CA: ca.crt only mounted.

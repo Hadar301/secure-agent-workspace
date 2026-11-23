@@ -96,6 +96,10 @@ _preflight_spec = _importlib.spec_from_file_location("saw_preflight", _Path(__fi
 _preflight = _importlib.module_from_spec(_preflight_spec)
 _preflight_spec.loader.exec_module(_preflight)
 
+_attestation_spec = _importlib.spec_from_file_location("saw_attestation", _Path(__file__).with_name("attestation.py"))
+_attestation = _importlib.module_from_spec(_attestation_spec)
+_attestation_spec.loader.exec_module(_attestation)
+
 
 def _project(function, *args, **kwargs):
     try:
@@ -364,6 +368,21 @@ class Vault:
     def write(self, path, data):
         self.http.call("POST", f"/v1/{self.kv}/data/{path}", {"data": data}, headers=self._h())
 
+    def metadata_exists(self, path):
+        """Check a KV v2 path without requesting its secret data."""
+        prefix = self.kv + "/data/"
+        if not isinstance(path, str) or not path.startswith(prefix):
+            raise PortalError("approved Vault credential reference is invalid")
+        relative = path[len(prefix):]
+        if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", relative):
+            raise PortalError("approved Vault credential reference is invalid")
+        try:
+            result = self.http.call("GET", f"/v1/{self.kv}/metadata/" +
+                                    urllib.parse.quote(relative, safe="/"), headers=self._h(), ok404=True)
+        except HttpError:
+            raise PortalError("Vault credential reference check is unavailable") from None
+        return result is not None
+
     def destroy(self, path):
         self.http.call("DELETE", f"/v1/{self.kv}/metadata/{path}", headers=self._h(), ok404=True)
 
@@ -394,6 +413,20 @@ DEPLOYMENT_MODES = ("vm", *KUBERNETES_MODES)
 PROVISIONABLE_MODES = ("vm",)
 
 
+def trustee_kbs_config_allowlist():
+    """Read the exact KbsConfig paths the provisioner may update."""
+    try:
+        allowed = json.loads(os.environ.get("SAW_TRUSTEE_KBS_CONFIG_REFS", "[]"))
+    except (TypeError, ValueError):
+        raise PortalError("Trustee KbsConfig portal allowlist is invalid") from None
+    pattern = r"/apis/confidentialcontainers.org/v1alpha1/namespaces/[a-z0-9-]+/kbsconfigs/[a-z0-9-]+"
+    if (not isinstance(allowed, list)
+            or any(not isinstance(item, str) or not re.fullmatch(pattern, item) for item in allowed)
+            or len(allowed) != len(set(allowed))):
+        raise PortalError("Trustee KbsConfig portal allowlist is invalid")
+    return allowed
+
+
 def container_site(user):
     """Trusted site inventory, never names/URLs supplied by the request."""
     sites = json.loads(os.environ.get("SAW_CONTAINER_SITES", "{}"))
@@ -402,6 +435,42 @@ def container_site(user):
             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(site.get("subject", ""))):
         return None
     return site
+
+
+def trustee_config_reference(site):
+    """Return the approved Trustee identity only if the portal can revoke it."""
+    try:
+        if not _attestation.enabled(site):
+            return None
+        cfg = _attestation.validate(site, "kata")
+        allowed = trustee_kbs_config_allowlist()
+        path = cfg["references"]["trusteeConfig"]["path"]
+        if path not in allowed:
+            raise PortalError("Trustee KbsConfig is not approved for portal membership updates")
+        ref = cfg["references"]["trusteeConfig"]
+        return {"path": ref["path"], "uid": ref["uid"], "sha256": ref["sha256"]}
+    except _attestation.AttestationError as exc:
+        raise PortalError("Trustee approval is invalid: " + str(exc)) from None
+
+
+def revoke_trustee_registration(k8s, user, entry):
+    """Remove this registration from Trustee before Argo removes its Secret."""
+    ref = entry.get("trusteeConfigRef")
+    if ref is None:
+        return False
+    try:
+        if not isinstance(ref, dict) or set(ref) != {"path", "uid", "sha256"}:
+            raise PortalError("Stored Trustee reference is invalid")
+        allowed = trustee_kbs_config_allowlist()
+        if ref["path"] not in allowed:
+            raise PortalError("Trustee KbsConfig is not approved for portal membership updates")
+        registration = entry_generation(user, entry)
+        return _attestation.revoke_trustee_resource_membership(
+            ref, user, registration, lambda path: k8s.call("GET", path),
+            lambda path, body: k8s.call("PATCH", path, body,
+                                         headers={"Content-Type": "application/merge-patch+json"}))
+    except _attestation.AttestationError as exc:
+        raise PortalError("Trustee resource cleanup failed: " + str(exc)) from None
 
 
 def container_profiles(site):
@@ -488,13 +557,36 @@ def parse_request(data, catalog):
     profile = data.get("profile", "")
     if profile not in catalog:
         raise PortalError(f"unknown profile {profile!r}; available: {', '.join(sorted(catalog))}")
+    mode = request_deployment_mode(data)
+    credential_mode = data.get("credentialMode", "inline")
+    if credential_mode not in {"inline", "trustee-reference"}:
+        raise PortalError("credentialMode is not supported")
+    if credential_mode == "trustee-reference" and mode != "kata":
+        raise PortalError("Trustee credential references require Kata mode")
     secrets, missing = {}, []
-    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) in KUBERNETES_MODES else None
+    selected = catalog[profile]
+    allowed = selected.get("dedicatedEndpointSecrets") if mode in KUBERNETES_MODES else None
+    permitted_fields = {"action", "token", "profile", "deploymentMode", "credentialMode", "forUser"}
+    if credential_mode == "trustee-reference":
+        for name, spec in selected.get("secrets", {}).items():
+            if allowed is not None and name not in allowed:
+                continue
+            for field in spec.get("fields", []):
+                key = f"{name}.{field['key']}"
+                if field.get("kind") == "secret":
+                    if key in data:
+                        raise PortalError("confidential requests cannot include credential values")
+                else:
+                    permitted_fields.add(key)
+        if set(data) - permitted_fields:
+            raise PortalError("confidential request contains unsupported fields")
     for name, spec in sorted(catalog[profile].get("secrets", {}).items()):
         if allowed is not None and name not in allowed:
             continue
         values = {}
         for field in spec.get("fields", []):
+            if credential_mode == "trustee-reference" and field.get("kind") == "secret":
+                continue
             value = (data.get(f"{name}.{field['key']}") or "").strip()
             if not value and "default" in field:
                 value = field["default"]
@@ -513,6 +605,22 @@ def parse_request(data, catalog):
     if missing:
         raise PortalError(f"profile {profile!r} needs: {', '.join(missing)}")
     return profile, secrets
+
+
+def credential_secret_names(profile, mode):
+    allowed = profile.get("dedicatedEndpointSecrets") if mode in KUBERNETES_MODES else None
+    return sorted(name for name, spec in profile.get("secrets", {}).items()
+                  if (allowed is None or name in allowed)
+                  and any(field.get("kind") == "secret" for field in spec.get("fields", [])))
+
+
+def approved_credential_references(site, user, profile, profile_catalog):
+    try:
+        return _attestation.approved_credential_references(
+            site, user, profile, credential_secret_names(profile_catalog, "kata"),
+            env("VAULT_KV_MOUNT", "secret"), env("VAULT_PREFIX_BASE", "hub"))
+    except _attestation.AttestationError:
+        raise PortalError("approved Vault credential references are invalid") from None
 
 
 def decode_secret(obj):
@@ -817,6 +925,10 @@ def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
 
 def check_workspace_preflight(k8s, user, site, mode, profile, catalog):
     """Run read-only platform gates before reserving or writing keys."""
+    try:
+        _preflight.verify_attestation(site, mode, lambda path: k8s.call("GET", path))
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
     observations = _preflight.configuration_facts(site)
     observations["api"] = True
     try:
@@ -1664,8 +1776,27 @@ def handle(action, request_name):
             site = container_site(user) if mode in KUBERNETES_MODES else None
             profile = None
             secrets = None
+            trustee_ref = None
+            credential_references = None
+            confidential_credentials = False
+            vault = None
             if mode in KUBERNETES_MODES:
+                try:
+                    confidential_credentials = _attestation.enabled(site or {})
+                except _attestation.AttestationError:
+                    raise PortalError("confidential attestation configuration is invalid") from None
+                reference_request = data.get("credentialMode") == "trustee-reference"
+                if confidential_credentials and (mode != "kata" or not reference_request):
+                    raise PortalError("confidential Kata requests must use approved Vault references")
+                if reference_request and not confidential_credentials:
+                    raise PortalError("Trustee credential references are not approved for this owner")
                 profile, secrets = parse_request(data, catalog)
+                if confidential_credentials:
+                    credential_references = approved_credential_references(
+                        site, user, profile, catalog[profile])
+                    vault = vault_client()
+                    if any(not vault.metadata_exists(path) for path in credential_references.values()):
+                        raise PortalError("an approved Vault credential reference is unavailable")
                 check_workspace_preflight(k8s, user, site, mode, profile, catalog)
             if cm is not None:
                 assert_mode_unchanged(read_entry(cm), mode)
@@ -1699,6 +1830,12 @@ def handle(action, request_name):
                     raise PortalError("changing the endpoint requires a new registration")
                 models = public_model_inputs(catalog[profile], secrets)
                 previous = committed_entry(cm)
+                trustee_ref = trustee_config_reference(site) if site else None
+                if previous and previous.get("trusteeConfigRef") != trustee_ref:
+                    raise PortalError("changing the Trustee configuration requires a new registration")
+                if previous and previous.get("credentialReferences") != credential_references:
+                    if previous.get("credentialReferences") is not None or credential_references is not None:
+                        raise PortalError("changing confidential credential references requires a new registration")
                 lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
                 if previous and not lifecycle and previous.get("modelInputs", {}) != models:
                     raise PortalError("changing model selection requires a new container registration")
@@ -1709,6 +1846,10 @@ def handle(action, request_name):
             generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
             prefix = vault_prefix(user, generation)
             entry = registry_entry(user, profile, generation, mode)
+            if trustee_ref is not None:
+                entry["trusteeConfigRef"] = trustee_ref
+            if credential_references is not None:
+                entry["credentialReferences"] = credential_references
             if mode in KUBERNETES_MODES:
                 if lifecycle:
                     entry["lifecycleVersion"] = 1
@@ -1728,10 +1869,11 @@ def handle(action, request_name):
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
                 entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1
             cm = reserve_credentials(k8s, ns, name, cm, entry, user)
-            vault = vault_client()
-            for secret, values in secrets.items():
-                vault.write(f"{prefix}/{secret}", values)
-                log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
+            if not confidential_credentials:
+                vault = vault or vault_client()
+                for secret, values in secrets.items():
+                    vault.write(f"{prefix}/{secret}", values)
+                    log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
                           resource_version=cm["metadata"].get("resourceVersion") if cm else None,
@@ -1741,6 +1883,7 @@ def handle(action, request_name):
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
             if cm is None and k8s.call("GET", argo_app, ok404=True) is None:
                 raise PortalError(f"{user} has no portal workspace")
+            entry = read_entry(cm) if cm is not None else None
             # Mark the entry first: the ApplicationSet (create and update
             # only) then stops getting it, so it does not rebuild the
             # Application, while the catalog keeps showing the workspace
@@ -1769,6 +1912,8 @@ def handle(action, request_name):
                     raise
                 raise PortalError(f"{name} changed while this request ran (a create?); request it again") from None
             log(f"workspace saw-{user} marked for deletion by {run}")
+            if entry is not None:
+                revoke_trustee_registration(k8s, user, entry)
             delete_application(k8s, user)
         write_result(user)
     except NotARequest:
@@ -1811,7 +1956,9 @@ def finish_delete(user):
         raise PortalError(f"{name} is not this run's deletion any more "
                           f"({'re-created' if not is_deleting(cm) else 'taken over by ' + owner}); "
                           "its entry and keys are left alone")
-    prefix = vault_prefix(user, entry_generation(user, read_entry(cm)))
+    entry = read_entry(cm)
+    revoke_trustee_registration(k8s, user, entry)
+    prefix = vault_prefix(user, entry_generation(user, entry))
     if os.environ.get("DELETE_VAULT_SECRETS", "true") == "true":
         vault = vault_client()
         for secret in sorted({s for p in catalog.values() for s in p.get("secrets", {})}):

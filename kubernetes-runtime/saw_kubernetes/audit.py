@@ -4,14 +4,15 @@ import json
 import subprocess
 from pathlib import Path
 
-from .boundary import fingerprint, objects, verify
+from .boundary import approval_fingerprint, objects, verify
 
 
 def capture(config, get):
     approved = {}
     for key, (path, field) in objects(config).items():
         obj = get(path)
-        approved[key] = {"uid": obj["metadata"]["uid"], "sha256": fingerprint(obj[field])}
+        approved[key] = {"uid": obj["metadata"]["uid"],
+                         "sha256": approval_fingerprint(key, obj[field])}
     result = dict(config, approved=approved)
     verify(result, result, get)
     return result

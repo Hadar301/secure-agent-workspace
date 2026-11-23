@@ -75,6 +75,45 @@ subjects:
   - kind: ServiceAccount
     name: {{ $sa }}
     namespace: {{ $ns }}
+{{- $trusteeRefs := dict -}}
+{{- range $ref := .Values.portal.trusteeKbsConfigRefs | default list -}}
+{{- if not (regexMatch "^/apis/confidentialcontainers.org/v1alpha1/namespaces/[a-z0-9-]+/kbsconfigs/[a-z0-9-]+$" $ref) }}{{ fail "portal.trusteeKbsConfigRefs must contain exact KbsConfig API paths" }}{{- end }}
+{{- if hasKey $trusteeRefs $ref }}{{ fail "portal.trusteeKbsConfigRefs contains a duplicate path" }}{{- end }}
+{{- $_ := set $trusteeRefs $ref true -}}
+{{- $parts := splitList "/" $ref -}}
+{{- $trusteeNamespace := index $parts 5 -}}
+{{- $trusteeName := index $parts 7 -}}
+{{- $roleName := printf "saw-portal-kbs-%s" (sha256sum $ref | trunc 12) -}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $roleName }}
+  namespace: {{ $trusteeNamespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["confidentialcontainers.org"]
+    resources: ["kbsconfigs"]
+    resourceNames: [{{ $trusteeName | quote }}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $roleName }}
+  namespace: {{ $trusteeNamespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $roleName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $ns }}
+{{- end }}
 ---
 # To refuse a user whose namespace saw-<user> is managed in Git.
 apiVersion: rbac.authorization.k8s.io/v1

@@ -75,12 +75,29 @@ def test_list_names_every_generated_file():
     assert "charts/openshell-rhdh/files/workspace.py" in listed
     assert "charts/openshell-rhdh/files/saw_keycloak_admin.py" in listed
     assert UI_MIRROR in listed
-    assert len(listed) == 12 + len(shipped) + 1
+    assert len(listed) == len(set(listed))
     assert sorted(p.rsplit("/", 1)[1] for p in mirrored) == shipped
     assert "charts/openshell-saw/files/provider-profiles" in listed
     assert "charts/openshell-rhdh/files/create-workspace.yaml" in listed
+    assert "charts/openshell-rhdh/files/create-confidential-kata-workspace.yaml" in listed
     assert "charts/saw-users/files/profile-catalog.json" in listed
     assert all((ROOT / p).is_file() or (ROOT / p).is_dir() for p in listed)
+
+
+def test_confidential_form_uses_only_approved_vault_references():
+    form_path = ROOT / "charts/openshell-rhdh/files/create-confidential-kata-workspace.yaml"
+    form = yaml.safe_load(form_path.read_text())
+    assert form["metadata"]["name"] == "create-confidential-kata-saw-workspace"
+    properties = form["spec"]["parameters"][0]["properties"]
+    assert properties["deploymentMode"]["enum"] == ["kata"]
+    body = form["spec"]["steps"][0]["input"]["body"]["stringData"]
+    assert body["credentialMode"] == "trustee-reference"
+    assert not any("api_key" in key for key in body)
+    serialized = form_path.read_text()
+    assert "secrets.inference__api_key" not in serialized
+    assert "secrets.web_search__api_key" not in serialized
+    register = next(step for step in form["spec"]["steps"] if step["id"] == "task-register")
+    assert register["name"] == "Verify approved Vault references and register the workspace"
 
 
 @pytest.fixture
@@ -88,7 +105,10 @@ def scratch(tmp_path):
     """A git repo with the generator, the profiles and their outputs, and a
     PATH whose python/python3 are this interpreter (it has PyYAML)."""
     repo = tmp_path / "repo"
-    for rel in ["scripts/saw-profile-catalog.py", ".githooks/pre-commit", "charts/openshell-saw/templates/_governed-proxy-policy.tpl", "charts/saw-users/files/workspace.py", "charts/openshell-keycloak/files/saw_keycloak_admin.py", UI_SOURCE, *outputs()]:
+    for rel in ["scripts/saw-profile-catalog.py", "kubernetes-runtime/saw_kubernetes/attestation.py",
+                ".githooks/pre-commit", "charts/openshell-saw/templates/_governed-proxy-policy.tpl",
+                "charts/saw-users/files/workspace.py", "charts/openshell-keycloak/files/saw_keycloak_admin.py",
+                UI_SOURCE, *outputs()]:
         if (ROOT / rel).is_dir():          # the mirror directory is listed as an owned path
             continue
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)

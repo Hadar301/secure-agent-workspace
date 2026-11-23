@@ -202,6 +202,10 @@ def preflight(config, namespace, user):
         if (existing.get("metadata", {}).get("deletionTimestamp")
                 or labels.get("argocd.argoproj.io/managed-by") != argo):
             raise InstallError("installation namespace is deleting or is not managed by the selected Argo CD")
+    try:
+        preflight_checks.verify_attestation(site, mode, lambda path: json.loads(run("oc", "get", "--raw", path)))
+    except preflight_checks.PreflightError as exc:
+        raise InstallError("SAW preflight failed: " + exc.reason) from None
     observations = preflight_checks.configuration_facts(site)
     observations["api"] = True  # The API reads below succeeded.
     try:

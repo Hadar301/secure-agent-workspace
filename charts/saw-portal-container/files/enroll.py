@@ -16,11 +16,17 @@ from receipt import receipt_key
 from gateway_ca import read_public_ca
 from http_errors import format_http_error
 from kube_api import request_headers
+import attestation
 
 S=Path("/var/run/secrets/kubernetes.io/serviceaccount")
 class NoRedirect(h.HTTPRedirectHandler):
     def redirect_request(self,*args): raise ValueError("redirect")
 client=h.build_opener(h.ProxyHandler({}),NoRedirect(),h.HTTPSHandler(context=ssl.create_default_context(cafile=str(S/"ca.crt"))))
+
+class RetryEnrollment(Exception):
+    """A referenced credential resource has not synced yet."""
+
+
 def api(path, patch=None):
     req=h.Request("https://kubernetes.default.svc"+path,method="PATCH" if patch is not None else "GET",
         headers=request_headers((S/"token").read_text().strip(), patch is not None),data=json.dumps(patch).encode() if patch is not None else None)
@@ -74,12 +80,40 @@ def once(x):
             ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
         verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
-             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
+             governanceNamespace=x["governance"],gateway=u,slotKeys=sorted(x["targets"]))
     if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)
         return cache[p]
+    attestation_settings=x.get("attestation")
+    confidential=None
+    if attestation_settings is not None:
+        attestation_site={"attestation":attestation_settings}
+        try:
+            if attestation.enabled(attestation_site):
+                if mode!="kata":raise attestation.AttestationError("AttestationConfigurationRejected")
+                attestation.verify_platform(attestation_site,get,mode)
+                attestation.verify_kbs_reachability(attestation_site)
+                try:
+                    attestation.verify_resource_secret_ready(attestation_site,u,r,get)
+                except attestation.AttestationError as exc:
+                    if exc.reason == "CredentialResourceUnavailable":
+                        raise RetryEnrollment() from None
+                    raise
+                attestation.ensure_resource_membership(
+                    attestation_site,u,r,get,lambda path,body:api(path,body))
+                attestation.verify_resource_membership(attestation_site,u,r,get)
+                confidential=dict(settings=attestation_settings,owner=u,registration=r,installation=ident)
+        except RetryEnrollment:
+            raise
+        except attestation.AttestationError as exc:
+            raise PreflightError(str(exc)) from None
+    if confidential is not None:
+        cfg["confidentialAttestation"]=confidential
+        cfg["confidentialProviderPolicy"]=u+"-confidential-provider-policy"
+    else:
+        cfg["proxyPolicy"]=u+"-proxy-policy"
     approved=capture(cfg,get)["approved"]
     verify_contract(cfg,get,x["reference"])
     profile=obj("configmap","saw-bom-profiles")
@@ -112,6 +146,8 @@ def once(x):
         slots[key]=slot
     bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode=mode,
        gatewayVersion=x["gatewayVersion"],approvedCredentialFreeProviders=[],bindings=slots)
+    if confidential is not None:
+        bindings["confidentialAttestation"]=confidential
     if runtime:
         bindings.update(workloadRuntimeClass=runtime["name"],workloadRuntimeClassUID=runtime["uid"],
                         workloadRuntimeClassDigest=runtime["sha256"])
@@ -124,6 +160,10 @@ def once(x):
     if x.get("modelInputs"):
         bindings["modelInputs"]=x["modelInputs"]
     plan=compile_profile_files(profile["data"],bindings)
+    if confidential is not None:
+        confidential["placements"] = plan["attestation"]["placements"]
+        bindings["confidentialAttestation"] = confidential
+        plan = compile_profile_files(profile["data"],bindings)
     KubernetesResourceVerifier(obj,lambda _:None)(plan)  # same snapshot verified above
     intent=json.loads(build_intent(profile,bindings,name="saw-runtime-intent",generation=1,pin_plan=True)["data"]["intent.json"])
     public_ca=read_public_ca(t,u,ident,get)
@@ -144,6 +184,12 @@ if __name__=="__main__":
         except PreflightError as exc:
             print("Kata preflight failed: "+exc.reason,flush=True)
             raise SystemExit(1)
+        except RetryEnrollment:
+            print("Waiting for Trustee credential resource to become ready",flush=True)
+            if n==99:
+                print("Enrollment stopped: CredentialResourceUnavailable",flush=True)
+                raise SystemExit(1)
+            time.sleep(5)
         except Exception as exc:
             # Never log an API body, credential, or other input.
             detail = format_http_error(exc) if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__

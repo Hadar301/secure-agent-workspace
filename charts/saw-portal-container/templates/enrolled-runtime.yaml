@@ -119,6 +119,13 @@ spec:
 {{- with $site.kataRuntimeClass }}
           workloadRuntimeClass: {{ .name | quote }}
 {{- end }}
+{{- if and $site.attestation $site.attestation.enabled }}
+          confidentialAttestation:
+            settings: {{ $site.attestation | toJson }}
+            owner: {{ $u | quote }}
+            registration: {{ $reg | quote }}
+            installation: {{ $.Values.installationID | quote }}
+{{- end }}
           intent: saw-runtime-intent
           profile: saw-bom-profiles
           status: saw-runtime-status

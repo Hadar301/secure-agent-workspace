@@ -816,3 +816,6 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 .PHONY: kata-worker-check
 kata-worker-check: ## Report firmware and verify KVM on selected local-Kata workers
 	@$(or $(PYTHON),uv run --locked python) scripts/kata_worker_check.py
+
+.PHONY: saw-init
+saw-init: saw-preflight ## Read-only gate before Kubernetes workspace installation

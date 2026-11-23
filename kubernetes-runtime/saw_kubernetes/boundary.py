@@ -1,10 +1,13 @@
 """Read-only checks of the administrator-approved OpenShift installation."""
 import hashlib
 import json
+import re
+import uuid
 
 import yaml
 
 from . import provider as governed
+from . import attestation
 
 
 class BoundaryError(ValueError):
@@ -14,6 +17,37 @@ class BoundaryError(ValueError):
 def fingerprint(value):
     data = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(data.encode()).hexdigest()
+
+
+def _confidential_context(config):
+    context = config.get("confidentialAttestation")
+    if context is None:
+        return None
+    try:
+        if (not isinstance(context, dict)
+                or set(context) != {"settings", "owner", "registration", "installation"}
+                or config.get("mode") != "kata"):
+            raise ValueError()
+        settings = attestation.validate({"attestation": context["settings"]}, "kata")
+        if (settings is None or context["owner"] != config.get("gateway")
+                or context["installation"] != config.get("ownerID")
+                or context["registration"] != config.get("trustedNamespace", "").removeprefix("saw-ctl-")):
+            raise ValueError()
+        attestation.resource(context["owner"], context["registration"], "inference")
+        if str(uuid.UUID(context["installation"])) != context["installation"]:
+            raise ValueError()
+        return context
+    except (attestation.AttestationError, ValueError, TypeError, KeyError, AttributeError):
+        raise BoundaryError("AttestationConfigurationRejected") from None
+
+
+def approval_fingerprint(key, value):
+    if key == "confidentialTrusteeConfig":
+        try:
+            return attestation.trustee_config_digest(value)
+        except attestation.AttestationError as exc:
+            raise BoundaryError(str(exc)) from None
+    return fingerprint(value)
 
 
 def objects(config):
@@ -32,7 +66,7 @@ def objects(config):
             "sandboxPlacement": (f"{admission}/validatingadmissionpolicies/{policy}-kata", "spec"),
             "sandboxPlacementBinding": (f"{admission}/validatingadmissionpolicybindings/{policy}-kata", "spec"),
         }
-    return {
+    result = {
         **placement,
         "validation": (f"{admission}/validatingadmissionpolicies/{policy}", "spec"),
         "podDeleteGuard": (f"{admission}/validatingadmissionpolicies/{ns}-pods-driver", "spec"),
@@ -57,9 +91,26 @@ def objects(config):
         "governanceProfiles": (f"{core}/{governance}/configmaps/governance-interceptor-profiles", "data"),
         "proxy": (f"{apps}/{trusted}/deployments/{gateway}-credential-proxy", "spec"),
         "proxyNetwork": (f"{net}/{trusted}/networkpolicies/{gateway}-credential-proxy", "spec"),
-        "proxyPolicy": (f"{core}/{trusted}/configmaps/{config['proxyPolicy']}", "data"),
+        "proxyPolicy": (f"{core}/{trusted}/configmaps/{config.get('proxyPolicy', gateway + '-proxy-policy')}", "data"),
         "publicCA": (f"{core}/{ns}/configmaps/{gateway}-proxy-ca", "data"),
     }
+    context = _confidential_context(config)
+    if context is not None:
+        # Confidential supervisors fetch credentials from CDH inside the VM.
+        # They do not use the Kubernetes-side credential proxy or its CA.
+        for key in ("proxy", "proxyNetwork", "proxyPolicy", "publicCA"):
+            result.pop(key)
+        provider_policy = config.get("confidentialProviderPolicy")
+        if (not isinstance(provider_policy, str)
+                or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", provider_policy)):
+            raise BoundaryError("ConfidentialProviderPolicyUnavailable")
+        result["confidentialProviderPolicy"] = (
+            f"{core}/{trusted}/configmaps/{provider_policy}", "data")
+        for key, ref in context["settings"]["references"].items():
+            approval_key = "confidential" + key[0].upper() + key[1:]
+            field = "spec" if key in {"trustee", "trusteeConfig"} else "data"
+            result[approval_key] = (ref["path"], field)
+    return result
 
 
 def complete_list(get, path):
@@ -67,6 +118,35 @@ def complete_list(get, path):
     if response.get("metadata", {}).get("continue") or not isinstance(response.get("items"), list):
         raise BoundaryError("IncompleteInventory")
     return response["items"]
+
+
+def verify_confidential_plan(config, plan, confidential):
+    if confidential is None:
+        if plan.get("schemaVersion") == 2 or "attestation" in plan:
+            raise BoundaryError("AttestationApprovalMissing")
+        return
+    if "schemaVersion" not in plan:
+        if "attestation" in plan:
+            raise BoundaryError("AttestationPlanMismatch")
+        return
+    if (plan.get("schemaVersion") != 2
+            or plan.get("mode") != "kata"
+            or plan.get("requestedPlacement") != {
+                "supervisor": "confidential", "workload": "confidential"}
+            or plan.get("runtimeClass", {}).get("name") != config.get("workloadRuntimeClass")):
+        raise BoundaryError("AttestationPlanMismatch")
+    slots = [f"{workspace['name']}/{sandbox['name']}"
+             for workspace in plan.get("workspaces", [])
+             for sandbox in workspace.get("sandboxes", [])]
+    try:
+        expected = attestation.placement_contract(
+            {"attestation": confidential["settings"]}, confidential["owner"],
+            confidential["registration"], confidential["installation"], slots,
+            config["workloadRuntimeClass"])
+    except (attestation.AttestationError, KeyError, TypeError):
+        raise BoundaryError("AttestationPlanMismatch") from None
+    if plan.get("attestation") != expected:
+        raise BoundaryError("AttestationPlanMismatch")
 
 
 def excludes_namespace(policy, namespace):
@@ -94,6 +174,7 @@ def verify(config, plan, get):
             plan["namespace"], plan["namespaceUID"], plan["ownerID"], plan["mode"]):
         raise BoundaryError("WrongInstallation")
     refs = objects(config)
+    confidential = _confidential_context(config)
     if set(config["approved"]) != set(refs):
         raise BoundaryError("IncompleteApproval")
     observed = {}
@@ -102,14 +183,17 @@ def verify(config, plan, get):
         meta = obj["metadata"]
         expected = config["approved"][key]
         if (meta.get("deletionTimestamp") or meta["uid"] != expected["uid"]
-                or fingerprint(obj[field]) != expected["sha256"]):
+                or approval_fingerprint(key, obj[field]) != expected["sha256"]):
             raise BoundaryError("ChangedBoundary:" + key)
         observed[key] = obj
     for workspace in plan.get("workspaces", []):
         for provider in workspace["providers"]:
             credentials = provider.get("credentials")
             if credentials:
-                policy = json.loads(observed["proxyPolicy"]["data"]["config.json"])
+                policy_key = ("confidentialProviderPolicy" if confidential is not None
+                              else "proxyPolicy")
+                policy_field = "policy.json" if confidential is not None else "config.json"
+                policy = json.loads(observed[policy_key]["data"][policy_field])
                 kind = provider.get("type", "openai")
                 if kind not in {"openai", "custom-inference"}:
                     live = observed["governanceProfiles"]["data"].get(kind + ".yaml", "")
@@ -148,10 +232,22 @@ def verify(config, plan, get):
                 and c.get("reason") == "SetupSucceeded"}
     if not zones or not zones <= realized:
         raise BoundaryError("NetworkNotRealized")
-    for key in ("gateway", "governance", "proxy"):
+    rollouts = ["gateway", "governance"]
+    if confidential is None:
+        rollouts.append("proxy")
+    for key in rollouts:
         obj = observed[key]
         status = obj.get("status", {})
         if (status.get("observedGeneration") != obj["metadata"]["generation"]
                 or status.get("readyReplicas", 0) != obj["spec"]["replicas"]
                 or status.get("updatedReplicas", 0) != obj["spec"]["replicas"]):
             raise BoundaryError("RolloutIncomplete:" + key)
+    if confidential is not None:
+        site = {"attestation": confidential["settings"]}
+        try:
+            attestation.verify_platform(site, get, "kata")
+            attestation.verify_resource_membership(
+                site, confidential["owner"], confidential["registration"], get)
+        except attestation.AttestationError as exc:
+            raise BoundaryError(str(exc)) from None
+    verify_confidential_plan(config, plan, confidential)

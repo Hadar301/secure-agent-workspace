@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from .core import shared
 from . import harness
+from . import attestation
 from . import provider as governed
 
 SOURCE_REVISION = "305c8b3d7bbdb97a6f2f7264c3ad43b0087c307f"
@@ -23,12 +24,13 @@ MANAGED = "saw.redhat.com/managed-by"
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\Z")
 IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}\Z")
 QUANTITY = re.compile(r"[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?\Z")
+INIT_DATA_ANNOTATION = "io.katacontainers.config.hypervisor.cc_init_data"
 
 
 SAFE_FAILURE_REASONS = frozenset({
     "ProfileRejected", "InvalidPlan", "PlacementRejected", "IdentityConflict",
     "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
-    "ProviderProfileMismatch",
+    "ProviderProfileMismatch", "AttestationIntegrationUnavailable",
     "WorkspaceRejected", "ProviderRejected", "SandboxRejected",
     "SandboxStateMismatch", "SandboxDrift",
 })
@@ -225,6 +227,38 @@ def _compatible_inference(workspace, sandbox, config):
     return provider, info
 
 
+def _confidential_configuration(value, mode, runtime_class):
+    if value is None:
+        return None
+    mapping(value, {"settings", "owner", "registration", "installation", "placements"},
+            {"settings", "owner", "registration", "installation"}, "confidential attestation")
+    supplied_placements = value.get("placements")
+    if supplied_placements is not None and not isinstance(supplied_placements, dict):
+        raise ContractError("confidential placements must be an object", safe_reason="PlacementRejected")
+    try:
+        settings = attestation.validate({"attestation": value["settings"]}, mode)
+        if settings is None:
+            raise attestation.AttestationError("AttestationConfigurationRejected")
+        owner = name(value["owner"], "attestation owner", 19)
+        registration = value["registration"]
+        if not isinstance(registration, str) or not re.fullmatch(r"[a-f0-9]{16}", registration):
+            raise attestation.AttestationError("AttestationIdentityRejected")
+        installation = value["installation"]
+        if str(uuid.UUID(installation)) != installation:
+            raise ValueError()
+        if not runtime_class:
+            raise attestation.AttestationError("AttestationConfigurationRejected")
+    except attestation.AttestationError as exc:
+        raise ContractError(str(exc), safe_reason=str(exc)) from None
+    except (ValueError, TypeError, AttributeError):
+        raise ContractError("AttestationIdentityRejected", safe_reason="AttestationConfigurationRejected") from None
+    result = {"settings": settings, "owner": owner, "registration": registration,
+              "installation": installation}
+    if supplied_placements is not None:
+        result["placements"] = supplied_placements
+    return result
+
+
 def compile_profile_files(files, config):
     """Compile stock SAW ConfigMap data with administrator-approved bindings.
 
@@ -246,7 +280,8 @@ def compile_profile_files(files, config):
         raise ContractError("profile documents fail shared SAW schema or semantic validation") from None
     mapping(config, {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode",
                      "workloadRuntimeClass", "workloadRuntimeClassUID", "workloadRuntimeClassDigest", "bindings",
-                     "approvedCredentialFreeProviders", "gatewayVersion", "retiredSandboxes", "modelInputs", "proxyBindings", "customInferenceURL"},
+                     "approvedCredentialFreeProviders", "gatewayVersion", "retiredSandboxes", "modelInputs", "proxyBindings", "customInferenceURL",
+                     "confidentialAttestation"},
             {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode", "bindings",
              "approvedCredentialFreeProviders", "gatewayVersion"}, "administrator configuration")
     try:
@@ -279,6 +314,8 @@ def compile_profile_files(files, config):
         runtime_ref["sha256"] = sha
     else:
         raise ContractError("this adapter only accepts container or kata")
+    confidential = _confidential_configuration(
+        config.get("confidentialAttestation"), mode, runtime_ref["name"])
     approved = config["approvedCredentialFreeProviders"]
     if not isinstance(approved, list) or any(not isinstance(p, str) for p in approved):
         raise ContractError("approvedCredentialFreeProviders must be a list")
@@ -446,13 +483,41 @@ exec openclaw gateway""")
     claims = [r["name"] for r in all_refs]
     if len(claims) != len(set(claims)):
         raise ContractError("sharing retained claims between sandboxes is not supported")
-    plan = {"schemaVersion": 1, "sourceRevision": SOURCE_REVISION, "ownerID": owner,
+    plan = {"schemaVersion": 2 if confidential else 1, "sourceRevision": SOURCE_REVISION, "ownerID": owner,
             "namespace": config["namespace"], "namespaceUID": config["namespaceUID"],
             "ownerSubject": config["ownerSubject"], "mode": mode, "gatewayVersion": config["gatewayVersion"],
-            "requestedPlacement": {"supervisor": "container", "workload": mode},
+            "requestedPlacement": ({"supervisor": "confidential", "workload": "confidential"}
+                                   if confidential else {"supervisor": "container", "workload": mode}),
             "runtimeClass": runtime_ref,
             "claims": sorted(all_refs, key=lambda r: (r["workspace"], r["name"])),
             "workspaces": sorted(workspaces, key=lambda w: w["name"])}
+    if confidential:
+        slots = [f"{workspace['name']}/{sandbox['name']}"
+                 for workspace in workspaces for sandbox in workspace["sandboxes"]]
+        try:
+            plan["attestation"] = attestation.placement_contract(
+                {"attestation": confidential["settings"]}, confidential["owner"],
+                confidential["registration"], confidential["installation"], slots,
+                runtime_ref["name"])
+        except attestation.AttestationError as exc:
+            raise ContractError(str(exc), safe_reason=str(exc)) from None
+        placements = plan["attestation"]["placements"]
+        if confidential.get("placements") is not None and confidential["placements"] != placements:
+            raise ContractError("enrolled confidential placements changed", safe_reason="PlacementRejected")
+        for workspace in workspaces:
+            for sandbox in workspace["sandboxes"]:
+                slot = f"{workspace['name']}/{sandbox['name']}"
+                placement = placements[slot]["workload"]
+                template = sandbox["spec"]["template"]
+                platform = template.setdefault("platform_config", {})
+                if not isinstance(platform, dict):
+                    raise ContractError("confidential Pod template is invalid", safe_reason="PlacementRejected")
+                annotations = platform.setdefault("annotations", {})
+                if not isinstance(annotations, dict):
+                    raise ContractError("confidential Pod annotations are invalid", safe_reason="PlacementRejected")
+                platform["runtime_class_name"] = placement["runtime_class_name"]
+                annotations[INIT_DATA_ANNOTATION] = placement["init_data"]
+                sandbox["annotations"][REVISION] = digest(sandbox["spec"])
     if any(p["type"] == "custom-inference" for w in workspaces for p in w["providers"]):
         plan["customInferenceURL"] = config["customInferenceURL"]
     retired = config.get("retiredSandboxes", {})

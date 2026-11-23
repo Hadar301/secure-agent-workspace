@@ -29,6 +29,87 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: {name: default-deny, namespace: {{ $runtime }}, annotations: {argocd.argoproj.io/sync-wave: "-1"}}
 spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
+{{- $site := .Values.site | default dict }}
+{{- if dig "attestation" "enabled" false $site }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.owner }}-confidential-provider-policy
+  namespace: {{ $trusted }}
+  labels:
+    saw.redhat.com/runtime-owner: {{ required "installationID required" .Values.installationID | quote }}
+    saw.redhat.com/portal-owner: {{ .Values.owner | quote }}
+    saw.redhat.com/registration: {{ .Values.registration | quote }}
+immutable: true
+data:
+  policy.json: {{ required "explicit governed provider policy required" $site.providerPolicy | toJson | quote }}
+{{- $trusteeRef := dig "references" "trusteeConfig" "path" "" $site.attestation }}
+{{- if not (regexMatch "^/apis/confidentialcontainers.org/v1alpha1/namespaces/[a-z0-9-]+/kbsconfigs/[a-z0-9-]+$" $trusteeRef) }}{{ fail "approved Trustee configuration path is invalid" }}{{- end }}
+{{- $trusteeParts := splitList "/" $trusteeRef }}
+{{- $trusteeNamespace := index $trusteeParts 5 }}
+{{- $resourceName := printf "saw-%s-%s" $u $id }}
+{{- $externalData := list }}
+{{- $fieldPairs := dict }}
+{{- $seenFields := dict }}
+{{- $seenSources := dict }}
+{{- $fieldIndex := 0 }}
+{{- range $binding := $site.providerPolicy.bindings }}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" $binding.secret)) (not (regexMatch "^[A-Za-z0-9_-]+$" $binding.key)) (not (kindIs "slice" $binding.providers)) }}{{ fail "confidential credential binding is invalid" }}{{- end }}
+{{- if $binding.refresh }}{{ fail "confidential credential refresh is not qualified" }}{{- end }}
+{{- $fieldKey := printf "%s/%s" $binding.secret $binding.key }}
+{{- if hasKey $seenFields $fieldKey }}{{ fail "confidential credential field is duplicated" }}{{- end }}
+{{- $_ := set $seenFields $fieldKey true }}
+{{- $sourcePath := index ($site.credentialReferences | default dict) $binding.secret | default "" }}
+{{- $sourcePattern := printf "^[A-Za-z0-9_-]+/data/([A-Za-z0-9_-]+/)*saw-%s/([A-Za-z0-9_-]+/)*%s$" $u $binding.secret }}
+{{- if not (regexMatch $sourcePattern $sourcePath) }}{{ fail "confidential credential reference is not approved for this owner" }}{{- end }}
+{{- if and (hasKey $seenSources $sourcePath) (ne (get $seenSources $sourcePath) $binding.secret) }}{{ fail "confidential credentials must use separate Vault resources" }}{{- end }}
+{{- $_ := set $seenSources $sourcePath $binding.secret }}
+{{- $alias := printf "field%d" $fieldIndex }}
+{{- $externalData = append $externalData (dict "secretKey" $alias "remoteRef" (dict "key" $sourcePath "property" $binding.key)) }}
+{{- $pairs := get $fieldPairs $binding.secret | default list }}
+{{- $pairs = append $pairs (printf "%q .%s" $binding.key $alias) }}
+{{- if has "custom-inference" $binding.providers }}
+{{- $customURL := required "custom inference requires an approved URL" $site.customInferenceURL }}
+{{- $pairs = append $pairs (printf "%q %q" "url" $customURL) }}
+{{- end }}
+{{- $_ := set $fieldPairs $binding.secret $pairs }}
+{{- $fieldIndex = add1 $fieldIndex }}
+{{- end }}
+{{- if eq $fieldIndex 0 }}{{ fail "confidential Trustee credential resources are missing" }}{{- end }}
+{{- $secretTemplates := dict "image-policy" ($site.attestation.imagePolicy | toJson) }}
+{{- range $secret, $pairs := $fieldPairs }}
+{{- $_ := set $secretTemplates $secret (printf "{{ dict %s | toJson }}" (join " " $pairs)) }}
+{{- end }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ $resourceName }}
+  namespace: {{ $trusteeNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+  labels:
+    saw.redhat.com/runtime-owner: {{ .Values.installationID | quote }}
+    saw.redhat.com/portal-owner: {{ $u | quote }}
+    saw.redhat.com/registration: {{ $id | quote }}
+spec:
+  refreshInterval: 1m
+  secretStoreRef: {kind: ClusterSecretStore, name: {{ $.Values.secretStore | quote }}}
+  target:
+    name: {{ $resourceName }}
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      metadata:
+        labels:
+          saw.redhat.com/runtime-owner: {{ $.Values.installationID | quote }}
+          saw.redhat.com/portal-owner: {{ $u | quote }}
+          saw.redhat.com/registration: {{ $id | quote }}
+      data:
+{{ toYaml $secretTemplates | indent 8 }}
+  data:
+{{ toYaml $externalData | indent 4 }}
+{{- end }}
 {{- $customSecret := "" }}
 {{- $sources := dict }}
 {{- with required "explicit governed provider policy required" (.Values.site | default dict).providerPolicy }}
@@ -43,6 +124,7 @@ spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
 {{- end }}
 {{- end }}
 {{- range $secret, $fields := $sources }}
+{{- if not (dig "attestation" "enabled" false ($.Values.site | default dict)) }}
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -69,6 +151,7 @@ spec:
     - secretKey: {{ . }}
       remoteRef: {key: {{ printf "%s/%s" $prefix $secret | quote }}, property: {{ . }}}
     {{- end }}
+{{- end }}
 {{- end }}
 
 {{- $pull := (.Values.site | default dict).imagePull | default dict }}

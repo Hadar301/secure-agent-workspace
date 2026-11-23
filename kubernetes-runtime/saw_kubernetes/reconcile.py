@@ -182,8 +182,19 @@ class Reconciler:
             raise ContractError("a positive intent generation and Running/Stopped state are required",
                                 safe_reason="InvalidIntent")
         body = {k: v for k, v in plan.items() if k != "revision"}
-        if plan.get("sourceRevision") != SOURCE_REVISION or plan.get("schemaVersion") != 1 or digest(body) != plan.get("revision"):
+        schema = plan.get("schemaVersion")
+        if (plan.get("sourceRevision") != SOURCE_REVISION or schema not in (1, 2)
+                or digest(body) != plan.get("revision")
+                or (schema == 1 and "attestation" in plan)
+                or (schema == 2 and not isinstance(plan.get("attestation"), dict))):
             raise ContractError("invalid or modified compiled plan", safe_reason="InvalidPlan")
+        if schema == 2:
+            if (plan.get("mode") != "kata" or plan.get("requestedPlacement") !=
+                    {"supervisor": "confidential", "workload": "confidential"}):
+                raise ContractError("confidential placement differs from the approved plan",
+                                    safe_reason="PlacementRejected")
+            raise ContractError("confidential compute driver is not qualified",
+                                safe_reason="AttestationIntegrationUnavailable")
         if plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
                 "supervisor": "container", "workload": plan["mode"]}:
             raise ContractError("stock adapter requires an ordinary-container supervisor",

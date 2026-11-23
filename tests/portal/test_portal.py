@@ -251,6 +251,30 @@ def test_a_request_gets_the_profiles_secrets(portal, catalog):
                        "web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 
+def test_a_trustee_reference_request_has_no_credential_fields(portal, catalog, monkeypatch):
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm", "kata"]')
+    profile, values = portal.parse_request({"profile": "data-science",
+        "deploymentMode": "kata", "credentialMode": "trustee-reference"}, catalog)
+    assert profile == "data-science"
+    assert all("api_key" not in fields for fields in values.values())
+    assert values["inference"]["model"] == DS_MODEL
+    assert values["inference"]["cuda_model"] == DS_MODEL
+
+
+@pytest.mark.parametrize("data", [
+    {"profile": "data-science", "deploymentMode": "kata",
+     "credentialMode": "trustee-reference", "inference.api_key": "supplied"},
+    {"profile": "data-science", "deploymentMode": "kata",
+     "credentialMode": "trustee-reference", "extra": "unsupported"},
+    {"profile": "data-science", "deploymentMode": "vm",
+     "credentialMode": "trustee-reference"},
+])
+def test_invalid_trustee_reference_requests_are_rejected(portal, catalog, data, monkeypatch):
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm", "kata"]')
+    with pytest.raises(portal.PortalError):
+        portal.parse_request(data, catalog)
+
+
 def test_missing_fields_are_named(portal, catalog):
     with pytest.raises(portal.PortalError, match="needs: inference.api_key, inference.url, inference.model"):
         portal.parse_request({"profile": "custom-inference", "web-search.api_key": "b"}, catalog)
@@ -366,7 +390,10 @@ class Fake:
         self.objects = {}      # path -> object
         self.rv = 0            # last resourceVersion handed out
         self.deleted = []
+        self.events = []
         self.vault = {}        # kv path -> data
+        self.vault_writes = []
+        self.metadata_reads = []
         self.vault_health = {"initialized": True, "sealed": False, "standby": False}
         self.logins = []
         self.logs = {}         # pod log path -> text
@@ -390,6 +417,13 @@ class Fake:
                 url = urlsplit(self.path)
                 if url.path == "/v1/sys/health":
                     return self._reply(200, fake.vault_health)
+                if url.path.startswith("/v1/secret/metadata/"):
+                    assert self.headers["X-Vault-Token"] == "vault-token"
+                    path = url.path[len("/v1/secret/metadata/"):]
+                    fake.metadata_reads.append(path)
+                    if path in fake.vault:
+                        return self._reply(200, {"data": {"keys": []}})
+                    return self._reply(404, {"reason": "NotFound"})
                 if url.path in fake.logs:
                     raw = fake.logs[url.path].encode()
                     self.send_response(200)
@@ -411,7 +445,9 @@ class Fake:
                     return self._reply(200, {"auth": {"client_token": "vault-token"}})
                 if self.path.startswith("/v1/secret/data/"):
                     assert self.headers["X-Vault-Token"] == "vault-token"
-                    fake.vault[self.path[len("/v1/secret/data/"):]] = body["data"]
+                    path = self.path[len("/v1/secret/data/"):]
+                    fake.vault_writes.append(path)
+                    fake.vault[path] = body["data"]
                     return self._reply(200, {})
                 path = f"{self.path}/{body['metadata']['name']}"
                 if path in fake.objects:
@@ -433,6 +469,29 @@ class Fake:
                 fake.objects[self.path] = body
                 self._reply(200, fake.objects[self.path])
 
+            def do_PATCH(self):
+                body = self._body()
+                obj = fake.objects.get(self.path)
+                if obj is None:
+                    return self._reply(404, {"reason": "NotFound"})
+                if self.headers.get_content_type() != "application/merge-patch+json":
+                    return self._reply(415, {"reason": "UnsupportedMediaType"})
+                want = (body.get("metadata") or {}).get("resourceVersion")
+                have = (obj.get("metadata") or {}).get("resourceVersion")
+                if want and want != have:
+                    return self._reply(409, {"reason": "Conflict"})
+                for key, value in body.items():
+                    if key == "metadata":
+                        continue
+                    if isinstance(value, dict):
+                        obj.setdefault(key, {}).update(value)
+                    else:
+                        obj[key] = value
+                fake.rv += 1
+                obj.setdefault("metadata", {})["resourceVersion"] = str(fake.rv)
+                fake.events.append(("PATCH", self.path))
+                self._reply(200, obj)
+
             def do_DELETE(self):
                 if self.path.startswith("/v1/secret/metadata/"):
                     fake.vault.pop(self.path[len("/v1/secret/metadata/"):], None)
@@ -442,6 +501,7 @@ class Fake:
                 if any(meta.get(k) != v for k, v in pre.items()) and self.path in fake.objects:
                     return self._reply(409, {"reason": "Conflict"})
                 fake.deleted.append(self.path)
+                fake.events.append(("DELETE", self.path))
                 self._reply(200 if fake.objects.pop(self.path, None) else 404, {})
 
             def log_message(self, *args):
@@ -623,6 +683,87 @@ def test_create_writes_vault_and_the_registry(portal, world):
     assert "/api/v1/namespaces/saw-portal/secrets/saw-req-1" not in fake.objects, "request consumed"
 
 
+def test_confidential_create_checks_vault_metadata_without_writing_keys(portal, world, monkeypatch):
+    fake, signer = world
+    refs = {
+        "inference": "secret/data/hub/saw-alice/credentials/inference",
+        "web-search": "secret/data/hub/saw-alice/credentials/web-search",
+    }
+    for path in refs.values():
+        fake.vault[path.removeprefix("secret/data/")] = {}
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"data-science": "a" * 64}},
+    }, "kata")
+    site["attestation"] = {"enabled": True}
+    site["credentialReferences"] = {"data-science": refs}
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm", "kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    monkeypatch.setattr(portal, "check_workspace_preflight", lambda *args: None)
+    monkeypatch.setattr(portal._workspace, "validate_runtime_placement", lambda *args: None)
+    monkeypatch.setattr(portal._preflight, "verify_profile_image_access", lambda *args: None)
+    monkeypatch.setattr(portal, "trustee_config_reference", lambda site: None)
+    fake.request("saw-req-confidential", {
+        "action": "create", "token": signer.token(), "profile": "data-science",
+        "deploymentMode": "kata", "credentialMode": "trustee-reference",
+    })
+
+    assert portal.main(["create", "saw-req-confidential"]) == 0
+    assert fake.metadata_reads == [
+        "hub/saw-alice/credentials/inference", "hub/saw-alice/credentials/web-search"]
+    assert fake.vault_writes == []
+    entry = json.loads(fake.objects[REGISTRY]["data"]["user.json"])
+    assert entry["credentialReferences"] == refs
+    assert entry["values"]["deployment"]["mode"] == "kata"
+    assert "api_key" not in json.dumps(entry)
+    assert "/api/v1/namespaces/saw-portal/secrets/saw-req-confidential" not in fake.objects
+
+
+def test_confidential_create_stops_when_an_approved_reference_is_missing(portal, world, monkeypatch):
+    fake, signer = world
+    refs = {
+        "inference": "secret/data/hub/saw-alice/credentials/inference",
+        "web-search": "secret/data/hub/saw-alice/credentials/web-search",
+    }
+    fake.vault["hub/saw-alice/credentials/inference"] = {}
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"data-science": "a" * 64}},
+    }, "kata")
+    site["attestation"] = {"enabled": True}
+    site["credentialReferences"] = {"data-science": refs}
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm", "kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    monkeypatch.setattr(portal, "check_workspace_preflight", lambda *args: None)
+    monkeypatch.setattr(portal._workspace, "validate_runtime_placement", lambda *args: None)
+    monkeypatch.setattr(portal._preflight, "verify_profile_image_access", lambda *args: None)
+    monkeypatch.setattr(portal, "trustee_config_reference", lambda site: None)
+    fake.request("saw-req-confidential", {
+        "action": "create", "token": signer.token(), "profile": "data-science",
+        "deploymentMode": "kata", "credentialMode": "trustee-reference",
+    })
+
+    assert portal.main(["create", "saw-req-confidential"]) == 1
+    assert fake.vault_writes == []
+    assert REGISTRY not in fake.objects
+    assert not any(path.endswith("/configmaps/saw-ws-alice") for path in fake.objects)
+
+
+def test_vault_reference_metadata_probe_does_not_read_data(portal, world):
+    fake, _ = world
+    relative = "hub/saw-alice/credentials/inference"
+    fake.vault[relative] = {}
+    vault = portal.vault_client()
+    assert vault.metadata_exists("secret/data/" + relative) is True
+    assert vault.metadata_exists("secret/data/hub/saw-alice/credentials/missing") is False
+    assert fake.metadata_reads == [relative, "hub/saw-alice/credentials/missing"]
+    assert fake.vault_writes == []
+    for path in ("other/data/hub/saw-alice/credentials/inference",
+                 "secret/data/hub/saw-alice/../saw-bob/credentials/inference"):
+        with pytest.raises(portal.PortalError, match="approved Vault credential reference"):
+            vault.metadata_exists(path)
+
+
 def test_the_owner_comes_from_the_token_not_the_form(portal, world):
     fake, signer = world
     fake.request("saw-req-1", ds_request(signer, owner="bob"))
@@ -681,6 +822,43 @@ def test_delete_removes_the_entry_and_the_keys(portal, world):
     assert portal.main(["finish-delete", "alice"]) == 0
     assert "/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice" not in fake.objects
     assert fake.vault == {}
+
+
+def test_delete_revokes_trustee_membership_before_deleting_application(portal, world, monkeypatch):
+    fake, signer = world
+    fake.request("saw-req-1", ds_request(signer))
+    assert portal.main(["create", "saw-req-1"]) == 0
+    cm = fake.objects[REGISTRY]
+    entry = json.loads(cm["data"]["user.json"])
+    path = "/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"
+    uid = "11111111-1111-4111-8111-111111111111"
+    own = "saw-alice-" + GEN[0]
+    config = {"metadata": {"uid": uid, "resourceVersion": "10"},
+              "spec": {"policyRevision": "changed-after-enrollment",
+                       "kbsSecretResources": ["saw-bob-fedcba9876543210", own]}}
+    entry["trusteeConfigRef"] = {"path": path, "uid": uid, "sha256": "a" * 64}
+    cm["data"]["user.json"] = json.dumps(entry, sort_keys=True)
+    fake.objects[REGISTRY] = cm
+    fake.objects[path] = config
+    monkeypatch.setenv("SAW_TRUSTEE_KBS_CONFIG_REFS", json.dumps([path]))
+    fake.events.clear()
+
+    fake.request("saw-req-2", {"action": "delete", "token": signer.token()})
+    assert portal.main(["delete", "saw-req-2"]) == 0
+    assert config["spec"]["kbsSecretResources"] == ["saw-bob-fedcba9876543210"]
+    app_path = "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/portal-ws-alice"
+    assert fake.events.index(("PATCH", path)) < fake.events.index(("DELETE", app_path))
+    assert portal.main(["finish-delete", "alice"]) == 0
+
+
+def test_malformed_trustee_cleanup_configuration_fails_with_safe_error(portal, monkeypatch):
+    monkeypatch.setenv("SAW_TRUSTEE_KBS_CONFIG_REFS", "{")
+    with pytest.raises(portal.PortalError, match="^Trustee KbsConfig portal allowlist is invalid$"):
+        portal.trustee_kbs_config_allowlist()
+    monkeypatch.setenv("SAW_TRUSTEE_KBS_CONFIG_REFS",
+                       '["/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"]')
+    with pytest.raises(portal.PortalError, match="^Stored Trustee reference is invalid$"):
+        portal.revoke_trustee_registration(None, "alice", {"trusteeConfigRef": []})
 
 
 def test_delete_of_someone_elses_workspace_is_impossible(portal, world):

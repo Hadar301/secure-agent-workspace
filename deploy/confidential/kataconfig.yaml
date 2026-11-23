@@ -1,0 +1,10 @@
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: saw-confidential-kata
+spec:
+  # Azure peer pods run their Kata VM on Azure. The OpenShift worker does not
+  # need host KVM hardware, so do not filter workers by host Kata eligibility.
+  checkNodeEligibility: false
+  enablePeerPods: true
+  logLevel: info

@@ -26,10 +26,15 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- if and (eq .Values.deployment.mode "kata") (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $k.workload.runtimeClassName)) -}}{{- fail "kata requires an approved workload RuntimeClass name" -}}{{- end -}}
 {{- if not (regexMatch "^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$" .Values.oidc.issuerUrl) -}}{{- fail "oidc.issuerUrl must be explicit HTTPS without userinfo, query or fragment" -}}{{- end -}}
 {{- if not (or (regexMatch "^https://[^/?#@[:space:]]+/?$" $k.governance.endpoint) (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc(\\.cluster\\.local)?:[0-9]+$" $k.governance.endpoint)) -}}{{- fail "governance endpoint must be HTTPS without userinfo or the explicitly selected in-cluster HTTP gRPC Service" -}}{{- end -}}
+{{- if $k.confidential.enabled -}}
+{{- if ne .Values.deployment.mode "kata" -}}{{- fail "confidential placement requires kata mode" -}}{{- end -}}
+{{- if or (empty $k.confidential.supervisors) (empty $k.confidential.workloads) -}}{{- fail "confidential supervisor and workload placements are required" -}}{{- end -}}
+{{- else -}}
 {{- if or (not (regexMatch "^https?://[^/?#@[:space:]]+:[0-9]+$" $k.proxy.url)) (not $k.proxy.caConfigMap) -}}{{- fail "configure the trusted credential proxy URL without userinfo and public CA ConfigMap" -}}{{- end -}}
+{{- end -}}
 {{- if or (not $k.network.reconcilerNamespace) (not $k.network.reconcilerLabels) -}}{{- fail "trusted reconciler namespace and exact Pod labels are required" -}}{{- end -}}
 {{- if eq $k.network.reconcilerNamespace .Release.Namespace -}}{{- fail "trusted reconciler identity must be outside the runtime namespace" -}}{{- end -}}
-{{- if not $k.network.gatewayEgress -}}{{- fail "explicit gateway API/DNS/OIDC/governance/proxy egress rules are required" -}}{{- end -}}
+{{- if not $k.network.gatewayEgress -}}{{- fail "explicit gateway API/DNS/OIDC/governance egress rules are required" -}}{{- end -}}
 {{- range $rule := $k.network.gatewayEgress -}}
 {{- if or (not $rule.to) (not $rule.ports) -}}{{- fail "gateway egress rules need nonempty destinations and ports" -}}{{- end -}}
 {{- range $peer := $rule.to -}}

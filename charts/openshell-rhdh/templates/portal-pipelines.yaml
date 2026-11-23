@@ -87,6 +87,8 @@ spec:
         - name: CLUSTER_DOMAIN
           value: {{ .Values.global.clusterDomain | quote }}
         {{- include "openshell-rhdh.containerSitesEnv" . | nindent 8 }}
+        - name: SAW_TRUSTEE_KBS_CONFIG_REFS
+          value: {{ .Values.portal.trusteeKbsConfigRefs | default list | toJson | quote }}
         - name: SAW_DEPLOYMENT_MODES
           value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
         - name: CATALOG_PATH

@@ -11,6 +11,7 @@
 {{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
 {{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
 {{- with $s.kataRuntimeClass }}{{- $_ := set $bootstrap "kataRuntimeClass" . }}{{- end }}
+{{- if and $s.attestation $s.attestation.enabled }}{{- $_ := set $bootstrap "attestation" $s.attestation }}{{- end }}
 {{- $revision := dict "chartVersion" .Chart.Version "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}
 {{- $scriptName := printf "bootstrap-%s" $revision -}}
 apiVersion: v1
@@ -40,6 +41,53 @@ kind: ClusterRoleBinding
 metadata: {name: {{ $t }}-{{ $name }}}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $t }}-{{ $name }}}
 subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- if and $s.attestation $s.attestation.enabled }}
+{{- if or (ne (len $s.attestation.references) 7) (not (hasKey $s.attestation.references "peerPods")) (not (hasKey $s.attestation.references "trustee")) (not (hasKey $s.attestation.references "trusteeConfig")) (not (hasKey $s.attestation.references "attestationPolicy")) (not (hasKey $s.attestation.references "resourcePolicy")) (not (hasKey $s.attestation.references "referenceValues")) (not (hasKey $s.attestation.references "qualification")) }}{{ fail "confidential approval references are incomplete" }}{{- end }}
+{{- range $key, $ref := $s.attestation.references }}
+{{- $parts := splitList "/" $ref.path }}
+{{- $expectedPath := "^/api/v1/namespaces/[a-z0-9-]+/configmaps/[a-z0-9-]+$" }}
+{{- $expectedParts := 7 }}{{- $namespaceIndex := 4 }}
+{{- if eq $key "peerPods" }}{{- $expectedPath = "^/api/v1/namespaces/openshift-sandboxed-containers-operator/configmaps/peer-pods-cm$" }}
+{{- else if eq $key "trustee" }}{{- $expectedPath = "^/apis/apps/v1/namespaces/[a-z0-9-]+/deployments/[a-z0-9-]+$" }}{{- $expectedParts = 8 }}{{- $namespaceIndex = 5 }}
+{{- else if eq $key "trusteeConfig" }}{{- $expectedPath = "^/apis/confidentialcontainers.org/v1alpha1/namespaces/[a-z0-9-]+/kbsconfigs/[a-z0-9-]+$" }}{{- $expectedParts = 8 }}{{- $namespaceIndex = 5 }}{{- end }}
+{{- if or (ne (len $parts) $expectedParts) (not (regexMatch $expectedPath $ref.path)) }}{{ fail "confidential approval path is invalid" }}{{- end }}
+{{- $resource := "configmaps" }}{{- $apiGroup := "" }}
+{{- if eq $key "trustee" }}{{- $resource = "deployments" }}{{- $apiGroup = "apps" }}
+{{- else if eq $key "trusteeConfig" }}{{- $resource = "kbsconfigs" }}{{- $apiGroup = "confidentialcontainers.org" }}{{- end }}
+{{- $role := printf "%s-attestation-%s" $name $key }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $role | quote }}, namespace: {{ index $parts $namespaceIndex | quote }}}
+rules:
+  - apiGroups: [{{ $apiGroup | quote }}]
+    resources: [{{ $resource }}]
+    resourceNames: [{{ base $ref.path | quote }}]
+    verbs: [get{{ if eq $key "trusteeConfig" }}, patch{{ end }}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $role | quote }}, namespace: {{ index $parts $namespaceIndex | quote }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $role | quote }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
+{{- end }}
+{{- if and $s.attestation $s.attestation.enabled }}
+{{- $trusteeParts := splitList "/" $s.attestation.references.trusteeConfig.path }}
+{{- $trusteeNamespace := index $trusteeParts 5 }}
+{{- $resourceName := printf "saw-%s-%s" $g $r }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-trustee-resource, namespace: {{ $trusteeNamespace }}}
+rules: [{apiGroups: [external-secrets.io], resources: [externalsecrets], resourceNames: [{{ $resourceName }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-trustee-resource, namespace: {{ $trusteeNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-trustee-resource}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
 {{- range $ns := list $n $t $gov }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -48,16 +96,22 @@ metadata: {name: {{ $name }}, namespace: {{ $ns }}}
 rules:
 {{- if eq $ns $n }}
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config{{- if not (and $s.attestation $s.attestation.enabled) }}, {{ $g }}-proxy-ca{{- end }}], verbs: [get]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ include "portal.claims" $ }}, verbs: [get]}
   - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny, openshell-sandbox-workloads, openshell-sandbox-supervisors], verbs: [get]}
 {{- else if eq $ns $t }}
+{{- if and $s.attestation $s.attestation.enabled }}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-confidential-provider-policy], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-gateway-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-portal-enrollment], verbs: [get, patch]}
+{{- else }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
   - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-proxy-policy, {{ $g }}-proxy-ca, {{ $g }}-gateway-ca], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-portal-enrollment], verbs: [get, patch]}
+{{- end }}
 {{- else }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [governance-interceptor], verbs: [get]}
@@ -118,7 +172,7 @@ spec:
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: {name: {{ $name }}-{{ $revision }}, namespace: {{ $t }}}
+metadata: {name: {{ $name }}-{{ $revision }}, namespace: {{ $t }}, annotations: {argocd.argoproj.io/sync-wave: "1"}}
 spec:
   backoffLimit: 1
   activeDeadlineSeconds: 1200

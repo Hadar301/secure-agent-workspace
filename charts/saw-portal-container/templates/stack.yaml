@@ -13,6 +13,45 @@
 {{- $ui := printf "saw-ui-%s" $reg }}
 {{- $map := dict "RUNTIME" $runtime "TRUSTED" $trusted "ARCHIVE" $archive "UI" $ui "OWNER" $u "SUBJECT" .Values.ownerSubject "INSTALLATION" $ownerID "DOMAIN" $g.clusterDomain }}
 {{- $targets := include "portal.targets" . | fromJson }}
+{{- $confidentialEnabled := dig "attestation" "enabled" false $site }}
+{{- $confidentialConfigMapName := "" }}
+{{- $confidentialSupervisors := dict }}
+{{- $confidentialWorkloads := dict }}
+{{- $policyConfidentialSupervisors := dict }}
+{{- $policyConfidentialWorkloads := dict }}
+{{- $confidentialData := dict }}
+{{- if $confidentialEnabled }}
+{{- if not $site.kataRuntimeClass }}{{ fail "confidential attestation requires an approved Kata RuntimeClass" }}{{ end }}
+{{- $confidentialBinding := dig "enrollment" "intent" "bindings" "confidentialAttestation" dict $site }}
+{{- $placements := get $confidentialBinding "placements" }}
+{{- if not (kindIs "map" $placements) }}{{ fail "confidential enrollment placements are missing" }}{{ end }}
+{{- $confidentialConfigMapName = printf "saw-confidential-%s-%s" $u $reg }}
+{{- $resources := dict }}
+{{- range $binding := $site.providerPolicy.bindings }}
+{{- if or (not $binding.secret) (not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" $binding.secret)) }}{{ fail "confidential provider resource name is invalid" }}{{ end }}
+{{- $_ := set $resources $binding.secret (printf "default/saw-%s-%s/%s" $u $reg $binding.secret) }}
+{{- end }}
+{{- if eq (len $resources) 0 }}{{ fail "confidential Trustee credential resources are missing" }}{{ end }}
+{{- $_ := set $confidentialData "policy.json" ($site.providerPolicy | toJson) }}
+{{- range $slot := $targets }}
+{{- $slotKey := printf "%s/%s" $slot.workspace $slot.sandbox }}
+{{- $resourceName := printf "%s--%s" $slot.workspace $slot.sandbox }}
+{{- if not (hasKey $placements $slotKey) }}{{ fail "confidential placement is missing for a selected workspace slot" }}{{ end }}
+{{- $placement := get $placements $slotKey }}
+{{- $supervisor := get $placement "supervisor" }}
+{{- $workload := get $placement "workload" }}
+{{- if or (not (kindIs "map" $supervisor)) (not (kindIs "map" $workload)) }}{{ fail "confidential slot placement is invalid" }}{{ end }}
+{{- if or (ne $supervisor.runtime_class_name $site.kataRuntimeClass.name) (ne $workload.runtime_class_name $site.kataRuntimeClass.name) }}{{ fail "confidential placement RuntimeClass differs from the site approval" }}{{ end }}
+{{- $configKey := printf "supervisor-%s.json" ($slotKey | sha256sum | trunc 16) }}
+{{- $supervisorPlacement := dict "runtime_class_name" $supervisor.runtime_class_name "init_data" $supervisor.init_data "config_map_name" $confidentialConfigMapName "config_key" $configKey }}
+{{- $workloadPlacement := dict "runtime_class_name" $workload.runtime_class_name "init_data" $workload.init_data }}
+{{- $_ := set $confidentialSupervisors $slotKey $supervisorPlacement }}
+{{- $_ := set $confidentialWorkloads $slotKey $workloadPlacement }}
+{{- $_ := set $policyConfidentialSupervisors $resourceName $supervisorPlacement }}
+{{- $_ := set $policyConfidentialWorkloads $resourceName $workloadPlacement }}
+{{- $_ := set $confidentialData $configKey (dict "policy" "/etc/saw-confidential/policy.json" "resources" $resources "publicCAFile" "/run/openshell/saw-proxy-ca.pem" | toJson) }}
+{{- end }}
+{{- end }}
 {{- $namespaces := dict $archive "retained" }}
 {{- range $slot := $targets }}{{- if $slot.ui }}{{- $_ := set $namespaces (printf "saw-ui-%s" $slot.relayID) "ephemeral" }}{{- end }}{{- end }}
 {{- range $name, $dest := $namespaces }}
@@ -60,6 +99,7 @@ spec:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $runtime }}}}
           podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}
       ports: [{port: 18081, protocol: TCP}]
+{{- if not $confidentialEnabled }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -67,7 +107,23 @@ metadata: {name: {{ $u }}-proxy-policy, namespace: {{ $trusted }}}
 data:
   config.json: |
     {{ required "explicit governed provider policy required" $site.providerPolicy | toJson }}
-{{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "proxy" (list "saw-kubernetes-proxy" $trusted) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
+{{- end }}
+{{- if $confidentialEnabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $confidentialConfigMapName }}
+  namespace: {{ $runtime }}
+  labels:
+    saw.redhat.com/runtime-owner: {{ $ownerID | quote }}
+    saw.redhat.com/registration: {{ $reg | quote }}
+    saw.redhat.com/portal-owner: {{ $u | quote }}
+immutable: true
+data: {{ $confidentialData | toYaml | nindent 2 }}
+{{- end }}
+{{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
+{{- if not $confidentialEnabled }}{{- $_ := set $charts "proxy" (list "saw-kubernetes-proxy" $trusted) }}{{- end }}
 {{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" $archive $slot) }}{{- end }}
 {{- range $key, $c := $charts }}
 {{- $item := required (printf "missing site.stack.%s" $key) (get $stack (ternary "audit" $key (eq (len $c) 3))) }}
@@ -80,6 +136,23 @@ data:
 {{- $gateway := fromJson $values }}
 {{- $_ := set $gateway "deployment" (dict "mode" "kata") }}
 {{- $_ := set $gateway.kubernetes.workload "runtimeClassName" $site.kataRuntimeClass.name }}
+{{- if $confidentialEnabled }}
+{{- $_ := set $gateway.kubernetes "confidential" (dict "enabled" true "supervisors" $confidentialSupervisors "workloads" $confidentialWorkloads) }}
+{{- $_ := set $gateway.kubernetes.proxy "url" "" }}
+{{- $_ := set $gateway.kubernetes.proxy "caConfigMap" "" }}
+{{- $driverApproval := $site.attestation.driver }}
+{{- if or (not $driverApproval.gatewayImage) (not $driverApproval.supervisorImage) }}{{ fail "confidential gateway and supervisor images must be approved by digest" }}{{ end }}
+{{- $gatewayKubernetes := get $gateway "kubernetes" }}
+{{- if not (kindIs "map" $gatewayKubernetes) }}{{ fail "gateway Kubernetes values are required" }}{{ end }}
+{{- $gatewayChart := get $gatewayKubernetes "gateway" | default dict }}
+{{- if not (kindIs "map" $gatewayChart) }}{{ fail "gateway chart values must be a map" }}{{ end }}
+{{- $_ := set $gatewayChart "image" $driverApproval.gatewayImage }}
+{{- $_ := set $gatewayKubernetes "gateway" $gatewayChart }}
+{{- $supervisorChart := get $gatewayKubernetes "supervisor" | default dict }}
+{{- if not (kindIs "map" $supervisorChart) }}{{ fail "supervisor chart values must be a map" }}{{ end }}
+{{- $_ := set $supervisorChart "image" $driverApproval.supervisorImage }}
+{{- $_ := set $gatewayKubernetes "supervisor" $supervisorChart }}
+{{- end }}
 {{- $values = toJson $gateway }}
 {{- end }}
 {{- if eq $key "policy" }}
@@ -87,6 +160,12 @@ data:
 {{- if $site.kataRuntimeClass }}
 {{- $_ := set $policy "mode" "kata" }}
 {{- $_ := set $policy "workloadRuntimeClassName" $site.kataRuntimeClass.name }}
+{{- end }}
+{{- if $confidentialEnabled }}
+{{- $_ := set $policy "confidentialMode" true }}
+{{- $_ := set $policy "confidentialConfigMapName" $confidentialConfigMapName }}
+{{- $_ := set $policy "confidentialSupervisors" $policyConfidentialSupervisors }}
+{{- $_ := set $policy "confidentialWorkloads" $policyConfidentialWorkloads }}
 {{- end }}
 {{- $gw := $stack.gateway.values.kubernetes }}
 {{- $slots := dict }}
@@ -99,9 +178,17 @@ data:
 {{- $_ := set $policy "forwarderImage" $stack.audit.values.image }}
 {{- $_ := set $policy "serverTLSSecret" (replace "@OWNER@" $u $gw.identity.serverTlsSecret) }}
 {{- $_ := set $policy "supervisorImage" (dig "supervisor" "image" $.Values.driverDefaults.supervisorImage $gw) }}
+{{- if $confidentialEnabled }}
+{{- $_ := set $policy "supervisorImage" $site.attestation.driver.supervisorImage }}
+{{- end }}
 {{- $_ := set $policy "runtimeImage" ($gw.workload.runtimeImage | default $.Values.driverDefaults.runtimeImage) }}
 {{- $proxyURL := replace "@TRUSTED@" $trusted (replace "@OWNER@" $u $gw.proxy.url) }}
-{{- $_ := set $policy "supervisorCommand" (list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501" "--upstream-proxy" $proxyURL "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/.openshell/supervisor/upstream-proxy-ca.pem") }}
+{{- $supervisorArgs := list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501" }}
+{{- if $confidentialEnabled }}
+{{- $_ := set $policy "supervisorCommand" (concat (list "/usr/local/bin/saw-credential-proxy" "supervise") $supervisorArgs (list "--upstream-proxy" "http://127.0.0.1:3128" "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/run/openshell/saw-proxy-ca.pem")) }}
+{{- else }}
+{{- $_ := set $policy "supervisorCommand" (concat $supervisorArgs (list "--upstream-proxy" $proxyURL "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/.openshell/supervisor/upstream-proxy-ca.pem")) }}
+{{- end }}
 {{- $values = toJson $policy }}
 {{- end }}
 {{- if and (eq $key "proxy") $site.providerPolicy }}

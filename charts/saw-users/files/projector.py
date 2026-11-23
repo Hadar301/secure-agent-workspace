@@ -87,6 +87,7 @@ class Publications:
 
 def verify_gitops_preflight(owner, site, mode, read):
     """Stop ApplicationSet generation on a changed live Kata boundary."""
+    preflight.verify_attestation(site, mode, read)
     automatic = site.get("automaticEnrollment", {})
     if not automatic or automatic.get("enabled") is False:
         return

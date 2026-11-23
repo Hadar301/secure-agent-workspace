@@ -340,18 +340,23 @@ SSH key always from the shared `secret/data/hub/ssh`.
 To write there, the pipeline logs in to Vault as its service account
 (`saw-portal-provisioner`) through the `hub` Kubernetes auth mount, with the
 role `saw-portal-writer`. The role's policy allows only
-`secret/data/hub/saw-*` and `secret/metadata/hub/saw-*`: any portal user's
-path, not one user's. Vault cannot tell the users apart (one provisioner
-writes for all of them); what keeps a request to its own user's path is
-`portal.py`, which takes the user only from the verified Backstage token
-(there is no setting to trust the form instead). The imperative job
+`secret/data/hub/saw-*` with create/update only, and metadata read/delete for
+cleanup and approved-reference checks. It cannot read provider values. The
+policy covers any portal user's path, not one user's. Vault cannot tell the
+users apart (one provisioner writes for all of them). `portal.py` keeps each
+request on its owner's path. It takes the owner only from the verified
+Backstage token (there is no setting to trust the form instead). The imperative job
 `saw-portal-vault` creates the policy and the role through Vault's HTTP API
 with the pattern's root token (`ansible/playbooks/saw-portal-vault.yaml`).
 Without the imperative framework, run
 `make portal-vault-setup` once as a cluster admin.
 
-Deleting a workspace also deletes its keys (`portal.deleteVaultSecrets`): the
-keys of the entry's generation only. A delete's cleanup can be overtaken after
+Deleting a regular workspace also deletes its generated Vault path
+(`portal.deleteVaultSecrets`): the entry's generation only. A confidential
+workspace uses owner-provisioned Vault references. Delete revokes that
+registration's Trustee membership; it does not delete the owner's Vault
+credentials. The owner or administrator manages their rotation and removal.
+A regular delete's cleanup can be overtaken after
 it has checked that the entry is still its own (a later delete takes over and
 finishes, then a create registers a replacement); the replacement has a new
 generation, so the older cleanup cannot destroy its keys.

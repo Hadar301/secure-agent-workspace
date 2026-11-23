@@ -192,6 +192,10 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- $template := $root.Files.Get .path | fromYaml -}}
 {{- $step := last $template.spec.parameters -}}
 {{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
+{{- if .confidential -}}
+{{- if not (has "kata" $modes) -}}{{- fail "confidential Kata template requires kata in portal.deploymentModes" -}}{{- end -}}
+{{- $modes = list "kata" -}}
+{{- end -}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
 {{- $approved := dict "container" (dict) "kata" (dict) -}}
