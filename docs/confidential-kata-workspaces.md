@@ -4,9 +4,18 @@ Status: implementation in progress. Confidential enrollment is disabled.
 
 ## Latest platform verification (2026-11-23)
 
-The Pattern utility can reach the Azure cluster API when it runs in its Linux
-AMD64 Podman container. The Mac host still cannot resolve the API name. The
-host DNS issue does not block commands run through the Pattern container.
+At 2026-11-23T17:39:41Z, a read-only cluster check confirmed that the Kata
+workers and Trustee components are ready. The Mac shell resolved the API host
+for one read, then failed DNS lookups on follow-up reads. An approved read-only
+API session succeeded. The `podman` CLI could not connect to its Linux socket
+from this shell. Treat direct Mac API access as intermittent.
+
+RuntimeClass `kata-remote` exists with handler `kata-remote` and selector
+`node-role.kubernetes.io/kata-oc`. KataConfig `saw-confidential-kata` reports
+`InProgress=False`. KbsConfig `saw-trustee-kbs-config` still lists only
+`attestation-status`. The RVPS `reference_value` has no entries. The Trustee
+deployment and operator Pods are Ready. No cluster resources changed during
+this check.
 
 The Pattern foundation is installed. All 10 Argo CD Applications checked in
 `vp-gitops` report `Synced` and `Healthy`. `vault-backend` is `Valid`, the RHDH
