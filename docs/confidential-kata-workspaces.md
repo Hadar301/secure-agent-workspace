@@ -455,8 +455,10 @@ No measurements were added to Trustee. The user approved the cluster pull
 secret for `registry.redhat.io`; Veritas resolved image tag `1.13.1` to
 `sha256:cd0bbdc464dfe0060b33a07474f30ed093a6efc839ba910a44915ef9f55b195b`.
 Signature verification stopped because both the Veritas and Pattern utility
-containers could not resolve Red Hat's Rekor hostname. Veritas produced no
+containers could not resolve Red Hat's Rekor hostname. A public DNS-over-HTTPS
+lookup also returned `NXDOMAIN` for that hostname. Veritas produced no
 reference values, and no cluster resources changed. Do not skip transparency
-log verification. Continue when the Red Hat Rekor endpoint is reachable, then
-generate measurements from the exact approved init-data. Do not use test
+log verification or replace the configured log without approval. Continue when
+Red Hat provides a reachable endpoint, then generate measurements from the
+exact approved init-data. Do not use test
 measurements or measurements from an untrusted probe Pod as RVPS references.
