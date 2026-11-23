@@ -466,7 +466,8 @@ def render_template(cat, for_user=False, confidential=False):
                     "title": "Profile", "type": "string", "enum": names,
                     "enumNames": [f"{n}: {profiles[n]['description']}" if profiles[n]["description"]
                                   else n for n in names],
-                    "default": "data-science" if "data-science" in names else names[0]}},
+                    "default": ("kata-data-science" if confidential and "kata-data-science" in names
+                                else "data-science" if "data-science" in names else names[0])}},
                 "dependencies": {"profile": {"oneOf": one_of}},
             }],
             "steps": [

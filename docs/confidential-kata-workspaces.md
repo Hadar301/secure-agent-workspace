@@ -468,3 +468,13 @@ No cluster resources changed. The full reference set remains blocked until
 Veritas measures the exact init-data for the approved SAW registration and
 roles. Do not use test measurements or measurements from an untrusted probe
 Pod as RVPS references.
+
+## Kata canary profile
+
+The `kata-data-science` catalog profile provides one default OpenClaw notebook
+with NVIDIA inference. It does not request a web-search credential. It defines
+workspace content only; the confidential RHDH template selects Kata separately.
+The confidential form selects this profile by default.
+The profile does not qualify its image or prove confidential execution. Keep
+workspace creation blocked until the approved site values, measured init-data,
+Trustee resource policy, and live boot checks pass.
