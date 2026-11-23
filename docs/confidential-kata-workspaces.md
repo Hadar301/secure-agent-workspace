@@ -451,7 +451,12 @@ compact separators) with the approved `referenceSet`.
 The `referenceValues` object approval still pins the ConfigMap UID and complete
 data content.
 
-No measurements were added to Trustee. The no-auth Veritas run stopped because
-`registry.redhat.io` requires authentication. It made no cluster changes. The
-next measurement step needs an approved registry auth source. Do not use test
+No measurements were added to Trustee. The user approved the cluster pull
+secret for `registry.redhat.io`; Veritas resolved image tag `1.13.1` to
+`sha256:cd0bbdc464dfe0060b33a07474f30ed093a6efc839ba910a44915ef9f55b195b`.
+Signature verification stopped because both the Veritas and Pattern utility
+containers could not resolve Red Hat's Rekor hostname. Veritas produced no
+reference values, and no cluster resources changed. Do not skip transparency
+log verification. Continue when the Red Hat Rekor endpoint is reachable, then
+generate measurements from the exact approved init-data. Do not use test
 measurements or measurements from an untrusted probe Pod as RVPS references.
