@@ -44,6 +44,19 @@ update produced the same timeout and no guest-console lines. I restored
 `logLevel=info`; all three Kata workers are Ready and the pool reports
 `Updated=True`, `Degraded=False`. This does not verify attestation or Trustee
 release.
+
+A third credential-free PodVM probe on 2026-11-23 captured live worker and CAA
+logs. At `2026-11-23T09:56:58Z`, CAA had assigned a VM IP, created the VXLAN
+tunnel, and opened the guest TTRPC proxy. Kata failed its gRPC health check at
+`09:57:28Z`. A kubelet retry failed at `09:59:35Z` because the agent connection
+was not established. CRI-O reported a container-create timeout for both
+attempts. CAA removed both VXLAN tunnels. The probe Pod, PeerPod, and namespace
+were deleted. The captured logs contained no guest-console output. This
+narrows the failure to guest boot or guest-agent transport after CAA set up the
+tunnel, but does not identify which. Azure VM deletion was not independently
+verified because this session had no Azure management login. The probe used no
+credentials and returned no attestation evidence.
+
 The feature branch now rejects missing, broad, or additional copy rules before
 deployment. The change has 66 focused contract tests passing; the branch is
 not deployed to the cluster.
