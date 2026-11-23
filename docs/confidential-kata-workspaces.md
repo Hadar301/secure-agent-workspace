@@ -451,14 +451,20 @@ compact separators) with the approved `referenceSet`.
 The `referenceValues` object approval still pins the ConfigMap UID and complete
 data content.
 
-No measurements were added to Trustee. The user approved the cluster pull
-secret for `registry.redhat.io`; Veritas resolved image tag `1.13.1` to
-`sha256:cd0bbdc464dfe0060b33a07474f30ed093a6efc839ba910a44915ef9f55b195b`.
-Signature verification stopped because both the Veritas and Pattern utility
-containers could not resolve Red Hat's Rekor hostname. A public DNS-over-HTTPS
-lookup also returned `NXDOMAIN` for that hostname. Veritas produced no
-reference values, and no cluster resources changed. Do not skip transparency
-log verification or replace the configured log without approval. Continue when
-Red Hat provides a reachable endpoint, then generate measurements from the
-exact approved init-data. Do not use test
-measurements or measurements from an untrusted probe Pod as RVPS references.
+No measurements were added to Trustee. The pinned `coco-tools` image used an
+old default Rekor hostname, which returned `NXDOMAIN`. Current Veritas source
+lists a replacement Red Hat endpoint in its
+[Rekor configuration](https://github.com/confidential-devhub/veritas/blob/main/src/veritas/container.py).
+I passed that endpoint with `--rekor-url` and `--rekor-pub-key-url`. Cosign
+then verified the image signature. Veritas resolved OSC image tag `1.13.1` to
+`sha256:cd0bbdc464dfe0060b33a07474f30ed093a6efc839ba910a44915ef9f55b195b` and
+generated `snp_pcr03`, `snp_pcr09`, `snp_pcr11`, and `snp_pcr12`.
+
+The partial output is in
+`local-docs/kata-confidential-veritas-azure-snp-1.13.1.partial.yaml`. It does
+not contain `snp_pcr08`, which Veritas computes from init-data. The exact
+approved SAW init-data is not available yet. Do not apply this partial file.
+No cluster resources changed. The full reference set remains blocked until
+Veritas measures the exact init-data for the approved SAW registration and
+roles. Do not use test measurements or measurements from an untrusted probe
+Pod as RVPS references.
