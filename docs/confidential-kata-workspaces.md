@@ -66,9 +66,23 @@ tunnel, but does not identify which. Azure VM deletion was not independently
 verified because this session had no Azure management login. The probe used no
 credentials and returned no attestation evidence.
 
-The feature branch now rejects missing, broad, or additional copy rules before
-deployment. The change has 66 focused contract tests passing; the branch is
-not deployed to the cluster.
+The first policy rejected all CopyFileRequest calls. A second policy allowed
+the shared-container prefix but did not include the full Kata Agent defaults
+or checks for .. traversal and unsafe symlink targets. A container-create
+timeout followed. This evidence makes the incomplete policy a likely cause,
+but it does not prove the root cause. The cluster has not run a probe with the
+reviewed policy below.
+
+Source update (2026-11-23): the reviewed policy is now stored at
+deploy/confidential/kata-agent-policy.rego. The validator accepts only this
+baseline and rejects changes that enable process exec, stream reads, guest
+policy replacement, broad file copies, path traversal, or absolute symlinks.
+The contract and affected chart tests pass: 292 tests. The Docker API is
+unavailable in this shell, so the policy was not compiled with OPA. A new
+read-only cluster check found all three Kata workers Ready, the approved
+kata-remote RuntimeClass present, and no PeerPods. No PodVM or workspace was
+created. Do not run another VM probe until the guest image and exact init-data
+measurements are pinned and the RVPS reference values are approved.
 
 Follow-up on 2026-11-23: existing shared Vault entries were copied inside the
 Vault pod to owner-scoped paths for `hacohen`. The inference path is
@@ -115,16 +129,20 @@ workspace test.
   The KBS attestation and resource policy ConfigMaps have separate references,
   so a policy edit invalidates the approval.
 - Init-data generation uses supported `aa.toml`, `cdh.toml`, and `policy.rego`
-  entries. The reviewed Rego template must define one `policy_data` object with
-  a `saw_identity: __SAW_IDENTITY_JSON__` member. Generation replaces that
-  marker with the installation, owner, registration, slot, and role identity.
-  It must also deny `CopyFileRequest` by default and define exactly one rule,
-  which allows requests only when `input.path` starts with
-  `/run/kata-containers/shared/containers/`. The preflight rejects a missing
-  rule, a broader path, or an additional rule. A live 2026-11-23 probe showed
-  that the Kata Agent needs this request to create a container's shared
-  filesystem. The later scoped-policy probe timed out before the container
-  started; it did not verify attestation or Trustee release.
+  entries. deploy/confidential/kata-agent-policy.rego is the reviewed
+  baseline, based on Red Hat's OSC 1.13 Azure guidance. It allows normal Kata
+  Agent lifecycle requests, including CreateContainerRequest and
+  CreateSandboxRequest. It denies ExecProcessRequest, ReadStreamRequest,
+  SetPolicyRequest, and CopyFileRequest by default. Its copy rule allows only
+  the Kata shared-container path, rejects .. traversal, and accepts symlinks
+  only when their targets are relative and traversal-free. attestation.py
+  accepts only this exact policy template with one
+  policy_data.saw_identity: __SAW_IDENTITY_JSON__ marker. Init-data generation
+  replaces that marker with the installation, owner, registration, slot, and
+  role identity. A policy change alters the init-data and approval digests.
+  The previous timeout remains unexplained until a credential-free live probe
+  boots with this reviewed policy. The probe must not include provider
+  credentials, and it does not qualify attestation or Trustee release.
   Trustee parses Kata `policy_data` from init-data only after it verifies the
   measured init-data. This creates a candidate verified identity claim. The
   deployed Red Hat Trustee claim shape and KBS policy path still need live

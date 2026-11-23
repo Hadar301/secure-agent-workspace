@@ -24,15 +24,94 @@ REFERENCE_SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 POLICY_DATA = re.compile(r"(?m)^[ \t]*policy_data[ \t]*:=[ \t]*\{")
 IDENTITY_MEMBER = re.compile(
     r"(?m)^[ \t]*\"saw_identity\"[ \t]*:[ \t]*" + re.escape(IDENTITY_MARKER) + r"[ \t]*,?[ \t]*$")
-COPY_FILE_DEFAULT = re.compile(
-    r"(?m)^[ \t]*default[ \t]+CopyFileRequest[ \t]*:=[ \t]*false[ \t]*$")
-COPY_FILE_DECLARATION = re.compile(
-    r"(?m)^[ \t]*(?:default[ \t]+)?CopyFileRequest\b")
-COPY_FILE_SHARED_PATH = re.compile(
-    r'(?m)^[ \t]*CopyFileRequest[ \t]*\{[ \t]*\n'
-    r'[ \t]*startswith[ \t]*\([ \t]*input\.path[ \t]*,[ \t]*'
-    r'"/run/kata-containers/shared/containers/"[ \t]*\)[ \t]*\n'
-    r'[ \t]*\}[ \t]*$')
+KATA_AGENT_POLICY_TEMPLATE = r'''package agent_policy
+
+import future.keywords.in
+import future.keywords.if
+
+default AddARPNeighborsRequest := true
+default AddSwapRequest := true
+default CloseStdinRequest := true
+default CreateSandboxRequest := true
+default DestroySandboxRequest := true
+default GetMetricsRequest := true
+default GetOOMEventRequest := true
+default GuestDetailsRequest := true
+default ListInterfacesRequest := true
+default ListRoutesRequest := true
+default MemHotplugByProbeRequest := true
+default OnlineCPUMemRequest := true
+default PauseContainerRequest := true
+default PullImageRequest := true
+default RemoveContainerRequest := true
+default RemoveStaleVirtiofsShareMountsRequest := true
+default ReseedRandomDevRequest := true
+default ResumeContainerRequest := true
+default SetGuestDateTimeRequest := true
+default SignalProcessRequest := true
+default StartContainerRequest := true
+default StartTracingRequest := true
+default StatsContainerRequest := true
+default StopTracingRequest := true
+default TtyWinResizeRequest := true
+default UpdateContainerRequest := true
+default UpdateEphemeralMountsRequest := true
+default UpdateInterfaceRequest := true
+default UpdateRoutesRequest := true
+default WaitProcessRequest := true
+default WriteStreamRequest := true
+default CreateContainerRequest := true
+default ReadStreamRequest := false
+default CopyFileRequest := false
+default SetPolicyRequest := false
+default ExecProcessRequest := false
+
+CopyFileRequest if {
+    allow_copy_file
+}
+
+allow_copy_file if {
+    input.file_type == "Regular"
+    allow_copy_file_path(input.path, "")
+}
+
+allow_copy_file if {
+    input.file_type == "Directory"
+    allow_copy_file_path(input.path, "")
+}
+
+allow_copy_file if {
+    input.file_type == "Symlink"
+    allow_copy_file_path(input.path, ".*/.+")
+    check_directory_traversal(input.symlink_target)
+    not startswith(input.symlink_target, "/")
+}
+
+allow_copy_file_path(path, regex_suffix) if {
+    check_directory_traversal(path)
+    some regex1 in policy_data.request_defaults.CopyFileRequest
+    regex2 := replace(regex1, "$(sfprefix)", policy_data.common.sfprefix)
+    regex3 := replace(regex2, "$(cpath)", policy_data.common.cpath)
+    regex4 := replace(regex3, "$(bundle-id)", "[a-z0-9]{64}")
+    regex5 := concat("", [regex4, regex_suffix])
+    regex.match(regex5, path)
+}
+
+check_directory_traversal(i_path) if {
+    not regex.match("(^|/)\\.\\.($|/)", i_path)
+}
+
+policy_data := {
+    "saw_identity": __SAW_IDENTITY_JSON__,
+    "common": {
+        "cpath": "/run/kata-containers/shared/containers(?:/passthrough)?",
+        "sfprefix": "^$(cpath)/(watchable/)?$(bundle-id)-[a-z0-9]{16}-"
+    },
+    "request_defaults": {
+        "CopyFileRequest": ["$(sfprefix)"]
+    }
+}
+'''
 
 class AttestationError(ValueError):
     """Only fixed reason codes may leave this module."""
@@ -148,9 +227,7 @@ def _validate(site, mode="kata"):
     if (len(POLICY_DATA.findall(policy)) != 1 or len(IDENTITY_MEMBER.findall(policy)) != 1
             or policy.count(IDENTITY_MARKER) != 1):
         raise AttestationError("AttestationIdentityClaimUnavailable")
-    if (len(COPY_FILE_DECLARATION.findall(policy)) != 2
-            or not COPY_FILE_DEFAULT.search(policy)
-            or not COPY_FILE_SHARED_PATH.search(policy)):
+    if policy != KATA_AGENT_POLICY_TEMPLATE:
         raise AttestationError("AttestationPolicyRejected")
     image_policy = cfg["imagePolicy"]
     if not isinstance(image_policy, dict) or image_policy.get("default") != [{"type": "reject"}]:

@@ -44,17 +44,7 @@ def trustee_reference_values(tee):
 
 @pytest.fixture
 def approved():
-    policy = ("package agent_policy\n"
-              "policy_data := {\n"
-              '  "saw_identity": __SAW_IDENTITY_JSON__,\n'
-              '  "containers": []\n'
-              "}\n"
-              "default CopyFileRequest := false\n"
-              "CopyFileRequest {\n"
-              '  startswith(input.path, "/run/kata-containers/shared/containers/")\n'
-              "}\n"
-              "default ExecProcessRequest := false\n"
-              "default SetPolicyRequest := false\n")
+    policy = a.KATA_AGENT_POLICY_TEMPLATE
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,"trustee.example.test")])
     now = datetime.now(timezone.utc)
@@ -245,27 +235,37 @@ def test_rejected_configuration_never_echoes_inputs(approved,change,reason):
         a.validate(site)
 
 @pytest.mark.parametrize("change",[
-    "missing-rule", "broad-rule", "allow-all-default", "extra-broad-rule",
+    "missing-copy-rule", "broad-copy-path", "allow-copy-by-default",
+    "extra-copy-rule", "missing-create-container", "missing-create-sandbox",
+    "allow-exec", "allow-policy-change", "allow-stream-read",
+    "allow-traversal", "allow-absolute-symlink",
 ])
-def test_guest_policy_requires_scoped_kata_shared_copy(approved,change):
+def test_guest_policy_requires_reviewed_kata_agent_baseline(approved,change):
     site,_=approved
     policy=site["attestation"]["guestPolicy"]
-    rule=('CopyFileRequest {\n'
-          '  startswith(input.path, "/run/kata-containers/shared/containers/")\n'
-          '}\n')
-    if change=="missing-rule":
-        policy=policy.replace(rule,"")
-    elif change=="broad-rule":
-        policy=policy.replace("/run/kata-containers/shared/containers/", "/")
-    else:
-        if change=="allow-all-default":
-            policy=policy.replace("default CopyFileRequest := false", "default CopyFileRequest := true")
-        else:
-            policy += "CopyFileRequest {\n  true\n}\n"
+    changes={
+        "missing-copy-rule":("CopyFileRequest if {\n    allow_copy_file\n}\n", ""),
+        "broad-copy-path":("/run/kata-containers/shared/containers(?:/passthrough)?", "/"),
+        "allow-copy-by-default":("default CopyFileRequest := false", "default CopyFileRequest := true"),
+        "extra-copy-rule":("policy_data := {", "CopyFileRequest if { true }\n\npolicy_data :={"),
+        "missing-create-container":("default CreateContainerRequest := true\n", ""),
+        "missing-create-sandbox":("default CreateSandboxRequest := true\n", ""),
+        "allow-exec":("default ExecProcessRequest := false", "default ExecProcessRequest := true"),
+        "allow-policy-change":("default SetPolicyRequest := false", "default SetPolicyRequest := true"),
+        "allow-stream-read":("default ReadStreamRequest := false", "default ReadStreamRequest := true"),
+        "allow-traversal":("    check_directory_traversal(path)\n", ""),
+        "allow-absolute-symlink":('    not startswith(input.symlink_target, "/")\n', ""),
+    }
+    old,new=changes[change]
+    policy=policy.replace(old,new,1)
     site["attestation"]["guestPolicy"]=policy
     site["attestation"]["policyDigest"]=hashlib.sha256(policy.encode()).hexdigest()
     with pytest.raises(a.AttestationError,match="^AttestationPolicyRejected$"):
         a.validate(site)
+
+def test_reviewed_policy_file_matches_validator_template():
+    policy=(ROOT/"deploy/confidential/kata-agent-policy.rego").read_text()
+    assert policy == a.KATA_AGENT_POLICY_TEMPLATE.rstrip() + "\n"
 
 @pytest.mark.parametrize("policy",[
     "package agent_policy\npolicy_data := {\"containers\": []}\n",
