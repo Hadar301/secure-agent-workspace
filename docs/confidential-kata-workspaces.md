@@ -33,6 +33,16 @@ contract, portal, runtime, profile, Vault, and Make paths passed 576 tests in
 the Linux container. This does not qualify attestation or secret release. The
 confidential enrollment gate remains closed.
 
+A credential-free PodVM probe on 2026-11-23 first showed the guest policy
+rejecting `CopyFileRequest`. A second probe used the scoped shared-container
+rule. It did not show that policy denial, but the guest check timed out before
+the container started. The kubelet reported `CreateContainer failed: create
+container timeout`. The cloud adaptor deleted the probe VMs. No PeerPods or
+probe namespaces remain. This does not verify attestation or Trustee release.
+The feature branch now rejects missing, broad, or additional copy rules before
+deployment. The change has 66 focused contract tests passing; the branch is
+not deployed to the cluster.
+
 Follow-up on 2026-11-23: existing shared Vault entries were copied inside the
 Vault pod to owner-scoped paths for `hacohen`. The inference path is
 `secret/data/hub/saw-hacohen/credentials/inference`. It contains the existing
@@ -81,6 +91,13 @@ workspace test.
   entries. The reviewed Rego template must define one `policy_data` object with
   a `saw_identity: __SAW_IDENTITY_JSON__` member. Generation replaces that
   marker with the installation, owner, registration, slot, and role identity.
+  It must also deny `CopyFileRequest` by default and define exactly one rule,
+  which allows requests only when `input.path` starts with
+  `/run/kata-containers/shared/containers/`. The preflight rejects a missing
+  rule, a broader path, or an additional rule. A live 2026-11-23 probe showed
+  that the Kata Agent needs this request to create a container's shared
+  filesystem. The later scoped-policy probe timed out before the container
+  started; it did not verify attestation or Trustee release.
   Trustee parses Kata `policy_data` from init-data only after it verifies the
   measured init-data. This creates a candidate verified identity claim. The
   deployed Red Hat Trustee claim shape and KBS policy path still need live

@@ -39,6 +39,10 @@ def approved():
               '  "saw_identity": __SAW_IDENTITY_JSON__,\n'
               '  "containers": []\n'
               "}\n"
+              "default CopyFileRequest := false\n"
+              "CopyFileRequest {\n"
+              '  startswith(input.path, "/run/kata-containers/shared/containers/")\n'
+              "}\n"
               "default ExecProcessRequest := false\n"
               "default SetPolicyRequest := false\n")
     key = ec.generate_private_key(ec.SECP256R1())
@@ -219,6 +223,29 @@ def test_changed_approval_and_denied_reads_are_safe(approved):
 def test_rejected_configuration_never_echoes_inputs(approved,change,reason):
     site,_=approved;change(site["attestation"])
     with pytest.raises(a.AttestationError,match="^"+reason+"$"):
+        a.validate(site)
+
+@pytest.mark.parametrize("change",[
+    "missing-rule", "broad-rule", "allow-all-default", "extra-broad-rule",
+])
+def test_guest_policy_requires_scoped_kata_shared_copy(approved,change):
+    site,_=approved
+    policy=site["attestation"]["guestPolicy"]
+    rule=('CopyFileRequest {\n'
+          '  startswith(input.path, "/run/kata-containers/shared/containers/")\n'
+          '}\n')
+    if change=="missing-rule":
+        policy=policy.replace(rule,"")
+    elif change=="broad-rule":
+        policy=policy.replace("/run/kata-containers/shared/containers/", "/")
+    else:
+        if change=="allow-all-default":
+            policy=policy.replace("default CopyFileRequest := false", "default CopyFileRequest := true")
+        else:
+            policy += "CopyFileRequest {\n  true\n}\n"
+    site["attestation"]["guestPolicy"]=policy
+    site["attestation"]["policyDigest"]=hashlib.sha256(policy.encode()).hexdigest()
+    with pytest.raises(a.AttestationError,match="^AttestationPolicyRejected$"):
         a.validate(site)
 
 @pytest.mark.parametrize("policy",[

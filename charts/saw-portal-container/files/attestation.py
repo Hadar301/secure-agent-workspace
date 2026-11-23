@@ -21,6 +21,15 @@ LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\Z")
 POLICY_DATA = re.compile(r"(?m)^[ \t]*policy_data[ \t]*:=[ \t]*\{")
 IDENTITY_MEMBER = re.compile(
     r"(?m)^[ \t]*\"saw_identity\"[ \t]*:[ \t]*" + re.escape(IDENTITY_MARKER) + r"[ \t]*,?[ \t]*$")
+COPY_FILE_DEFAULT = re.compile(
+    r"(?m)^[ \t]*default[ \t]+CopyFileRequest[ \t]*:=[ \t]*false[ \t]*$")
+COPY_FILE_DECLARATION = re.compile(
+    r"(?m)^[ \t]*(?:default[ \t]+)?CopyFileRequest\b")
+COPY_FILE_SHARED_PATH = re.compile(
+    r'(?m)^[ \t]*CopyFileRequest[ \t]*\{[ \t]*\n'
+    r'[ \t]*startswith[ \t]*\([ \t]*input\.path[ \t]*,[ \t]*'
+    r'"/run/kata-containers/shared/containers/"[ \t]*\)[ \t]*\n'
+    r'[ \t]*\}[ \t]*$')
 
 class AttestationError(ValueError):
     """Only fixed reason codes may leave this module."""
@@ -91,6 +100,10 @@ def _validate(site, mode="kata"):
     if (len(POLICY_DATA.findall(policy)) != 1 or len(IDENTITY_MEMBER.findall(policy)) != 1
             or policy.count(IDENTITY_MARKER) != 1):
         raise AttestationError("AttestationIdentityClaimUnavailable")
+    if (len(COPY_FILE_DECLARATION.findall(policy)) != 2
+            or not COPY_FILE_DEFAULT.search(policy)
+            or not COPY_FILE_SHARED_PATH.search(policy)):
+        raise AttestationError("AttestationPolicyRejected")
     image_policy = cfg["imagePolicy"]
     if not isinstance(image_policy, dict) or image_policy.get("default") != [{"type": "reject"}]:
         raise AttestationError("ImageSignaturePolicyRejected")
