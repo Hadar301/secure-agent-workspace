@@ -496,6 +496,31 @@ Veritas measures the exact init-data for the approved SAW registration and
 roles. Do not use test measurements or measurements from an untrusted probe
 Pod as RVPS references.
 
+## OPA policy validation and live gate (2026-11-24)
+
+The reviewed Kata Agent policy now passes `opa check --strict` with OPA v1.22.4.
+Nine OPA tests pass through `make saw-test-kata-policy`. They check normal
+container lifecycle requests, denied process execution, denied stream reads,
+denied policy replacement, allowed shared-container copies, rejected copies
+outside the shared path, path traversal, and absolute symlink targets. Tests
+use a synthetic SAW identity. The OPA binary and generated policy copy stayed
+under `/private/tmp`.
+
+Read-only checks on the Azure cluster confirm that `kata-remote` still uses
+handler `kata-remote` and selector `node-role.kubernetes.io/kata-oc`, and the
+KataConfig reports `InProgress=False`. No PeerPods exist. The Trustee RVPS
+reference ConfigMap contains zero entries. The `qualified` gateway image,
+supervisor image, guest image, and reference set in
+`deploy/confidential/source-lock.yaml` remain unset. No cluster resource
+changed during these checks.
+
+This confirms local policy syntax and the listed policy decisions only. It does
+not verify init-data parsing, guest boot, attestation, or Trustee release. Do
+not launch another PodVM until the pinned guest inputs and exact approved
+init-data have a reviewed reference set in RVPS. The next step is to produce
+and review those measured build artifacts. The confidential deployment gate
+stays closed.
+
 ## Kata canary profile
 
 The `kata-data-science` catalog profile provides one default OpenClaw notebook
