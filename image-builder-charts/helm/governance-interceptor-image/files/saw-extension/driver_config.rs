@@ -98,13 +98,15 @@ fn valid_kubernetes_driver(config: &Value) -> bool {
         if values.iter().any(|(k,v)| !["cpu", "memory", "ephemeral-storage"].contains(&k.as_str()) || !k8s_quantity(v)) { return false; }
     }
     let gate = mounts.get(1).and_then(|m| m.get("name")).and_then(Value::as_str) == Some("saw-gate");
+    let whole_volume = gate && mounts[1].get("mount_path").and_then(Value::as_str)
+        == Some("/sandbox/.saw/gate-volume");
     let reserved = if gate { 3 } else { 1 };
     if volumes.len() < reserved || volumes.len() > reserved + 16 || mounts.len() < volumes.len() { return false; }
     // The briefing harness reuses two approved PVCs. These are the only aliases
     // allowed; base mounts still have a one-to-one ordered volume mapping.
     let aliases = &mounts[volumes.len()..];
     if !aliases.is_empty() {
-        if !gate || aliases.len() != 2 { return false; }
+        if !gate || whole_volume || aliases.len() != 2 { return false; }
         for (mount, name, path, ro) in [
             (&aliases[0], "saw-gate", "/sandbox/harness", true),
             (&aliases[1], "saw-workspace", "/sandbox/briefing", false),
@@ -130,7 +132,7 @@ fn valid_kubernetes_driver(config: &Value) -> bool {
             _ => format!("data-{}", index-reserved),
         };
         let reserved_mount = gate && (index == 1 || index == 2);
-        if v.len() != 2 || m.len() != (if reserved_mount { 4 } else { 3 }) || v.get("name").and_then(Value::as_str) != Some(name.as_str())
+        if v.len() != 2 || m.len() != (if reserved_mount && !whole_volume { 4 } else { 3 }) || v.get("name").and_then(Value::as_str) != Some(name.as_str())
             || m.get("name").and_then(Value::as_str) != Some(name.as_str()) { return false; }
         let Some(pvc) = v.get("persistent_volume_claim").and_then(Value::as_object) else { return false; };
         if pvc.len() != 2 { return false; }
@@ -143,9 +145,13 @@ fn valid_kubernetes_driver(config: &Value) -> bool {
         if index == 0 {
             if path != "/sandbox/workspace" || read_only { return false; }
         } else if gate && index == 1 {
-            if m.get("sub_path").and_then(Value::as_str) != Some("bundle") || path != "/sandbox/.saw/trusted" || !read_only || !claim.starts_with("saw-gate-") { return false; }
+            let placement = if whole_volume { path == "/sandbox/.saw/gate-volume" }
+                else { path == "/sandbox/.saw/trusted" && m.get("sub_path").and_then(Value::as_str) == Some("bundle") };
+            if !placement || !read_only || !claim.starts_with("saw-gate-") { return false; }
         } else if gate && index == 2 {
-            if m.get("sub_path").and_then(Value::as_str) != Some("log") || path != "/sandbox/.saw/audit" || read_only || !claim.starts_with("saw-audit-") { return false; }
+            let placement = if whole_volume { path == "/sandbox/.saw/audit-volume" }
+                else { path == "/sandbox/.saw/audit" && m.get("sub_path").and_then(Value::as_str) == Some("log") };
+            if !placement || read_only || !claim.starts_with("saw-audit-") { return false; }
         } else if !(path == "/data" || path.starts_with("/data/"))
             || path[1..].split("/").any(|p| p.is_empty() || p == "." || p == "..")
             || path.chars().any(|c| c.is_control()) { return false; }

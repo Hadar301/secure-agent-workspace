@@ -28,9 +28,10 @@ def verify(directory, files, model_selector=False, browser=False):
             raise ValueError("existing gate differs from the requested policy or owner")
 
 
-def publish(root, identity, receipt_key=None, *, model=None, generation=None, browser=False):
+def publish(root, identity, receipt_key=None, *, model=None, generation=None, browser=False, whole_volume=False):
     assets = Path(shared.__file__).parent
-    files, _, digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key)
+    files, _, digest, _ = shared.tool_gate_bundle(
+        assets, identity, receipt_key, whole_volume=whole_volume)
     target = root / "bundle"
     publish_tree(root, target, files, model_selector=model is not None, browser=browser)
     if model is not None:
@@ -120,6 +121,7 @@ if __name__ == "__main__":
         parser.add_argument("--" + key, required=True)
     parser.add_argument("--harness", nargs=2, metavar=("NAME", "DIGEST"))
     parser.add_argument("--browser-proof")
+    parser.add_argument("--whole-volume", action="store_true")
     parser.add_argument("--model")
     parser.add_argument("--model-generation",type=int)
     receipt = parser.add_mutually_exclusive_group()
@@ -134,7 +136,7 @@ if __name__ == "__main__":
     os.umask(0o022)
     if args.harness:
         publish_harness(Path("/volume"), Path("/bom"), *args.harness)
-    result = publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation, browser=bool(args.browser_proof))
+    result = publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation, browser=bool(args.browser_proof), whole_volume=args.whole_volume)
     if args.browser_proof:
         publish_browser_proof(Path("/volume/bundle"), Path(args.browser_proof).read_bytes())
     print(result)

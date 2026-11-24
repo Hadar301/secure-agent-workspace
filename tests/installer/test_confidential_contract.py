@@ -1380,3 +1380,123 @@ def test_explicit_container_gid_cannot_change_in_policy(generated_launch,gid):
     data['containers'][1]['OCI']['Process']['User']['GID']=gid
     with pytest.raises(a.AttestationError,match='^LaunchPolicyRejected$'):
         a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+@pytest.fixture
+def confidential_agent(approved):
+    import yaml
+    site, _ = approved
+    files = generic_profile_files()
+    provider_key = "profiles__developer__default__providers.yaml"
+    providers = yaml.safe_load(files[provider_key])
+    providers["spec"]["providers"] = [
+        {"name": "nvidia", "type": "nvidia", "credentialSecret": "inference"}]
+    files[provider_key] = yaml.safe_dump(providers)
+    sandbox_key = "profiles__developer__default__sandbox.yaml"
+    sandboxes = yaml.safe_load(files[sandbox_key])
+    sandboxes["spec"]["sandboxes"][0].update(type="openclaw", providers=["nvidia"], inference={
+        "providerRef": "nvidia", "protocol": "openai", "baseUrl": "https://integrate.api.nvidia.com/v1",
+        "model": "nvidia/nemotron-3.5-lightning-30b-a3b"})
+    files[sandbox_key] = yaml.safe_dump(sandboxes)
+    key = base64.b64encode(bytes.fromhex("302a300506032b6570032100") + bytes(range(32))).decode()
+    gate = {"ownerLogin": "alice", "receiptKey": key,
+            "trusted": {"claimName": "saw-gate-toolbox", "uid": "gate-uid", "readOnly": True},
+            "audit": {"claimName": "saw-audit-toolbox", "uid": "audit-uid", "readOnly": False}}
+    config = {"ownerID": UID, "namespace": "saw-alice", "namespaceUID": "namespace-uid",
+              "ownerSubject": "alice-subject", "mode": "kata", "workloadRuntimeClass": "kata-remote",
+              "workloadRuntimeClassUID": UID, "workloadRuntimeClassDigest": "c" * 64,
+              "gatewayVersion": "0.1.2", "approvedCredentialFreeProviders": [],
+              "proxyBindings": [{"type": "nvidia", "secret": "inference", "key": "api_key", "refresh": False}],
+              "bindings": {"default/toolbox": {"workspace": {
+                  "claimName": "workspace-toolbox", "uid": "pvc-uid", "readOnly": False}, "toolGate": gate}},
+              "confidentialAttestation": {"settings": site["attestation"], "owner": "alice",
+                  "registration": "0123456789abcdef", "installation": UID}}
+    return files, config
+
+
+def test_confidential_gate_publication_matches_compiled_root_mounts(confidential_agent, tmp_path):
+    from saw_kubernetes.core import shared
+    from saw_kubernetes.prepare_gate import publish
+    files, config = confidential_agent
+    gate = config["bindings"]["default/toolbox"]["toolGate"]
+    identity = shared.tool_gate_identity("alice", "alice-subject", "default", "toolbox")
+    digest = publish(tmp_path, identity, gate["receiptKey"], whole_volume=True)
+    assert publish(tmp_path, identity, gate["receiptKey"], whole_volume=True) == digest
+    spec = compile_profile_files(files, config)["workspaces"][0]["sandboxes"][0]["spec"]
+    mounts = spec["template"]["driver_config"]["kubernetes"]["containers"]["agent"]["volume_mounts"]
+    assert mounts == [
+        {"name": "saw-workspace", "mount_path": "/sandbox/workspace", "read_only": False},
+        {"name": "saw-gate", "mount_path": "/sandbox/.saw/gate-volume", "read_only": True},
+        {"name": "saw-audit", "mount_path": "/sandbox/.saw/audit-volume", "read_only": False}]
+    command = spec["command"][2]
+    assert digest in command
+    assert 'mountOptions("/sandbox/.saw/gate-volume")' in command
+    assert 'mountOptions("/sandbox/.saw/audit-volume")' in command
+    assert '/sandbox/.saw/gate-volume/bundle/plugin' in command
+    assert '/sandbox/.saw/trusted' not in command
+    assert '/sandbox/.saw/audit/' not in command
+    assert (tmp_path / "bundle/plugin/index.js").is_file()
+    assert b'/sandbox/.saw/audit-volume/log' in (tmp_path / "bundle/plugin/index.js").read_bytes()
+    assert b'/sandbox/.saw/gate-volume/bundle' in (tmp_path / "bundle/plugin/tool-gate.mjs").read_bytes()
+    # An old publication cannot be accepted under a new path-bound digest.
+    with pytest.raises(ValueError, match="existing gate differs"):
+        publish(tmp_path, identity, gate["receiptKey"])
+
+
+@pytest.mark.parametrize("field,read_only", [("trusted", False), ("audit", True)])
+def test_confidential_gate_rejects_wrong_mount_mode(confidential_agent, field, read_only):
+    files, config = confidential_agent
+    config["bindings"]["default/toolbox"]["toolGate"][field]["readOnly"] = read_only
+    with pytest.raises(ContractError, match="mount mode"):
+        compile_profile_files(files, config)
+
+
+@pytest.mark.parametrize("gate_mode,audit_mode,valid", [("ro", "rw", True), ("rw", "rw", False), ("ro", "ro", False)])
+def test_confidential_startup_checks_mount_roots_and_nested_digest(confidential_agent, gate_mode, audit_mode, valid):
+    import shutil
+    import subprocess
+    from saw_kubernetes.core import shared
+    if not shutil.which("node"):
+        pytest.skip("node is required to execute the compiled startup check")
+    files, config = confidential_agent
+    gate = config["bindings"]["default/toolbox"]["toolGate"]
+    tree, _, _, _ = shared.tool_gate_bundle(Path(shared.__file__).parent,
+        shared.tool_gate_identity("alice", "alice-subject", "default", "toolbox"), gate["receiptKey"], whole_volume=True)
+    command = compile_profile_files(files, config)["workspaces"][0]["sandboxes"][0]["spec"]["command"][2]
+    check = command[command.index("const root ="):command.index("const target =")]
+    mounted = {"/sandbox/.saw/gate-volume/bundle/" + rel: data.decode() for rel, (data, _) in tree.items()}
+    mountinfo = ("1 0 0:1 / /sandbox/.saw/gate-volume " + gate_mode + " - nfs source " + gate_mode + "\n" +
+                 "2 0 0:2 / /sandbox/.saw/audit-volume " + audit_mode + " - nfs source " + audit_mode)
+    js = "const files=" + json.dumps(mounted) + "; const mountinfo=" + json.dumps(mountinfo) + ";" + """
+const crypto = require('crypto'); const config = {};
+const fs = {constants: {}, readFileSync: p => p === '/proc/self/mountinfo' ? mountinfo : files[p],
+  readdirSync: dir => [...new Set(Object.keys(files).filter(p=>p.startsWith(dir+'/'))
+    .map(p=>p.slice(dir.length+1).split('/')[0]))].map(name=>({name,
+      isDirectory:()=>Object.keys(files).some(p=>p.startsWith(dir+'/'+name+'/')),
+      isFile:()=>Object.hasOwn(files,dir+'/'+name)}))};
+"""
+    result = subprocess.run(["node", "-e", js + check], capture_output=True, text=True)
+    assert (result.returncode == 0) is valid, result.stderr
+
+
+def test_confidential_model_and_browser_use_the_published_bundle(confidential_agent, tmp_path):
+    from saw_kubernetes.core import shared
+    from saw_kubernetes.prepare_gate import publish, publish_browser_proof, verify
+    files, config = confidential_agent
+    binding = config["bindings"]["default/toolbox"]
+    binding["browser"] = {"origin": "https://workspace.example.test", "ownerLogin": "alice"}
+    gate = binding["toolGate"]
+    gate["modelSelector"] = True
+    identity = shared.tool_gate_identity("alice", "alice-subject", "default", "toolbox")
+    digest = publish(tmp_path, identity, gate["receiptKey"], whole_volume=True,
+                     model="nvidia/test-model", generation=2, browser=True)
+    publish_browser_proof(tmp_path / "bundle", b"a" * 64)
+    tree, _, _, _ = shared.tool_gate_bundle(Path(shared.__file__).parent, identity,
+                                           gate["receiptKey"], whole_volume=True)
+    verify(tmp_path / "bundle", tree, model_selector=True, browser=True)
+    command = compile_profile_files(files, config)["workspaces"][0]["sandboxes"][0]["spec"]["command"]
+    assert command[-1] == "model-from-gate"
+    assert digest in command[2]
+    assert "/sandbox/.saw/gate-volume/bundle/model.json" in command[2]
+    assert "/sandbox/.saw/gate-volume/bundle/relay-proof" in command[2]
+    assert "/sandbox/.saw/trusted" not in command[2]

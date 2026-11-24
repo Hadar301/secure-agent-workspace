@@ -230,14 +230,23 @@ spec:
           (m.name == 'data-{{ $i }}' && m.mountPath == {{ $m.mountPath | toJson }} &&
            !has(m.subPath) && m.?readOnly.orValue(false) == {{ $m.readOnly }}) ||
           {{ end -}}
+{{- if $.Values.confidentialMode }}
+          (m.name == 'saw-workspace' && m.mountPath == '/sandbox/workspace' && !has(m.subPath) && !m.?readOnly.orValue(false)) ||
+          (m.name == 'saw-audit' && m.mountPath == '/sandbox/.saw/audit-volume' && !has(m.subPath) && !m.?readOnly.orValue(false)) ||
+{{- else }}
           (m.name == 'saw-workspace' && ((m.mountPath == '/sandbox/workspace' && !has(m.subPath)) || (m.mountPath == '/sandbox/briefing' && m.subPath == 'briefing'))) ||
           (m.name == 'saw-audit' && m.subPath == 'log' && m.mountPath == '/sandbox/.saw/audit') ||
+{{- end }}
           (m.name == 'openshell-runtime' && m.mountPath == '/.openshell/runtime' && m.readOnly) ||
           (m.name == 'openshell-runtime-state' && m.mountPath == '/.openshell/state') ||
           (m.name == 'openshell-pod-identity' && m.mountPath == '/.openshell/pod-identity' && m.readOnly) ||
           (m.name == 'openshell-run' && m.mountPath == '/run') || m.name == 'saw-gate')) &&
         object.spec.containers[0].volumeMounts.all(m,
+{{- if $.Values.confidentialMode }}
+          m.name != 'saw-gate' || (m.readOnly && !has(m.subPath) && m.mountPath == '/sandbox/.saw/gate-volume')) &&
+{{- else }}
           m.name != 'saw-gate' || (m.readOnly && has(m.subPath) && ((m.mountPath == '/sandbox/.saw/trusted' && m.subPath == 'bundle') || (m.mountPath == '/sandbox/harness' && m.subPath.matches('^harness-[a-f0-9]{64}$'))))) &&
+{{- end }}
         object.spec.initContainers[0].volumeMounts.all(m, m.name in ['openshell-sandbox-bootstrap','openshell-runtime','openshell-runtime-state']))
       message: Workload image and PVC attachments must match the approved sandbox slot.
 {{- end }}

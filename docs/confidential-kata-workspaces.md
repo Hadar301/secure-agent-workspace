@@ -174,11 +174,25 @@ revalidates that narrowing. Strict supplemental groups and the stock low-port
 sysctl must also match generated OCI values. The original Pod retains those
 settings.
 
-The pinned generator rejects `subPath` mounts. SAW currently uses `bundle` and
-`log` subpaths for the trusted tool gate and audit exchange. The input checker
-now reports `LaunchPolicySubPathUnsupported` before running the generator.
-The mount layout or the pinned generator must change before qualification.
-Do not remove subpaths from generator input or weaken tool-gate integrity.
+The pinned generator rejects `subPath` mounts. Confidential tool gates now
+mount the full dedicated PVC read-only at `/sandbox/.saw/gate-volume` and
+read the checked bundle from its `bundle/` directory. Audit exchange mounts
+its full PVC read-write at `/sandbox/.saw/audit-volume` and uses `log/`.
+The on-disk directories and atomic publication stay the same. The publisher
+and compiler derive the path-bound bundle digest from one shared source.
+Startup checks the mount roots and hashes only the nested approved bundle.
+The gateway guard and admission policy restrict these fixed paths and modes.
+Other workspace modes retain their existing subpath layout.
+
+The actual driver rendered the workspace profile with its tool gate and with
+optional harnesses disabled. The pinned generator and launch validator accepted
+that Pod. Sixteen executable Rego cases checked mount modes, foreign sources,
+user IDs, and denied exec and diagnostic requests. This preview used unenrolled
+identities and test attestation inputs. It did not create a live workspace or
+approve credential release. Optional harnesses still use subpaths and need a
+compatible layout before confidential use. The input checker continues to
+report `LaunchPolicySubPathUnsupported` for any remaining subpath; it never
+removes one from generator input.
 
 PR #173 adds shared ReadWriteMany storage provisioning, but its current compiler
 still sets those subpaths. It does not resolve this generator incompatibility.

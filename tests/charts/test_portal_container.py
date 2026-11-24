@@ -479,6 +479,9 @@ def test_enrolled_controller_receives_the_approved_confidential_identity(tmp_pat
     app, = [obj for obj in docs if obj["kind"] == "Application"
             and obj["metadata"]["name"] == f"saw-c-{REG}-controller"]
     config = app["spec"]["source"]["helm"]["valuesObject"]["configuration"]
+    prep, = [obj for obj in docs if obj["kind"] == "Job" and
+             obj["spec"]["template"]["spec"]["serviceAccountName"] == "saw-gate-preparation"]
+    assert "--whole-volume" in prep["spec"]["template"]["spec"]["containers"][0]["command"]
     assert config["confidentialAttestation"] == {
         "settings": site["attestation"], "owner": U, "registration": REG,
         "installation": user()["installationID"]}

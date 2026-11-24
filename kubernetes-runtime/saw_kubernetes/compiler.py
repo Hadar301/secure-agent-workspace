@@ -90,7 +90,8 @@ def _claim(binding, workspace, mount_path, volume_name):
     return volume, mount, reference
 
 
-def _storage(binding, workspace):
+def _storage(binding, workspace, *, whole_volume=False):
+    paths = shared.tool_gate_paths(whole_volume=whole_volume)
     mapping(binding, {"workspace", "mounts", "resources", "browser", "toolGate"}, {"workspace"}, "sandbox binding")
     volume, mount, reference = _claim(binding["workspace"], workspace, "/sandbox/workspace", "saw-workspace")
     if reference["name"].startswith(("saw-gate-", "saw-audit-")):
@@ -103,13 +104,14 @@ def _storage(binding, workspace):
         mapping(gate, {"trusted", "audit", "ownerLogin", "receiptKey", "modelSelector", "harness"}, {"trusted", "audit", "ownerLogin"}, "toolGate")
         name(gate["ownerLogin"], "toolGate ownerLogin", 63)
         for field, volume_name, path, readonly in [
-            ("trusted", "saw-gate", "/sandbox/.saw/trusted", True),
-            ("audit", "saw-audit", "/sandbox/.saw/audit", False),
+            ("trusted", "saw-gate", paths["trustedMount"], True),
+            ("audit", "saw-audit", paths["auditMount"], False),
         ]:
             volume, mount, reference = _claim(gate[field], workspace, path, volume_name)
             if not reference["name"].startswith(volume_name + "-") or mount["read_only"] != readonly:
                 raise ContractError(f"{field} requires the reserved claim prefix and mount mode")
-            mount["sub_path"] = "bundle" if readonly else "log"
+            if not whole_volume:
+                mount["sub_path"] = "bundle" if readonly else "log"
             volumes.append(volume)
             mounts.append(mount)
             refs.append(reference)
@@ -402,7 +404,7 @@ def compile_profile_files(files, config):
             used_bindings.add(key)
             if sandbox.type not in ("openclaw", "nemoclaw") and "browser" in bindings[key]:
                 raise ContractError("browser settings require an OpenClaw sandbox")
-            driver, refs = _storage(bindings[key], ws_name)
+            driver, refs = _storage(bindings[key], ws_name, whole_volume=confidential is not None)
             all_refs.extend(refs)
             if "toolGate" in bindings[key]:
                 if sandbox.type not in ("openclaw", "nemoclaw"):
@@ -414,7 +416,8 @@ def compile_profile_files(files, config):
                 assets = Path(shared.__file__).parent
                 receipt_key = bindings[key]["toolGate"].get("receiptKey")
                 try:
-                    _, _, gate_digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key)
+                    _, _, gate_digest, _ = shared.tool_gate_bundle(
+                        assets, identity, receipt_key, whole_volume=confidential is not None)
                 except shared.InstallerError as exc:
                     raise ContractError(str(exc)) from exc
                 script = Path(__file__).with_name("tool_gate_preflight.js").read_text()
@@ -466,6 +469,15 @@ exec openclaw gateway""")
                     harness.configure(command, driver, bundles[expected_harness["name"]], workspace, sandbox, catalog)
             except shared.InstallerError as exc:
                 raise ContractError(str(exc)) from exc
+            if confidential is not None and "toolGate" in bindings[key]:
+                paths = shared.tool_gate_paths(whole_volume=True)
+                # Hash the nested bundle, but check the actual PVC mount roots.
+                command[2] = (command[2]
+                    .replace("mountOptions(root)", "mountOptions(" + json.dumps(paths["trustedMount"]) + ")")
+                    .replace("mountOptions('/sandbox/.saw/audit')",
+                             "mountOptions(" + json.dumps(paths["auditMount"]) + ")")
+                    .replace("/sandbox/.saw/trusted", paths["trusted"])
+                    .replace("/sandbox/.saw/audit/", paths["audit"] + "/"))
             spec = {"template": {"image": sandbox.image, "driver_config": {"kubernetes": driver}},
                     "providers": sorted(references), "command": command, "tty": False}
             if sandbox.type in ("openclaw", "nemoclaw"):
