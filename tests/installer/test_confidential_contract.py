@@ -807,3 +807,148 @@ def test_plain_mode_cannot_silently_enable_confidential_driver():
     from saw_kubernetes.boundary import verify_confidential_driver
     with pytest.raises(BoundaryError,match="^UnexpectedConfidentialDriver$"):
         verify_confidential_driver({}, {}, None, {"confidential_mode":True}, {})
+
+
+@pytest.fixture
+def launch_pod():
+    return {"apiVersion":"v1", "kind":"Pod", "metadata":{"name":"supervisor","namespace":"workspace"},
+            "spec":{"automountServiceAccountToken":False,
+                    "securityContext":{"seccompProfile":{"type":"RuntimeDefault"},
+                                       "runAsNonRoot":True,"runAsUser":1001},
+                    "containers":[{"name":"supervisor", "image":IMAGE,
+                                   "command":["/approved-supervisor"],
+                                   "securityContext":{"allowPrivilegeEscalation":False,
+                                                      "readOnlyRootFilesystem":True}}]}}
+
+
+def test_launch_input_preserves_effective_security_without_mutating_pod(launch_pod):
+    import copy
+    original=copy.deepcopy(launch_pod)
+    result=a.launch_policy_input(launch_pod)
+    assert launch_pod==original
+    assert "automountServiceAccountToken" not in result["spec"]
+    assert result["spec"]["securityContext"]=={"runAsUser":1001}
+    security=result["spec"]["containers"][0]["securityContext"]
+    assert security["seccompProfile"]=={"type":"RuntimeDefault"}
+    assert security["allowPrivilegeEscalation"] is False
+    assert security["readOnlyRootFilesystem"] is True
+    assert result["spec"]["containers"][0]["command"]==["/approved-supervisor"]
+
+
+@pytest.mark.parametrize("change",["auto-token","implicit-token","root","boolean-uid","implicit-uid",
+    "unconfined","container-unconfined","root-override","host-network","privileged","secret-env","env-from"])
+def test_unsafe_launch_input_is_rejected(launch_pod,change):
+    spec=launch_pod["spec"]; container=spec["containers"][0]
+    if change=="auto-token":spec["automountServiceAccountToken"]=True
+    elif change=="implicit-token":del spec["automountServiceAccountToken"]
+    elif change=="root":spec["securityContext"]["runAsUser"]=0
+    elif change=="boolean-uid":spec["securityContext"]["runAsUser"]=True
+    elif change=="implicit-uid":del spec["securityContext"]["runAsUser"]
+    elif change=="unconfined":spec["securityContext"]["seccompProfile"]={"type":"Unconfined"}
+    elif change=="container-unconfined":container["securityContext"]["seccompProfile"]={"type":"Unconfined"}
+    elif change=="root-override":container["securityContext"]["runAsNonRoot"]=False
+    elif change=="host-network":spec["hostNetwork"]=True
+    elif change=="privileged":container["securityContext"]["privileged"]=True
+    elif change=="secret-env":container["env"]=[{"name":"KEY","valueFrom":{"secretKeyRef":{"name":"provider","key":"api_key"}}}]
+    elif change=="env-from":container["envFrom"]=[{"secretRef":{"name":"provider"}}]
+    with pytest.raises(a.AttestationError,match="^LaunchPolicyInputRejected$"):
+        a.launch_policy_input(launch_pod)
+
+
+def test_launch_input_keeps_other_unsupported_fields_for_generator_rejection(launch_pod):
+    launch_pod["spec"]["unknownSecurityField"]={"enabled":True}
+    assert a.launch_policy_input(launch_pod)["spec"]["unknownSecurityField"]=={"enabled":True}
+
+
+def test_init_container_cannot_bypass_launch_input_checks(launch_pod):
+    launch_pod["spec"]["initContainers"]=[{"name":"init","image":IMAGE,
+        "securityContext":{"runAsUser":0}}]
+    with pytest.raises(a.AttestationError,match="^LaunchPolicyInputRejected$"):
+        a.launch_policy_input(launch_pod)
+
+
+def test_launch_input_cli_is_private_and_does_not_overwrite(tmp_path,monkeypatch,capsys,launch_pod):
+    import yaml
+    source=tmp_path/"pod.yaml"; source.write_text(yaml.safe_dump(launch_pod))
+    output=tmp_path/"generator.yaml"
+    monkeypatch.setattr(sys,"argv",["confidential-artifacts.py","launch-input","--pod",str(source),"--output",str(output)])
+    assert artifacts.main()==0
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert "apiVersion" not in capsys.readouterr().out
+    before=output.read_bytes()
+    assert artifacts.main()==1
+    assert output.read_bytes()==before
+    captured=capsys.readouterr()
+    assert captured.out==""
+    assert captured.err.strip()=="AttestationConfigurationRejected"
+
+
+@pytest.fixture
+def generated_launch(launch_pod, monkeypatch):
+    prefix="package agent_policy\n\ndefault CreateContainerRequest := false"
+    monkeypatch.setattr(a,"GENPOLICY_RULES_SHA256",hashlib.sha256(prefix.encode()).hexdigest())
+    data={"request_defaults":{"ExecProcessRequest":{"allowed_commands":[],"regex":[]},
+        "ReadStreamRequest":False,"WriteStreamRequest":False,"GetDiagnosticDataRequest":False},
+        "containers":[{"OCI":{"Annotations":{"io.kubernetes.cri.container-type":"sandbox"},
+            "Process":{"Args":["/pause"]}}},
+            {"OCI":{"Annotations":{"io.kubernetes.cri.container-type":"container",
+                "io.kubernetes.cri.container-name":"supervisor",
+                "io.kubernetes.cri.image-name":IMAGE,
+                "io.kubernetes.cri.sandbox-namespace":"workspace"},
+                "Root":{"Readonly":True},"Process":{"Args":["/approved-supervisor"],
+                "User":{"UID":1001},"NoNewPrivileges":True}}}]}
+    return launch_pod,prefix,data
+
+
+def test_launch_template_uses_verified_rules_and_one_identity_marker(generated_launch):
+    pod,prefix,data=generated_launch
+    result=a.compile_launch_policy(pod,prefix+"\n\npolicy_data := "+json.dumps(data))
+    assert result.startswith(prefix)
+    assert result.count(a.IDENTITY_MARKER)==1
+    assert a.IDENTITY_MEMBER.search(result) is None  # JSON output, not the legacy handwritten policy
+    parsed=json.loads(result.split("policy_data := ",1)[1].replace(a.IDENTITY_MARKER,"null"))
+    assert parsed["saw_identity"] is None
+    assert parsed["containers"]==data["containers"]
+
+
+@pytest.mark.parametrize("change",["rules","command","image","uid","namespace","readonly",
+    "privilege","exec","stream","diagnostic","extra-container","extra-pause","trailing-rule","marker"])
+def test_changed_launch_artifacts_fail_closed(generated_launch,change):
+    import copy
+    pod,prefix,data=generated_launch; data=copy.deepcopy(data)
+    app=data["containers"][1]["OCI"]
+    if change=="rules":prefix+="\ndefault ExecProcessRequest := true"
+    elif change=="command":app["Process"]["Args"]=["/bin/sh"]
+    elif change=="image":app["Annotations"]["io.kubernetes.cri.image-name"]="registry.example.test/foreign@sha256:"+"f"*64
+    elif change=="uid":app["Process"]["User"]["UID"]=0
+    elif change=="namespace":app["Annotations"]["io.kubernetes.cri.sandbox-namespace"]="foreign"
+    elif change=="readonly":app["Root"]["Readonly"]=False
+    elif change=="privilege":app["Process"]["NoNewPrivileges"]=False
+    elif change=="exec":data["request_defaults"]["ExecProcessRequest"]["allowed_commands"]=[["/bin/sh"]]
+    elif change=="stream":data["request_defaults"]["ReadStreamRequest"]=True
+    elif change=="diagnostic":data["request_defaults"]["GetDiagnosticDataRequest"]=True
+    elif change=="extra-container":
+        extra=copy.deepcopy(data["containers"][1]);extra["OCI"]["Annotations"]["io.kubernetes.cri.container-name"]="foreign"
+        data["containers"].append(extra)
+    elif change=="extra-pause":data["containers"].append(copy.deepcopy(data["containers"][0]))
+    elif change=="marker":data["untrusted"]=a.IDENTITY_MARKER
+    generated=prefix+"\n\npolicy_data := "+json.dumps(data)
+    if change=="trailing-rule":generated+="\nExecProcessRequest := true"
+    with pytest.raises(a.AttestationError,match="^LaunchPolicyRejected$"):
+        a.compile_launch_policy(pod,generated)
+
+
+def test_generator_rules_digest_matches_source_lock():
+    import yaml
+    locked=yaml.safe_load((ROOT/"deploy/confidential/source-lock.yaml").read_text())
+    assert locked["policyGenerator"]["rulesCodeSHA256"]==a.GENPOLICY_RULES_SHA256
+    assert locked["status"]=="blocked"
+    assert all(value is None for value in locked["qualified"].values())
+
+
+def test_node_placeholder_cannot_bypass_exact_command_matching(generated_launch):
+    pod,prefix,data=generated_launch
+    pod["spec"]["containers"][0]["command"]=["/approved-supervisor","$(node-name)"]
+    data["containers"][1]["OCI"]["Process"]["Args"]=["/approved-supervisor","$(node-name)"]
+    with pytest.raises(a.AttestationError,match="^LaunchPolicyRejected$"):
+        a.compile_launch_policy(pod,prefix+"\n\npolicy_data := "+json.dumps(data))

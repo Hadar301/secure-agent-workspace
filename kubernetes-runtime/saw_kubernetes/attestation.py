@@ -1,5 +1,6 @@
 """Public confidential-workspace contract and Trustee registration helpers."""
 import base64
+import copy
 import gzip
 import hashlib
 import io
@@ -717,3 +718,123 @@ def trustee_resources(site, owner, registration, policy, secret_store):
             "spec": {"refreshInterval": "1m", "secretStoreRef": {"kind": "ClusterSecretStore", "name": secret_store},
                      "target": {"name": name, "creationPolicy": "Owner", "template": {
                          "engineVersion": "v2", "data": templates}}, "data": data}}
+
+
+def launch_policy_input(pod):
+    """Adapt a nonroot Pod to the pinned generator without ignoring fields.
+
+    The returned document is generator input only. Deploy the original Pod.
+    Keep unknown fields so genpolicy rejects unsupported security settings.
+    """
+    try:
+        if not isinstance(pod, dict) or pod.get("apiVersion") != "v1" or pod.get("kind") != "Pod":
+            raise ValueError()
+        result = copy.deepcopy(pod)
+        spec = result["spec"]
+        if (spec.get("automountServiceAccountToken") is not False
+                or any(spec.get(k) for k in ("hostPID", "hostIPC", "hostNetwork", "ephemeralContainers"))):
+            raise ValueError()
+        del spec["automountServiceAccountToken"]
+        pod_security = spec.get("securityContext", {})
+        if not isinstance(pod_security, dict) or not isinstance(spec.get("containers"), list) or not spec["containers"]:
+            raise ValueError()
+        inherited_seccomp = pod_security.pop("seccompProfile", None)
+        inherited_nonroot = pod_security.pop("runAsNonRoot", None)
+        for group in ("containers", "initContainers"):
+            containers = spec.get(group, [])
+            if not isinstance(containers, list):
+                raise ValueError()
+            for container in containers:
+                security = container.setdefault("securityContext", {})
+                uid = security.get("runAsUser", pod_security.get("runAsUser"))
+                nonroot = security.pop("runAsNonRoot", inherited_nonroot)
+                if (type(uid) is not int or uid <= 0 or nonroot is not True
+                        or security.get("privileged", False) is not False):
+                    raise ValueError()
+                seccomp = security.get("seccompProfile", inherited_seccomp)
+                if seccomp != {"type": "RuntimeDefault"}:
+                    raise ValueError()
+                security["seccompProfile"] = copy.deepcopy(seccomp)
+                if any("secretKeyRef" in env.get("valueFrom", {}) for env in container.get("env", [])):
+                    raise ValueError()
+                if container.get("envFrom"):
+                    raise ValueError()
+        if not pod_security:
+            spec.pop("securityContext", None)
+        return result
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise AttestationError("LaunchPolicyInputRejected") from None
+
+
+# OSC 1.13 release rules; digest covers the exact code with trailing whitespace
+# removed. Generated policy data remains administrator-reviewed public input.
+GENPOLICY_RULES_SHA256 = "2655cbb7641829dd88e0647cac76407a6072cdd130c77fda436fa9af08f4b43e"
+
+
+def compile_launch_policy(pod, generated):
+    """Create an identity-bearing template from reviewed rules and Pod output.
+
+    This does not qualify a driver, approve resource release, or enable enrollment.
+    The generator must still run without unsupported-field suppression.
+    """
+    normalized = launch_policy_input(pod)
+    try:
+        if not isinstance(generated, str) or len(generated.encode()) > 512 * 1024:
+            raise ValueError()
+        matches = list(POLICY_DATA.finditer(generated))
+        if len(matches) != 1 or IDENTITY_MARKER in generated:
+            raise ValueError()
+        match = matches[0]
+        prefix = generated[:match.start()].rstrip()
+        if hashlib.sha256(prefix.encode()).hexdigest() != GENPOLICY_RULES_SHA256:
+            raise ValueError()
+        # POLICY_DATA includes the opening brace. Decode one JSON object only;
+        # trailing Rego rules or hand-written expressions are rejected.
+        data = json.loads(generated[match.end()-1:])
+        defaults = data["request_defaults"]
+        if (defaults["ExecProcessRequest"] != {"allowed_commands": [], "regex": []}
+                or any(defaults[key] is not False for key in
+                       ("ReadStreamRequest", "WriteStreamRequest", "GetDiagnosticDataRequest"))):
+            raise ValueError()
+        containers = data["containers"]
+        actual, pauses = {}, []
+        for container in containers:
+            oci = container["OCI"]
+            annotations = oci["Annotations"]
+            if annotations["io.kubernetes.cri.container-type"] == "sandbox":
+                pauses.append(oci)
+            else:
+                name = annotations["io.kubernetes.cri.container-name"]
+                if name in actual:
+                    raise ValueError()
+                actual[name] = oci
+        if len(pauses) != 1 or pauses[0]["Process"]["Args"] != ["/pause"]:
+            raise ValueError()
+        spec = normalized["spec"]
+        expected = spec["containers"] + spec.get("initContainers", [])
+        if len(expected) != len(actual) or len({c["name"] for c in expected}) != len(expected):
+            raise ValueError()
+        for container in expected:
+            oci = actual[container["name"]]
+            process = oci["Process"]
+            security = container["securityContext"]
+            uid = security.get("runAsUser", spec.get("securityContext", {}).get("runAsUser"))
+            image = container["image"]
+            command = container.get("command")
+            if (not IMAGE.fullmatch(image) or not isinstance(command, list) or not command
+                    or any("$(node-name)" in arg for arg in command + container.get("args", []))
+                    or process["Args"] != command + container.get("args", [])
+                    or process["User"]["UID"] != uid
+                    or process["NoNewPrivileges"] is not True
+                    or oci["Root"]["Readonly"] != security.get("readOnlyRootFilesystem", False)
+                    or oci["Annotations"]["io.kubernetes.cri.image-name"] != image
+                    or oci["Annotations"]["io.kubernetes.cri.sandbox-namespace"] != pod["metadata"]["namespace"]):
+                raise ValueError()
+        data["saw_identity"] = IDENTITY_MARKER
+        encoded = canonical(data)
+        if encoded.count(json.dumps(IDENTITY_MARKER)) != 1:
+            raise ValueError()
+        encoded = encoded.replace(json.dumps(IDENTITY_MARKER), IDENTITY_MARKER)
+        return prefix + "\n\npolicy_data := " + encoded + "\n"
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise AttestationError("LaunchPolicyRejected") from None

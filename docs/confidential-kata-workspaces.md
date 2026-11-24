@@ -64,6 +64,56 @@ provider keys. The synthetic result verifies the KBS measurement-to-resource
 mapping; it does not complete the application launch boundary. Live changed-
 measurement, debug-mode, and old-token revocation tests also remain open.
 
+## Preparing measured launch policies
+
+`deploy/confidential/source-lock.yaml` pins the Red Hat tools image and the
+Kata release rules and settings by revision and SHA256. Use these inputs;
+do not enable the generator's unsupported-field suppression option.
+
+Use the actual approved supervisor or workload Pod manifest, after admission
+has resolved its nonzero UID. Keep this manifest as the deployment input.
+Prepare a separate generator input with:
+
+```sh
+uv run --with pyyaml scripts/confidential-artifacts.py launch-input \
+  --pod approved-pod.yaml --output generator-input.yaml
+```
+
+The conversion requires explicit `automountServiceAccountToken: false`, a
+nonzero numeric UID, `runAsNonRoot: true`, and RuntimeDefault seccomp. It moves
+inherited seccomp to container security contexts and removes only the redundant
+nonroot flag and unsupported explicit automount field from generator input.
+It rejects host namespaces, privileged containers, Secret environment imports,
+and unsafe init containers. Other unsupported fields remain for genpolicy to
+reject. The actual deployment manifest is not modified.
+
+Run the pinned genpolicy tool with the locked rules and settings, then validate
+its raw output against the original Pod:
+
+```sh
+uv run --with pyyaml scripts/confidential-artifacts.py launch-policy \
+  --pod approved-pod.yaml --policy generated-policy.rego \
+  --output launch-template.rego
+```
+
+The validator accepts only the exact locked rules code followed by JSON policy
+data. It requires the Pod's image digest, command, namespace, UID, read-only-root
+setting, and no-new-privileges flag to match. Exec, stream, and diagnostic
+permissions must remain denied. A single measured SAW identity marker is added.
+The commands write new private files and never print manifests or replace an
+existing file. Generated mounts, environment, and all remaining policy data
+still require administrator review against the actual Pod and image inputs.
+
+A local generation check passed for the signed supervisor candidate. Normal OPA
+compilation passed. Strict OPA lint rejects unused arguments in the upstream
+rules; the rules were not edited to suppress that diagnostic. This result is
+not a live launch qualification.
+
+The current enrolled settings still accept only the legacy policy template.
+Per-slot supervisor/workload launch-template enrollment and the chart/preflight
+activation gates remain incomplete. Do not replace this missing integration
+with a manually asserted qualification record or deploy a real provider key.
+
 ## Historical platform verification (2026-11-23)
 
 At 2026-11-23T17:39:41Z, a read-only cluster check confirmed that the Kata

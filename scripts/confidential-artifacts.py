@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import yaml
@@ -24,17 +25,37 @@ def site_for_profile(site, profile):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action",choices=["initdata","trustee-resources"])
-    parser.add_argument("--values",required=True)
-    parser.add_argument("--owner",required=True)
-    parser.add_argument("--registration",required=True)
+    parser.add_argument("action",choices=["initdata","trustee-resources","launch-input","launch-policy"])
+    parser.add_argument("--values")
+    parser.add_argument("--owner")
+    parser.add_argument("--registration")
     parser.add_argument("--installation")
     parser.add_argument("--slot")
     parser.add_argument("--role",choices=["supervisor","workload"])
     parser.add_argument("--profile")
     parser.add_argument("--secret-store")
+    parser.add_argument("--policy")
+    parser.add_argument("--pod")
+    parser.add_argument("--output")
     args=parser.parse_args()
+    if args.action in ("launch-input", "launch-policy"):
+        if not args.pod or not args.output or (args.action == "launch-policy" and not args.policy):
+            parser.error("launch actions require --pod and --output; launch-policy also requires --policy")
+    elif not args.values or not args.owner or not args.registration:
+        parser.error("this action requires --values, --owner and --registration")
     try:
+        if args.action in ("launch-input", "launch-policy"):
+            pod = yaml.safe_load(Path(args.pod).read_text())
+            if args.action == "launch-input":
+                encoded = yaml.safe_dump(a.launch_policy_input(pod), sort_keys=False)
+            else:
+                encoded = a.compile_launch_policy(pod, Path(args.policy).read_text())
+            # No manifest on stdout. Do not overwrite inputs or follow a link.
+            fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                stream.write(encoded)
+            print("Prepared private launch artifact; deploy the original Pod manifest.")
+            return 0
         values=yaml.safe_load(Path(args.values).read_text())
         site=values["containerSites"][args.owner]
         if args.action=="initdata":
@@ -46,7 +67,7 @@ def main():
         return 0
     except a.AttestationError as exc:
         print(str(exc),file=sys.stderr)
-    except (OSError,ValueError,KeyError,TypeError):
+    except (OSError,ValueError,KeyError,TypeError,yaml.YAMLError):
         print("AttestationConfigurationRejected",file=sys.stderr)
     return 1
 
