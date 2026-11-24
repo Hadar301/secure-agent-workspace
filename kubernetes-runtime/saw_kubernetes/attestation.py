@@ -622,7 +622,8 @@ def initdata(site, owner, registration, installation, slot, role):
         '"saw_identity": ' + canonical(identity), cfg["guestPolicy"], count=1)
     aa = ("[token_configs]\n"
           "[token_configs.coco_as]\nurl = "+json.dumps(cfg["kbsURL"])+"\n"
-          "[token_configs.kbs]\nurl = "+json.dumps(cfg["kbsURL"])+"\n")
+          "[token_configs.kbs]\nurl = "+json.dumps(cfg["kbsURL"])
+          +"\ncert = "+json.dumps(cfg["kbsCA"])+"\n")
     cdh = ("socket = \"unix:///run/confidential-containers/cdh.sock\"\ncredentials = []\n[kbc]\nname = \"cc_kbc\"\nurl = "
            +json.dumps(cfg["kbsURL"])+"\nkbs_cert = "+json.dumps(cfg["kbsCA"])
            +"\n[image]\nimage_security_policy_uri = "

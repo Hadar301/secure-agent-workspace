@@ -27,6 +27,8 @@ It also mirrors the governance provider profiles into the installer:
 
 Canonical workspace projection and Keycloak bootstrap helpers are mirrored
 into the independently installable RHDH chart by the same generation/check.
+Attestation chart assets are relative symlinks to one runtime source file.
+Helm resolves these links when rendering or packaging each chart.
 
     scripts/saw-profile-catalog.py            write generated catalog, forms,
                                                    and mirrored helpers
@@ -39,6 +41,7 @@ files when charts/saw-bom/profiles changes.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -580,6 +583,30 @@ def render_delete_template(for_user=False):
             + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None))
 
 
+def attestation_links():
+    source = ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py"
+    return [(ROOT / "charts" / chart / "files/attestation.py",
+             Path(os.path.relpath(source, ROOT / "charts" / chart / "files")))
+            for chart in ("saw-users", "saw-portal-container", "openshell-rhdh")]
+
+
+def sync_source_links(links, check=False):
+    stale = []
+    for path, target in links:
+        if path.is_symlink() and path.readlink() == target:
+            continue
+        if check:
+            stale.append(str(path.relative_to(ROOT)) + " (shared source link)")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Unlink first. Never write through an old or incorrect link.
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        path.symlink_to(target)
+        print(f"linked {path.relative_to(ROOT)} -> {target}")
+    return stale
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail when an output is stale")
@@ -594,7 +621,7 @@ def main(argv=None):
     lifecycle = TEMPLATE_OUTPUT.with_name("set-workspace-state.yaml")
     # Independent Helm charts package the same reviewed broker renderer.
     policy_template = ROOT / "charts/openshell-saw/templates/_governed-proxy-policy.tpl"
-    attestation_source = ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py"
+    source_links = attestation_links()
     policy_outputs = [
         (ROOT / "charts/openshell-rhdh/files/saw_keycloak_admin.py",
          (ROOT / "charts/openshell-keycloak/files/saw_keycloak_admin.py").read_text()),
@@ -602,9 +629,6 @@ def main(argv=None):
          (ROOT / "charts/openshell-saw/files/installer/saw_ui_limit.py").read_text()),
         (ROOT / "charts/openshell-rhdh/files/workspace.py",
          (ROOT / "charts/saw-users/files/workspace.py").read_text()),
-        (ROOT / "charts/saw-users/files/attestation.py", attestation_source.read_text()),
-        (ROOT / "charts/saw-portal-container/files/attestation.py", attestation_source.read_text()),
-        (ROOT / "charts/openshell-rhdh/files/attestation.py", attestation_source.read_text()),
         (ROOT / "charts/saw-users/templates/_governed-proxy-policy.tpl", policy_template.read_text()),
         (ROOT / "charts/saw-users/files/governed-profiles.json", json.dumps(
             {p.stem: load(p) for p in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}, sort_keys=True, indent=2) + "\n")]
@@ -613,7 +637,7 @@ def main(argv=None):
         # the mirror directory itself, so `git add -A -- <list>` (the hook,
         # the workflow) also stages a mirror this run removed.
         for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, CONFIDENTIAL_TEMPLATE_OUTPUT, lifecycle, DELETE_TEMPLATE,
-                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *(p for p, _ in policy_outputs), *mirror, INSTALLER_PROFILES):
+                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *(p for p, _ in policy_outputs), *(p for p, _ in source_links), *mirror, INSTALLER_PROFILES):
             print(path.relative_to(ROOT))
         return 0
     try:
@@ -631,7 +655,7 @@ def main(argv=None):
     outputs.append((ADMIN_DELETE_TEMPLATE, render_delete_template(for_user=True)))
     outputs += policy_outputs
     outputs += sorted(mirror.items())
-    stale = []
+    stale = sync_source_links(source_links, check=args.check)
     for path in extra:
         if args.check:
             stale.append(f"{path.relative_to(ROOT)} (no longer a governance profile)")

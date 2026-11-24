@@ -696,3 +696,83 @@ def test_live_attachment_verifier_checks_runtimeclass_drift(resources):
         objects["runtimeclass"] = dict(runtime, **change)
         with pytest.raises(ContractError):
             verifier(plan)
+
+
+def confidential_plan(plan):
+    result = copy.deepcopy(plan)
+    result.update(schemaVersion=2, mode="kata",
+                  requestedPlacement={"supervisor": "confidential", "workload": "confidential"},
+                  attestation={"capability": "saw-confidential-v1"})
+    result["revision"] = digest({k:v for k,v in result.items() if k != "revision"})
+    return result
+
+
+def test_confidential_reconcile_requires_explicit_boundary_on_every_running_pass(runtime):
+    plan, gateway, reconciler, _ = runtime
+    plan = confidential_plan(plan)
+    verified = []
+    def boundary(observed):
+        assert observed == plan
+        assert not gateway.calls
+        verified.append(True)
+    reconciler.verify_confidential = boundary
+    for _ in range(2):
+        gateway.calls.clear()
+        result = reconciler.reconcile(plan, generation=1)
+        assert result["requestedPlacement"] == plan["requestedPlacement"]
+        assert gateway.calls
+    assert len(verified) == 2
+
+
+def test_changed_confidential_boundary_blocks_rpc_and_state(runtime):
+    plan, gateway, reconciler, _ = runtime
+    def reject(_):
+        raise ContractError("changed confidential boundary", safe_reason="AttestationApprovalMissing")
+    reconciler.verify_confidential = reject
+    with pytest.raises(ContractError, match="changed confidential boundary"):
+        reconciler.reconcile(confidential_plan(plan), generation=1)
+    assert gateway.calls == []
+    assert reconciler.store.load() == {}
+
+
+def test_stop_does_not_require_trustee_release_to_remain_available(runtime):
+    plan, gateway, reconciler, _ = runtime
+    def unavailable(_):
+        raise AssertionError("stop must not request renewed confidential release approval")
+    reconciler.verify_confidential = unavailable
+    result = reconciler.reconcile(confidential_plan(plan), generation=1, desired_state="Stopped")
+    assert result["phase"] == "Stopped"
+    assert not any(name.startswith(("Create", "Start")) for name,_ in gateway.calls)
+
+
+@pytest.mark.parametrize("confidential", [False, True])
+def test_peer_pod_handler_requires_confidential_placement_and_exact_approval(resources, confidential):
+    plan, namespace, pvc, _ = resources
+    if confidential:
+        plan = confidential_plan(plan)
+    placement = {"handler":"kata-remote", "scheduling":{"nodeSelector":{"pool":"peer"}},
+                 "overhead":{"podFixed":{"memory":"128Mi"}}}
+    runtime = dict(placement, metadata={"uid":"reviewed",
+        "labels":{"openshell.ai/sandbox-attachable":"true"}})
+    plan["runtimeClass"] = {"name":"peer-runtime", "uid":"reviewed", "sha256":digest(placement)}
+    objects = {"namespace":namespace, "persistentvolumeclaim":pvc, "runtimeclass":runtime}
+    verifier = KubernetesResourceVerifier(lambda kind,*args: objects[kind], lambda _: None)
+    if confidential:
+        verifier(plan)
+        runtime["scheduling"] = {}
+        with pytest.raises(ContractError):
+            verifier(plan)
+    else:
+        with pytest.raises(ContractError):
+            verifier(plan)
+
+
+def test_confidential_resource_verifier_calls_live_boundary(resources):
+    plan, *_ = resources
+    verified = []
+    verifier = KubernetesResourceVerifier(lambda *args: None, lambda p: verified.append(p))
+    with pytest.raises(ContractError, match="invalid confidential placement"):
+        verifier.verify_confidential(plan)
+    plan = confidential_plan(plan)
+    verifier.verify_confidential(plan)
+    assert verified == [plan]

@@ -2,7 +2,69 @@
 
 Status: implementation in progress. Confidential enrollment is disabled.
 
-## Latest platform verification (2026-11-23)
+## Latest verification (2026-11-24)
+
+A credential-free Azure SNP probe booted with the reviewed guest policy.
+Trustee verified the Azure SNP endorsement and returned the public image policy
+and status resource. Both lab images have verified signatures. Guest-side
+negative signature cases and the complete workspace matrix remain unverified.
+Confidential enrollment stays disabled. No provider credential was released.
+
+AA and CDH use separate TLS clients. Generated init-data must set both
+`token_configs.kbs.cert` in `aa.toml` and `kbc.kbs_cert` in `cdh.toml` to the
+approved Trustee CA. Changing these settings changes the measured init-data.
+Recompute and review reference values before a new enrollment.
+
+The installed token exposes Azure SNP PCR08 at
+`submods.cpu0["ear.veraison.annotated-evidence"]["az-snp-vtpm"].tpm.pcr08`.
+Its `init_data` field in the same annotated evidence holds the verified PCR08
+value, not the raw init-data SHA256. The token did not expose parsed
+`policy_data.saw_identity`. Do not use a requested owner name or label as
+attested identity.
+
+### Administrator measurement binding
+
+`scripts/trustee-resource-policy.py --approvals FILE` renders a default-deny KBS
+resource policy. Run it through `uv run`. The input is a public JSON approval
+record with `schemaVersion: 1` and a `bindings` list. Each binding has these
+fields: `owner`, `registration`, `installation`, `slot`, `role`, `pcr08`,
+`initdataSHA256`, `referenceSetSHA256`, `expiresAt`, and `resources`.
+
+The administrator must derive PCR08 from verified platform inputs and the exact
+approved init-data. The renderer checks format and consistency; it does not
+prove measurement provenance or approve a release. Keep this approval review
+separate from workspace-owner input. Use a distinct approved measurement for
+each owner, registration, slot, and role. Duplicate measurements are rejected.
+
+For the initial Azure SNP CPU path, the generated policy requires an exact PCR08
+binding, matching verified `init_data`, affirmative measured-platform scores,
+disabled debug and migration, and an unexpired approval. It compares the exact
+KBS resource path array with `default/saw-<owner>-<registration>/<resource>`.
+Supervisor bindings can permit named inference and web-search resources.
+Workload bindings can permit only `image-policy`. Missing fields, other TEEs,
+additional devices, foreign paths, and revoked bindings fail closed.
+
+This is an administrator policy tool, not an enrollment integration. Review its
+full policy before installation. It replaces a KBS resource policy and does not
+merge rules for other applications. Revoke a registration by removing its
+measurement bindings and reloading the policy.
+
+A live synthetic-only probe passed its exact measurement check, retrieved its
+own test resource, and received `PolicyDeny` for a foreign registration and the
+legacy status path. This KBS version returns HTTP 401 with JSON `type` set to
+its `PolicyDeny` URI. A generic 401 is not enough to prove policy isolation.
+The test measurement and synthetic resources were removed after the run.
+All 186 affected local tests passed, including 51 executable policy and
+protocol cases.
+
+Production credential release is not qualified. The current agent policy still
+permits `CreateContainerRequest` broadly. Constrain the approved image, startup
+command, and relevant container settings in the measured policy before using
+provider keys. The synthetic result verifies the KBS measurement-to-resource
+mapping; it does not complete the application launch boundary. Live changed-
+measurement, debug-mode, and old-token revocation tests also remain open.
+
+## Historical platform verification (2026-11-23)
 
 At 2026-11-23T17:39:41Z, a read-only cluster check confirmed that the Kata
 workers and Trustee components are ready. The Mac shell resolved the API host
@@ -121,6 +183,15 @@ VMs. The gateway stays on the default runtime. This design has not passed a live
 workspace test.
 
 ## Implemented source components
+
+Attestation logic has one source file:
+`kubernetes-runtime/saw_kubernetes/attestation.py`. The `saw-users`,
+`openshell-rhdh`, and `saw-portal-container` chart assets are relative symlinks
+to that file. Edit the runtime source only. `make catalog` repairs missing or
+incorrect links; its check mode rejects regular copies. Helm resolves the links
+when rendering and writes regular files into chart packages, so packaged charts
+do not require the repository checkout.
+
 
 - `make saw-init` calls the existing read-only workspace preflight. It uses the
   same `SAW_USERS_VALUES_FILE`, `OPENSHELL_SAW_NAME`, and `DEPLOYMENT_MODE` inputs.

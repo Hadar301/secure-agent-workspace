@@ -115,6 +115,14 @@ class KubernetesResourceVerifier:
             raise ContractError("Kubernetes resource replaced or deleting")
         return metadata
 
+    def verify_confidential(self, plan):
+        """Require the enrolled live boundary before confidential create/start."""
+        if (plan.get("schemaVersion") != 2 or plan.get("mode") != "kata"
+                or plan.get("requestedPlacement") != {
+                    "supervisor": "confidential", "workload": "confidential"}):
+            raise ContractError("invalid confidential placement contract", safe_reason="PlacementRejected")
+        self.verify_boundary(plan)
+
     def verify_shutdown(self, plan):
         """Shutdown checks namespace identity, not renewed attachment permission.
 
@@ -160,5 +168,9 @@ class KubernetesResourceVerifier:
             if meta.get("labels", {}).get("openshell.ai/sandbox-attachable") != "true":
                 raise ContractError("RuntimeClass has not been approved")
             placement = {k: obj.get(k) for k in ("handler", "overhead", "scheduling")}
-            if obj.get("handler") != "kata" or digest(placement) != runtime.get("sha256"):
+            confidential = (plan.get("schemaVersion") == 2 and plan.get("mode") == "kata"
+                            and plan.get("requestedPlacement") == {
+                                "supervisor": "confidential", "workload": "confidential"})
+            expected_handler = "kata-remote" if confidential else "kata"
+            if obj.get("handler") != expected_handler or digest(placement) != runtime.get("sha256"):
                 raise ContractError("RuntimeClass handler, scheduling or overhead differs from approval")

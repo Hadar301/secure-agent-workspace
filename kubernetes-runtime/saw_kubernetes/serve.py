@@ -48,7 +48,8 @@ def main():
     def reconcile(plan, **kwargs):
         with sessions.open() as gateway:
             return Reconciler(gateway, state / "core", resources.verify_attachments,
-                              verify_shutdown=resources.verify_shutdown).reconcile(plan, **kwargs)
+                              verify_shutdown=resources.verify_shutdown,
+                              verify_confidential=resources.verify_confidential).reconcile(plan, **kwargs)
     frontend = Controller(api, scope, state, compile_profile_files, reconcile, boundary)
     stopped = False
     def stop(signum, frame):

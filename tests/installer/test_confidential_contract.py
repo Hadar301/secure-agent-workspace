@@ -126,7 +126,8 @@ def test_approved_public_objects_and_deterministic_initdata(approved):
     aa_config = tomllib.loads(parsed["data"]["aa.toml"])
     assert aa_config == {"token_configs": {
         "coco_as": {"url": site["attestation"]["kbsURL"]},
-        "kbs": {"url": site["attestation"]["kbsURL"]},
+        "kbs": {"url": site["attestation"]["kbsURL"],
+                "cert": site["attestation"]["kbsCA"]},
     }}
     cdh_config = tomllib.loads(parsed["data"]["cdh.toml"])
     assert cdh_config["kbc"]["url"] == site["attestation"]["kbsURL"]
@@ -137,6 +138,21 @@ def test_approved_public_objects_and_deterministic_initdata(approved):
     assert "saw-identity" not in generated_policy
     assert a.initdata(*args[:-1],"workload")["sha256"]!=result["sha256"]
     assert a.initdata(site,"alice","fedcba9876543210",UID,"default/notebook","supervisor")["sha256"]!=result["sha256"]
+
+
+
+@pytest.mark.parametrize("role", ["supervisor", "workload"])
+def test_each_guest_tls_client_receives_the_approved_ca(approved, role):
+    site, _ = approved
+    result = a.initdata(site, "alice", "0123456789abcdef", UID,
+                        "default/notebook", role)
+    data = tomllib.loads(gzip.decompress(
+        base64.b64decode(result["annotation"])).decode())["data"]
+    aa = tomllib.loads(data["aa.toml"])["token_configs"]["kbs"]
+    cdh = tomllib.loads(data["cdh.toml"])["kbc"]
+    assert aa["url"] == cdh["url"] == site["attestation"]["kbsURL"]
+    assert aa["cert"] == cdh["kbs_cert"] == site["attestation"]["kbsCA"]
+    assert aa["url"].startswith("https://")
 
 
 def test_confidential_boundary_pins_named_public_objects(approved):
@@ -703,14 +719,18 @@ def test_invalid_trustee_reference_payload_is_rejected(approved, field, value):
     with pytest.raises(a.AttestationError, match="^ReferenceValuesRejected$"):
         a.verify_platform(site, objects.__getitem__)
 
-def test_preflight_checker_copies_match_runtime_source():
+def test_chart_attestation_links_use_one_runtime_source():
     source = (ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py").read_bytes()
     for relative in (
         "charts/openshell-rhdh/files/attestation.py",
         "charts/saw-users/files/attestation.py",
         "charts/saw-portal-container/files/attestation.py",
     ):
-        assert (ROOT / relative).read_bytes() == source
+        asset = ROOT / relative
+        assert asset.is_symlink()
+        assert not asset.readlink().is_absolute()
+        assert asset.resolve() == ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py"
+        assert asset.read_bytes() == source
 
 @pytest.mark.parametrize("key", ["attestationPolicy", "resourcePolicy"])
 def test_changed_trustee_policy_is_rejected(approved,key):

@@ -112,7 +112,7 @@ def scratch(tmp_path):
         if (ROOT / rel).is_dir():          # the mirror directory is listed as an owned path
             continue
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / rel, repo / rel)
+        shutil.copy2(ROOT / rel, repo / rel, follow_symlinks=False)
     shutil.copytree(ROOT / "charts" / "saw-bom" / "profiles", repo / "charts" / "saw-bom" / "profiles")
     shutil.copytree(ROOT / "charts" / "governance-policy" / "profiles",
                     repo / "charts" / "governance-policy" / "profiles")
@@ -323,3 +323,29 @@ def test_the_workflow_and_hook_see_an_added_and_a_removed_governance_profile(scr
     git("commit", "-q", "-m", "edit acme-llm")
     shown = git("show", "--stat", "--format=", "HEAD").stdout
     assert "provider-profiles/acme-llm.yaml" in shown
+
+
+@pytest.mark.parametrize("kind", ["copy", "wrong-link", "broken-link"])
+def test_attestation_links_are_checked_and_repaired_without_writing_through(scratch, kind):
+    repo, env, _ = scratch
+    source = repo / "kubernetes-runtime/saw_kubernetes/attestation.py"
+    original = source.read_bytes()
+    target = repo / "charts/saw-users/files/attestation.py"
+    target.unlink()
+    other = repo / "unrelated.py"
+    other.write_text("do not change\n")
+    if kind == "copy":
+        target.write_bytes(original)
+    elif kind == "wrong-link":
+        target.symlink_to(other)
+    else:
+        target.symlink_to("missing.py")
+    check = subprocess.run([sys.executable, "scripts/saw-profile-catalog.py", "--check"],
+                           cwd=repo, env=env, capture_output=True, text=True)
+    assert check.returncode == 1
+    assert "attestation.py (shared source link)" in check.stderr
+    subprocess.run([sys.executable, "scripts/saw-profile-catalog.py"], cwd=repo,
+                   env=env, capture_output=True, text=True, check=True)
+    assert target.is_symlink() and target.resolve() == source
+    assert source.read_bytes() == original
+    assert other.read_text() == "do not change\n"

@@ -102,12 +102,16 @@ class Reconciler:
     providing a no-op in a deployment is not qualification.
     """
 
-    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None):
+    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None,
+                 verify_confidential=None):
         self.rpc = rpc
         self.store = StateStore(state_directory)
         if not callable(verify_resources):
             raise ContractError("resource verifier is required", safe_reason="InvalidPlan")
         self.verify_resources = verify_resources
+        if verify_confidential is not None and not callable(verify_confidential):
+            raise ContractError("confidential boundary verifier must be callable", safe_reason="InvalidPlan")
+        self.verify_confidential = verify_confidential
         self.verify_shutdown = (verify_shutdown if verify_shutdown is not None else
                                 getattr(verify_resources, "verify_shutdown", verify_resources))
         if not callable(self.verify_shutdown):
@@ -193,9 +197,10 @@ class Reconciler:
                     {"supervisor": "confidential", "workload": "confidential"}):
                 raise ContractError("confidential placement differs from the approved plan",
                                     safe_reason="PlacementRejected")
-            raise ContractError("confidential compute driver is not qualified",
-                                safe_reason="AttestationIntegrationUnavailable")
-        if plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
+            if self.verify_confidential is None:
+                raise ContractError("confidential compute driver is not qualified",
+                                    safe_reason="AttestationIntegrationUnavailable")
+        elif plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
                 "supervisor": "container", "workload": plan["mode"]}:
             raise ContractError("stock adapter requires an ordinary-container supervisor",
                                 safe_reason="PlacementRejected")
@@ -210,6 +215,10 @@ class Reconciler:
             if previous.get("generation", 0) > generation or (previous.get("generation") == generation and previous != intent):
                 raise ContractError("stale generation or conflicting intent at the same generation",
                                     safe_reason="StaleIntent")
+            if schema == 2 and desired_state == "Running":
+                # Recheck enrolled driver, Trustee, measurements and placements
+                # before every RPC pass. Never infer approval from a plan flag.
+                self.verify_confidential(plan)
             (self.verify_shutdown if desired_state == "Stopped" else self.verify_resources)(plan)
             state.update(identity=identity, intent=intent)
             self.store.save(state)
