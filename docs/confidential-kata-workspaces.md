@@ -111,6 +111,45 @@ images use the file interface and are incompatible. Do not deploy a mixed pair.
 The Go tests and chart contracts pass. The rebuilt gateway passed all nine
 confidential driver tests on AMD64. Full workspace qualification remains open.
 
+## Reserve storage before launch-policy generation
+
+The measured policy needs the real namespace UID range and claim identities.
+Do not generate it from preview IDs. Use the same public user values as Make,
+with one Kata profile, `attestation.enabled: true`,
+`automaticEnrollment.enabled: false`, the approved `kataRuntimeClass`, and
+`stack.audit.values.storageClass` and `exchangeStorageClass`. No enrolled
+intent is permitted at this stage. Keep provider key values out of this file.
+
+```sh
+export DEPLOYMENT_MODE=kata
+export SAW_USERS_VALUES_FILE=/path/to/reviewed-public-values.yaml
+export OPENSHELL_SAW_NAME=alice
+export SAW_KUBE_CONTEXT=approved-cluster-context
+make saw-prepare-confidential
+make saw-prepare-confidential-apply
+```
+
+The first command reads the selected cluster and performs server admission dry
+runs where the destination namespace exists. It reports `admissionPending` for
+claims and policies whose namespace does not exist. It does not report full
+admission success for these resources.
+
+The apply command creates only the runtime and retained history namespaces,
+default-deny NetworkPolicies, and the claims from the production audit chart.
+Each new object gets a server dry run before creation. It starts no workload,
+creates no credential object, reads no Secret, and makes no Trustee change.
+It rejects foreign objects and changes to an existing claim. A repeat retains
+the same object UIDs. The returned IDs and namespace ranges are public policy
+inputs. Use `uv run scripts/confidential-prepare.py --output NEW_FILE` with the
+same environment to save them. Add `--apply` only for the reservation step.
+
+`StorageReserved` means the claims exist. It does not prove that claims are
+Bound, that their CSI driver supports peer pods, or that a guest can mount them.
+Qualify the selected storage transport before enabling enrollment. The command
+checks the approved RuntimeClass identity and placement, storage-class
+existence, ownership, permissions, and admission. It is not the full
+confidential preflight. The enrollment and credential-release gates stay closed.
+
 ## Preparing measured launch policies
 
 `deploy/confidential/source-lock.yaml` pins the Red Hat tools image and the

@@ -1,4 +1,7 @@
 enabled: false
+# Reserve the same claims before generating measured launch policies.
+# This mode emits no workload, credential resource, Service, or RBAC.
+prepareOnly: false
 trustedNamespace: ""
 runtimeNamespace: ""
 image: ""
