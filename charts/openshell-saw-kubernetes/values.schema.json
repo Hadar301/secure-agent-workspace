@@ -118,10 +118,9 @@
                 "properties": {
                   "runtime_class_name": {"type": "string", "minLength": 1},
                   "init_data": {"type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$", "maxLength": 200000},
-                  "config_map_name": {"type": "string", "minLength": 1, "maxLength": 63},
-                  "config_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$", "maxLength": 253}
+                  "bootstrap_json": {"type": "string", "minLength": 1, "maxLength": 65536}
                 },
-                "required": ["runtime_class_name", "init_data", "config_map_name", "config_key"]
+                "required": ["runtime_class_name", "init_data", "bootstrap_json"]
               }
             },
             "workloads": {

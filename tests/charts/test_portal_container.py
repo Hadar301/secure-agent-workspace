@@ -551,13 +551,18 @@ def test_confidential_stack_pins_both_runtime_pod_classes_and_init_data(tmp_path
     assert policy["confidentialMode"] is True
     assert policy["confidentialSupervisors"]["default--notebook"]["init_data"] == "e30="
     assert policy["confidentialWorkloads"]["default--notebook"]["runtime_class_name"] == "kata-remote"
-    config, = [obj for obj in docs if obj["kind"] == "ConfigMap"
-               and obj["metadata"]["name"] == f"saw-confidential-{U}-{REG}"]
-    supervisor_config = next(value for key, value in config["data"].items()
-                             if key.startswith("supervisor-"))
-    assert "default/saw-alice-" + REG + "/inference" in supervisor_config
-    provider_policy = json.loads(config["data"]["policy.json"])
-    assert all("value" not in binding for binding in provider_policy["bindings"])
+    assert not any(obj["kind"] == "ConfigMap" and
+                   obj["metadata"]["name"] == f"saw-confidential-{U}-{REG}" for obj in docs)
+    bootstrap_json = confidential["supervisors"]["default/notebook"]["bootstrap_json"]
+    bootstrap = json.loads(bootstrap_json)
+    assert bootstrap["schemaVersion"] == 1
+    assert bootstrap["policy"] == site["providerPolicy"]
+    assert bootstrap["resources"]["inference"] == f"default/saw-alice-{REG}/inference"
+    assert policy["confidentialSupervisors"]["default--notebook"]["bootstrap_json"] == bootstrap_json
+    import tomllib
+    driver = tomllib.loads(gateway_config["data"]["gateway.toml"])["openshell"]["drivers"]["kubernetes"]
+    assert driver["confidential_supervisors"]["default/notebook"]["bootstrap_json"] == bootstrap_json
+    assert all("value" not in binding for binding in bootstrap["policy"]["bindings"])
 
 
 def test_static_mixed_backends_keep_vm_resolution_in_the_root():

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -19,12 +21,13 @@ import (
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/proxy"
 )
 
-// Public bootstrap configuration. This file must be part of the measured guest
-// policy. Kubernetes identity/bootstrap Secrets never contain provider keys.
+// Public bootstrap configuration. Its JSON value must be pinned by the measured
+// guest policy. Kubernetes identity/bootstrap Secrets never contain provider keys.
 type confidentialConfig struct {
-	Policy       string            `json:"policy"`
-	Resources    map[string]string `json:"resources"`
-	PublicCAFile string            `json:"publicCAFile"`
+	SchemaVersion int               `json:"schemaVersion"`
+	Policy        json.RawMessage   `json:"policy"`
+	Resources     map[string]string `json:"resources"`
+	PublicCAFile  string            `json:"publicCAFile"`
 }
 
 func confidential(args []string) error {
@@ -33,13 +36,9 @@ func confidential(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	raw, err := os.ReadFile(env("SAW_CONFIDENTIAL_CONFIG", "/etc/saw-confidential/config.json"))
-	if err != nil || len(raw) > 1024*1024 {
-		return errors.New("AttestationConfigurationRejected")
-	}
-	var cfg confidentialConfig
-	if json.Unmarshal(raw, &cfg) != nil || cfg.Policy != "/etc/saw-confidential/policy.json" || cfg.PublicCAFile != "/run/openshell/saw-proxy-ca.pem" {
-		return errors.New("AttestationConfigurationRejected")
+	cfg, err := loadConfidentialBootstrap(os.Environ())
+	if err != nil {
+		return err
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	material, err := cdh.New().FetchAll(fetchCtx, cfg.Resources)
@@ -47,7 +46,7 @@ func confidential(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := config.NewMemory(cfg.Policy, material)
+	store, err := config.NewMemoryData(cfg.Policy, material)
 	if err != nil {
 		return err
 	}
@@ -97,6 +96,35 @@ func confidential(args []string) error {
 		<-childExit
 		return errors.New("SupervisorStopped")
 	}
+}
+
+const confidentialBootstrapEnv = "SAW_CONFIDENTIAL_BOOTSTRAP_JSON"
+
+func loadConfidentialBootstrap(environ []string) (*confidentialConfig, error) {
+	var raw string
+	count := 0
+	for _, entry := range environ {
+		if strings.HasPrefix(entry, confidentialBootstrapEnv+"=") {
+			raw = strings.TrimPrefix(entry, confidentialBootstrapEnv+"=")
+			count++
+		}
+		if strings.HasPrefix(entry, "SAW_CONFIDENTIAL_CONFIG=") {
+			return nil, errors.New("AttestationConfigurationRejected")
+		}
+	}
+	if count != 1 || len(raw) == 0 || len(raw) > 64*1024 {
+		return nil, errors.New("AttestationConfigurationRejected")
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	decoder.DisallowUnknownFields()
+	var cfg confidentialConfig
+	var trailing any
+	if decoder.Decode(&cfg) != nil || decoder.Decode(&trailing) != io.EOF ||
+		cfg.SchemaVersion != 1 || len(cfg.Policy) == 0 || len(cfg.Resources) == 0 ||
+		cfg.PublicCAFile != "/run/openshell/saw-proxy-ca.pem" {
+		return nil, errors.New("AttestationConfigurationRejected")
+	}
+	return &cfg, nil
 }
 
 func validSupervisorArgs(args []string) bool {

@@ -1,12 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
 	"errors"
 	"fmt"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -67,10 +69,28 @@ func New(path, secretsDir string) (*Store, error) {
 // NewMemory never opens credential files. Material comes from an attested CDH
 // fetch and is copied so callers cannot change a running proxy's credentials.
 func NewMemory(path string, material map[string]map[string]string) (*Store, error) {
-	s, err := New(path, "")
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.New("CredentialPolicyRejected")
 	}
+	return NewMemoryData(raw, material)
+}
+
+// NewMemoryData reads no policy or credential file. The public policy bytes
+// come from the measured bootstrap environment and are parsed once.
+func NewMemoryData(raw []byte, material map[string]map[string]string) (*Store, error) {
+	var policy Policy
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var trailing any
+	if decoder.Decode(&policy) != nil || decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("CredentialPolicyRejected")
+	}
+	s := &Store{Broker: &oauth.Broker{}}
+	if s.setPolicy(policy) != nil {
+		return nil, errors.New("CredentialPolicyRejected")
+	}
+
 	s.material = make(map[string]map[string]string)
 	for _, b := range s.policy.Bindings {
 		if b.Refresh != nil {
@@ -115,6 +135,10 @@ func (s *Store) Reload() error {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("decode policy: %w", err)
 	}
+	return s.setPolicy(p)
+}
+
+func (s *Store) setPolicy(p Policy) error {
 	if p.MarkerPrefix == "" || !keyRE.MatchString(p.MarkerPrefix) {
 		return errors.New("invalid marker prefix")
 	}

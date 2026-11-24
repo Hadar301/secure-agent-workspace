@@ -37,3 +37,4 @@ policyGenerator:
   rulesCodeSHA256: 2655cbb7641829dd88e0647cac76407a6072cdd130c77fda436fa9af08f4b43e
   settingsPath: src/tools/genpolicy/genpolicy-settings.json
   settingsSHA256: c542084030cab02298e56dff6f2e070827b519361cdfff1cdc0e5e0e52bdd887
+  environmentRulesSHA256: 2fd6b64642343ce37b71dc6f88377b70e8b2b1b35357fc7c4526b0e046e10240

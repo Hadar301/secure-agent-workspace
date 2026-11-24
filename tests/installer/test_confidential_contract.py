@@ -758,17 +758,19 @@ def confidential_driver(approved):
     contract = a.placement_contract(site, "alice", context["registration"], UID,
                                     ["default/toolbox"], "kata-remote")
     placement = contract["placements"]["default/toolbox"]
+    provider_policy={"markerPrefix":"saw","allowHosts":["api.example.test"],
+        "profiles":{"nvidia":["api.example.test"]},
+        "bindings":[{"secret":"inference","key":"api_key","providers":["nvidia"]}]}
     driver = {"confidential_mode":True, "default_runtime_class_name":"kata-remote",
               "supervisor_image":IMAGE,
               "confidential_supervisors":{"default/toolbox":{
                   "runtime_class_name":"kata-remote", "init_data":placement["supervisor"]["init_data"],
-                  "config_map_name":"saw-confidential-alice-0123456789abcdef",
-                  "config_key":"supervisor-"+hashlib.sha256(b"default/toolbox").hexdigest()[:16]+".json"}},
+                  "bootstrap_json":a.supervisor_bootstrap(provider_policy,"alice","0123456789abcdef")}},
               "confidential_workloads":{"default/toolbox":{
                   "runtime_class_name":"kata-remote", "init_data":placement["workload"]["init_data"]}}}
     gateway={"spec":{"template":{"spec":{"containers":[{"name":"gateway","image":IMAGE}]}}}}
     return ({"workloadRuntimeClass":"kata-remote"}, {"schemaVersion":2,"attestation":contract},
-            context, driver, gateway)
+            context, driver, gateway, provider_policy)
 
 
 def test_confidential_driver_matches_enrolled_placement(confidential_driver):
@@ -781,7 +783,7 @@ def test_confidential_driver_matches_enrolled_placement(confidential_driver):
     "external-proxy", "external-proxy-ca", "insecure-proxy"])
 def test_confidential_driver_rejects_actual_deployment_mismatch(confidential_driver, change):
     from saw_kubernetes.boundary import verify_confidential_driver
-    config, plan, context, driver, gateway = confidential_driver
+    config, plan, context, driver, gateway, provider_policy = confidential_driver
     supervisor=driver["confidential_supervisors"]["default/toolbox"]
     workload=driver["confidential_workloads"]["default/toolbox"]
     if change=="disabled": driver["confidential_mode"]=False
@@ -800,7 +802,7 @@ def test_confidential_driver_rejects_actual_deployment_mismatch(confidential_dri
     elif change=="external-proxy-ca": driver["proxy_ca_bundle"]="/external/ca.pem"
     elif change=="insecure-proxy": driver["proxy_auth_allow_insecure"]=True
     with pytest.raises(BoundaryError,match="^ConfidentialDriverMismatch$"):
-        verify_confidential_driver(config,plan,context,driver,gateway)
+        verify_confidential_driver(config,plan,context,driver,gateway,provider_policy)
 
 
 def test_plain_mode_cannot_silently_enable_confidential_driver():
@@ -887,7 +889,12 @@ def test_launch_input_cli_is_private_and_does_not_overwrite(tmp_path,monkeypatch
 def generated_launch(launch_pod, monkeypatch):
     prefix="package agent_policy\n\ndefault CreateContainerRequest := false"
     monkeypatch.setattr(a,"GENPOLICY_RULES_SHA256",hashlib.sha256(prefix.encode()).hexdigest())
-    data={"request_defaults":{"ExecProcessRequest":{"allowed_commands":[],"regex":[]},
+    monkeypatch.setattr(a,"GENPOLICY_ENV_RULES_SHA256",a.digest([]))
+    policy={"markerPrefix":"saw","allowHosts":["api.example.test"],"profiles":{"nvidia":["api.example.test"]},
+            "bindings":[{"secret":"inference","key":"api_key","providers":["nvidia"]}]}
+    bootstrap=a.supervisor_bootstrap(policy,"alice","0123456789abcdef")
+    launch_pod["spec"]["containers"][0]["env"]=[{"name":a.BOOTSTRAP_ENV,"value":bootstrap}]
+    data={"request_defaults":{"CreateContainerRequest":{"allow_env_regex":[]},"ExecProcessRequest":{"allowed_commands":[],"regex":[]},
         "ReadStreamRequest":False,"WriteStreamRequest":False,"GetDiagnosticDataRequest":False},
         "containers":[{"OCI":{"Annotations":{"io.kubernetes.cri.container-type":"sandbox"},
             "Process":{"Args":["/pause"]}}},
@@ -896,7 +903,7 @@ def generated_launch(launch_pod, monkeypatch):
                 "io.kubernetes.cri.image-name":IMAGE,
                 "io.kubernetes.cri.sandbox-namespace":"workspace"},
                 "Root":{"Readonly":True},"Process":{"Args":["/approved-supervisor"],
-                "User":{"UID":1001},"NoNewPrivileges":True}}}]}
+                "Env":[a.BOOTSTRAP_ENV+"="+bootstrap],"User":{"UID":1001},"NoNewPrivileges":True}}}]}
     return launch_pod,prefix,data
 
 
@@ -952,3 +959,193 @@ def test_node_placeholder_cannot_bypass_exact_command_matching(generated_launch)
     data["containers"][1]["OCI"]["Process"]["Args"]=["/approved-supervisor","$(node-name)"]
     with pytest.raises(a.AttestationError,match="^LaunchPolicyRejected$"):
         a.compile_launch_policy(pod,prefix+"\n\npolicy_data := "+json.dumps(data))
+
+
+@pytest.mark.parametrize("change",["missing","duplicate","changed","wide-pattern","legacy-file"])
+def test_supervisor_bootstrap_cannot_escape_measured_environment(generated_launch,change):
+    pod,prefix,data=generated_launch
+    process=data["containers"][1]["OCI"]["Process"]
+    if change=="missing":pod["spec"]["containers"][0]["env"]=[]
+    elif change=="duplicate":process["Env"]*=2
+    elif change=="changed":process["Env"]=[a.BOOTSTRAP_ENV+"={}"]
+    elif change=="wide-pattern":data["request_defaults"]["CreateContainerRequest"]["allow_env_regex"]=["^.*$"]
+    elif change=="legacy-file":pod["spec"]["containers"][0]["env"].append({"name":"SAW_CONFIDENTIAL_CONFIG","value":"/unmeasured/file.json"})
+    with pytest.raises(a.AttestationError,match="^LaunchPolicyRejected$"):
+        a.compile_launch_policy(pod,prefix+"\n\npolicy_data := "+json.dumps(data))
+
+
+@pytest.fixture
+def launch_site(approved, generated_launch):
+    import copy
+    site, _ = approved
+    site = copy.deepcopy(site)
+    pod, prefix, data = copy.deepcopy(generated_launch)
+    pod['metadata']['namespace'] = 'saw-alice'
+    pod['spec']['runtimeClassName'] = 'kata-remote'
+    command = ['/usr/local/bin/saw-credential-proxy', 'supervise', '/openshell-supervisor',
+               '--upstream-proxy', 'http://127.0.0.1:3128',
+               '--upstream-proxy-ca-bundle', '/run/openshell/saw-proxy-ca.pem']
+    pod['spec']['containers'][0]['command'] = command
+    oci = data['containers'][1]['OCI']
+    oci['Annotations']['io.kubernetes.cri.sandbox-namespace'] = 'saw-alice'
+    oci['Process']['Args'] = command
+    supervisor = {'pod': pod, 'template': a.compile_launch_policy(
+        pod, prefix+'\n\npolicy_data := '+json.dumps(data))}
+    workload_pod, workload_data = copy.deepcopy((pod, data))
+    workload_pod['spec']['containers'][0].update(
+        name='workload', command=['/approved-workload'], env=[])
+    workload_oci = workload_data['containers'][1]['OCI']
+    workload_oci['Annotations']['io.kubernetes.cri.container-name'] = 'workload'
+    workload_oci['Process'].update(Args=['/approved-workload'], Env=[])
+    workload = {'pod': workload_pod, 'template': a.compile_launch_policy(
+        workload_pod, prefix+'\n\npolicy_data := '+json.dumps(workload_data))}
+    policies = {'default/notebook': {'supervisor': supervisor, 'workload': workload}}
+    cfg = site['attestation']
+    cfg.pop('guestPolicy')
+    cfg.update(schemaVersion=2, launchPolicies=policies, policyDigest=a.digest(policies))
+    return site
+
+
+def test_launch_bundle_is_enrolled_and_generates_each_role(launch_site):
+    cfg = a.validate(launch_site)
+    assert cfg['schemaVersion'] == 2
+    args = (launch_site, 'alice', '0123456789abcdef', UID, 'default/notebook')
+    results = {role: a.initdata(*args, role) for role in ('supervisor', 'workload')}
+    assert results['supervisor']['sha256'] != results['workload']['sha256']
+    for role, result in results.items():
+        policy = tomllib.loads(gzip.decompress(base64.b64decode(result['annotation'])).decode())['data']['policy.rego']
+        parsed = json.loads(policy.split('policy_data := ', 1)[1])
+        assert parsed['saw_identity'] == result['identity']
+        assert parsed['saw_identity']['role'] == role
+        assert a.IDENTITY_MARKER not in policy
+    contract = a.placement_contract(*args[:4], ['default/notebook'], 'kata-remote')
+    assert contract['policy_digest'] == a.digest(cfg['launchPolicies'])
+    assert contract['placements']['default/notebook']['supervisor']['init_data'] == results['supervisor']['annotation']
+
+
+@pytest.mark.parametrize('change', ['stale-digest', 'changed-command', 'changed-template',
+    'extra-field', 'missing-role', 'extra-role', 'wrong-slot', 'missing-marker',
+    'two-markers', 'missing-wrapper', 'external-proxy'])
+def test_launch_bundle_changes_fail_closed(launch_site, change):
+    cfg = launch_site['attestation']
+    entry = cfg['launchPolicies']['default/notebook']['supervisor']
+    if change == 'stale-digest':
+        cfg['policyDigest'] = 'f'*64
+    elif change == 'changed-command':
+        entry['pod']['spec']['containers'][0]['command'] = ['/bin/sh']
+    elif change == 'changed-template':
+        entry['template'] += '\nCreateContainerRequest := true'
+    elif change == 'extra-field':
+        entry['qualification'] = 'self-asserted'
+    elif change == 'missing-role':
+        cfg['launchPolicies']['default/notebook'].pop('workload')
+    elif change == 'extra-role':
+        cfg['launchPolicies']['default/notebook']['gateway'] = entry
+    elif change == 'wrong-slot':
+        cfg['launchPolicies']['private-fixture-marker'] = cfg['launchPolicies'].pop('default/notebook')
+    elif change == 'missing-marker':
+        entry['template'] = entry['template'].replace(a.IDENTITY_MARKER, 'null')
+    elif change == 'two-markers':
+        entry['template'] += '\n# '+a.IDENTITY_MARKER
+    elif change == 'missing-wrapper':
+        entry['pod']['spec']['containers'][0]['command'][0] = '/unmeasured-wrapper'
+    elif change == 'external-proxy':
+        entry['pod']['spec']['containers'][0]['command'][4] = 'http://private-fixture-marker'
+    if change != 'stale-digest':
+        cfg['policyDigest'] = a.digest(cfg['launchPolicies'])
+    with pytest.raises(a.AttestationError, match='^AttestationLaunchPolicyRejected$'):
+        a.validate(launch_site)
+
+
+@pytest.mark.parametrize('change', ['foreign-owner', 'foreign-registration', 'missing-slot', 'wrong-supervisor-image'])
+def test_launch_identity_must_match_the_registration(launch_site, change):
+    args = [launch_site, 'alice', '0123456789abcdef', UID, 'default/notebook', 'supervisor']
+    if change == 'foreign-owner': args[1] = 'bob'
+    elif change == 'foreign-registration': args[2] = 'fedcba9876543210'
+    elif change == 'missing-slot': args[4] = 'other/notebook'
+    else: launch_site['attestation']['driver']['supervisorImage'] = IMAGE.replace('a'*64, 'f'*64)
+    with pytest.raises(a.AttestationError, match='^AttestationLaunchBindingRejected$'):
+        a.initdata(*args)
+
+
+@pytest.mark.parametrize('slots,runtime', [(['other/notebook'], 'kata-remote'),
+                                           (['default/notebook'], 'ordinary-kata')])
+def test_launch_placement_cannot_select_other_slots_or_runtime(launch_site, slots, runtime):
+    with pytest.raises(a.AttestationError, match='^AttestationLaunchBindingRejected$'):
+        a.placement_contract(launch_site, 'alice', '0123456789abcdef', UID, slots, runtime)
+
+
+def test_driver_bootstrap_must_match_the_measured_launch_pod(confidential_driver, launch_site):
+    from saw_kubernetes.boundary import verify_confidential_driver
+    config, plan, context, driver, gateway, provider_policy = confidential_driver
+    cfg = launch_site['attestation']
+    cfg['launchPolicies']['default/toolbox'] = cfg['launchPolicies'].pop('default/notebook')
+    context['settings'] = cfg
+    verify_confidential_driver(config, plan, context, driver, gateway, provider_policy)
+    measured = cfg['launchPolicies']['default/toolbox']['supervisor']['pod']['spec']['containers'][0]['env'][0]
+    public = json.loads(measured['value'])
+    public['policy']['allowHosts'] = ['foreign.example.test']
+    measured['value'] = a.canonical(public)
+    with pytest.raises(BoundaryError, match='^ConfidentialDriverMismatch$'):
+        verify_confidential_driver(config, plan, context, driver, gateway, provider_policy)
+
+
+def test_driver_api_metadata_is_removed_only_from_generator_input(launch_pod):
+    import copy
+    owner = {'apiVersion': 'agents.x-k8s.io/v1alpha1', 'kind': 'Sandbox',
+             'name': 'approved-slot', 'uid': UID, 'controller': True, 'blockOwnerDeletion': True}
+    launch_pod['metadata']['ownerReferences'] = [owner]
+    launch_pod['spec']['schedulingGates'] = [{'name': 'openshell.ai/bootstrap'}]
+    launch_pod['spec']['securityContext'].update(fsGroup=1001, fsGroupChangePolicy='OnRootMismatch')
+    original = copy.deepcopy(launch_pod)
+    normalized = a.launch_policy_input(launch_pod)
+    assert launch_pod == original
+    assert 'ownerReferences' not in normalized['metadata']
+    assert 'schedulingGates' not in normalized['spec']
+    assert normalized['spec']['securityContext']['fsGroup'] == 1001
+    assert 'fsGroupChangePolicy' not in normalized['spec']['securityContext']
+
+
+@pytest.mark.parametrize('field', ['owner', 'gate', 'ownership'])
+def test_unknown_driver_api_field_conversion_is_rejected(launch_pod, field):
+    if field == 'owner': launch_pod['metadata']['ownerReferences'] = [{'kind': 'Deployment'}]
+    elif field == 'gate': launch_pod['spec']['schedulingGates'] = [{'name': 'unreviewed.example/gate'}]
+    else: launch_pod['spec']['securityContext']['fsGroupChangePolicy'] = 'Always'
+    with pytest.raises(a.AttestationError, match='^LaunchPolicyInputRejected$'):
+        a.launch_policy_input(launch_pod)
+
+
+@pytest.fixture
+def supervisor_token_pod(launch_pod):
+    launch_pod['spec']['volumes'] = [{'name': 'sa-token', 'projected': {
+        'defaultMode': 0o440, 'sources': [{'serviceAccountToken': {
+            'audience': 'openshell-gateway', 'expirationSeconds': 600, 'path': 'token'}}]}}]
+    launch_pod['spec']['containers'][0]['volumeMounts'] = [
+        {'name': 'sa-token', 'mountPath': '/var/run/secrets/openshell', 'readOnly': True}]
+    return launch_pod
+
+
+def test_projected_token_keeps_the_original_and_read_only_mount(supervisor_token_pod):
+    import copy
+    original = copy.deepcopy(supervisor_token_pod)
+    normalized = a.launch_policy_input(supervisor_token_pod)
+    assert supervisor_token_pod == original
+    assert normalized['spec']['volumes'] == [{'name': 'sa-token', 'projected': {'defaultMode': 0o440}}]
+    assert normalized['spec']['containers'][0]['volumeMounts'] == original['spec']['containers'][0]['volumeMounts']
+
+
+@pytest.mark.parametrize('change', ['audience', 'path', 'ttl', 'writable', 'mode', 'other-source', 'extra-source', 'missing-mount'])
+def test_projected_token_conversion_rejects_changed_contract(supervisor_token_pod, change):
+    spec = supervisor_token_pod['spec']
+    projection = spec['volumes'][0]['projected']
+    token = projection['sources'][0]['serviceAccountToken']
+    if change == 'audience': token['audience'] = 'unreviewed'
+    elif change == 'path': token['path'] = '../token'
+    elif change == 'ttl': token['expirationSeconds'] = 3601
+    elif change == 'writable': spec['containers'][0]['volumeMounts'][0]['readOnly'] = False
+    elif change == 'mode': projection['defaultMode'] = 0o666
+    elif change == 'other-source': projection['sources'] = [{'secret': {'name': 'unreviewed'}}]
+    elif change == 'extra-source': projection['sources'].append({'configMap': {'name': 'unreviewed'}})
+    else: spec['containers'][0]['volumeMounts'] = []
+    with pytest.raises(a.AttestationError, match='^LaunchPolicyInputRejected$'):
+        a.launch_policy_input(supervisor_token_pod)

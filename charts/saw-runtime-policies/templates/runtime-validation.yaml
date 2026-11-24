@@ -180,7 +180,7 @@ spec:
         'OPENSHELL_SSH_SOCKET_PATH','OPENSHELL_SSH_SOCKET_SHARED','OPENSHELL_PROXY_TLS_DIR','OPENSHELL_PROXY_CA_CERT',
         'OPENSHELL_PROXY_CA_KEY','OPENSHELL_LOG_LEVEL','OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_NETWORK_RUNTIME_CAPABILITIES',
         'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME','OPENSHELL_GATEWAY_NAME'
-        {{- if .Values.confidentialMode }},'SAW_CONFIDENTIAL_CONFIG'{{- end }}]) &&
+        {{- if .Values.confidentialMode }},'SAW_CONFIDENTIAL_BOOTSTRAP_JSON'{{- end }}]) &&
         object.spec.volumes.all(v, has(v.emptyDir) ||
           (v.name == 'bootstrap' && has(v.secret) && v.secret.secretName.matches('^os-supervisor-' + variables.pair + '-[a-f0-9]{12}$')) ||
           (v.name == 'client-tls' && has(v.secret) && v.secret.secretName == {{ .Values.serverTLSSecret | toJson }} &&
@@ -188,23 +188,17 @@ spec:
           (v.name == 'sa-token' && has(v.projected) && v.projected.sources.size() == 1 &&
            has(v.projected.sources[0].serviceAccountToken) && v.projected.sources[0].serviceAccountToken.audience == 'openshell-gateway' &&
            v.projected.sources[0].serviceAccountToken.path == 'token' && v.projected.sources[0].serviceAccountToken.expirationSeconds <= 3600)
-          {{- if .Values.confidentialMode }} ||
-          (v.name == 'saw-confidential' && has(v.configMap) &&
-           v.configMap.name == {{ .Values.confidentialConfigMapName | toJson }} &&
-           has(v.configMap.items) && v.configMap.items.size() == 2 &&
-           v.configMap.items.exists(i, i.key == 'policy.json' && i.path == 'policy.json') &&
-           v.configMap.items.exists(i, i.key == {{ $confidentialSupervisors }}[variables.slot].config_key &&
-             i.path == {{ $confidentialSupervisors }}[variables.slot].config_key))
-          {{- end }}))
+        ))
       message: Supervisor executable, TLS projection and token must match the stock contract.
 {{- if .Values.confidentialMode }}
     - expression: >-
         variables.role != 'supervisor' || (variables.slot in {{ $confidentialSupervisors }} &&
-        object.spec.containers[0].env.exists(e, e.name == 'SAW_CONFIDENTIAL_CONFIG' &&
-          e.value == '/etc/saw-confidential/' + {{ $confidentialSupervisors }}[variables.slot].config_key) &&
-        object.spec.containers[0].volumeMounts.exists(m, m.name == 'saw-confidential' &&
-          m.mountPath == '/etc/saw-confidential' && has(m.readOnly) && m.readOnly))
-      message: Confidential supervisor configuration must be read-only and match its approved slot.
+        object.spec.containers[0].env.filter(e, e.name == 'SAW_CONFIDENTIAL_BOOTSTRAP_JSON').size() == 1 &&
+        object.spec.containers[0].env.exists(e, e.name == 'SAW_CONFIDENTIAL_BOOTSTRAP_JSON' &&
+          has(e.value) && e.value == {{ $confidentialSupervisors }}[variables.slot].bootstrap_json) &&
+        (!has(object.spec.containers[0].volumeMounts) ||
+         object.spec.containers[0].volumeMounts.all(m, m.name != 'saw-confidential' && m.mountPath != '/etc/saw-confidential')))
+      message: Confidential supervisor bootstrap must match its measured slot without file fallback.
       reason: Forbidden
 {{- end }}
     - expression: >-

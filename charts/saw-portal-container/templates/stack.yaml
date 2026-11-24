@@ -14,25 +14,23 @@
 {{- $map := dict "RUNTIME" $runtime "TRUSTED" $trusted "ARCHIVE" $archive "UI" $ui "OWNER" $u "SUBJECT" .Values.ownerSubject "INSTALLATION" $ownerID "DOMAIN" $g.clusterDomain }}
 {{- $targets := include "portal.targets" . | fromJson }}
 {{- $confidentialEnabled := dig "attestation" "enabled" false $site }}
-{{- $confidentialConfigMapName := "" }}
 {{- $confidentialSupervisors := dict }}
 {{- $confidentialWorkloads := dict }}
 {{- $policyConfidentialSupervisors := dict }}
 {{- $policyConfidentialWorkloads := dict }}
-{{- $confidentialData := dict }}
 {{- if $confidentialEnabled }}
 {{- if not $site.kataRuntimeClass }}{{ fail "confidential attestation requires an approved Kata RuntimeClass" }}{{ end }}
 {{- $confidentialBinding := dig "enrollment" "intent" "bindings" "confidentialAttestation" dict $site }}
 {{- $placements := get $confidentialBinding "placements" }}
 {{- if not (kindIs "map" $placements) }}{{ fail "confidential enrollment placements are missing" }}{{ end }}
-{{- $confidentialConfigMapName = printf "saw-confidential-%s-%s" $u $reg }}
 {{- $resources := dict }}
 {{- range $binding := $site.providerPolicy.bindings }}
 {{- if or (not $binding.secret) (not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" $binding.secret)) }}{{ fail "confidential provider resource name is invalid" }}{{ end }}
 {{- $_ := set $resources $binding.secret (printf "default/saw-%s-%s/%s" $u $reg $binding.secret) }}
 {{- end }}
 {{- if eq (len $resources) 0 }}{{ fail "confidential Trustee credential resources are missing" }}{{ end }}
-{{- $_ := set $confidentialData "policy.json" ($site.providerPolicy | toJson) }}
+{{- $bootstrapJSON := dict "schemaVersion" 1 "policy" $site.providerPolicy "resources" $resources "publicCAFile" "/run/openshell/saw-proxy-ca.pem" | toJson }}
+{{- if gt (len $bootstrapJSON) 65536 }}{{ fail "confidential bootstrap JSON exceeds 64 KiB" }}{{ end }}
 {{- range $slot := $targets }}
 {{- $slotKey := printf "%s/%s" $slot.workspace $slot.sandbox }}
 {{- $resourceName := printf "%s--%s" $slot.workspace $slot.sandbox }}
@@ -42,14 +40,12 @@
 {{- $workload := get $placement "workload" }}
 {{- if or (not (kindIs "map" $supervisor)) (not (kindIs "map" $workload)) }}{{ fail "confidential slot placement is invalid" }}{{ end }}
 {{- if or (ne $supervisor.runtime_class_name $site.kataRuntimeClass.name) (ne $workload.runtime_class_name $site.kataRuntimeClass.name) }}{{ fail "confidential placement RuntimeClass differs from the site approval" }}{{ end }}
-{{- $configKey := printf "supervisor-%s.json" ($slotKey | sha256sum | trunc 16) }}
-{{- $supervisorPlacement := dict "runtime_class_name" $supervisor.runtime_class_name "init_data" $supervisor.init_data "config_map_name" $confidentialConfigMapName "config_key" $configKey }}
+{{- $supervisorPlacement := dict "runtime_class_name" $supervisor.runtime_class_name "init_data" $supervisor.init_data "bootstrap_json" $bootstrapJSON }}
 {{- $workloadPlacement := dict "runtime_class_name" $workload.runtime_class_name "init_data" $workload.init_data }}
 {{- $_ := set $confidentialSupervisors $slotKey $supervisorPlacement }}
 {{- $_ := set $confidentialWorkloads $slotKey $workloadPlacement }}
 {{- $_ := set $policyConfidentialSupervisors $resourceName $supervisorPlacement }}
 {{- $_ := set $policyConfidentialWorkloads $resourceName $workloadPlacement }}
-{{- $_ := set $confidentialData $configKey (dict "policy" "/etc/saw-confidential/policy.json" "resources" $resources "publicCAFile" "/run/openshell/saw-proxy-ca.pem" | toJson) }}
 {{- end }}
 {{- end }}
 {{- $namespaces := dict $archive "retained" }}
@@ -108,20 +104,6 @@ data:
   config.json: |
     {{ required "explicit governed provider policy required" $site.providerPolicy | toJson }}
 {{- end }}
-{{- if $confidentialEnabled }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $confidentialConfigMapName }}
-  namespace: {{ $runtime }}
-  labels:
-    saw.redhat.com/runtime-owner: {{ $ownerID | quote }}
-    saw.redhat.com/registration: {{ $reg | quote }}
-    saw.redhat.com/portal-owner: {{ $u | quote }}
-immutable: true
-data: {{ $confidentialData | toYaml | nindent 2 }}
-{{- end }}
 {{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
 {{- if not $confidentialEnabled }}{{- $_ := set $charts "proxy" (list "saw-kubernetes-proxy" $trusted) }}{{- end }}
 {{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" $archive $slot) }}{{- end }}
@@ -163,7 +145,6 @@ data: {{ $confidentialData | toYaml | nindent 2 }}
 {{- end }}
 {{- if $confidentialEnabled }}
 {{- $_ := set $policy "confidentialMode" true }}
-{{- $_ := set $policy "confidentialConfigMapName" $confidentialConfigMapName }}
 {{- $_ := set $policy "confidentialSupervisors" $policyConfidentialSupervisors }}
 {{- $_ := set $policy "confidentialWorkloads" $policyConfidentialWorkloads }}
 {{- end }}

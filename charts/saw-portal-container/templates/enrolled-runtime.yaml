@@ -120,6 +120,7 @@ spec:
           workloadRuntimeClass: {{ .name | quote }}
 {{- end }}
 {{- if and $site.attestation $site.attestation.enabled }}
+          confidentialProviderPolicy: {{ printf "%s-confidential-provider-policy" $u | quote }}
           confidentialAttestation:
             settings: {{ $site.attestation | toJson }}
             owner: {{ $u | quote }}

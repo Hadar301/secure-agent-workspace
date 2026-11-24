@@ -25,11 +25,7 @@
     },
     "workloadRuntimeClassName": {"type": "string"},
     "confidentialMode": {"type": "boolean"},
-    "confidentialConfigMapName": {
-      "type": "string",
-      "maxLength": 63,
-      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-    },
+
     "confidentialSupervisors": {
       "type": "object",
       "additionalProperties": {
@@ -42,24 +38,12 @@
             "pattern": "^[A-Za-z0-9+/]+={0,2}$",
             "maxLength": 200000
           },
-          "config_map_name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 63,
-            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-          },
-          "config_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 253,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$"
-          }
+          "bootstrap_json": {"type": "string", "minLength": 1, "maxLength": 65536}
         },
         "required": [
           "runtime_class_name",
           "init_data",
-          "config_map_name",
-          "config_key"
+          "bootstrap_json"
         ]
       }
     },

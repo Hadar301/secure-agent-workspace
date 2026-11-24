@@ -19,17 +19,17 @@ index 5b498a24..69d12c24 100644
  rand = { workspace = true }
  rcgen = { workspace = true }
 +base64 = { workspace = true }
-
+ 
  [dev-dependencies]
  openshell-otel-test-support = { path = "../openshell-otel-test-support" }
 diff --git a/crates/openshell-driver-kubernetes/src/config.rs b/crates/openshell-driver-kubernetes/src/config.rs
-index 6bd7d93a..5f3e89f7 100644
+index 6bd7d93a..655d9d54 100644
 --- a/crates/openshell-driver-kubernetes/src/config.rs
 +++ b/crates/openshell-driver-kubernetes/src/config.rs
 @@ -1,12 +1,11 @@
  // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  // SPDX-License-Identifier: Apache-2.0
-
+ 
 +use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
  pub use openshell_core::DynamicStringAllowlist as OperatorNamespaceAllowlist;
  use openshell_core::config;
@@ -40,7 +40,7 @@ index 6bd7d93a..5f3e89f7 100644
 +use std::collections::{BTreeMap, BTreeSet};
  use std::path::Path;
  use std::str::FromStr;
-
+ 
 @@ -263,6 +262,14 @@ pub struct KubernetesComputeConfig {
      /// Applied when a `CreateSandbox` request does not specify one.
      /// Empty string (default) = omit the field, using the cluster default.
@@ -59,7 +59,7 @@ index 6bd7d93a..5f3e89f7 100644
 @@ -323,6 +330,24 @@ pub const ANNOTATION_SCC_MCS: &str = "openshift.io/sa.scc.mcs";
  /// Format: `<start>/<size>` (e.g. `1000000000/10000`).
  pub const ANNOTATION_SCC_SUPPLEMENTAL_GROUPS: &str = "openshift.io/sa.scc.supplemental-groups";
-
+ 
 +/// Administrator-owned placement for a confidential supervisor. Workload
 +/// placement remains controlled by the approved Sandbox template.
 +#[derive(Debug, Clone, Deserialize, Serialize)]
@@ -67,8 +67,8 @@ index 6bd7d93a..5f3e89f7 100644
 +pub struct ConfidentialSupervisorPlacement {
 +    pub runtime_class_name: String,
 +    pub init_data: String,
-+    pub config_map_name: String,
-+    pub config_key: String,
++    /// Public JSON pinned by the measured Kata launch policy. Never credentials.
++    pub bootstrap_json: String,
 +}
 +
 +#[derive(Debug, Clone, Deserialize, Serialize)]
@@ -91,7 +91,7 @@ index 6bd7d93a..5f3e89f7 100644
              sa_token_ttl_secs: 3600,
              provider_spiffe_workload_api_socket_path: String::new(),
              sandbox_uid: None,
-@@ -379,7 +407,53 @@ impl KubernetesComputeConfig {
+@@ -379,7 +407,52 @@ impl KubernetesComputeConfig {
          self.validate_provider_spiffe_workload_api_socket_path()?;
          self.validate_sandbox_identity_config()?;
          self.validate_proxy_uid()?;
@@ -128,8 +128,7 @@ index 6bd7d93a..5f3e89f7 100644
 +                || !is_dns_1123_label(sandbox)
 +                || supervisor.runtime_class_name != self.default_runtime_class_name
 +                || !is_dns1123_subdomain(&supervisor.runtime_class_name)
-+                || !is_dns_1123_label(&supervisor.config_map_name)
-+                || !valid_config_map_key(&supervisor.config_key)
++                || !valid_confidential_bootstrap(&supervisor.bootstrap_json)
 +                || !valid_init_data(&supervisor.init_data)
 +            {
 +                return Err("confidential supervisor placement is invalid".to_string());
@@ -144,27 +143,45 @@ index 6bd7d93a..5f3e89f7 100644
 +        }
 +        Ok(())
      }
-
+ 
      /// Clamp `sa_token_ttl_secs` into the `[MIN_SA_TOKEN_TTL_SECS,
-@@ -762,6 +836,32 @@ pub fn is_dns_1123_label(s: &str) -> bool {
+@@ -762,6 +835,50 @@ pub fn is_dns_1123_label(s: &str) -> bool {
          .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
  }
-
-+fn valid_config_map_key(value: &str) -> bool {
-+    !value.is_empty()
-+        && value.len() <= 253
-+        && value
-+            .as_bytes()
-+            .first()
-+            .is_some_and(u8::is_ascii_alphanumeric)
-+        && value
-+            .as_bytes()
-+            .last()
-+            .is_some_and(u8::is_ascii_alphanumeric)
-+        && value
-+            .bytes()
-+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+ 
++pub(crate) fn valid_confidential_bootstrap(raw: &str) -> bool {
++    if raw.is_empty() || raw.len() > 64 * 1024 {
++        return false;
++    }
++    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
++        return false;
++    };
++    let Some(object) = value.as_object() else {
++        return false;
++    };
++    object.len() == 4
++        && object
++            .get("schemaVersion")
++            .and_then(serde_json::Value::as_u64)
++            == Some(1)
++        && object
++            .get("policy")
++            .is_some_and(serde_json::Value::is_object)
++        && object
++            .get("publicCAFile")
++            .and_then(serde_json::Value::as_str)
++            == Some("/run/openshell/saw-proxy-ca.pem")
++        && object
++            .get("resources")
++            .and_then(serde_json::Value::as_object)
++            .is_some_and(|resources| {
++                !resources.is_empty() && resources.values().all(serde_json::Value::is_string)
++            })
++        && serde_json::to_string(&value).ok().as_deref() == Some(raw)
 +}
++
++#[cfg(test)]
++pub(crate) const CONFIDENTIAL_BOOTSTRAP_FIXTURE: &str = r#"{"policy":{"allowHosts":["api.example.test"],"bindings":[{"key":"api_key","providers":["nvidia"],"secret":"inference"}],"markerPrefix":"saw","profiles":{"nvidia":["api.example.test"]}},"publicCAFile":"/run/openshell/saw-proxy-ca.pem","resources":{"inference":"default/saw-alice-0123456789abcdef/inference"},"schemaVersion":1}"#;
 +
 +fn valid_init_data(value: &str) -> bool {
 +    if value.is_empty() || value.len() > 200_000 {
@@ -179,10 +196,10 @@ index 6bd7d93a..5f3e89f7 100644
  /// Validate that a workspace name produces a valid K8s namespace name in
  /// managed mode (combined length <= 63, DNS-1123 compliant).
  pub fn validate_managed_namespace_name(gateway_id: &str, workspace: &str) -> Result<(), String> {
-@@ -967,6 +1067,86 @@ mod tests {
+@@ -967,6 +1084,108 @@ mod tests {
          assert!(cfg.default_runtime_class_name.is_empty());
      }
-
+ 
 +    #[test]
 +    fn confidential_placement_is_disabled_by_default() {
 +        KubernetesComputeConfig::default()
@@ -191,13 +208,36 @@ index 6bd7d93a..5f3e89f7 100644
 +    }
 +
 +    #[test]
++    fn confidential_bootstrap_rejects_unmeasured_inputs() {
++        assert!(valid_confidential_bootstrap(CONFIDENTIAL_BOOTSTRAP_FIXTURE));
++        for invalid in [
++            String::new(),
++            "{}".into(),
++            "x".repeat(65537),
++            format!(" {}", CONFIDENTIAL_BOOTSTRAP_FIXTURE),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE
++                .replace("/run/openshell/saw-proxy-ca.pem", "/unmeasured/ca.pem"),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace(
++                "\"schemaVersion\":1",
++                "\"schemaVersion\":1,\"schemaVersion\":1",
++            ),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace(
++                "\"schemaVersion\":1",
++                "\"schemaVersion\":1,\"unknown\":true",
++            ),
++        ] {
++            assert!(!valid_confidential_bootstrap(&invalid));
++        }
++    }
++
++    #[test]
 +    fn confidential_placement_requires_matching_slots_and_runtime_classes() {
 +        let slot = "default/notebook".to_string();
 +        let supervisor = ConfidentialSupervisorPlacement {
 +            runtime_class_name: "kata-remote".into(),
 +            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
-+            config_map_name: "saw-confidential".into(),
-+            config_key: "supervisor.json".into(),
++            bootstrap_json: CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
 +        };
 +        let workload = ConfidentialWorkloadPlacement {
 +            runtime_class_name: "kata-remote".into(),
@@ -243,8 +283,7 @@ index 6bd7d93a..5f3e89f7 100644
 +                ConfidentialSupervisorPlacement {
 +                    runtime_class_name: "kata-remote".into(),
 +                    init_data: "not-base64".into(),
-+                    config_map_name: "saw-confidential".into(),
-+                    config_key: "supervisor.json".into(),
++                    bootstrap_json: CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
 +                },
 +            )]),
 +            confidential_workloads: BTreeMap::from([(
@@ -293,7 +332,7 @@ index 42f75aba..fc1b49e2 100644
 +        }
          Ok(())
      }
-
+ 
 @@ -1653,6 +1663,14 @@ impl KubernetesComputeDriver {
          };
          let rendered = sandbox_to_k8s_spec(sandbox.spec.as_ref(), &params)
@@ -311,7 +350,7 @@ index 42f75aba..fc1b49e2 100644
              &self.config.resource_admission,
 @@ -1665,6 +1683,26 @@ impl KubernetesComputeDriver {
      }
-
+ 
      async fn admit_stored_resources(&self, object: &DynamicObject) -> Result<(), tonic::Status> {
 +        let workspace = annotation_or_label(object, LABEL_SANDBOX_WORKSPACE).ok_or_else(|| {
 +            tonic::Status::failed_precondition("sandbox lacks workspace identity")
@@ -430,7 +469,7 @@ index aa980db4..1b4b70fc 100644
 +++ b/crates/openshell-driver-kubernetes/src/lib.rs
 @@ -11,9 +11,10 @@ mod resource_admission;
  mod sandbox_runtime;
-
+ 
  pub use config::{
 -    DEFAULT_GATEWAY_ID, DEFAULT_SANDBOX_SERVICE_ACCOUNT_NAME, DEFAULT_WORKSPACE_STORAGE_SIZE,
 -    KubernetesComputeConfig, KubernetesImagePullPolicy, KubernetesSandboxRuntimeConfig,
@@ -449,7 +488,7 @@ index d70f706f..8fc6e0c4 100644
 @@ -116,6 +116,23 @@ struct Args {
      #[arg(long, env = "OPENSHELL_HOST_GATEWAY_IP")]
      host_gateway_ip: Option<String>,
-
+ 
 +    #[arg(long, env = "OPENSHELL_K8S_CONFIDENTIAL_MODE", default_value_t = false)]
 +    confidential_mode: bool,
 +
@@ -469,11 +508,11 @@ index d70f706f..8fc6e0c4 100644
 +
      #[arg(long, env = openshell_core::config::SANDBOX_RUNTIME_IMAGE_ENV)]
      sandbox_runtime_image: Option<String>,
-
+ 
 @@ -235,6 +252,11 @@ async fn main() -> Result<()> {
          })
          .collect::<Result<BTreeMap<_, _>>>()?;
-
+ 
 +    let confidential_supervisors = serde_json::from_str(&args.confidential_supervisors_json)
 +        .map_err(|_| miette::miette!("confidential supervisor placement JSON is invalid"))?;
 +    let confidential_workloads = serde_json::from_str(&args.confidential_workloads_json)
@@ -493,10 +532,10 @@ index d70f706f..8fc6e0c4 100644
              provider_spiffe_workload_api_socket_path: args
                  .provider_spiffe_workload_api_socket_path
 diff --git a/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs b/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
-index b6d75be7..05d6699d 100644
+index b6d75be7..c44d9c23 100644
 --- a/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
 +++ b/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
-@@ -1321,3 +1321,279 @@ mod tests {
+@@ -1321,3 +1321,272 @@ mod tests {
          assert!(material.private_key_pem.contains("PRIVATE KEY"));
      }
  }
@@ -525,10 +564,7 @@ index b6d75be7..05d6699d 100644
 +                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 +    };
 +    if !label(&cfg.runtime_class_name)
-+        || !label(&cfg.config_map_name)
-+        || cfg.config_key.is_empty()
-+        || cfg.config_key.contains('/')
-+        || cfg.config_key.contains("..")
++        || !crate::config::valid_confidential_bootstrap(&cfg.bootstrap_json)
 +        || cfg.runtime_class_name != expected_runtime_class
 +        || cfg.init_data.is_empty()
 +        || cfg.init_data.len() > 200_000
@@ -575,38 +611,16 @@ index b6d75be7..05d6699d 100644
 +        "/run/openshell/saw-proxy-ca.pem".to_string(),
 +    ]);
 +    container.command = Some(command);
-+    container.env.get_or_insert_default().push(env_var(
-+        "SAW_CONFIDENTIAL_CONFIG",
-+        &format!("/etc/saw-confidential/{}", cfg.config_key),
++    let environment = container.env.get_or_insert_default();
++    if environment.iter().any(|env| {
++        env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON" || env.name == "SAW_CONFIDENTIAL_CONFIG"
++    }) {
++        return Err("confidential bootstrap environment is duplicated".to_string());
++    }
++    environment.push(env_var(
++        "SAW_CONFIDENTIAL_BOOTSTRAP_JSON",
++        &cfg.bootstrap_json,
 +    ));
-+    container
-+        .volume_mounts
-+        .get_or_insert_default()
-+        .push(volume_mount(
-+            "saw-confidential",
-+            "/etc/saw-confidential",
-+            true,
-+        ));
-+    spec.volumes.get_or_insert_default().push(Volume {
-+        name: "saw-confidential".to_string(),
-+        config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-+            name: cfg.config_map_name.clone(),
-+            items: Some(vec![
-+                KeyToPath {
-+                    key: "policy.json".to_string(),
-+                    path: "policy.json".to_string(),
-+                    ..Default::default()
-+                },
-+                KeyToPath {
-+                    key: cfg.config_key.clone(),
-+                    path: cfg.config_key.clone(),
-+                    ..Default::default()
-+                },
-+            ]),
-+            ..Default::default()
-+        }),
-+        ..Default::default()
-+    });
 +    spec.runtime_class_name = Some(cfg.runtime_class_name.clone());
 +    pod.metadata.annotations.get_or_insert_default().insert(
 +        "io.katacontainers.config.hypervisor.cc_init_data".to_string(),
@@ -704,12 +718,30 @@ index b6d75be7..05d6699d 100644
 +        let cfg = crate::config::ConfidentialSupervisorPlacement {
 +            runtime_class_name: "kata-remote".into(),
 +            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
-+            config_map_name: "saw-confidential".into(),
-+            config_key: "notebook.json".into(),
++            bootstrap_json: crate::config::CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
 +        };
 +        let result = confidential_supervisor_pod(pod, true, "kata-remote", Some(&cfg)).unwrap();
 +        let spec = result.spec.unwrap();
 +        assert_eq!(spec.runtime_class_name.as_deref(), Some("kata-remote"));
++        assert!(spec.volumes.as_ref().is_none_or(|volumes| {
++            !volumes
++                .iter()
++                .any(|volume| volume.name == "saw-confidential")
++        }));
++        let environment = spec.containers[0].env.as_ref().unwrap();
++        assert_eq!(
++            environment
++                .iter()
++                .filter(|env| env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON")
++                .count(),
++            1
++        );
++        assert!(
++            environment
++                .iter()
++                .any(|env| env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON"
++                    && env.value.as_deref() == Some(cfg.bootstrap_json.as_str()))
++        );
 +        let command = spec.containers[0].command.as_ref().unwrap();
 +        assert_eq!(command[0], "/usr/local/bin/saw-credential-proxy");
 +        assert!(!command.iter().any(|arg| arg.contains("external.example")));

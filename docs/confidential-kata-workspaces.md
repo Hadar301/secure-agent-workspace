@@ -64,6 +64,27 @@ provider keys. The synthetic result verifies the KBS measurement-to-resource
 mapping; it does not complete the application launch boundary. Live changed-
 measurement, debug-mode, and old-token revocation tests also remain open.
 
+## Measured public bootstrap configuration
+
+The confidential supervisor receives `SAW_CONFIDENTIAL_BOOTSTRAP_JSON`.
+This value contains schema version 1, the public provider routing policy,
+registration-specific KBS resource paths, and the public proxy CA file path.
+It contains no provider credentials. The generated launch policy must pin the
+complete JSON value. Duplicate values, the legacy file variable, a changed
+bootstrap value, or wider environment rules fail validation.
+
+The gateway driver passes this value directly to the supervisor Pod. The
+confidential path no longer mounts a bootstrap ConfigMap into that Pod. A
+separate immutable policy ConfigMap remains in the controller boundary for
+comparison with the approved driver configuration. The credential proxy
+parses its public policy once, fetches credentials from local CDH, and keeps
+those credentials in memory. It has no file fallback in confidential mode.
+
+This interface requires rebuilt gateway and supervisor images. Earlier lab
+images use the file interface and are incompatible. Do not deploy a mixed pair.
+The local Go tests and chart contracts pass. Native driver tests and full
+workspace qualification remain required.
+
 ## Preparing measured launch policies
 
 `deploy/confidential/source-lock.yaml` pins the Red Hat tools image and the
@@ -84,8 +105,22 @@ nonzero numeric UID, `runAsNonRoot: true`, and RuntimeDefault seccomp. It moves
 inherited seccomp to container security contexts and removes only the redundant
 nonroot flag and unsupported explicit automount field from generator input.
 It rejects host namespaces, privileged containers, Secret environment imports,
-and unsafe init containers. Other unsupported fields remain for genpolicy to
-reject. The actual deployment manifest is not modified.
+and unsafe init containers. It also removes the stock Sandbox owner reference,
+the exact `openshell.ai/bootstrap` scheduling gate, and `OnRootMismatch` volume
+ownership handling from generator input. These API fields do not become guest
+OCI fields. Numeric `fsGroup` remains, so additional groups stay constrained.
+Other ownership shapes, scheduling gates, or volume ownership policies are
+rejected. Other unsupported fields remain for genpolicy to reject. The actual
+deployment manifest is not modified.
+
+The pinned generator models projected volumes as read-only shared mounts, but
+its parser does not accept their `sources`. The conversion accepts only the
+stock supervisor token: volume `sa-token`, mode `0440`, audience
+`openshell-gateway`, path `token`, lifetime at most 3600 seconds, and one
+read-only mount at `/var/run/secrets/openshell`. It retains the projected-volume
+type for policy generation and keeps the full projection in the enrolled Pod.
+It rejects other projections. This check does not measure the token contents;
+the token provides gateway authentication and contains no provider credential.
 
 Run the pinned genpolicy tool with the locked rules and settings, then validate
 its raw output against the original Pod:
@@ -109,10 +144,23 @@ compilation passed. Strict OPA lint rejects unused arguments in the upstream
 rules; the rules were not edited to suppress that diagnostic. This result is
 not a live launch qualification.
 
-The current enrolled settings still accept only the legacy policy template.
-Per-slot supervisor/workload launch-template enrollment and the chart/preflight
-activation gates remain incomplete. Do not replace this missing integration
-with a manually asserted qualification record or deploy a real provider key.
+Attestation settings schema version 2 use `launchPolicies` instead of the
+legacy `guestPolicy`. Map each `workspace/sandbox` slot to exactly two entries:
+`supervisor` and `workload`. Each entry contains the original `pod` manifest
+and its generated `template`. Set `policyDigest` to the canonical JSON SHA256
+of the complete `launchPolicies` map. Both manifests and templates are enrolled.
+The validator rechecks each template against its Pod and the locked generator
+rules. Each supervisor must use the guest-local proxy wrapper. Init-data binds
+the selected policy to its owner, registration, installation, slot, and role.
+The placement contract rejects missing or extra slots and a changed RuntimeClass.
+
+The original Pod manifest must come from the pinned driver and resolved site
+configuration. Random sandbox IDs and runtime mount paths still need an
+explicit supported generation contract. Do not hand-edit a representative Pod
+and treat it as the live driver output. Schema version 1 remains available for
+historical probes, but its broad launch policy does not qualify provider release.
+The chart and preflight activation gates remain closed. Do not replace live
+qualification with a manually asserted record or deploy a real provider key.
 
 ## Historical platform verification (2026-11-23)
 

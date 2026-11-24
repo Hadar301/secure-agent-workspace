@@ -150,7 +150,7 @@ def verify_confidential_plan(config, plan, confidential):
 
 
 
-def verify_confidential_driver(config, plan, context, driver, gateway):
+def verify_confidential_driver(config, plan, context, driver, gateway, provider_policy=None):
     """Check the actual approved driver settings before confidential RPCs."""
     if context is None:
         if driver.get("confidential_mode"):
@@ -180,6 +180,10 @@ def verify_confidential_driver(config, plan, context, driver, gateway):
     placements = plan.get("attestation", {}).get("placements")
     if not isinstance(placements, dict) or set(supervisors) != set(placements):
         raise BoundaryError("ConfidentialDriverMismatch")
+    try:
+        bootstrap = attestation.supervisor_bootstrap(provider_policy, context["owner"], context["registration"])
+    except attestation.AttestationError:
+        raise BoundaryError("ConfidentialDriverMismatch") from None
     for slot, placement in placements.items():
         try:
             supervisor = placement["supervisor"]
@@ -187,10 +191,15 @@ def verify_confidential_driver(config, plan, context, driver, gateway):
             expected_supervisor = {
                 "runtime_class_name": supervisor["runtime_class_name"],
                 "init_data": supervisor["init_data"],
-                "config_map_name": f"saw-confidential-{context['owner']}-{context['registration']}",
-                "config_key": "supervisor-" + hashlib.sha256(slot.encode()).hexdigest()[:16] + ".json",
+                "bootstrap_json": bootstrap,
             }
             expected_workload = {key: workload[key] for key in ("runtime_class_name", "init_data")}
+            if settings["schemaVersion"] == 2:
+                pod = settings["launchPolicies"][slot]["supervisor"]["pod"]
+                measured = [e.get("value") for e in pod["spec"]["containers"][0].get("env", [])
+                            if e.get("name") == attestation.BOOTSTRAP_ENV]
+                if measured != [bootstrap]:
+                    raise BoundaryError("ConfidentialDriverMismatch")
         except (KeyError, TypeError, AttributeError):
             raise BoundaryError("ConfidentialDriverMismatch") from None
         if supervisors[slot] != expected_supervisor or workloads[slot] != expected_workload:
@@ -258,7 +267,9 @@ def verify(config, plan, get):
         if (not runtime or plan.get("runtimeClass", {}).get("name", runtime) != runtime
                 or driver.get("default_runtime_class_name") != runtime):
             raise BoundaryError("WrongWorkloadPlacement")
-        verify_confidential_driver(config, plan, confidential, driver, observed["gateway"])
+        provider_policy = (json.loads(observed["confidentialProviderPolicy"]["data"]["policy.json"])
+                           if confidential is not None else None)
+        verify_confidential_driver(config, plan, confidential, driver, observed["gateway"], provider_policy)
         checks.append("sandboxPlacement")
     for key in checks:
         vap = observed[key]

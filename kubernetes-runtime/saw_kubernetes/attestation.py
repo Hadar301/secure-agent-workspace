@@ -202,9 +202,12 @@ def _validate(site, mode="kata"):
     if not enabled(site):
         return None
     cfg = site["attestation"]
+    version = cfg.get("schemaVersion")
     required = {"enabled", "schemaVersion", "tee", "kbsURL", "kbsCA", "policyDigest",
-                "referenceSet", "guestPolicy", "imagePolicy", "driver", "references"}
-    if set(cfg) != required or mode != "kata" or (type(cfg["schemaVersion"]) is not int or cfg["schemaVersion"] != 1) or cfg["tee"] not in ("snp", "tdx"):
+                "referenceSet", "imagePolicy", "driver", "references"}
+    required.add("launchPolicies" if version == 2 else "guestPolicy")
+    if (set(cfg) != required or mode != "kata" or type(version) is not int
+            or version not in (1, 2) or cfg["tee"] not in ("snp", "tdx")):
         raise AttestationError("AttestationConfigurationRejected")
     try:
         u = urlsplit(cfg["kbsURL"])
@@ -219,17 +222,20 @@ def _validate(site, mode="kata"):
         ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=cfg["kbsCA"])
     except (ValueError, ssl.SSLError):
         raise AttestationError("TrusteeTrustRejected") from None
-    if (not isinstance(cfg["guestPolicy"], str) or len(cfg["guestPolicy"]) > 512*1024
-            or not SHA.fullmatch(str(cfg["policyDigest"]))
-            or hashlib.sha256(cfg["guestPolicy"].encode()).hexdigest() != cfg["policyDigest"]
-            or not SHA.fullmatch(str(cfg["referenceSet"]))):
+    if not SHA.fullmatch(str(cfg["policyDigest"])) or not SHA.fullmatch(str(cfg["referenceSet"])):
         raise AttestationError("AttestationPolicyRejected")
-    policy = cfg["guestPolicy"]
-    if (len(POLICY_DATA.findall(policy)) != 1 or len(IDENTITY_MEMBER.findall(policy)) != 1
-            or policy.count(IDENTITY_MARKER) != 1):
-        raise AttestationError("AttestationIdentityClaimUnavailable")
-    if policy != KATA_AGENT_POLICY_TEMPLATE:
-        raise AttestationError("AttestationPolicyRejected")
+    if version == 1:
+        policy = cfg["guestPolicy"]
+        if (not isinstance(policy, str) or len(policy.encode()) > 512*1024
+                or hashlib.sha256(policy.encode()).hexdigest() != cfg["policyDigest"]):
+            raise AttestationError("AttestationPolicyRejected")
+        if (len(POLICY_DATA.findall(policy)) != 1 or len(IDENTITY_MEMBER.findall(policy)) != 1
+                or policy.count(IDENTITY_MARKER) != 1):
+            raise AttestationError("AttestationIdentityClaimUnavailable")
+        if policy != KATA_AGENT_POLICY_TEMPLATE:
+            raise AttestationError("AttestationPolicyRejected")
+    else:
+        validate_launch_policies(cfg["launchPolicies"], cfg["policyDigest"])
     image_policy = cfg["imagePolicy"]
     if not isinstance(image_policy, dict) or image_policy.get("default") != [{"type": "reject"}]:
         raise AttestationError("ImageSignaturePolicyRejected")
@@ -617,10 +623,29 @@ def initdata(site, owner, registration, installation, slot, role):
     if not re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", str(slot)):
         raise AttestationError("AttestationIdentityRejected")
     identity = dict(owner=owner, registration=registration, installation=installation, slot=slot, role=role)
-    # Trustee parses Kata's policy_data from verified init-data and includes it
-    # in the attestation claims. A comment or extra init-data key is not a claim.
-    policy = IDENTITY_MEMBER.sub(
-        '"saw_identity": ' + canonical(identity), cfg["guestPolicy"], count=1)
+    if cfg["schemaVersion"] == 2:
+        try:
+            entry = cfg["launchPolicies"][slot][role]
+            pod = entry["pod"]
+            if pod["metadata"]["namespace"] != "saw-" + owner:
+                raise ValueError()
+            if role == "supervisor":
+                container = pod["spec"]["containers"][0]
+                if (len(pod["spec"]["containers"]) != 1 or container["name"] != "supervisor"
+                        or container["image"] != cfg["driver"]["supervisorImage"]):
+                    raise ValueError()
+                raw = next(e["value"] for e in container["env"] if e["name"] == BOOTSTRAP_ENV)
+                public = json.loads(raw)
+                if supervisor_bootstrap(public["policy"], owner, registration) != raw:
+                    raise ValueError()
+            policy = entry["template"].replace(IDENTITY_MARKER, canonical(identity))
+        except (KeyError, TypeError, ValueError, StopIteration, IndexError):
+            raise AttestationError("AttestationLaunchBindingRejected") from None
+    else:
+        # The identity is measured, but this Trustee build exposes only PCR08.
+        # Resource policy must bind that verified measurement to this identity.
+        policy = IDENTITY_MEMBER.sub(
+            '\"saw_identity\": ' + canonical(identity), cfg["guestPolicy"], count=1)
     aa = ("[token_configs]\n"
           "[token_configs.coco_as]\nurl = "+json.dumps(cfg["kbsURL"])+"\n"
           "[token_configs.kbs]\nurl = "+json.dumps(cfg["kbsURL"])
@@ -650,6 +675,12 @@ def placement_contract(site, owner, registration, installation, slots, runtime_c
             or len(slots) != len(set(slots))):
         raise AttestationError("AttestationConfigurationRejected")
     resource(owner, registration, "inference")
+    if cfg["schemaVersion"] == 2:
+        if set(cfg["launchPolicies"]) != set(slots):
+            raise AttestationError("AttestationLaunchBindingRejected")
+        if any(entry["pod"]["spec"].get("runtimeClassName") != runtime_class
+               for roles in cfg["launchPolicies"].values() for entry in roles.values()):
+            raise AttestationError("AttestationLaunchBindingRejected")
     placements = {}
     for slot in sorted(slots):
         roles = {}
@@ -730,7 +761,26 @@ def launch_policy_input(pod):
         if not isinstance(pod, dict) or pod.get("apiVersion") != "v1" or pod.get("kind") != "Pod":
             raise ValueError()
         result = copy.deepcopy(pod)
+        metadata = result.get("metadata", {})
+        # API ownership is not a guest OCI field. Preserve it in the enrolled
+        # original and remove only the exact driver shape from generator input.
+        if "ownerReferences" in metadata:
+            owners = metadata["ownerReferences"]
+            if (not isinstance(owners, list) or len(owners) != 1
+                    or not isinstance(owners[0], dict)
+                    or set(owners[0]) != {"apiVersion", "kind", "name", "uid", "controller", "blockOwnerDeletion"}
+                    or owners[0]["kind"] != "Sandbox"
+                    or owners[0]["controller"] is not True or owners[0]["blockOwnerDeletion"] is not True
+                    or any(not isinstance(owners[0][key], str) or not owners[0][key]
+                           for key in ("apiVersion", "name", "uid"))):
+                raise ValueError()
+            del metadata["ownerReferences"]
         spec = result["spec"]
+        # The driver removes this API scheduling gate before guest startup.
+        if "schedulingGates" in spec:
+            if spec["schedulingGates"] != [{"name": "openshell.ai/bootstrap"}]:
+                raise ValueError()
+            del spec["schedulingGates"]
         if (spec.get("automountServiceAccountToken") is not False
                 or any(spec.get(k) for k in ("hostPID", "hostIPC", "hostNetwork", "ephemeralContainers"))):
             raise ValueError()
@@ -738,6 +788,11 @@ def launch_policy_input(pod):
         pod_security = spec.get("securityContext", {})
         if not isinstance(pod_security, dict) or not isinstance(spec.get("containers"), list) or not spec["containers"]:
             raise ValueError()
+        if "fsGroupChangePolicy" in pod_security:
+            if pod_security["fsGroupChangePolicy"] != "OnRootMismatch":
+                raise ValueError()
+            # Keep numeric fsGroup so generated AdditionalGids stay constrained.
+            del pod_security["fsGroupChangePolicy"]
         inherited_seccomp = pod_security.pop("seccompProfile", None)
         inherited_nonroot = pod_security.pop("runAsNonRoot", None)
         for group in ("containers", "initContainers"):
@@ -759,6 +814,30 @@ def launch_policy_input(pod):
                     raise ValueError()
                 if container.get("envFrom"):
                     raise ValueError()
+        for volume in spec.get("volumes", []):
+            if "projected" not in volume:
+                continue
+            projection = volume["projected"]
+            if (set(volume) != {"name", "projected"} or volume["name"] != "sa-token"
+                    or not isinstance(projection, dict) or set(projection) != {"defaultMode", "sources"}
+                    or projection["defaultMode"] != 0o440 or type(projection["defaultMode"]) is not int
+                    or not isinstance(projection["sources"], list) or len(projection["sources"]) != 1
+                    or set(projection["sources"][0]) != {"serviceAccountToken"}):
+                raise ValueError()
+            token = projection["sources"][0]["serviceAccountToken"]
+            if (not isinstance(token, dict) or set(token) != {"audience", "expirationSeconds", "path"}
+                    or token["audience"] != "openshell-gateway" or token["path"] != "token"
+                    or type(token["expirationSeconds"]) is not int or not 1 <= token["expirationSeconds"] <= 3600):
+                raise ValueError()
+            mounts = [(container["name"], mount) for container in spec["containers"]
+                      + spec.get("initContainers", []) for mount in container.get("volumeMounts", [])
+                      if mount.get("name") == "sa-token"]
+            if mounts != [("supervisor", {"name": "sa-token", "mountPath": "/var/run/secrets/openshell", "readOnly": True})]:
+                raise ValueError()
+            # The locked generator uses only the projected-volume type to
+            # constrain a read-only shared mount. Its parser lacks sources.
+            # Keep the full token projection in the original enrolled Pod.
+            del projection["sources"]
         if not pod_security:
             spec.pop("securityContext", None)
         return result
@@ -769,6 +848,8 @@ def launch_policy_input(pod):
 # OSC 1.13 release rules; digest covers the exact code with trailing whitespace
 # removed. Generated policy data remains administrator-reviewed public input.
 GENPOLICY_RULES_SHA256 = "2655cbb7641829dd88e0647cac76407a6072cdd130c77fda436fa9af08f4b43e"
+GENPOLICY_ENV_RULES_SHA256 = '2fd6b64642343ce37b71dc6f88377b70e8b2b1b35357fc7c4526b0e046e10240'
+BOOTSTRAP_ENV = "SAW_CONFIDENTIAL_BOOTSTRAP_JSON"
 
 
 def compile_launch_policy(pod, generated):
@@ -792,7 +873,8 @@ def compile_launch_policy(pod, generated):
         # trailing Rego rules or hand-written expressions are rejected.
         data = json.loads(generated[match.end()-1:])
         defaults = data["request_defaults"]
-        if (defaults["ExecProcessRequest"] != {"allowed_commands": [], "regex": []}
+        if (digest(defaults["CreateContainerRequest"]["allow_env_regex"]) != GENPOLICY_ENV_RULES_SHA256
+                or defaults["ExecProcessRequest"] != {"allowed_commands": [], "regex": []}
                 or any(defaults[key] is not False for key in
                        ("ReadStreamRequest", "WriteStreamRequest", "GetDiagnosticDataRequest"))):
             raise ValueError()
@@ -818,6 +900,20 @@ def compile_launch_policy(pod, generated):
             oci = actual[container["name"]]
             process = oci["Process"]
             security = container["securityContext"]
+            if container["name"] == "supervisor":
+                entries = [entry for entry in container.get("env", []) if entry.get("name") == BOOTSTRAP_ENV]
+                if (len(entries) != 1 or not isinstance(entries[0].get("value"), str)
+                        or any(entry.get("name") == "SAW_CONFIDENTIAL_CONFIG" for entry in container.get("env", []))):
+                    raise ValueError()
+                raw = entries[0]["value"]
+                public = json.loads(raw)
+                if (not isinstance(public, dict) or set(public) != {"schemaVersion", "policy", "resources", "publicCAFile"}
+                        or type(public["schemaVersion"]) is not int or public["schemaVersion"] != 1 or canonical(public) != raw or len(raw.encode()) > 64*1024
+                        or public["publicCAFile"] != "/run/openshell/saw-proxy-ca.pem"):
+                    raise ValueError()
+                measured = [entry for entry in process["Env"] if entry.startswith(BOOTSTRAP_ENV + "=")]
+                if measured != [BOOTSTRAP_ENV + "=" + raw]:
+                    raise ValueError()
             uid = security.get("runAsUser", spec.get("securityContext", {}).get("runAsUser"))
             image = container["image"]
             command = container.get("command")
@@ -838,3 +934,74 @@ def compile_launch_policy(pod, generated):
         return prefix + "\n\npolicy_data := " + encoded + "\n"
     except (ValueError, TypeError, KeyError, AttributeError):
         raise AttestationError("LaunchPolicyRejected") from None
+
+
+def supervisor_bootstrap(policy, owner, registration):
+    """Canonical public supervisor configuration; never provider material."""
+    try:
+        if (not isinstance(policy, dict) or set(policy) != {"markerPrefix", "allowHosts", "profiles", "bindings"}
+                or not isinstance(policy["bindings"], list) or not policy["bindings"]):
+            raise ValueError()
+        resources = {}
+        for binding in policy["bindings"]:
+            if (not isinstance(binding, dict) or set(binding) != {"secret", "key", "providers"}
+                    or not isinstance(binding["key"], str) or not binding["key"]):
+                raise ValueError()
+            name = binding["secret"]
+            resources[name] = resource(owner, registration, name)
+        result = canonical({"schemaVersion": 1, "policy": policy, "resources": resources,
+                            "publicCAFile": "/run/openshell/saw-proxy-ca.pem"})
+        if len(result.encode()) > 64 * 1024:
+            raise ValueError()
+        return result
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise AttestationError("AttestationBootstrapRejected") from None
+
+
+def validate_launch_policies(policies, expected_digest):
+    """Validate a complete, administrator-reviewed launch bundle without I/O.
+
+    A bundle alone does not qualify the platform or enable enrollment.
+    Its digest includes both original Pod manifests and generated templates.
+    """
+    try:
+        if (not isinstance(policies, dict) or not policies or len(policies) > 16
+                or len(canonical(policies).encode()) > 768 * 1024
+                or digest(policies) != expected_digest):
+            raise ValueError()
+        for slot, roles in policies.items():
+            if (not re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", slot)
+                    or not isinstance(roles, dict) or set(roles) != {"supervisor", "workload"}):
+                raise ValueError()
+            for role, entry in roles.items():
+                if not isinstance(entry, dict) or set(entry) != {"pod", "template"}:
+                    raise ValueError()
+                pod_spec = entry["pod"]["spec"]
+                if role == "supervisor":
+                    containers = pod_spec["containers"]
+                    if (len(containers) != 1 or containers[0]["name"] != "supervisor"
+                            or pod_spec.get("initContainers")):
+                        raise ValueError()
+                    command = containers[0].get("command", []) + containers[0].get("args", [])
+                    if command[:3] != ["/usr/local/bin/saw-credential-proxy", "supervise", "/openshell-supervisor"]:
+                        raise ValueError()
+                    for flag, value in (("--upstream-proxy", "http://127.0.0.1:3128"),
+                                        ("--upstream-proxy-ca-bundle", "/run/openshell/saw-proxy-ca.pem")):
+                        if command.count(flag) != 1 or command[command.index(flag)+1] != value:
+                            raise ValueError()
+                    allowed = {"--upstream-proxy", "--upstream-proxy-ca-bundle", "--upstream-proxy-connect-by-hostname"}
+                    if any(arg.startswith("--upstream-") and arg not in allowed for arg in command):
+                        raise ValueError()
+                template = entry["template"]
+                if not isinstance(template, str) or template.count(IDENTITY_MARKER) != 1:
+                    raise ValueError()
+                match, = list(POLICY_DATA.finditer(template))
+                data = json.loads(template[match.end()-1:].replace(IDENTITY_MARKER, "null"))
+                if "saw_identity" not in data or data.pop("saw_identity") is not None:
+                    raise ValueError()
+                generated = template[:match.start()] + "policy_data := " + canonical(data) + "\n"
+                if compile_launch_policy(entry["pod"], generated) != template:
+                    raise ValueError()
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, AttestationError):
+        raise AttestationError("AttestationLaunchPolicyRejected") from None
+    return expected_digest

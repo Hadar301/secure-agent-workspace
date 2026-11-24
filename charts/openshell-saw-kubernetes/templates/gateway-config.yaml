@@ -80,8 +80,7 @@ data:
     [openshell.drivers.kubernetes.confidential_supervisors.{{ $slot | quote }}]
     runtime_class_name = {{ $placement.runtime_class_name | quote }}
     init_data = {{ $placement.init_data | quote }}
-    config_map_name = {{ $placement.config_map_name | quote }}
-    config_key = {{ $placement.config_key | quote }}
+    bootstrap_json = {{ $placement.bootstrap_json | quote }}
     {{- end }}
     {{- range $slot, $placement := .Values.kubernetes.confidential.workloads }}
     [openshell.drivers.kubernetes.confidential_workloads.{{ $slot | quote }}]

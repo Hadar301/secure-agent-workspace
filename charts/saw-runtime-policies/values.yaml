@@ -7,7 +7,6 @@ sandboxServiceAccount: ""
 mode: container
 workloadRuntimeClassName: ""
 confidentialMode: false
-confidentialConfigMapName: ""
 confidentialSupervisors: {}
 confidentialWorkloads: {}
 network:
