@@ -521,6 +521,35 @@ init-data have a reviewed reference set in RVPS. The next step is to produce
 and review those measured build artifacts. The confidential deployment gate
 stays closed.
 
+## Local supervisor candidate (2026-11-24)
+
+The supervisor build script now defaults to `PLATFORM=linux/amd64` and accepts
+only Linux AMD64 or ARM64 targets. It passes the selected platform to Podman.
+This prevents the ARM64 build host from selecting the wrong output architecture.
+
+The local candidate `localhost/saw-confidential-supervisor:f2968dd` built with
+the pinned supervisor base in `source-lock.yaml` and the Go builder
+`docker.io/library/golang@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804`.
+Podman reports Linux AMD64 and local manifest digest
+`sha256:34d579d6eafe4c790839a5b33e9703f96d594f0f39f3ee43dbdfa57f2bb15d64`.
+The supervisor starts with `--help`. The packaged proxy's `supervise` command
+exits with `AttestationConfigurationRejected` when its public configuration is
+absent. Both checks used a read-only filesystem, no network, and no credentials.
+The base supervisor records source revision
+`71b5bdbf4222b593e397609821726abaa229fa9d`; the patched driver targets the
+separate OpenShell revision in `source-lock.yaml`. Their integration is untested.
+
+This candidate exists only in the local Podman store. It has not been pushed,
+signed, or qualified. Do not put its digest in the qualified source-lock fields.
+The patched gateway image also needs a Linux build. Its documented Konflux
+build needs Hermeto and Linux RPM tools; Hermeto is absent from the Mac shell.
+
+A read-only cluster check found the Azure gallery image version ending in
+`1104433989.0.1`, VM size `Standard_DC2as_v5`, and `DISABLECVM=false` in
+`peer-pods-cm`. These are configuration observations, not attestation evidence.
+No cluster resources changed. The next gates are a patched gateway build,
+reviewed image signatures, and approved guest and exact init-data measurements.
+
 ## Kata canary profile
 
 The `kata-data-science` catalog profile provides one default OpenClaw notebook
