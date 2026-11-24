@@ -64,6 +64,17 @@ provider keys. The synthetic result verifies the KBS measurement-to-resource
 mapping; it does not complete the application launch boundary. Live changed-
 measurement, debug-mode, and old-token revocation tests also remain open.
 
+## Guest image-signature key format
+
+The pinned OSC image-rs verifier reads `sigstoreSigned.keyData` as PEM bytes.
+Use the public-key PEM text directly in the guest image policy. Host
+containers/image tools use Base64-encoded PEM in this field; keep their policy
+file separate. Do not copy a host policy into a Trustee resource unchanged.
+The shared preflight rejects that encoding with `GuestImagePolicyKeyRejected`.
+It also rejects private-key labels, malformed PEM, and simultaneous `keyData`
+and `keyPath`. This is an encoding check. Registry verification and live guest
+acceptance and rejection tests are still required.
+
 ## Measured public bootstrap configuration
 
 The confidential supervisor receives `SAW_CONFIDENTIAL_BOOTSTRAP_JSON`.

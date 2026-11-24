@@ -198,6 +198,33 @@ def validate(site, mode="kata"):
     except (ValueError, TypeError, AttributeError, KeyError):
         raise AttestationError("AttestationConfigurationRejected") from None
 
+def _verify_guest_signing_key(rule):
+    """OSC image-rs consumes PEM bytes in keyData, unlike containers/image.
+
+    This checks encoding only. Registry and live guest tests must still prove
+    that the approved public key verifies the selected image signatures.
+    """
+    if ("keyData" in rule) == ("keyPath" in rule):
+        raise AttestationError("GuestImagePolicyKeyRejected")
+    if "keyPath" in rule:
+        if not isinstance(rule["keyPath"], str) or not rule["keyPath"]:
+            raise AttestationError("GuestImagePolicyKeyRejected")
+        return
+    try:
+        value = rule["keyData"]
+        if not isinstance(value, str) or len(value) > 16 * 1024:
+            raise ValueError()
+        match = re.fullmatch(r"-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/=\n]+)\n-----END PUBLIC KEY-----\n?", value)
+        if not match:
+            raise ValueError()
+        encoded = match[1].replace("\n", "")
+        der = base64.b64decode(encoded, validate=True)
+        if not der or der[0] != 0x30 or base64.b64encode(der).decode() != encoded:
+            raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        raise AttestationError("GuestImagePolicyKeyRejected") from None
+
+
 def _validate(site, mode="kata"):
     if not enabled(site):
         return None
@@ -250,6 +277,9 @@ def _validate(site, mode="kata"):
                 raise AttestationError("ImageSignaturePolicyRejected")
             if any(not isinstance(r, dict) or r.get("type") not in {"sigstoreSigned", "signedBy"} for r in rules):
                 raise AttestationError("ImageSignaturePolicyRejected")
+            for rule in rules:
+                if rule["type"] == "sigstoreSigned":
+                    _verify_guest_signing_key(rule)
     driver = cfg["driver"]
     if (not isinstance(driver, dict) or set(driver) != {"capability", "sourceRevision", "gatewayImage", "supervisorImage"}
             or driver["capability"] != CAPABILITY

@@ -33,7 +33,7 @@ SAFE_FAILURE_REASONS = frozenset({
     "ProviderProfileMismatch", "AttestationIntegrationUnavailable",
     "WorkspaceRejected", "ProviderRejected", "SandboxRejected",
     "SandboxStateMismatch", "SandboxDrift", "AttestationLaunchSpecMismatch",
-    "ConfidentialHarnessUnsupported",
+    "ConfidentialHarnessUnsupported", "GuestImagePolicyKeyRejected",
 })
 
 

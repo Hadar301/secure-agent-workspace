@@ -1551,3 +1551,34 @@ def test_confidential_harness_fails_before_plan_publication(confidential_agent):
     with pytest.raises(ContractError) as error:
         compile_profile_files(files, cfg)
     assert error.value.safe_reason == "ConfidentialHarnessUnsupported"
+
+
+@pytest.mark.parametrize("ending", ["", "\n"])
+def test_guest_image_policy_accepts_pem_public_key(approved, ending):
+    site, _ = approved
+    rule = site["attestation"]["imagePolicy"]["transports"]["docker"]["registry.example.test"][0]
+    public = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode().rstrip("\n") + ending
+    rule.pop("keyPath")
+    rule["keyData"] = public
+    assert a.validate(site) is site["attestation"]
+
+
+@pytest.mark.parametrize("fault", ["base64-pem", "private-label", "malformed-base64", "empty", "both", "neither", "path-type"])
+def test_guest_image_policy_rejects_wrong_key_encoding_safely(approved, fault):
+    site, _ = approved
+    rule = site["attestation"]["imagePolicy"]["transports"]["docker"]["registry.example.test"][0]
+    public = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    rule.pop("keyPath")
+    rule["keyData"] = public
+    if fault == "base64-pem": rule["keyData"] = base64.b64encode(public.encode()).decode()
+    elif fault == "private-label": rule["keyData"] = public.replace("PUBLIC KEY", "PRIVATE KEY")
+    elif fault == "malformed-base64": rule["keyData"] = "-----BEGIN PUBLIC KEY-----\nprivate-fixture-marker\n-----END PUBLIC KEY-----\n"
+    elif fault == "empty": rule["keyData"] = ""
+    elif fault == "both": rule["keyPath"] = "/etc/pki/public.pem"
+    elif fault == "neither": rule.pop("keyData")
+    elif fault == "path-type": rule = {"type": "sigstoreSigned", "keyPath": 1}
+    site["attestation"]["imagePolicy"]["transports"]["docker"]["registry.example.test"] = [rule]
+    with pytest.raises(a.AttestationError, match="^GuestImagePolicyKeyRejected$"):
+        a.validate(site)
