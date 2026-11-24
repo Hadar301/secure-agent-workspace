@@ -4,11 +4,26 @@ Status: implementation in progress. Confidential enrollment is disabled.
 
 ## Latest verification (2026-11-24)
 
-A credential-free Azure SNP probe booted with the reviewed guest policy.
-Trustee verified the Azure SNP endorsement and returned the public image policy
-and status resource. Both lab images have verified signatures. Guest-side
-negative signature cases and the complete workspace matrix remain unverified.
-Confidential enrollment stays disabled. No provider credential was released.
+Credential-free Azure SNP image checks passed: a signed agent image ran,
+an unsigned manifest was rejected by the guest's `sigstoreSigned` rule, and a
+valid signed AMD64 manifest was rejected with a different public key. The same
+canonical manifest ran after the correct key was restored. Trustee accepted
+attestation and returned the public image policy in these cases. The events
+expose rule rejection, not the verifier's inner error. An initial wrong-key
+case resolved an unsigned cache alias and is excluded from the result.
+
+The temporary public resource and measurement binding were removed. The
+original default-deny policy is loaded, original KBS membership is preserved,
+and no test Pods or PeerPods remain. No provider credential was used. These
+component checks used the public qualification guest policy. Restrictive
+per-slot launch policies, the real NVIDIA workspace, and the complete
+workspace matrix remain unqualified. Confidential enrollment stays disabled.
+
+This operator reverts `rollout restart` annotations on its managed Deployment.
+A resource update must reach the replacement Trustee Pod's init converter.
+For the tests, recycling only that managed Pod loaded the new public policy;
+the loaded file hash was checked before the next Pod started. Readiness alone
+was insufficient. Do not expose resource contents during these checks.
 
 AA and CDH use separate TLS clients. Generated init-data must set both
 `token_configs.kbs.cert` in `aa.toml` and `kbc.kbs_cert` in `cdh.toml` to the
