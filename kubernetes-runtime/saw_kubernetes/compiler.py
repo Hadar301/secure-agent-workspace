@@ -32,7 +32,8 @@ SAFE_FAILURE_REASONS = frozenset({
     "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
     "ProviderProfileMismatch", "AttestationIntegrationUnavailable",
     "WorkspaceRejected", "ProviderRejected", "SandboxRejected",
-    "SandboxStateMismatch", "SandboxDrift",
+    "SandboxStateMismatch", "SandboxDrift", "AttestationLaunchSpecMismatch",
+    "ConfidentialHarnessUnsupported",
 })
 
 
@@ -357,6 +358,9 @@ def compile_profile_files(files, config):
             if not sandbox.enabled:
                 continue
             name(sandbox.name, "sandbox")
+            if confidential is not None and sandbox.harness_ref:
+                raise ContractError("confidential harness mounts require an unsupported subpath",
+                                    safe_reason="ConfidentialHarnessUnsupported")
             if sandbox.gpu_enabled:
                 raise ContractError("container workspaces do not support GPU device requests")
             command = ["sh", "-c", "sleep infinity"]
@@ -484,6 +488,11 @@ exec openclaw gateway""")
                 # The boundary binary runs before the main command and inherits
                 # image TMPDIR. OpenShift assigns a distinct UID per namespace.
                 spec["template"]["environment"] = {"TMPDIR": "/tmp"}
+            if confidential is not None:
+                try:
+                    attestation.verify_launch_spec(confidential["settings"], key, spec)
+                except attestation.AttestationError as exc:
+                    raise ContractError(str(exc), safe_reason=str(exc)) from None
             sandboxes.append({"name": sandbox.name, "spec": spec, "annotations": {REVISION: digest(spec)},
                               "labels": {MANAGED: "kubernetes-runtime", OWNER: owner}})
         workspaces.append({"name": ws_name, "providers": sorted(providers, key=lambda p: p["metadata"]["name"]),

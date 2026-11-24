@@ -199,6 +199,17 @@ still sets those subpaths. It does not resolve this generator incompatibility.
 Its workspace Secret credential path also needs separate integration review
 against the confidential Trustee-only release requirement.
 
+The supervisor preview now encodes the exact compiled workspace command with
+OpenShell's native `MainProcessConfig` encoder. The compiler checks that the
+measured `OPENSHELL_MAIN_PROCESS_SPEC` matches the compiled command, TTY,
+attachment mode, and workload image. A mismatch reports
+`AttestationLaunchSpecMismatch`. Duplicate environment entries, duplicate JSON
+fields, and Secret projections cannot replace this public launch value.
+The native supervisor/workload pair passes schema-2 compilation and normal
+OPA compilation. These checks use offline bindings and do not qualify release.
+The compiler rejects optional confidential harnesses before plan publication
+with `ConfidentialHarnessUnsupported` until their storage layout is supported.
+
 The workload Pod and runtime mount paths still need live qualification. Do not
 hand-edit a representative Pod and treat it as the live driver output. Schema version 1 remains available for
 historical probes, but its broad launch policy does not qualify provider release.

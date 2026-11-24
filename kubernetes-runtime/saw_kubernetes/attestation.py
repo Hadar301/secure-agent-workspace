@@ -666,6 +666,36 @@ def initdata(site, owner, registration, installation, slot, role):
             "sha256": hashlib.sha256(raw).hexdigest(), "boundarySHA256": digest(cfg)}
 
 
+def verify_launch_spec(settings, slot, sandbox_spec):
+    """Bind a validated schema-2 launch bundle to the compiled agent process.
+
+    The supervisor starts this process inside the workload. Its measured
+    environment must encode the exact command, even though the workload Pod
+    itself starts the stock boundary binary. No provider value is read here.
+    """
+    if settings.get("schemaVersion") != 2:
+        return  # Legacy probe policies do not qualify confidential enrollment.
+    try:
+        roles = settings["launchPolicies"][slot]
+        supervisors = roles["supervisor"]["pod"]["spec"]["containers"]
+        workloads = roles["workload"]["pod"]["spec"]["containers"]
+        if (len(supervisors) != 1 or supervisors[0]["name"] != "supervisor"
+                or len(workloads) != 1 or workloads[0]["name"] != "agent"
+                or workloads[0]["image"] != sandbox_spec["template"]["image"]):
+            raise ValueError()
+        entries = [e for e in supervisors[0].get("env", [])
+                   if e.get("name") == "OPENSHELL_MAIN_PROCESS_SPEC"]
+        if len(entries) != 1 or set(entries[0]) != {"name", "value"}:
+            raise ValueError()
+        measured = json.loads(entries[0]["value"], object_pairs_hook=_unique_json_object)
+        expected = {"version": 1, "command": sandbox_spec["command"],
+                    "tty": sandbox_spec["tty"], "await_main_process_attachment": False}
+        if canonical(measured) != canonical(expected):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        raise AttestationError("AttestationLaunchSpecMismatch") from None
+
+
 def placement_contract(site, owner, registration, installation, slots, runtime_class):
     """Bind per-slot supervisor and workload init-data into a compiled plan."""
     cfg = validate(site)

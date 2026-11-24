@@ -1500,3 +1500,54 @@ def test_confidential_model_and_browser_use_the_published_bundle(confidential_ag
     assert "/sandbox/.saw/gate-volume/bundle/model.json" in command[2]
     assert "/sandbox/.saw/gate-volume/bundle/relay-proof" in command[2]
     assert "/sandbox/.saw/trusted" not in command[2]
+
+
+@pytest.fixture
+def launch_process(launch_site):
+    cfg = launch_site["attestation"]
+    roles = cfg["launchPolicies"]["default/notebook"]
+    roles["workload"]["pod"]["spec"]["containers"][0]["name"] = "agent"
+    spec = {"command": ["sh", "-ec", "sleep infinity"], "tty": False, "template": {"image": IMAGE}}
+    main = {"version": 1, "command": spec["command"], "tty": False, "await_main_process_attachment": False}
+    entry = {"name": "OPENSHELL_MAIN_PROCESS_SPEC", "value": json.dumps(main)}
+    roles["supervisor"]["pod"]["spec"]["containers"][0]["env"].append(entry)
+    return cfg, spec, entry
+
+
+def test_enrolled_main_process_matches_compiled_agent(launch_process):
+    cfg, spec, _ = launch_process
+    a.verify_launch_spec(cfg, "default/notebook", spec)
+
+
+@pytest.mark.parametrize("change", ["command", "tty", "version", "await", "extra", "missing", "duplicate", "duplicate-json", "image", "slot", "projection"])
+def test_changed_main_process_is_rejected_without_input_values(launch_process, change):
+    cfg, spec, entry = launch_process
+    slot = "default/notebook"
+    data = json.loads(entry["value"])
+    if change == "command": data["command"] = ["private-fixture-marker"]
+    elif change == "tty": data["tty"] = True
+    elif change == "version": data["version"] = True
+    elif change == "await": data["await_main_process_attachment"] = True
+    elif change == "extra": data["private-fixture-marker"] = True
+    elif change == "missing": entry["name"] = "OTHER"
+    elif change == "duplicate":
+        cfg["launchPolicies"][slot]["supervisor"]["pod"]["spec"]["containers"][0]["env"].append(dict(entry))
+    elif change == "image": spec["template"]["image"] = "private-fixture-marker"
+    elif change == "slot": slot = "foreign/slot"
+    elif change == "projection": entry["valueFrom"] = {"secretKeyRef": {"name": "private-fixture-marker", "key": "key"}}
+    entry["value"] = json.dumps(data)
+    if change == "duplicate-json": entry["value"] = '{"version":0,' + entry["value"][1:]
+    with pytest.raises(a.AttestationError, match="^AttestationLaunchSpecMismatch$"):
+        a.verify_launch_spec(cfg, slot, spec)
+
+
+def test_confidential_harness_fails_before_plan_publication(confidential_agent):
+    import yaml
+    files, cfg = confidential_agent
+    name = "profiles__developer__default__sandbox.yaml"
+    document = yaml.safe_load(files[name])
+    document["spec"]["sandboxes"][0]["harnessRef"] = {"name": "optional", "digest": "sha256:" + "a" * 64}
+    files[name] = yaml.safe_dump(document)
+    with pytest.raises(ContractError) as error:
+        compile_profile_files(files, cfg)
+    assert error.value.safe_reason == "ConfidentialHarnessUnsupported"
