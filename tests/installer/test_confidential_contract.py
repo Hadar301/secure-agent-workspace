@@ -748,3 +748,62 @@ def test_unready_trustee_rejected(approved):
     obj["status"]["availableReplicas"]=0
     with pytest.raises(a.AttestationError,match="^TrusteeUnavailable$"):
         a.verify_platform(site,objects.__getitem__)
+
+
+@pytest.fixture
+def confidential_driver(approved):
+    site, _ = approved
+    context = {"settings":site["attestation"], "owner":"alice",
+               "registration":"0123456789abcdef", "installation":UID}
+    contract = a.placement_contract(site, "alice", context["registration"], UID,
+                                    ["default/toolbox"], "kata-remote")
+    placement = contract["placements"]["default/toolbox"]
+    driver = {"confidential_mode":True, "default_runtime_class_name":"kata-remote",
+              "supervisor_image":IMAGE,
+              "confidential_supervisors":{"default/toolbox":{
+                  "runtime_class_name":"kata-remote", "init_data":placement["supervisor"]["init_data"],
+                  "config_map_name":"saw-confidential-alice-0123456789abcdef",
+                  "config_key":"supervisor-"+hashlib.sha256(b"default/toolbox").hexdigest()[:16]+".json"}},
+              "confidential_workloads":{"default/toolbox":{
+                  "runtime_class_name":"kata-remote", "init_data":placement["workload"]["init_data"]}}}
+    gateway={"spec":{"template":{"spec":{"containers":[{"name":"gateway","image":IMAGE}]}}}}
+    return ({"workloadRuntimeClass":"kata-remote"}, {"schemaVersion":2,"attestation":contract},
+            context, driver, gateway)
+
+
+def test_confidential_driver_matches_enrolled_placement(confidential_driver):
+    from saw_kubernetes.boundary import verify_confidential_driver
+    verify_confidential_driver(*confidential_driver)
+
+
+@pytest.mark.parametrize("change", ["disabled", "gateway-image", "supervisor-image", "runtime",
+    "missing-supervisor", "extra-slot", "supervisor-init", "workload-init", "config-map", "config-key",
+    "external-proxy", "external-proxy-ca", "insecure-proxy"])
+def test_confidential_driver_rejects_actual_deployment_mismatch(confidential_driver, change):
+    from saw_kubernetes.boundary import verify_confidential_driver
+    config, plan, context, driver, gateway = confidential_driver
+    supervisor=driver["confidential_supervisors"]["default/toolbox"]
+    workload=driver["confidential_workloads"]["default/toolbox"]
+    if change=="disabled": driver["confidential_mode"]=False
+    elif change=="gateway-image": gateway["spec"]["template"]["spec"]["containers"][0]["image"]="registry.example.test/other@sha256:"+"f"*64
+    elif change=="supervisor-image": driver["supervisor_image"]="registry.example.test/other@sha256:"+"f"*64
+    elif change=="runtime": driver["default_runtime_class_name"]="kata"
+    elif change=="missing-supervisor": driver["confidential_supervisors"]={}
+    elif change=="extra-slot":
+        driver["confidential_supervisors"]["default/extra"]=dict(supervisor)
+        driver["confidential_workloads"]["default/extra"]=dict(workload)
+    elif change=="supervisor-init": supervisor["init_data"]="changed"
+    elif change=="workload-init": workload["init_data"]="changed"
+    elif change=="config-map": supervisor["config_map_name"]="foreign"
+    elif change=="config-key": supervisor["config_key"]="foreign.json"
+    elif change=="external-proxy": driver["https_proxy"]="http://proxy.example.test:3128"
+    elif change=="external-proxy-ca": driver["proxy_ca_bundle"]="/external/ca.pem"
+    elif change=="insecure-proxy": driver["proxy_auth_allow_insecure"]=True
+    with pytest.raises(BoundaryError,match="^ConfidentialDriverMismatch$"):
+        verify_confidential_driver(config,plan,context,driver,gateway)
+
+
+def test_plain_mode_cannot_silently_enable_confidential_driver():
+    from saw_kubernetes.boundary import verify_confidential_driver
+    with pytest.raises(BoundaryError,match="^UnexpectedConfidentialDriver$"):
+        verify_confidential_driver({}, {}, None, {"confidential_mode":True}, {})

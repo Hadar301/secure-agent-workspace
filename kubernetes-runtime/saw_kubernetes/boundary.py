@@ -149,6 +149,54 @@ def verify_confidential_plan(config, plan, confidential):
         raise BoundaryError("AttestationPlanMismatch")
 
 
+
+def verify_confidential_driver(config, plan, context, driver, gateway):
+    """Check the actual approved driver settings before confidential RPCs."""
+    if context is None:
+        if driver.get("confidential_mode"):
+            raise BoundaryError("UnexpectedConfidentialDriver")
+        return
+    settings = context["settings"]
+    containers = gateway.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    gateways = [c for c in containers if c.get("name") == "gateway"]
+    if (driver.get("confidential_mode") is not True
+            or len(gateways) != 1 or gateways[0].get("image") != settings["driver"]["gatewayImage"]
+            or driver.get("supervisor_image") != settings["driver"]["supervisorImage"]
+            or driver.get("default_runtime_class_name") != config.get("workloadRuntimeClass")
+            or any(driver.get(key) for key in (
+                "https_proxy", "no_proxy", "proxy_auth_secret_name", "proxy_auth_secret_key",
+                "proxy_ca_bundle", "proxy_auth_allow_insecure", "provider_spiffe_workload_api_socket_path"))):
+        raise BoundaryError("ConfidentialDriverMismatch")
+    supervisors = driver.get("confidential_supervisors")
+    workloads = driver.get("confidential_workloads")
+    if (not isinstance(supervisors, dict) or not supervisors
+            or not isinstance(workloads, dict) or set(supervisors) != set(workloads)):
+        raise BoundaryError("ConfidentialDriverMismatch")
+    # During boundary capture the compiled plan is not available yet. The
+    # approved gateway-config hash binds these settings. Runtime passes must
+    # additionally match the recomputed per-slot init-data contract exactly.
+    if "schemaVersion" not in plan:
+        return
+    placements = plan.get("attestation", {}).get("placements")
+    if not isinstance(placements, dict) or set(supervisors) != set(placements):
+        raise BoundaryError("ConfidentialDriverMismatch")
+    for slot, placement in placements.items():
+        try:
+            supervisor = placement["supervisor"]
+            workload = placement["workload"]
+            expected_supervisor = {
+                "runtime_class_name": supervisor["runtime_class_name"],
+                "init_data": supervisor["init_data"],
+                "config_map_name": f"saw-confidential-{context['owner']}-{context['registration']}",
+                "config_key": "supervisor-" + hashlib.sha256(slot.encode()).hexdigest()[:16] + ".json",
+            }
+            expected_workload = {key: workload[key] for key in ("runtime_class_name", "init_data")}
+        except (KeyError, TypeError, AttributeError):
+            raise BoundaryError("ConfidentialDriverMismatch") from None
+        if supervisors[slot] != expected_supervisor or workloads[slot] != expected_workload:
+            raise BoundaryError("ConfidentialDriverMismatch")
+
+
 def excludes_namespace(policy, namespace):
     """Prove disjointness only with the Kubernetes-managed, immutable name label.
 
@@ -210,6 +258,7 @@ def verify(config, plan, get):
         if (not runtime or plan.get("runtimeClass", {}).get("name", runtime) != runtime
                 or driver.get("default_runtime_class_name") != runtime):
             raise BoundaryError("WrongWorkloadPlacement")
+        verify_confidential_driver(config, plan, confidential, driver, observed["gateway"])
         checks.append("sandboxPlacement")
     for key in checks:
         vap = observed[key]
