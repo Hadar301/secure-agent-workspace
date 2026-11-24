@@ -1149,3 +1149,76 @@ def test_projected_token_conversion_rejects_changed_contract(supervisor_token_po
     else: spec['containers'][0]['volumeMounts'] = []
     with pytest.raises(a.AttestationError, match='^LaunchPolicyInputRejected$'):
         a.launch_policy_input(supervisor_token_pod)
+
+
+@pytest.fixture
+def runtime_launch(generated_launch):
+    import copy
+    pod, prefix, data = copy.deepcopy(generated_launch)
+    runtime_id = '11111111-1111-4111-8111-111111111111'
+    pod['metadata']['name'] = 'os-supervisor-' + runtime_id
+    pod['spec']['containers'][0]['env'].append({'name': a.RUNTIME_ID_ENV, 'value': runtime_id})
+    for item in data['containers']:
+        item['OCI']['Annotations'].update({
+            'io.kubernetes.cri.sandbox-name': '^os-supervisor-' + runtime_id + '$',
+            'openshell.ai/sandbox-id': runtime_id})
+    data['containers'][1]['OCI']['Process']['Env'].append(a.RUNTIME_ID_ENV + '=' + runtime_id)
+    return pod, prefix, data
+
+
+def test_runtime_uuid_changes_do_not_change_measured_policy(runtime_launch):
+    import copy
+    pod, prefix, data = runtime_launch
+    original = copy.deepcopy((pod, data))
+    first = a.compile_launch_policy(pod, prefix+'\n\npolicy_data := '+json.dumps(data))
+    other_pod, other_data = copy.deepcopy((pod, data))
+    old = '11111111-1111-4111-8111-111111111111'
+    new = '22222222-2222-4222-8222-222222222222'
+    other_pod = json.loads(json.dumps(other_pod).replace(old, new))
+    other_data = json.loads(json.dumps(other_data).replace(old, new))
+    second = a.compile_launch_policy(other_pod, prefix+'\n\npolicy_data := '+json.dumps(other_data))
+    assert first == second
+    assert (pod, data) == original
+    measured = json.loads(first.split('policy_data := ',1)[1].replace(a.IDENTITY_MARKER,'null'))
+    assert measured['request_defaults']['CreateContainerRequest']['allow_env_regex'] == [a.RUNTIME_ID_RULE]
+    assert not any(e.startswith(a.RUNTIME_ID_ENV+'=') for e in measured['containers'][1]['OCI']['Process']['Env'])
+    assert measured['containers'][1]['OCI']['Annotations']['openshell.ai/sandbox-id'] == '^'+a.RUNTIME_UUID_V4+'$'
+
+
+@pytest.mark.parametrize('change', ['not-uuid','duplicate-id','missing-id','pod-name','annotation-id','annotation-name','extra-rule'])
+def test_runtime_uuid_conversion_rejects_changed_driver_contract(runtime_launch,change):
+    pod,prefix,data = runtime_launch
+    if change == 'not-uuid': pod['spec']['containers'][0]['env'][-1]['value'] = '.*'
+    elif change == 'duplicate-id': pod['spec']['containers'][0]['env'].append(pod['spec']['containers'][0]['env'][-1])
+    elif change == 'missing-id': data['containers'][1]['OCI']['Process']['Env'].pop()
+    elif change == 'pod-name': pod['metadata']['name'] = 'foreign-pod'
+    elif change == 'annotation-id': data['containers'][0]['OCI']['Annotations']['openshell.ai/sandbox-id'] = 'foreign'
+    elif change == 'annotation-name': data['containers'][0]['OCI']['Annotations']['io.kubernetes.cri.sandbox-name'] = '.*'
+    else: data['request_defaults']['CreateContainerRequest']['allow_env_regex'].append('.*')
+    with pytest.raises(a.AttestationError,match='^LaunchPolicyRejected$'):
+        a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+def test_runtime_uuid_rule_is_revalidated_in_enrollment(runtime_launch,launch_site):
+    pod,prefix,data = runtime_launch
+    original_entry = launch_site['attestation']['launchPolicies']['default/notebook']['supervisor']
+    command = original_entry['pod']['spec']['containers'][0]['command']
+    pod['spec']['containers'][0]['command'] = command
+    data['containers'][1]['OCI']['Process']['Args'] = command
+    template = a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+    cfg = launch_site['attestation']
+    cfg['launchPolicies']['default/notebook']['supervisor'] = {'pod':pod,'template':template}
+    cfg['policyDigest'] = a.digest(cfg['launchPolicies'])
+    assert a.validate(launch_site) == cfg
+    cfg['launchPolicies']['default/notebook']['supervisor']['template'] = template.replace(a.RUNTIME_ID_RULE, '^OPENSHELL_SANDBOX_ID=.*$')
+    cfg['policyDigest'] = a.digest(cfg['launchPolicies'])
+    with pytest.raises(a.AttestationError,match='^AttestationLaunchPolicyRejected$'):
+        a.validate(launch_site)
+
+
+@pytest.mark.parametrize('runtime_id', ['11111111-1111-1111-8111-111111111111',
+    '11111111-1111-4111-7111-111111111111', '11111111-1111-4111-8111-111111111111-extra',
+    'prefix-11111111-1111-4111-8111-111111111111', '.*', ''])
+def test_runtime_uuid_rule_is_anchored_and_version_four(runtime_id):
+    import re
+    assert re.fullmatch(a.RUNTIME_ID_RULE, a.RUNTIME_ID_ENV + '=' + runtime_id) is None

@@ -155,9 +155,20 @@ the selected policy to its owner, registration, installation, slot, and role.
 The placement contract rejects missing or extra slots and a changed RuntimeClass.
 
 The original Pod manifest must come from the pinned driver and resolved site
-configuration. Random sandbox IDs and runtime mount paths still need an
-explicit supported generation contract. Do not hand-edit a representative Pod
-and treat it as the live driver output. Schema version 1 remains available for
+configuration. The supervisor policy accepts only the driver's canonical
+UUIDv4 runtime ID and its matching Pod-name annotations. It adds one fixed,
+anchored environment rule after checking the locked generator rules. It
+retains exact bootstrap JSON, namespace, image, command, and workspace identity.
+The runtime ID does not grant Trustee access. Resource release uses the
+enrolled registration measurement. Enrollment reverses and rechecks this
+conversion, so broader patterns fail even if their digest is recomputed.
+
+A driver-generated supervisor preview passed policy generation and validation.
+Six executable Rego checks accepted a new UUID and rejected invalid IDs and
+changed bootstrap JSON. These are offline checks.
+
+The workload Pod and runtime mount paths still need live qualification. Do not
+hand-edit a representative Pod and treat it as the live driver output. Schema version 1 remains available for
 historical probes, but its broad launch policy does not qualify provider release.
 The chart and preflight activation gates remain closed. Do not replace live
 qualification with a manually asserted record or deploy a real provider key.

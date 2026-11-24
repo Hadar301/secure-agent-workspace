@@ -852,6 +852,71 @@ GENPOLICY_ENV_RULES_SHA256 = '2fd6b64642343ce37b71dc6f88377b70e8b2b1b35357fc7c45
 BOOTSTRAP_ENV = "SAW_CONFIDENTIAL_BOOTSTRAP_JSON"
 
 
+# Runtime IDs do not grant Trustee access. Resource release uses the enrolled
+# registration measurement. These patterns permit only the driver's UUIDv4.
+RUNTIME_UUID_V4 = r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"
+RUNTIME_ID_ENV = "OPENSHELL_SANDBOX_ID"
+RUNTIME_ID_RULE = "^" + RUNTIME_ID_ENV + "=" + RUNTIME_UUID_V4 + "$"
+
+
+def _supervisor_runtime_identity(pod, data, *, restore=False):
+    containers = pod["spec"]["containers"]
+    supervisors = [c for c in containers if c["name"] == "supervisor"]
+    if not supervisors:
+        return
+    entries = [e for e in supervisors[0].get("env", []) if e["name"] == RUNTIME_ID_ENV]
+    if not entries:
+        return
+    if len(supervisors) != 1 or len(entries) != 1:
+        raise ValueError()
+    runtime_id = entries[0].get("value")
+    if (not isinstance(runtime_id, str) or not re.fullmatch(RUNTIME_UUID_V4, runtime_id)
+            or pod["metadata"]["name"] != "os-supervisor-" + runtime_id):
+        raise ValueError()
+    original_annotations = {
+        "io.kubernetes.cri.sandbox-name": "^os-supervisor-" + runtime_id + "$",
+        "openshell.ai/sandbox-id": runtime_id,
+    }
+    measured_annotations = {
+        "io.kubernetes.cri.sandbox-name": "^os-supervisor-" + RUNTIME_UUID_V4 + "$",
+        "openshell.ai/sandbox-id": "^" + RUNTIME_UUID_V4 + "$",
+    }
+    rules = data["request_defaults"]["CreateContainerRequest"]["allow_env_regex"]
+    if restore:
+        if not rules or rules[-1] != RUNTIME_ID_RULE or rules.count(RUNTIME_ID_RULE) != 1:
+            raise ValueError()
+        rules.pop()
+    else:
+        rules.append(RUNTIME_ID_RULE)
+    found = 0
+    for container in data["containers"]:
+        annotations = container["OCI"]["Annotations"]
+        for key, original in original_annotations.items():
+            if annotations.get(key) != (measured_annotations[key] if restore else original):
+                raise ValueError()
+            annotations[key] = original if restore else measured_annotations[key]
+        if annotations.get("io.kubernetes.cri.container-name") != "supervisor":
+            continue
+        found += 1
+        environment = container["OCI"]["Process"]["Env"]
+        original = RUNTIME_ID_ENV + "=" + runtime_id
+        if restore:
+            index = data.pop("saw_runtime_id_env_index")
+            if type(index) is not int or not 0 <= index <= len(environment):
+                raise ValueError()
+            if any(e.startswith(RUNTIME_ID_ENV + "=") for e in environment):
+                raise ValueError()
+            environment.insert(index, original)
+        else:
+            matches = [i for i, e in enumerate(environment) if e.startswith(RUNTIME_ID_ENV + "=")]
+            if len(matches) != 1 or environment[matches[0]] != original or "saw_runtime_id_env_index" in data:
+                raise ValueError()
+            data["saw_runtime_id_env_index"] = matches[0]
+            environment.pop(matches[0])
+    if found != 1:
+        raise ValueError()
+
+
 def compile_launch_policy(pod, generated):
     """Create an identity-bearing template from reviewed rules and Pod output.
 
@@ -926,6 +991,9 @@ def compile_launch_policy(pod, generated):
                     or oci["Annotations"]["io.kubernetes.cri.image-name"] != image
                     or oci["Annotations"]["io.kubernetes.cri.sandbox-namespace"] != pod["metadata"]["namespace"]):
                 raise ValueError()
+        if "saw_identity" in data or "saw_runtime_id_env_index" in data:
+            raise ValueError()
+        _supervisor_runtime_identity(pod, data)
         data["saw_identity"] = IDENTITY_MARKER
         encoded = canonical(data)
         if encoded.count(json.dumps(IDENTITY_MARKER)) != 1:
@@ -999,6 +1067,7 @@ def validate_launch_policies(policies, expected_digest):
                 data = json.loads(template[match.end()-1:].replace(IDENTITY_MARKER, "null"))
                 if "saw_identity" not in data or data.pop("saw_identity") is not None:
                     raise ValueError()
+                _supervisor_runtime_identity(entry["pod"], data, restore=True)
                 generated = template[:match.start()] + "policy_data := " + canonical(data) + "\n"
                 if compile_launch_policy(entry["pod"], generated) != template:
                     raise ValueError()
