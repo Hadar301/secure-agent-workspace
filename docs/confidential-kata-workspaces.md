@@ -82,8 +82,8 @@ those credentials in memory. It has no file fallback in confidential mode.
 
 This interface requires rebuilt gateway and supervisor images. Earlier lab
 images use the file interface and are incompatible. Do not deploy a mixed pair.
-The local Go tests and chart contracts pass. Native driver tests and full
-workspace qualification remain required.
+The Go tests and chart contracts pass. The rebuilt gateway passed all nine
+confidential driver tests on AMD64. Full workspace qualification remains open.
 
 ## Preparing measured launch policies
 
@@ -166,6 +166,24 @@ conversion, so broader patterns fail even if their digest is recomputed.
 A driver-generated supervisor preview passed policy generation and validation.
 Six executable Rego checks accepted a new UUID and rejected invalid IDs and
 changed bootstrap JSON. These are offline checks.
+
+The workload preview exposed two storage checks. The locked generator treats
+PVC mounts as writable. The launch validator checks each PVC mount source,
+destination and options, then narrows protected mounts to read-only. Enrollment
+revalidates that narrowing. Strict supplemental groups and the stock low-port
+sysctl must also match generated OCI values. The original Pod retains those
+settings.
+
+The pinned generator rejects `subPath` mounts. SAW currently uses `bundle` and
+`log` subpaths for the trusted tool gate and audit exchange. The input checker
+now reports `LaunchPolicySubPathUnsupported` before running the generator.
+The mount layout or the pinned generator must change before qualification.
+Do not remove subpaths from generator input or weaken tool-gate integrity.
+
+PR #173 adds shared ReadWriteMany storage provisioning, but its current compiler
+still sets those subpaths. It does not resolve this generator incompatibility.
+Its workspace Secret credential path also needs separate integration review
+against the confidential Trustee-only release requirement.
 
 The workload Pod and runtime mount paths still need live qualification. Do not
 hand-edit a representative Pod and treat it as the live driver output. Schema version 1 remains available for

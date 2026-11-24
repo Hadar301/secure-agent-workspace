@@ -1222,3 +1222,161 @@ def test_runtime_uuid_rule_is_revalidated_in_enrollment(runtime_launch,launch_si
 def test_runtime_uuid_rule_is_anchored_and_version_four(runtime_id):
     import re
     assert re.fullmatch(a.RUNTIME_ID_RULE, a.RUNTIME_ID_ENV + '=' + runtime_id) is None
+
+
+def test_explicit_host_namespace_denials_survive_original_manifest(launch_pod):
+    launch_pod['spec'].update(hostPID=False, hostIPC=False, shareProcessNamespace=False)
+    normalized = a.launch_policy_input(launch_pod)
+    assert 'hostPID' not in normalized['spec'] and 'hostIPC' not in normalized['spec']
+    assert normalized['spec']['shareProcessNamespace'] is False
+    assert launch_pod['spec']['hostPID'] is False and launch_pod['spec']['hostIPC'] is False
+
+
+@pytest.mark.parametrize('field', ['hostPID', 'hostIPC', 'shareProcessNamespace'])
+def test_shared_process_namespace_is_rejected(launch_pod, field):
+    launch_pod['spec'][field] = True
+    with pytest.raises(a.AttestationError, match='^LaunchPolicyInputRejected$'):
+        a.launch_policy_input(launch_pod)
+
+
+@pytest.fixture
+def strict_group_launch(generated_launch):
+    pod, prefix, data = generated_launch
+    pod['spec']['securityContext'].update(runAsGroup=1001, fsGroup=1001,
+        supplementalGroups=[1002], supplementalGroupsPolicy='Strict')
+    data['containers'][1]['OCI']['Process']['User'].update(GID=1001, AdditionalGids=[1001, 1002])
+    return pod, prefix, data
+
+
+def test_strict_groups_bind_the_generated_oci_identity(strict_group_launch):
+    pod, prefix, data = strict_group_launch
+    normalized = a.launch_policy_input(pod)
+    assert 'supplementalGroupsPolicy' not in normalized['spec']['securityContext']
+    assert pod['spec']['securityContext']['supplementalGroupsPolicy'] == 'Strict'
+    assert a.compile_launch_policy(pod, prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+@pytest.mark.parametrize('change', ['extra-group', 'missing-group', 'wrong-gid', 'merge-mode', 'boolean-group'])
+def test_strict_groups_reject_changed_or_image_groups(strict_group_launch, change):
+    pod, prefix, data = strict_group_launch
+    user = data['containers'][1]['OCI']['Process']['User']
+    reason = 'LaunchPolicyRejected'
+    if change == 'extra-group': user['AdditionalGids'].append(0)
+    elif change == 'missing-group': user['AdditionalGids'].pop()
+    elif change == 'wrong-gid': user['GID'] = 0
+    elif change == 'merge-mode':
+        pod['spec']['securityContext']['supplementalGroupsPolicy'] = 'Merge'
+        reason = 'LaunchPolicyInputRejected'
+    else:
+        pod['spec']['securityContext']['supplementalGroups'] = [True]
+        reason = 'LaunchPolicyInputRejected'
+    with pytest.raises(a.AttestationError, match='^'+reason+'$'):
+        a.compile_launch_policy(pod, prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+def test_workload_false_host_namespaces_are_removed_only_from_input(launch_pod):
+    import copy
+    launch_pod['spec'].update(hostPID=False, hostIPC=False, shareProcessNamespace=False)
+    original = copy.deepcopy(launch_pod)
+    result = a.launch_policy_input(launch_pod)
+    assert launch_pod == original
+    assert 'hostPID' not in result['spec'] and 'hostIPC' not in result['spec']
+    assert result['spec']['shareProcessNamespace'] is False
+
+
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_workload_low_port_sysctl_must_match_generated_oci(generated_launch, changed):
+    pod, prefix, data = generated_launch
+    pod['spec']['securityContext']['sysctls'] = [{'name':'net.ipv4.ip_unprivileged_port_start','value':'0'}]
+    data['containers'][1]['OCI']['Linux'] = {'Sysctl': {'net.ipv4.ip_unprivileged_port_start':'1' if changed else '0'}}
+    assert 'sysctls' not in a.launch_policy_input(pod)['spec']['securityContext']
+    if changed:
+        with pytest.raises(a.AttestationError, match='^LaunchPolicyRejected$'):
+            a.compile_launch_policy(pod, prefix+'\n\npolicy_data := '+json.dumps(data))
+    else:
+        assert a.compile_launch_policy(pod, prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+def test_unreviewed_sysctl_conversion_is_rejected(launch_pod):
+    launch_pod['spec']['securityContext']['sysctls'] = [{'name':'kernel.example','value':'1'}]
+    with pytest.raises(a.AttestationError, match='^LaunchPolicyInputRejected$'):
+        a.launch_policy_input(launch_pod)
+
+
+@pytest.fixture
+def pvc_launch(generated_launch):
+    pod,prefix,data = generated_launch
+    pod['spec']['volumes'] = [
+        {'name':'data','persistentVolumeClaim':{'claimName':'retained-data','readOnly':False}},
+        {'name':'gate','persistentVolumeClaim':{'claimName':'trusted-gate','readOnly':True}}]
+    pod['spec']['containers'][0]['volumeMounts'] = [
+        {'name':'data','mountPath':'/sandbox/workspace','readOnly':False},
+        {'name':'gate','mountPath':'/sandbox/.saw/trusted','readOnly':True}]
+    data['containers'][1]['OCI']['Mounts'] = [
+        {'destination':path,'source':'$(sfprefix)'+path.rsplit('/',1)[-1]+'$',
+         'type_':'bind','options':['rbind','rprivate','rw']}
+        for path in ['/sandbox/workspace','/sandbox/.saw/trusted']]
+    return pod,prefix,data
+
+
+def test_pvc_policy_narrows_the_protected_mount(pvc_launch):
+    pod,prefix,data = pvc_launch
+    assert a.launch_policy_input(pod)['spec']['volumes'][1]['persistentVolumeClaim'] == {'claimName':'trusted-gate'}
+    template = a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+    result = json.loads(template.split('policy_data := ',1)[1].replace(a.IDENTITY_MARKER,'null'))
+    mounts = result['containers'][1]['OCI']['Mounts']
+    assert mounts[0]['options'] == ['rbind','rprivate','rw']
+    assert mounts[1]['options'] == ['rbind','rprivate','ro']
+    assert pod['spec']['volumes'][1]['persistentVolumeClaim']['readOnly'] is True
+
+
+@pytest.mark.parametrize('change',['source','missing','duplicate','options','mode'])
+def test_pvc_policy_rejects_unreviewed_mounts(pvc_launch,change):
+    pod,prefix,data = pvc_launch
+    mounts=data['containers'][1]['OCI']['Mounts']
+    if change=='source':mounts[1]['source']='.*'
+    elif change=='missing':mounts.pop()
+    elif change=='duplicate':mounts.append(dict(mounts[1]))
+    elif change=='options':mounts[1]['options'].append('shared')
+    else:pod['spec']['volumes'][1]['persistentVolumeClaim']['readOnly']='true'
+    reason='LaunchPolicyInputRejected' if change=='mode' else 'LaunchPolicyRejected'
+    with pytest.raises(a.AttestationError,match='^'+reason+'$'):
+        a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+
+
+@pytest.mark.parametrize('field',['subPath','subPathExpr'])
+def test_subpath_is_rejected_before_the_generator(launch_pod,field):
+    launch_pod['spec']['containers'][0]['volumeMounts']=[
+        {'name':'trusted','mountPath':'/sandbox/.saw/trusted',field:'bundle'}]
+    with pytest.raises(a.AttestationError,match='^LaunchPolicySubPathUnsupported$'):
+        a.launch_policy_input(launch_pod)
+
+
+def test_readonly_pvc_policy_cannot_be_widened_during_enrollment(pvc_launch,launch_site):
+    import copy
+    pod,prefix,data=pvc_launch
+    command=launch_site['attestation']['launchPolicies']['default/notebook']['supervisor']['pod']['spec']['containers'][0]['command']
+    pod['spec']['containers'][0]['command']=command
+    data['containers'][1]['OCI']['Process']['Args']=command
+    template=a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))
+    policies=copy.deepcopy(launch_site['attestation']['launchPolicies'])
+    policies['default/notebook']['supervisor']={'pod':pod,'template':template}
+    assert a.validate_launch_policies(policies,a.digest(policies))==a.digest(policies)
+    parsed=json.loads(template.split('policy_data := ',1)[1].replace(a.IDENTITY_MARKER,'null'))
+    parsed['containers'][1]['OCI']['Mounts'][1]['options']=['rbind','rprivate','rw']
+    parsed['saw_identity']=a.IDENTITY_MARKER
+    changed=prefix+'\n\npolicy_data := '+a.canonical(parsed).replace('"'+a.IDENTITY_MARKER+'"',a.IDENTITY_MARKER)+'\n'
+    policies['default/notebook']['supervisor']['template']=changed
+    with pytest.raises(a.AttestationError,match='^AttestationLaunchPolicyRejected$'):
+        a.validate_launch_policies(policies,a.digest(policies))
+
+
+@pytest.mark.parametrize('gid',[0,1002])
+def test_explicit_container_gid_cannot_change_in_policy(generated_launch,gid):
+    pod,prefix,data=generated_launch
+    pod['spec']['containers'][0]['securityContext']['runAsGroup']=1001
+    data['containers'][1]['OCI']['Process']['User']['GID']=gid
+    with pytest.raises(a.AttestationError,match='^LaunchPolicyRejected$'):
+        a.compile_launch_policy(pod,prefix+'\n\npolicy_data := '+json.dumps(data))

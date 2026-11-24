@@ -782,9 +782,14 @@ def launch_policy_input(pod):
                 raise ValueError()
             del spec["schedulingGates"]
         if (spec.get("automountServiceAccountToken") is not False
-                or any(spec.get(k) for k in ("hostPID", "hostIPC", "hostNetwork", "ephemeralContainers"))):
+                or any(spec.get(k) for k in ("hostPID", "hostIPC", "hostNetwork", "shareProcessNamespace", "ephemeralContainers"))):
             raise ValueError()
         del spec["automountServiceAccountToken"]
+        for key in ("hostPID", "hostIPC"):
+            if key in spec:
+                if spec[key] is not False:
+                    raise ValueError()
+                del spec[key]
         pod_security = spec.get("securityContext", {})
         if not isinstance(pod_security, dict) or not isinstance(spec.get("containers"), list) or not spec["containers"]:
             raise ValueError()
@@ -793,6 +798,18 @@ def launch_policy_input(pod):
                 raise ValueError()
             # Keep numeric fsGroup so generated AdditionalGids stay constrained.
             del pod_security["fsGroupChangePolicy"]
+        if "supplementalGroupsPolicy" in pod_security:
+            if (pod_security["supplementalGroupsPolicy"] != "Strict"
+                    or any(type(pod_security.get(k)) is not int or pod_security[k] <= 0
+                           for k in ("runAsGroup", "fsGroup"))
+                    or not isinstance(pod_security.get("supplementalGroups"), list)
+                    or any(type(gid) is not int or gid <= 0 for gid in pod_security["supplementalGroups"])):
+                raise ValueError()
+            del pod_security["supplementalGroupsPolicy"]
+        if "sysctls" in pod_security:
+            if pod_security["sysctls"] != [{"name": "net.ipv4.ip_unprivileged_port_start", "value": "0"}]:
+                raise ValueError()
+            del pod_security["sysctls"]
         inherited_seccomp = pod_security.pop("seccompProfile", None)
         inherited_nonroot = pod_security.pop("runAsNonRoot", None)
         for group in ("containers", "initContainers"):
@@ -814,7 +831,16 @@ def launch_policy_input(pod):
                     raise ValueError()
                 if container.get("envFrom"):
                     raise ValueError()
+                if any("subPath" in mount or "subPathExpr" in mount
+                       for mount in container.get("volumeMounts", [])):
+                    raise AttestationError("LaunchPolicySubPathUnsupported")
         for volume in spec.get("volumes", []):
+            if "persistentVolumeClaim" in volume:
+                pvc = volume["persistentVolumeClaim"]
+                if "readOnly" in pvc:
+                    if type(pvc["readOnly"]) is not bool:
+                        raise ValueError()
+                    del pvc["readOnly"]
             if "projected" not in volume:
                 continue
             projection = volume["projected"]
@@ -841,6 +867,8 @@ def launch_policy_input(pod):
         if not pod_security:
             spec.pop("securityContext", None)
         return result
+    except AttestationError:
+        raise
     except (ValueError, TypeError, KeyError, AttributeError):
         raise AttestationError("LaunchPolicyInputRejected") from None
 
@@ -917,6 +945,37 @@ def _supervisor_runtime_identity(pod, data, *, restore=False):
         raise ValueError()
 
 
+def _pvc_launch_mounts(pod, data, *, restore=False):
+    """Narrow the pinned generator's RW PVC output to the Pod's exact mode."""
+    volumes = {v["name"]: v["persistentVolumeClaim"] for v in pod["spec"].get("volumes", [])
+               if "persistentVolumeClaim" in v}
+    if not volumes:
+        return
+    actual = {c["OCI"]["Annotations"].get("io.kubernetes.cri.container-name"): c["OCI"]
+              for c in data["containers"]}
+    for container in pod["spec"]["containers"] + pod["spec"].get("initContainers", []):
+        for mount in container.get("volumeMounts", []):
+            if mount["name"] not in volumes:
+                continue
+            volume = volumes[mount["name"]]
+            if (type(volume.get("readOnly", False)) is not bool
+                    or type(mount.get("readOnly", False)) is not bool):
+                raise ValueError()
+            readonly = volume.get("readOnly", False) or mount.get("readOnly", False)
+            matches = [m for m in actual[container["name"]]["Mounts"] if m["destination"] == mount["mountPath"]]
+            if len(matches) != 1:
+                raise ValueError()
+            policy_mount = matches[0]
+            access = "ro" if readonly and restore else "rw"
+            if (policy_mount["type_"] != "bind"
+                    or policy_mount["source"] != "$(sfprefix)" + mount["mountPath"].rsplit("/", 1)[-1] + "$"
+                    or len(policy_mount["options"]) != 3
+                    or set(policy_mount["options"]) != {"rbind", "rprivate", access}):
+                raise ValueError()
+            if readonly:
+                policy_mount["options"] = ["rbind", "rprivate", "rw" if restore else "ro"]
+
+
 def compile_launch_policy(pod, generated):
     """Create an identity-bearing template from reviewed rules and Pod output.
 
@@ -980,6 +1039,23 @@ def compile_launch_policy(pod, generated):
                 if measured != [BOOTSTRAP_ENV + "=" + raw]:
                     raise ValueError()
             uid = security.get("runAsUser", spec.get("securityContext", {}).get("runAsUser"))
+            original_security = pod["spec"].get("securityContext", {})
+            expected_gid = security.get("runAsGroup", spec.get("securityContext", {}).get("runAsGroup"))
+            if expected_gid is not None:
+                if (type(expected_gid) is not int or expected_gid <= 0
+                        or process["User"].get("GID") != expected_gid):
+                    raise ValueError()
+            if original_security.get("sysctls"):
+                if oci["Linux"]["Sysctl"].get("net.ipv4.ip_unprivileged_port_start") != "0":
+                    raise ValueError()
+            if original_security.get("supplementalGroupsPolicy") == "Strict":
+                gid = security.get("runAsGroup", original_security["runAsGroup"])
+                groups = process["User"]["AdditionalGids"]
+                expected_groups = set(original_security["supplementalGroups"]) | {original_security["fsGroup"]}
+                if (type(gid) is not int or gid <= 0 or process["User"]["GID"] != gid
+                        or not isinstance(groups, list) or len(groups) != len(expected_groups)
+                        or any(type(g) is not int for g in groups) or set(groups) != expected_groups):
+                    raise ValueError()
             image = container["image"]
             command = container.get("command")
             if (not IMAGE.fullmatch(image) or not isinstance(command, list) or not command
@@ -993,6 +1069,7 @@ def compile_launch_policy(pod, generated):
                 raise ValueError()
         if "saw_identity" in data or "saw_runtime_id_env_index" in data:
             raise ValueError()
+        _pvc_launch_mounts(pod, data)
         _supervisor_runtime_identity(pod, data)
         data["saw_identity"] = IDENTITY_MARKER
         encoded = canonical(data)
@@ -1067,6 +1144,7 @@ def validate_launch_policies(policies, expected_digest):
                 data = json.loads(template[match.end()-1:].replace(IDENTITY_MARKER, "null"))
                 if "saw_identity" not in data or data.pop("saw_identity") is not None:
                     raise ValueError()
+                _pvc_launch_mounts(entry["pod"], data, restore=True)
                 _supervisor_runtime_identity(entry["pod"], data, restore=True)
                 generated = template[:match.start()] + "policy_data := " + canonical(data) + "\n"
                 if compile_launch_policy(entry["pod"], generated) != template:
