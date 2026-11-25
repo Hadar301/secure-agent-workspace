@@ -382,3 +382,37 @@ def test_cluster_version_must_be_available_and_at_least_422():
         }})
     with pytest.raises(preflight.PreflightError, match="ClusterVersionUnavailable"):
         preflight.verify_cluster_version({"status": {"desired": {"version": "4.22.22"}}})
+
+
+
+def test_confidential_configuration_uses_control_plane_egress_without_proxy():
+    import copy
+    import yaml
+    site = copy.deepcopy(yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"])
+    site["attestation"] = {"enabled": True}
+    site["bootstrapEgress"] = site["stack"]["identity"]["values"]["network"]["bootstrapEgress"]
+    assert preflight.configuration_facts(site)["network"]
+    assert preflight.configuration_facts(site)["revisions"]
+    site["bootstrapEgress"] = []
+    assert not preflight.configuration_facts(site)["network"]
+
+
+def test_remote_runtime_still_requires_exact_reviewed_placement():
+    observed, _ = runtime_class()
+    observed["handler"] = "kata-remote"
+    approved = {"name": observed["metadata"]["name"], "uid": observed["metadata"]["uid"],
+                "sha256": preflight.runtime_placement_digest(observed)}
+    assert preflight.check_runtime_class(approved, observed) is True
+    observed["handler"] = "kata"
+    with pytest.raises(preflight.PreflightError, match="RuntimeClassPlacementChanged"):
+        preflight.check_runtime_class(approved, observed)
+
+
+@pytest.mark.parametrize("mode, gated", [("vm", False), ("container", True), ("kata", True)])
+def test_init_keeps_empty_foundation_separate_from_owner_preflight(mode, gated):
+    import subprocess
+    result = subprocess.run(["make", "--no-print-directory", "-n", "saw-init",
+        "DEPLOYMENT_MODE="+mode, "OPENSHELL_SAW_NAME=fixture"],
+        cwd=ROOT, text=True,capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert ("container-workspace.py preflight" in result.stdout) is gated

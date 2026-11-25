@@ -1,0 +1,14 @@
+apiVersion: confidentialcontainers.org/v1alpha1
+kind: TrusteeConfig
+metadata:
+  name: saw-trustee
+  namespace: trustee-operator-system
+  labels:
+    app.kubernetes.io/part-of: secure-agent-workspace
+spec:
+  profileType: Restricted
+  kbsServiceType: ClusterIP
+  httpsSpec:
+    tlsSecretName: saw-trustee-https
+  attestationTokenVerificationSpec:
+    tlsSecretName: saw-trustee-attestation-token

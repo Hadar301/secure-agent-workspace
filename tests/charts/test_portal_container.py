@@ -3,6 +3,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import json
+import shutil
 import subprocess
 
 import pytest
@@ -16,10 +17,14 @@ GLOBAL = {"repoURL":"https://github.com/example/secure-agent-workspace","targetR
           "vpArgoNamespace":"vp-gitops","clusterDomain":"cluster.example.com"}
 
 
-def render(chart, release, ns, values):
-    result = subprocess.run(["helm","template",release,str(ROOT/"charts"/chart),"--namespace",ns,
-                  "--api-versions","agents.x-k8s.io/v1beta1","--api-versions","policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy",
-                  "--api-versions","admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy","-f","-"],
+def render(chart, release, ns, values, show_only=None, chart_path=None):
+    command = ["helm","template",release,str(chart_path or ROOT/"charts"/chart),"--namespace",ns,
+               "--api-versions","agents.x-k8s.io/v1beta1","--api-versions","policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy",
+               "--api-versions","admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy"]
+    if show_only:
+        command.extend(["--show-only", show_only])
+    command.extend(["-f", "-"])
+    result = subprocess.run(command,
                  input=json.dumps(values),text=True,capture_output=True)
     assert result.returncode == 0, result.stderr
     return [d for d in yaml.safe_load_all(result.stdout) if d]
@@ -396,6 +401,236 @@ def test_static_kata_projector_can_read_only_approved_platform_metadata():
     assert all("secrets" not in rule.get("resources", []) for rule in role["rules"])
 
 
+def confidential_references():
+    return {
+        "peerPods": {"path": "/api/v1/namespaces/openshift-sandboxed-containers-operator/configmaps/peer-pods-cm"},
+        "trustee": {"path": "/apis/apps/v1/namespaces/trustee-system/deployments/kbs"},
+        "trusteeConfig": {"path": "/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"},
+        "attestationPolicy": {"path": "/api/v1/namespaces/trustee-system/configmaps/attestation-policy"},
+        "resourcePolicy": {"path": "/api/v1/namespaces/trustee-system/configmaps/resource-policy"},
+        "referenceValues": {"path": "/api/v1/namespaces/trustee-system/configmaps/references"},
+        "qualification": {"path": "/api/v1/namespaces/trustee-system/configmaps/qualification"},
+    }
+
+
+def confidential_site(site, *, structural=False):
+    """Add synthetic, non-deployable Kata placement inputs for chart rendering."""
+    site.setdefault("providerPolicy", {"allowHosts": ["api.openai.com"],
+        "bindings": [{"secret": "inference", "key": "api_key", "providers": ["openai"]}],
+        "markerPrefix": "saw-cred", "profiles": {"openai": ["api.openai.com"]}})
+    site["targets"] = {"default/notebook": {
+        "workspace": "default", "sandbox": "notebook", "ui": True,
+        "base": U, "relayID": REG, "subjectMap": "notebook-subject",
+    }}
+    site.setdefault("attestation", {})["driver"] = {
+        "gatewayImage": "registry.example.test/gateway@sha256:" + "a" * 64,
+        "supervisorImage": "registry.example.test/supervisor@sha256:" + "b" * 64,
+    }
+    bindings = site.setdefault("enrollment", {}).setdefault("intent", {}).setdefault("bindings", {})
+    bindings["confidentialAttestation"] = {"placements": {
+        "default/notebook": {
+            "supervisor": {"runtime_class_name": "kata-remote", "init_data": "e30="},
+            "workload": {"runtime_class_name": "kata-remote", "init_data": "e30="},
+        }
+    }}
+    if structural:
+        # Public structural fixture only. Python rejects its unmeasured policy.
+        settings = site["attestation"]
+        settings.update(schemaVersion=2, tee="snp", kbsURL="https://trustee.example.test",
+                        kbsCA="structural-fixture", policyDigest="d"*64, referenceSet="e"*64,
+                        imagePolicy={"default": [{"type": "reject"}]},
+                        launchPolicies={"default/notebook": {
+                            role: {"pod": {"kind": "Pod"}, "template": "unmeasured-structural-fixture"}
+                            for role in ("supervisor", "workload")}})
+        settings["driver"].update(capability="saw-confidential-v1", sourceRevision="f"*40)
+        for ref in settings["references"].values():
+            ref.update(uid="11111111-1111-4111-8111-111111111111", sha256="a"*64)
+        reference = site["automaticEnrollment"]["reference"]
+        for key in ("proxy", "proxyPolicy", "proxyNetwork", "publicCA"):
+            reference.pop(key, None)
+        reference.update({"confidential"+key[0].upper()+key[1:]: "a"*64
+                          for key in settings["references"]})
+        reference["confidentialProviderPolicy"] = "a"*64
+        site["bootstrapEgress"] = [{"to": [{"ipBlock": {"cidr": "192.0.2.1/32"}}], "ports": [{"protocol": "TCP", "port": 443}]}]
+        site["preparedConfidential"] = copy.deepcopy(bindings["confidentialAttestation"])
+    return site
+
+
+def test_confidential_enrollment_reads_only_approved_namespaced_objects(tmp_path):
+    site = copy.deepcopy(SITE)
+    site["kataRuntimeClass"] = {"name": "kata-remote", "uid": "11111111-1111-4111-8111-111111111111",
+                                "sha256": "a" * 64}
+    site["attestation"] = {"enabled": True, "references": confidential_references()}
+    site["credentialReferences"] = {
+        "inference": f"secret/data/hub/saw-{U}/credentials/inference",
+        "web-search": f"secret/data/hub/saw-{U}/credentials/web-search",
+    }
+    confidential_site(site, structural=True)
+    site["automaticEnrollment"]["reference"]["sandboxPlacement"] = "a" * 64
+    site["automaticEnrollment"]["reference"]["sandboxPlacementBinding"] = "a" * 64
+    chart_copy = tmp_path / "saw-portal-container"
+    shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
+    resources = render("saw-portal-container", U, "saw-" + U, {
+        "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
+        "installationID": user()["installationID"], "vaultPrefix": user()["vaultPrefix"],
+        "global": GLOBAL}, show_only="templates/auto-enroll.yaml", chart_path=chart_copy)
+    roles = [obj for obj in resources if obj["kind"] == "Role"
+             and "-attestation-" in obj["metadata"]["name"]]
+    assert len(roles) == 7
+    expected = {
+        "peerPods": ("openshift-sandboxed-containers-operator", "configmaps", "peer-pods-cm"),
+        "trustee": ("trustee-system", "deployments", "kbs"),
+        "trusteeConfig": ("trustee-system", "kbsconfigs", "kbs"),
+        "attestationPolicy": ("trustee-system", "configmaps", "attestation-policy"),
+        "resourcePolicy": ("trustee-system", "configmaps", "resource-policy"),
+        "referenceValues": ("trustee-system", "configmaps", "references"),
+        "qualification": ("trustee-system", "configmaps", "qualification"),
+    }
+    for key, (namespace, resource, name) in expected.items():
+        role, = [obj for obj in roles if obj["metadata"]["name"] == f"enroll-{REG}-attestation-{key}"]
+        rule, = role["rules"]
+        assert role["metadata"]["namespace"] == namespace
+        assert rule["resources"] == [resource]
+        assert rule["resourceNames"] == [name]
+        assert rule["verbs"] == (["get", "patch"] if key == "trusteeConfig" else ["get"])
+    assert all("secrets" not in rule.get("resources", []) for obj in roles for rule in obj["rules"])
+
+
+def test_confidential_controller_reads_only_approved_namespaced_objects():
+    values = yaml.safe_load((ROOT / "tests/fixtures/saw-kubernetes-controller-values.yaml").read_text())
+    values["configuration"]["confidentialAttestation"] = {
+        "settings": {"references": confidential_references()}, "owner": U,
+        "registration": REG, "installation": user()["installationID"]}
+    docs = render("saw-kubernetes-controller", U, "saw-ci-trusted", values,
+                  show_only="templates/controller.yaml")
+    roles = [obj for obj in docs if obj["kind"] == "Role"
+             and "-attestation-" in obj["metadata"]["name"]]
+    assert len(roles) == 7
+    assert all(obj["rules"][0]["verbs"] == ["get"] for obj in roles)
+    assert all("secrets" not in rule.get("resources", []) for obj in roles for rule in obj["rules"])
+
+
+def test_enrolled_controller_receives_the_approved_confidential_identity(tmp_path):
+    site = copy.deepcopy(SITE)
+    site["kataRuntimeClass"] = {"name": "kata-remote", "uid": "11111111-1111-4111-8111-111111111111",
+                                "sha256": "a" * 64}
+    site["attestation"] = {"enabled": True, "references": confidential_references()}
+    site["credentialReferences"] = {
+        "inference": f"secret/data/hub/saw-{U}/credentials/inference"}
+    site["automaticEnrollment"]["reference"]["sandboxPlacement"] = "a" * 64
+    site["automaticEnrollment"]["reference"]["sandboxPlacementBinding"] = "a" * 64
+    site["targets"] = {"default/notebook": {"workspace": "default", "sandbox": "notebook",
+        "ui": True, "base": U, "relayID": REG}}
+    site["enrollment"] = {
+        "registration": REG, "image": "registry.example.test/controller@sha256:" + "b" * 64,
+        "buildNamespace": "saw-builds", "revision": "c" * 40, "approved": {"validation": "a" * 64},
+        "intent": {"profileRef": {"name": "saw-bom-profiles"}, "bindings": {
+            "ownerID": user()["installationID"], "ownerSubject": site["subject"],
+            "namespace": "saw-" + U, "namespaceUID": "fixture-namespace-uid", "mode": "kata",
+            "bindings": {"default/notebook": {
+                "workspace": {"claimName": "workspace-" + U},
+                "toolGate": {"trusted": {"claimName": "saw-gate-" + U},
+                             "audit": {"claimName": "saw-audit-" + U},
+                             "ownerLogin": U, "receiptKey": "fixture-public-key"},
+                "browser": {"ownerLogin": U,
+                            "origin": "https://alice-default-notebook-ui.apps.cluster.example.com"}}}}}}
+    confidential_site(site, structural=True)
+    chart_copy = tmp_path / "saw-portal-container"
+    shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
+    docs = render("saw-portal-container", U, "saw-" + U, {
+        "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
+        "installationID": user()["installationID"], "intentGeneration": 1,
+        "vaultPrefix": user()["vaultPrefix"], "global": GLOBAL}, chart_path=chart_copy)
+    app, = [obj for obj in docs if obj["kind"] == "Application"
+            and obj["metadata"]["name"] == f"saw-c-{REG}-controller"]
+    config = app["spec"]["source"]["helm"]["valuesObject"]["configuration"]
+    prep, = [obj for obj in docs if obj["kind"] == "Job" and
+             obj["spec"]["template"]["spec"]["serviceAccountName"] == "saw-gate-preparation"]
+    assert "--whole-volume" in prep["spec"]["template"]["spec"]["containers"][0]["command"]
+    assert config["confidentialAttestation"] == {
+        "settings": site["attestation"], "owner": U, "registration": REG,
+        "installation": user()["installationID"]}
+
+
+def test_confidential_stack_pins_both_runtime_pod_classes_and_init_data(tmp_path):
+    site = copy.deepcopy(SITE)
+    site["kataRuntimeClass"] = {"name": "kata-remote", "uid": "11111111-1111-4111-8111-111111111111",
+                                "sha256": "a" * 64}
+    site["attestation"] = {"enabled": True, "references": confidential_references()}
+    site["credentialReferences"] = {
+        "inference": f"secret/data/hub/saw-{U}/credentials/inference",
+        "web-search": f"secret/data/hub/saw-{U}/credentials/web-search",
+    }
+    confidential_site(site, structural=True)
+    site["automaticEnrollment"]["reference"]["sandboxPlacement"] = "a" * 64
+    site["automaticEnrollment"]["reference"]["sandboxPlacementBinding"] = "a" * 64
+    chart_copy = tmp_path / "saw-portal-container"
+    shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
+    docs = render("saw-portal-container", U, "saw-" + U, {
+        "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
+        "installationID": user()["installationID"], "vaultPrefix": user()["vaultPrefix"],
+        "global": GLOBAL}, chart_path=chart_copy)
+    apps = {obj["metadata"]["name"]: obj for obj in docs if obj["kind"] == "Application"}
+    assert f"saw-c-{REG}-proxy" not in apps
+    confidential_policy = [obj for obj in docs if obj["kind"] == "ConfigMap"
+                           and obj["metadata"]["name"] == U + "-confidential-provider-policy"]
+    assert len(confidential_policy) == 1
+    assert confidential_policy[0]["immutable"] is True
+    assert json.loads(confidential_policy[0]["data"]["policy.json"]) == site["providerPolicy"]
+    trustee_resources = [obj for obj in docs if obj["kind"] == "ExternalSecret"]
+    assert len(trustee_resources) == 1
+    trustee_resource, = trustee_resources
+    assert trustee_resource["metadata"]["namespace"] == "trustee-system"
+    assert trustee_resource["metadata"]["labels"]["saw.redhat.com/portal-owner"] == U
+    assert trustee_resource["metadata"]["labels"]["saw.redhat.com/registration"] == REG
+    assert trustee_resource["spec"]["secretStoreRef"] == {
+        "kind": "ClusterSecretStore", "name": "vault-backend"}
+    assert trustee_resource["spec"]["target"]["name"] == f"saw-{U}-{REG}"
+    assert {row["remoteRef"]["key"] for row in trustee_resource["spec"]["data"]} == {
+        site["credentialReferences"]["inference"]}
+    assert all("value" not in row for row in trustee_resource["spec"]["data"])
+    trustee_roles = [obj for obj in docs if obj["kind"] == "Role"
+                     and obj["metadata"]["namespace"] == "trustee-system"]
+    kbs_rule = next(rule for role in trustee_roles for rule in role["rules"]
+                    if "kbsconfigs" in rule["resources"])
+    assert kbs_rule["verbs"] == ["get", "patch"]
+    assert any("externalsecrets" in rule["resources"] and rule["verbs"] == ["get"]
+               for role in trustee_roles for rule in role["rules"])
+    gateway = apps[f"saw-c-{REG}-gateway"]["spec"]["source"]["helm"]["valuesObject"]
+    assert gateway["deployment"]["mode"] == "kata"
+    assert gateway["kubernetes"]["workload"]["runtimeClassName"] == "kata-remote"
+    confidential = gateway["kubernetes"]["confidential"]
+    assert confidential["enabled"] is True
+    assert confidential["supervisors"]["default/notebook"]["runtime_class_name"] == "kata-remote"
+    assert confidential["workloads"]["default/notebook"]["runtime_class_name"] == "kata-remote"
+    assert confidential["supervisors"]["default/notebook"]["init_data"] == "e30="
+    gateway_docs = child(apps[f"saw-c-{REG}-gateway"])
+    gateway_pod = next(obj["spec"]["template"]["spec"] for obj in gateway_docs
+                       if obj["kind"] == "StatefulSet" and obj["metadata"]["name"] == "alice-gateway")
+    assert all(volume["name"] != "proxy-ca" for volume in gateway_pod["volumes"])
+    assert all(mount["name"] != "proxy-ca" for container in gateway_pod["containers"]
+               for mount in container.get("volumeMounts", []))
+    gateway_config, = [obj for obj in gateway_docs if obj["kind"] == "ConfigMap"
+                       and obj["metadata"]["name"] == "alice-gateway-config"]
+    assert "https_proxy" not in gateway_config["data"]["gateway.toml"]
+    policy = apps[f"saw-c-{REG}-policy"]["spec"]["source"]["helm"]["valuesObject"]
+    assert policy["confidentialMode"] is True
+    assert policy["confidentialSupervisors"]["default--notebook"]["init_data"] == "e30="
+    assert policy["confidentialWorkloads"]["default--notebook"]["runtime_class_name"] == "kata-remote"
+    assert not any(obj["kind"] == "ConfigMap" and
+                   obj["metadata"]["name"] == f"saw-confidential-{U}-{REG}" for obj in docs)
+    bootstrap_json = confidential["supervisors"]["default/notebook"]["bootstrap_json"]
+    bootstrap = json.loads(bootstrap_json)
+    assert bootstrap["schemaVersion"] == 1
+    assert bootstrap["policy"] == site["providerPolicy"]
+    assert bootstrap["resources"]["inference"] == f"default/saw-alice-{REG}/inference"
+    assert policy["confidentialSupervisors"]["default--notebook"]["bootstrap_json"] == bootstrap_json
+    import tomllib
+    driver = tomllib.loads(gateway_config["data"]["gateway.toml"])["openshell"]["drivers"]["kubernetes"]
+    assert driver["confidential_supervisors"]["default/notebook"]["bootstrap_json"] == bootstrap_json
+    assert all("value" not in binding for binding in bootstrap["policy"]["bindings"])
+
+
 def test_static_mixed_backends_keep_vm_resolution_in_the_root():
     values = {"global": GLOBAL, "users": [user(), {"name": "bob"}], "containerSites": {U: SITE},
               "ownerResolution": {"enabled": True},
@@ -679,3 +914,47 @@ def test_the_pattern_installs_the_collector():
     for signal in ("logs", "traces"):   # OCSF events and relayed agent traces
         assert pipelines[signal]["receivers"] == ["otlp"] and pipelines[signal]["exporters"] == ["debug"]
     assert collector["spec"]["config"]["receivers"]["otlp"]["protocols"] == {"grpc": {"endpoint": "0.0.0.0:4317"}}
+
+
+@pytest.mark.parametrize("chart",["saw-users","saw-portal-container"])
+def test_confidential_enrollment_cannot_use_legacy_secret_path(chart):
+    import copy
+    site=copy.deepcopy(SITE)
+    site["attestation"]={"enabled":True,"references":confidential_references()}
+    if chart=="saw-users":
+        values={"global":GLOBAL,"users":[user()],"containerSites":{U:site}}
+        ns="saw-portal"
+    else:
+        site["kataRuntimeClass"]={"name":"kata-remote","uid":"11111111-1111-4111-8111-111111111111","sha256":"a"*64}
+        site["providerAllowHosts"]=["api.openai.com"]
+        site["providerPolicy"]={"allowHosts":["api.openai.com"],"bindings":[{"secret":"inference","key":"api_key","providers":["openai"]}],"markerPrefix":"saw-cred","profiles":{"openai":["api.openai.com"]}}
+        site["credentialReferences"]={"inference":f"secret/data/hub/saw-{U}/credentials/inference"}
+        confidential_site(site)
+        values=dict(owner=U,ownerSubject=site["subject"],registration=REG,
+                    installationID=user()["installationID"],vaultPrefix=user()["vaultPrefix"],site=site,**{"global":GLOBAL})
+        ns="saw-"+U
+    with pytest.raises(AssertionError,match="AttestationLaunchPolicyRequired"):
+        render(chart,U,ns,values)
+
+
+
+def test_confidential_first_install_renders_without_published_enrollment():
+    site = copy.deepcopy(SITE)
+    site["kataRuntimeClass"] = {"name": "kata-remote", "uid": "11111111-1111-4111-8111-111111111111", "sha256": "a"*64}
+    site["attestation"] = {"enabled": True, "references": confidential_references()}
+    site["credentialReferences"] = {"inference": f"secret/data/hub/saw-{U}/credentials/inference",
+                                    "web-search": f"secret/data/hub/saw-{U}/credentials/web-search"}
+    confidential_site(site, structural=True)
+    site["automaticEnrollment"]["reference"].update(sandboxPlacement="a"*64, sandboxPlacementBinding="a"*64)
+    site.pop("enrollment")
+    assert "proxy" not in site["stack"]
+    docs = render("saw-portal-container", U, "saw-"+U, dict(
+        owner=U, ownerSubject=site["subject"], registration=REG,
+        installationID=user()["installationID"], vaultPrefix=user()["vaultPrefix"], site=site,
+        **{"global": GLOBAL}))
+    assert any(o["kind"] == "Job" for o in docs)
+    assert not any(o["kind"] == "Application" and o["spec"]["source"]["path"] == "charts/saw-kubernetes-proxy" for o in docs)
+    bootstrap = next(o for o in docs if o["kind"] == "ConfigMap" and "config.json" in o.get("data", {}))
+    assert len(json.loads(bootstrap["data"]["config.json"])["reference"]) == 31
+    provider = [o for o in docs if o["kind"] == "ExternalSecret"]
+    assert provider and all(o["metadata"]["namespace"] == "trustee-system" for o in provider)

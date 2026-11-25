@@ -41,6 +41,7 @@ spec:
     - name: user
       description: The user the request was for.
   volumes:
+    {{- include "openshell-rhdh.containerSitesVolume" . | nindent 4 }}
     {{- if $sitesConfigured }}
     - name: owner-directory
       secret: {secretName: saw-generator-keycloak, items: [{key: client_secret, path: client_secret}]}
@@ -63,6 +64,7 @@ spec:
       # enabled on the Argo CD controller (off by default on a fresh install).
       computeResources: {}
       volumeMounts:
+        {{- include "openshell-rhdh.containerSitesMount" . | nindent 8 }}
         {{- if $sitesConfigured }}
         - {name: owner-directory, mountPath: /etc/saw-owner-directory, readOnly: true}
         {{- end }}
@@ -87,6 +89,8 @@ spec:
         - name: CLUSTER_DOMAIN
           value: {{ .Values.global.clusterDomain | quote }}
         {{- include "openshell-rhdh.containerSitesEnv" . | nindent 8 }}
+        - name: SAW_TRUSTEE_KBS_CONFIG_REFS
+          value: {{ .Values.portal.trusteeKbsConfigRefs | default list | toJson | quote }}
         - name: SAW_DEPLOYMENT_MODES
           value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
         - name: CATALOG_PATH

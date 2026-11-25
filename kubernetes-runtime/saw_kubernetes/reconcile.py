@@ -102,7 +102,8 @@ class Reconciler:
     providing a no-op in a deployment is not qualification.
     """
 
-    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None, read_credential=None):
+    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None,
+                 read_credential=None, verify_confidential=None):
         self.rpc = rpc
         # read_credential(secret, key) -> (value, revision) from the trusted
         # namespace; called only when a value is handed to OpenShell.
@@ -112,6 +113,9 @@ class Reconciler:
         if not callable(verify_resources):
             raise ContractError("resource verifier is required", safe_reason="InvalidPlan")
         self.verify_resources = verify_resources
+        if verify_confidential is not None and not callable(verify_confidential):
+            raise ContractError("confidential boundary verifier must be callable", safe_reason="InvalidPlan")
+        self.verify_confidential = verify_confidential
         self.verify_shutdown = (verify_shutdown if verify_shutdown is not None else
                                 getattr(verify_resources, "verify_shutdown", verify_resources))
         if not callable(self.verify_shutdown):
@@ -189,9 +193,21 @@ class Reconciler:
             raise ContractError("a positive intent generation and Running/Stopped state are required",
                                 safe_reason="InvalidIntent")
         body = {k: v for k, v in plan.items() if k != "revision"}
-        if plan.get("sourceRevision") != SOURCE_REVISION or plan.get("schemaVersion") != 1 or digest(body) != plan.get("revision"):
+        schema = plan.get("schemaVersion")
+        if (plan.get("sourceRevision") != SOURCE_REVISION or schema not in (1, 2)
+                or digest(body) != plan.get("revision")
+                or (schema == 1 and "attestation" in plan)
+                or (schema == 2 and not isinstance(plan.get("attestation"), dict))):
             raise ContractError("invalid or modified compiled plan", safe_reason="InvalidPlan")
-        if plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
+        if schema == 2:
+            if (plan.get("mode") != "kata" or plan.get("requestedPlacement") !=
+                    {"supervisor": "confidential", "workload": "confidential"}):
+                raise ContractError("confidential placement differs from the approved plan",
+                                    safe_reason="PlacementRejected")
+            if self.verify_confidential is None:
+                raise ContractError("confidential compute driver is not qualified",
+                                    safe_reason="AttestationIntegrationUnavailable")
+        elif plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
                 "supervisor": "container", "workload": plan["mode"]}:
             raise ContractError("stock adapter requires an ordinary-container supervisor",
                                 safe_reason="PlacementRejected")
@@ -211,6 +227,10 @@ class Reconciler:
             if previous.get("generation", 0) > generation or (previous.get("generation") == generation and previous != intent):
                 raise ContractError("stale generation or conflicting intent at the same generation",
                                     safe_reason="StaleIntent")
+            if schema == 2 and desired_state == "Running":
+                # Recheck enrolled driver, Trustee, measurements and placements
+                # before every RPC pass. Never infer approval from a plan flag.
+                self.verify_confidential(plan)
             (self.verify_shutdown if desired_state == "Stopped" else self.verify_resources)(plan)
             state.update(identity=identity, intent=intent)
             self.store.save(state)
@@ -250,7 +270,7 @@ class Reconciler:
             # Resolve platform scope explicitly (workspace_scope omitted). A
             # workspace administrator's same-name custom profile is not enough.
             profile = self.rpc.call("GetProviderProfile", {"id": provider_type}).get("profile", {})
-            credentialed = any(p.get("credentialRef") for w in plan["workspaces"] for p in w["providers"]
+            credentialed = any(p.get("credentialRef") or p.get("credentials") for w in plan["workspaces"] for p in w["providers"]
                                if p["type"] == provider_type)
             if credentialed:
                 # OpenShell attaches this credential only to the profile's

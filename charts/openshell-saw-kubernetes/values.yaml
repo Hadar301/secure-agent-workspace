@@ -26,6 +26,12 @@ kubernetes:
     # Keep equal to saw-portal-container driverDefaults.runtimeImage.
     runtimeImage: ghcr.io/sauagarwa/saw-openshell-sandbox@sha256:402b9727a690e8c8a10fb10c0cee21e96ea034b652d6c7d5b3f06eba916c9881
     runtimeClassName: ""
+  confidential:
+    # This setting remains false until a signed, qualified guest image and
+    # measured Trustee policy are approved by the site.
+    enabled: false
+    supervisors: {}
+    workloads: {}
   identity:
     # Existing, retained identity; generated once outside Helm by its owner.
     # server TLS: tls.crt,tls.key,ca.crt; client CA: ca.crt only mounted.

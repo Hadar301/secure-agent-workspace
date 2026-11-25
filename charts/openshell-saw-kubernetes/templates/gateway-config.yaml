@@ -76,6 +76,7 @@ data:
     # second guest kernel.
     supervisor_runtime_class_name = {{ .Values.kubernetes.workload.runtimeClassName | quote }}
     {{- end }}
+    confidential_mode = {{ .Values.kubernetes.confidential.enabled }}
     workspace_storage_class = {{ .Values.kubernetes.storage.className | quote }}
     workspace_default_storage_size = {{ .Values.kubernetes.storage.workspaceSize | quote }}
     allow_driver_config = true
@@ -84,7 +85,7 @@ data:
     supervisor_image_pull_policy = "IfNotPresent"
     sandbox_runtime_image_pull_policy = "IfNotPresent"
     image_pull_secrets = {{ .Values.kubernetes.imagePullSecrets | toJson }}
-{{- if .Values.kubernetes.proxy.url }}
+{{- if and (not .Values.kubernetes.confidential.enabled) .Values.kubernetes.proxy.url }}
     https_proxy = {{ .Values.kubernetes.proxy.url | quote }}
     # Stock SAW proxy accepts DNS:443 CONNECT targets, never literal IPs.
     proxy_connect_by_hostname = true
@@ -97,6 +98,17 @@ data:
     "openshell.ai/sandbox-attachable-workspace" = "${workspace}"
     [openshell.drivers.kubernetes.sandbox_runtime]
     boundary_port = 5500
+    {{- range $slot, $placement := .Values.kubernetes.confidential.supervisors }}
+    [openshell.drivers.kubernetes.confidential_supervisors.{{ $slot | quote }}]
+    runtime_class_name = {{ $placement.runtime_class_name | quote }}
+    init_data = {{ $placement.init_data | quote }}
+    bootstrap_json = {{ $placement.bootstrap_json | quote }}
+    {{- end }}
+    {{- range $slot, $placement := .Values.kubernetes.confidential.workloads }}
+    [openshell.drivers.kubernetes.confidential_workloads.{{ $slot | quote }}]
+    runtime_class_name = {{ $placement.runtime_class_name | quote }}
+    init_data = {{ $placement.init_data | quote }}
+    {{- end }}
     [[openshell.gateway.interceptors]]
     name = "governance"
     grpc_endpoint = {{ .Values.kubernetes.governance.endpoint | quote }}

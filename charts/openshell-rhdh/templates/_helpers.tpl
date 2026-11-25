@@ -174,14 +174,25 @@ from the release is enough and keeps renders stable.
 {{- end -}}
 
 {{- define "openshell-rhdh.containerSitesEnv" -}}
-- name: SAW_CONTAINER_SITES
+- name: SAW_CONTAINER_SITES_FILE
+  value: /etc/saw-sites/container-sites.json
+{{- end -}}
+
+{{- define "openshell-rhdh.containerSitesMount" -}}
+- name: site-approvals
+  mountPath: /etc/saw-sites
+  readOnly: true
+{{- end -}}
+
+{{- define "openshell-rhdh.containerSitesVolume" -}}
+- name: site-approvals
   {{- if .Values.portal.containerSitesSecretName }}
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.portal.containerSitesSecretName | quote }}
-      key: container-sites.json
+  secret:
+    secretName: {{ .Values.portal.containerSitesSecretName | quote }}
+    items: [{key: container-sites.json, path: container-sites.json}]
   {{- else }}
-  value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+  configMap:
+    name: saw-portal-sites
   {{- end }}
 {{- /* Shared site for every owner without their own entry (saw-users'
 containerDefaults, from overrides/saw-container-defaults.yaml). Subjects come
@@ -199,6 +210,10 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- $template := $root.Files.Get .path | fromYaml -}}
 {{- $step := last $template.spec.parameters -}}
 {{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
+{{- if .confidential -}}
+{{- if not (has "kata" $modes) -}}{{- fail "confidential Kata template requires kata in portal.deploymentModes" -}}{{- end -}}
+{{- $modes = list "kata" -}}
+{{- end -}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
 {{- $approved := dict "container" (dict) "kata" (dict) -}}

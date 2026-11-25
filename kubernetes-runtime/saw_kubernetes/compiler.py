@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from .core import shared
 from . import harness
+from . import attestation
 from . import provider as governed
 
 SOURCE_REVISION = "305c8b3d7bbdb97a6f2f7264c3ad43b0087c307f"
@@ -23,6 +24,7 @@ MANAGED = "saw.redhat.com/managed-by"
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\Z")
 IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}\Z")
 QUANTITY = re.compile(r"[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?\Z")
+INIT_DATA_ANNOTATION = "io.katacontainers.config.hypervisor.cc_init_data"
 
 
 SAFE_FAILURE_REASONS = frozenset({
@@ -31,6 +33,9 @@ SAFE_FAILURE_REASONS = frozenset({
     "ProviderProfileMismatch", "ProviderRefreshFailed",
     "WorkspaceRejected", "ProviderRejected", "SandboxRejected",
     "SandboxStateMismatch", "SandboxDrift", "ReenrollRequired",
+    "ProviderProfileMismatch", "AttestationIntegrationUnavailable",
+    "SandboxStateMismatch", "SandboxDrift", "AttestationLaunchSpecMismatch",
+    "ConfidentialHarnessUnsupported", "GuestImagePolicyKeyRejected",
 })
 
 
@@ -88,7 +93,8 @@ def _claim(binding, workspace, mount_path, volume_name):
     return volume, mount, reference
 
 
-def _storage(binding, workspace):
+def _storage(binding, workspace, *, whole_volume=False):
+    paths = shared.tool_gate_paths(whole_volume=whole_volume)
     mapping(binding, {"workspace", "mounts", "resources", "browser", "toolGate"}, {"workspace"}, "sandbox binding")
     volume, mount, reference = _claim(binding["workspace"], workspace, "/sandbox/workspace", "saw-workspace")
     if reference["name"].startswith(("saw-gate-", "saw-audit-")):
@@ -107,13 +113,14 @@ def _storage(binding, workspace):
         if "localAudit" in gate and (gate["localAudit"] is not True or "receiptKey" in gate):
             raise ContractError("localAudit is true, and only without a receipt key")
         for field, volume_name, path, readonly in [
-            ("trusted", "saw-gate", "/sandbox/.saw/trusted", True),
-            ("audit", "saw-audit", "/sandbox/.saw/audit", False),
+            ("trusted", "saw-gate", paths["trustedMount"], True),
+            ("audit", "saw-audit", paths["auditMount"], False),
         ]:
             volume, mount, reference = _claim(gate[field], workspace, path, volume_name)
             if not reference["name"].startswith(volume_name + "-") or mount["read_only"] != readonly:
                 raise ContractError(f"{field} requires the reserved claim prefix and mount mode")
-            mount["sub_path"] = "bundle" if readonly else "log"
+            if not whole_volume:
+                mount["sub_path"] = "bundle" if readonly else "log"
             volumes.append(volume)
             mounts.append(mount)
             refs.append(reference)
@@ -234,6 +241,38 @@ def _compatible_inference(workspace, sandbox, config):
 REFRESH_MATERIAL = ("client_id", "client_secret", "refresh_token")
 
 
+def _confidential_configuration(value, mode, runtime_class):
+    if value is None:
+        return None
+    mapping(value, {"settings", "owner", "registration", "installation", "placements"},
+            {"settings", "owner", "registration", "installation"}, "confidential attestation")
+    supplied_placements = value.get("placements")
+    if supplied_placements is not None and not isinstance(supplied_placements, dict):
+        raise ContractError("confidential placements must be an object", safe_reason="PlacementRejected")
+    try:
+        settings = attestation.validate({"attestation": value["settings"]}, mode)
+        if settings is None:
+            raise attestation.AttestationError("AttestationConfigurationRejected")
+        owner = name(value["owner"], "attestation owner", 19)
+        registration = value["registration"]
+        if not isinstance(registration, str) or not re.fullmatch(r"[a-f0-9]{16}", registration):
+            raise attestation.AttestationError("AttestationIdentityRejected")
+        installation = value["installation"]
+        if str(uuid.UUID(installation)) != installation:
+            raise ValueError()
+        if not runtime_class:
+            raise attestation.AttestationError("AttestationConfigurationRejected")
+    except attestation.AttestationError as exc:
+        raise ContractError(str(exc), safe_reason=str(exc)) from None
+    except (ValueError, TypeError, AttributeError):
+        raise ContractError("AttestationIdentityRejected", safe_reason="AttestationConfigurationRejected") from None
+    result = {"settings": settings, "owner": owner, "registration": registration,
+              "installation": installation}
+    if supplied_placements is not None:
+        result["placements"] = supplied_placements
+    return result
+
+
 def compile_profile_files(files, config, gateway_profiles=None):
     """Compile stock SAW ConfigMap data with administrator-approved bindings.
 
@@ -255,7 +294,7 @@ def compile_profile_files(files, config, gateway_profiles=None):
         raise ContractError("profile documents fail shared SAW schema or semantic validation") from None
     mapping(config, {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode",
                      "workloadRuntimeClass", "workloadRuntimeClassUID", "workloadRuntimeClassDigest", "bindings",
-                     "approvedCredentialFreeProviders", "gatewayVersion", "retiredSandboxes", "modelInputs", "credentialBindings", "customInferenceURL"},
+                     "approvedCredentialFreeProviders", "gatewayVersion", "retiredSandboxes", "modelInputs", "credentialBindings", "customInferenceURL", "confidentialAttestation"},
             {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode", "bindings",
              "approvedCredentialFreeProviders", "gatewayVersion"}, "administrator configuration")
     try:
@@ -288,6 +327,8 @@ def compile_profile_files(files, config, gateway_profiles=None):
         runtime_ref["sha256"] = sha
     else:
         raise ContractError("this adapter only accepts container or kata")
+    confidential = _confidential_configuration(
+        config.get("confidentialAttestation"), mode, runtime_ref["name"])
     approved = config["approvedCredentialFreeProviders"]
     if not isinstance(approved, list) or any(not isinstance(p, str) for p in approved):
         raise ContractError("approvedCredentialFreeProviders must be a list")
@@ -322,8 +363,14 @@ def compile_profile_files(files, config, gateway_profiles=None):
                     ref["refresh"] = provider.refresh_strategy
                 if ref not in config.get("credentialBindings", []):
                     raise ContractError("provider credential is not one the site approved")
-                entry["credentialRef"] = {"secret": ref["secret"], "key": ref["key"]}
-                if provider.refresh_strategy:
+                if confidential is not None:
+                    public_bindings = [{**binding, "refresh": bool(binding.get("refresh"))}
+                                       for binding in config.get("credentialBindings", [])]
+                    entry["credentials"] = governed.checked_marker(
+                        provider, public_bindings, config.get("customInferenceURL"))
+                else:
+                    entry["credentialRef"] = {"secret": ref["secret"], "key": ref["key"]}
+                if provider.refresh_strategy and confidential is None:
                     # OpenShell refreshes the access token from this material
                     # (in the same Secret) once the reconciler configures it.
                     entry["refresh"] = {"strategy": provider.refresh_strategy, "material": list(REFRESH_MATERIAL)}
@@ -343,7 +390,8 @@ def compile_profile_files(files, config, gateway_profiles=None):
                 raise ContractError("UI route capability requires the matching approved OpenClaw browser binding")
             if sandbox.type in ("openclaw", "nemoclaw"):
                 inference_provider, info = _compatible_inference(workspace, sandbox, config)
-                if not any(p["metadata"]["name"] == inference_provider.name and p.get("credentialRef")
+                if not any(p["metadata"]["name"] == inference_provider.name and
+                           (p.get("credentials") if confidential is not None else p.get("credentialRef"))
                            for p in providers):
                     raise ContractError("agent requires an explicitly bound inference credential")
                 kind = inference_provider.type
@@ -380,7 +428,7 @@ def compile_profile_files(files, config, gateway_profiles=None):
             used_bindings.add(key)
             if sandbox.type not in ("openclaw", "nemoclaw") and "browser" in bindings[key]:
                 raise ContractError("browser settings require an OpenClaw sandbox")
-            driver, refs = _storage(bindings[key], ws_name)
+            driver, refs = _storage(bindings[key], ws_name, whole_volume=confidential is not None)
             all_refs.extend(refs)
             if "toolGate" in bindings[key]:
                 if sandbox.type not in ("openclaw", "nemoclaw"):
@@ -395,7 +443,7 @@ def compile_profile_files(files, config, gateway_profiles=None):
                 try:
                     enrolled = harness.binding_for(sandbox, bundles)
                     rules = harness.tool_rules(bundles[enrolled["name"]] if enrolled else None)
-                    _, _, gate_digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key, rules)
+                    _, _, gate_digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key, rules, whole_volume=confidential is not None)
                 except shared.InstallerError as exc:
                     raise ContractError(str(exc)) from exc
                 script = Path(__file__).with_name("tool_gate_preflight.js").read_text()
@@ -451,15 +499,30 @@ exec openclaw gateway""")
                     # no gateway yet and leaves this check to the controller.
                     catalog = (None if gateway_profiles is None else
                                {t: gateway_profiles[t] for t in provider_types if t in gateway_profiles})
-                    harness.configure(command, driver, bundles[expected_harness["name"]], workspace, sandbox, catalog)
+                    harness.configure(command, driver, bundles[expected_harness["name"]], workspace, sandbox, catalog,
+                                      whole_volume=confidential is not None)
             except shared.InstallerError as exc:
                 raise ContractError(str(exc)) from exc
+            if confidential is not None and "toolGate" in bindings[key]:
+                paths = shared.tool_gate_paths(whole_volume=True)
+                # Hash the nested bundle, but check the actual PVC mount roots.
+                command[2] = (command[2]
+                    .replace("mountOptions(root)", "mountOptions(" + json.dumps(paths["trustedMount"]) + ")")
+                    .replace("mountOptions('/sandbox/.saw/audit')",
+                             "mountOptions(" + json.dumps(paths["auditMount"]) + ")")
+                    .replace("/sandbox/.saw/trusted", paths["trusted"])
+                    .replace("/sandbox/.saw/audit/", paths["audit"] + "/"))
             spec = {"template": {"image": sandbox.image, "driver_config": {"kubernetes": driver}},
                     "providers": sorted(references), "command": command, "tty": False}
             if sandbox.type in ("openclaw", "nemoclaw"):
                 # The boundary binary runs before the main command and inherits
                 # image TMPDIR. OpenShift assigns a distinct UID per namespace.
                 spec["template"]["environment"] = {"TMPDIR": "/tmp"}
+            if confidential is not None:
+                try:
+                    attestation.verify_launch_spec(confidential["settings"], key, spec)
+                except attestation.AttestationError as exc:
+                    raise ContractError(str(exc), safe_reason=str(exc)) from None
             sandboxes.append({"name": sandbox.name, "spec": spec, "annotations": {REVISION: digest(spec)},
                               "labels": {MANAGED: "kubernetes-runtime", OWNER: owner}})
         workspaces.append({"name": ws_name, "providers": sorted(providers, key=lambda p: p["metadata"]["name"]),
@@ -471,13 +534,41 @@ exec openclaw gateway""")
     claims = [r["name"] for r in all_refs]
     if len(claims) != len(set(claims)):
         raise ContractError("sharing retained claims between sandboxes is not supported")
-    plan = {"schemaVersion": 1, "sourceRevision": SOURCE_REVISION, "ownerID": owner,
+    plan = {"schemaVersion": 2 if confidential else 1, "sourceRevision": SOURCE_REVISION, "ownerID": owner,
             "namespace": config["namespace"], "namespaceUID": config["namespaceUID"],
             "ownerSubject": config["ownerSubject"], "mode": mode, "gatewayVersion": config["gatewayVersion"],
-            "requestedPlacement": {"supervisor": "container", "workload": mode},
+            "requestedPlacement": ({"supervisor": "confidential", "workload": "confidential"}
+                                   if confidential else {"supervisor": "container", "workload": mode}),
             "runtimeClass": runtime_ref,
             "claims": sorted(all_refs, key=lambda r: (r["workspace"], r["name"])),
             "workspaces": sorted(workspaces, key=lambda w: w["name"])}
+    if confidential:
+        slots = [f"{workspace['name']}/{sandbox['name']}"
+                 for workspace in workspaces for sandbox in workspace["sandboxes"]]
+        try:
+            plan["attestation"] = attestation.placement_contract(
+                {"attestation": confidential["settings"]}, confidential["owner"],
+                confidential["registration"], confidential["installation"], slots,
+                runtime_ref["name"])
+        except attestation.AttestationError as exc:
+            raise ContractError(str(exc), safe_reason=str(exc)) from None
+        placements = plan["attestation"]["placements"]
+        if confidential.get("placements") is not None and confidential["placements"] != placements:
+            raise ContractError("enrolled confidential placements changed", safe_reason="PlacementRejected")
+        for workspace in workspaces:
+            for sandbox in workspace["sandboxes"]:
+                slot = f"{workspace['name']}/{sandbox['name']}"
+                placement = placements[slot]["workload"]
+                template = sandbox["spec"]["template"]
+                platform = template.setdefault("platform_config", {})
+                if not isinstance(platform, dict):
+                    raise ContractError("confidential Pod template is invalid", safe_reason="PlacementRejected")
+                annotations = platform.setdefault("annotations", {})
+                if not isinstance(annotations, dict):
+                    raise ContractError("confidential Pod annotations are invalid", safe_reason="PlacementRejected")
+                platform["runtime_class_name"] = placement["runtime_class_name"]
+                annotations[INIT_DATA_ANNOTATION] = placement["init_data"]
+                sandbox["annotations"][REVISION] = digest(sandbox["spec"])
     if any(p["type"] == "custom-inference" for w in workspaces for p in w["providers"]):
         plan["customInferenceURL"] = config["customInferenceURL"]
     retired = config.get("retiredSandboxes", {})

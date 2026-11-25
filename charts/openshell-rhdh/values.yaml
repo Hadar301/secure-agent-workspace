@@ -101,12 +101,23 @@ portal:
   # Administrator-owned request allowlist. Kata appears only for owners with a
   # reviewed RuntimeClass and an approved profile. Existing workspace mode is immutable.
   deploymentModes: [vm, kata]
+  # Adds a separate form that sends no provider key values. Enable only after
+  # confidential placement, Trustee policy and Vault references are qualified.
+  confidentialWorkspaceTemplate:
+    enabled: false
   containerSites: {} # Administrator-owned, keyed by login; empty denies all container requests.
   # Use an existing Secret in portal.namespace for owner approvals that must
   # stay out of Git. Its container-sites.json key has the same JSON shape as
   # containerSites. When set, the form shows enabled modes and profiles; the
   # provisioner still checks the exact owner and profile against the Secret.
   containerSitesSecretName: ""
+  # Exact Trustee KbsConfig API paths that the trusted provisioner may update
+  # to add or revoke one owner-registration resource name. Keep old paths here
+  # until workspaces enrolled against them have been deleted.
+  trusteeKbsConfigRefs: []
+  # Named public approval reads for sites supplied by containerSitesSecretName.
+  # These permissions do not approve an object or grant Secret access.
+  attestationPreflightRefs: []
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
   # Python 3 with the standard library is all portal.py needs.

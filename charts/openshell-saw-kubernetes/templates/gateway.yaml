@@ -89,7 +89,7 @@ spec:
             - {name: client-ca, mountPath: /etc/openshell-tls/client-ca, readOnly: true}
             - {name: jwt, mountPath: /etc/openshell-jwt, readOnly: true}
             - {name: peer-token, mountPath: /var/run/secrets/openshell-peer, readOnly: true}
-{{- if $k.proxy.url }}
+{{- if and (not $k.confidential.enabled) $k.proxy.url }}
             - {name: proxy-ca, mountPath: /etc/openshell-tls/proxy-ca, readOnly: true}
 {{- end }}
             - {name: tmp, mountPath: /tmp}
@@ -107,7 +107,7 @@ spec:
             secretName: {{ $k.identity.clientCaSecret | quote }}
             items: [{key: ca.crt, path: ca.crt}]
         - {name: jwt, secret: {secretName: {{ $k.identity.jwtSecret | quote }}, defaultMode: 0440}}
-{{- if $k.proxy.url }}
+{{- if and (not $k.confidential.enabled) $k.proxy.url }}
         - {name: proxy-ca, configMap: {name: {{ $k.proxy.caConfigMap | quote }}}}
 {{- end }}
         - {name: tmp, emptyDir: {}}

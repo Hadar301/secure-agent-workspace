@@ -283,6 +283,38 @@ def test_the_provisioner_may_delete_only_portal_applications(docs):
                                           "verbs": ["get", "delete"]}]
 
 
+def test_provisioner_kbs_config_access_is_exact_and_scoped(tmp_path):
+    path = "/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"
+    values = tmp_path / "trustee-values.yaml"
+    values.write_text(yaml.safe_dump({"portal": {"trusteeKbsConfigRefs": [path]}}))
+    docs = render("-f", str(values))
+    roles = [d for d in docs if d["kind"] == "Role" and d["metadata"]["namespace"] == "trustee-system"
+             and any("kbsconfigs" in rule.get("resources", []) for rule in d.get("rules", []))]
+    assert len(roles) == 1
+    role = roles[0]
+    assert role["rules"] == [{"apiGroups": ["confidentialcontainers.org"], "resources": ["kbsconfigs"],
+                               "resourceNames": ["kbs"], "verbs": ["get", "patch"]}]
+    binding = next(d for d in docs if d["kind"] == "RoleBinding"
+                   and d["metadata"]["name"] == role["metadata"]["name"])
+    assert binding["metadata"]["namespace"] == "trustee-system"
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "saw-portal-provisioner",
+                                    "namespace": "saw-portal"}]
+
+
+@pytest.mark.parametrize("refs", [
+    ["/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs/extra"],
+    ["/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"] * 2,
+])
+def test_invalid_provisioner_kbs_config_allowlist_fails_render(tmp_path, refs):
+    values = tmp_path / "trustee-values.yaml"
+    values.write_text(yaml.safe_dump({"portal": {"trusteeKbsConfigRefs": refs}}))
+    result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh", "-f", str(values)],
+                      capture_output=True, text=True)
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+    assert "portal.trusteeKbsConfigRefs" in result.stderr
+
+
 @pytest.mark.ci_external
 def test_stale_requests_are_cleaned_up(docs):
     cron = one(docs, "CronJob", "saw-portal-cleanup")
@@ -757,7 +789,6 @@ def test_container_choices_are_approved_catalog_profiles_in_both_forms():
 def test_secret_backed_site_approvals_feed_runtime_and_kata_form():
     docs = render("--set-string", "portal.containerSitesSecretName=site-approvals",
                   "--set-json", 'portal.admins=["admin"]')
-    secret_ref = {"secretKeyRef": {"name": "site-approvals", "key": "container-sites.json"}}
 
     task = one(docs, "Task", "saw-workspace")
     task_step = next(s for s in task["spec"]["steps"] if s["name"] == "run")
@@ -765,8 +796,13 @@ def test_secret_backed_site_approvals_feed_runtime_and_kata_form():
     generator_container = generator["spec"]["template"]["spec"]["containers"][0]
     for container in (task_step, generator_container):
         env = {entry["name"]: entry for entry in container["env"]}
-        assert env["SAW_CONTAINER_SITES"]["valueFrom"] == secret_ref
-        assert "value" not in env["SAW_CONTAINER_SITES"]
+        assert "SAW_CONTAINER_SITES" not in env
+        assert env["SAW_CONTAINER_SITES_FILE"]["value"] == "/etc/saw-sites/container-sites.json"
+        assert {"name": "site-approvals", "mountPath": "/etc/saw-sites", "readOnly": True} in container["volumeMounts"]
+    for pod in (task["spec"], generator["spec"]["template"]["spec"]):
+        volume = next(v for v in pod["volumes"] if v["name"] == "site-approvals")
+        assert volume["secret"] == {"secretName": "site-approvals", "items": [{"key": "container-sites.json", "path": "container-sites.json"}]}
+    assert not any(o["kind"] == "ConfigMap" and o["metadata"]["name"] == "saw-portal-sites" for o in docs)
     assert any(volume["name"] == "owner-directory" for volume in task["spec"]["volumes"])
 
     templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
@@ -913,3 +949,30 @@ def test_kata_forms_offer_only_profiles_approved_for_that_placement():
         assert fields["container"]["enum"] == ["custom-inference"]
         assert fields["kata"]["enum"] == ["data-science"]
         assert "site-kata" not in templates[name]
+
+
+
+def test_secret_backed_attestation_preflight_has_only_named_public_reads(tmp_path):
+    paths = ["/api/v1/namespaces/trustee-system/configmaps/public-qualification",
+             "/apis/apps/v1/namespaces/trustee-system/deployments/kbs",
+             "/apis/confidentialcontainers.org/v1alpha1/namespaces/trustee-system/kbsconfigs/kbs"]
+    file = tmp_path / "values.yaml"
+    file.write_text(yaml.safe_dump({"portal": {"containerSitesSecretName": "site-approvals",
+                                              "attestationPreflightRefs": paths + paths}}))
+    docs = render("-f", str(file))
+    roles = [o for o in docs if o["kind"] == "Role" and o["metadata"]["name"].startswith("saw-attestation-")]
+    assert len(roles) == 6  # Three deduplicated paths for each trusted reader.
+    assert all(o["rules"][0]["verbs"] == ["get"] and len(o["rules"][0]["resourceNames"]) == 1 for o in roles)
+    assert all("secrets" not in o["rules"][0]["resources"] for o in roles)
+    bindings = [o for o in docs if o["kind"] == "RoleBinding" and o["metadata"]["name"].startswith("saw-attestation-")]
+    assert {b["subjects"][0]["name"] for b in bindings} == {"saw-portal-provisioner", "saw-workspaces-generator"}
+
+
+@pytest.mark.parametrize("path", ["/api/v1/namespaces/trustee-system/secrets/key",
+                                  "/api/v1/namespaces/trustee-system/configmaps",
+                                  "/apis/apps/v1/namespaces/*/deployments/kbs"])
+def test_attestation_preflight_cannot_grant_secret_or_wildcard_access(tmp_path, path):
+    file = tmp_path / "values.yaml"
+    file.write_text(yaml.safe_dump({"portal": {"attestationPreflightRefs": [path]}}))
+    with pytest.raises(AssertionError, match="AttestationApprovalPathRejected"):
+        render("-f", str(file))

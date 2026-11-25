@@ -9,7 +9,8 @@ import hashlib
 import ipaddress
 import json
 import re
-from .boundary import BoundaryError, fingerprint, objects
+import ssl
+from .boundary import BoundaryError, approval_fingerprint, fingerprint, objects
 
 
 def contract(config, get):
@@ -55,7 +56,7 @@ def contract(config, get):
                     text = text.replace(config["gateway"] + "-" + relay[:8], "@SAW_SLOT_" + slot + "@")
                     text = text.replace("gate-" + relay + "-", "gate-@SAW_RELAY_" + slot + "@-")
                 text = text.replace("ui-" + relay + "-browser-proof", "ui-@SAW_RELAY_" + slot + "@-browser-proof")
-        output[key]=fingerprint(json.loads(text))
+        output[key]=approval_fingerprint(key, json.loads(text))
     return output
 
 

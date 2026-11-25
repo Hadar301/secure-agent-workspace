@@ -442,6 +442,13 @@ saw-preflight: .check-saw-name .check-deployment-mode ## Check Kubernetes worksp
 	fi
 	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py preflight
 
+.PHONY: saw-prepare-confidential saw-prepare-confidential-apply
+saw-prepare-confidential: .check-saw-name .check-deployment-mode ## Check confidential storage preparation without writes
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/confidential-prepare.py
+
+saw-prepare-confidential-apply: .check-saw-name .check-deployment-mode ## Reserve confidential storage without enrollment or credentials
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/confidential-prepare.py --apply
+
 saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 	@$(SCRIPTS_DIR)/saw-configure.sh
 # Keep the token saved by `openshell gateway add`. The separate make-login token
@@ -816,3 +823,9 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 .PHONY: kata-worker-check
 kata-worker-check: ## Report firmware and verify KVM on selected local-Kata workers
 	@$(or $(PYTHON),uv run --locked python) scripts/kata_worker_check.py
+
+# A foundation install has no owner or approved site yet. Only an explicit
+# Kubernetes workspace initialization can use the owner-specific read-only gate.
+ifneq ($(filter container kata,$(DEPLOYMENT_MODE)),)
+saw-init: saw-preflight
+endif

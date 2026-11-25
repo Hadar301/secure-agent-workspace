@@ -406,3 +406,11 @@ Make. A site can enable VM, Container and Kata together. Each active Kubernetes
 registration uses the placement approved for that login. Stop, start, model
 update, status, chat links and foreground deletion use the existing Kubernetes
 lifecycle implementation.
+
+
+## Confidential Kata and Trustee
+
+The existing Kata mode does not provide attested credential delivery. See
+[confidential Kata workspaces](confidential-kata-workspaces.md) for the new path,
+its deployment guard, and the remaining acceptance work. It is not yet available
+for provisioning.

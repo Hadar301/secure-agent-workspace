@@ -1,0 +1,3 @@
+{{- range $site := .Values.containerSites }}
+{{- include "saw.confidential.gate" $site -}}
+{{- end -}}

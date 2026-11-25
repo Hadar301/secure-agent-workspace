@@ -8,7 +8,8 @@ import subprocess
 import pytest
 
 from saw_kubernetes import compile_profile_files
-from .profile_fixtures import ROOT, briefing_inputs
+from saw_kubernetes.compiler import _storage
+from .profile_fixtures import ROOT, briefing_inputs, browser_slot
 
 
 def test_compiler_harness_output_and_tampering_against_rust_guard(tmp_path):
@@ -50,6 +51,17 @@ def test_compiler_harness_output_and_tampering_against_rust_guard(tmp_path):
             mounts.pop()
         else:
             mounts.append(copy.deepcopy(mounts[-1]))
+        invalid.append(driver)
+    root_driver = {"kubernetes": _storage(browser_slot(), "default", whole_volume=True)[0]}
+    valid.append(root_driver)
+    for index, field, value in [
+        (1, "sub_path", "bundle"), (1, "read_only", False),
+        (1, "mount_path", "/sandbox/.saw/trusted"),
+        (2, "sub_path", "log"), (2, "read_only", True),
+        (2, "mount_path", "/sandbox/.saw/audit"),
+    ]:
+        driver = copy.deepcopy(root_driver)
+        driver["kubernetes"]["containers"]["agent"]["volume_mounts"][index][field] = value
         invalid.append(driver)
     extension = ROOT/"image-builder-charts/helm/governance-interceptor-image/files/saw-extension/driver_config.rs"
     (tmp_path/"src").mkdir()

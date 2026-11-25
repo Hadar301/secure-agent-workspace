@@ -35,3 +35,12 @@ def test_portal_bootstrap_verifies_vault_before_sending_the_root_token():
     for request in requests:
         assert request["validate_certs"] is True
         assert request["ca_path"] == "{{ vault_ca }}"
+    policy = requests[0]["body"]["policy"]
+    assert 'path "{{ kv_mount }}/data/{{ prefix_base }}/saw-*"' in policy
+    assert 'capabilities = ["create", "update"]' in policy
+    assert 'capabilities = ["read", "delete"]' in policy
+    assert '"read"' not in policy.split('path "{{ kv_mount }}/data/', 1)[1].split("}", 1)[0]
+    setup = (ROOT / "scripts/portal-vault-setup.sh").read_text()
+    data_policy = setup.split('path "${KV_MOUNT}/data/', 1)[1].split("\n}", 1)[0]
+    assert 'capabilities = ["create", "update"]' in data_policy
+    assert '"read"' not in data_policy

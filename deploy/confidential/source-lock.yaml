@@ -1,0 +1,36 @@
+schemaVersion: 1
+status: blocked
+base:
+  saw: eb287284697a21aea54245173687858485146324
+  openshell: c2775b8df05619cdd57cb354ea8cd829ec79ee40
+  agentSandbox: b1277676f8bf0e82ea299928997ecf5d696a92f1
+  agentSandboxImage: registry.k8s.io/agent-sandbox/agent-sandbox-controller@sha256:ef1a1a3076afc996e711c44b388fbb7ffb7cd6858953d7e685166b299d77bd38
+  gatewayImage: quay.io/opendatahub/odh-openshell-gateway@sha256:e4b89770ef55238cc45d9880614eda64b8ab9a76be5e6c81c63a350889eb0717
+  supervisorImage: quay.io/opendatahub/odh-openshell-supervisor@sha256:c2c8e9d3d19a1612074df0f637078064cff45b92d35c74b116a72fb503b3c1bc
+  sandboxRuntimeImage: ghcr.io/sauagarwa/saw-openshell-sandbox@sha256:402b9727a690e8c8a10fb10c0cee21e96ea034b652d6c7d5b3f06eba916c9881
+bootstrap:
+  oscStartingCSV: sandboxed-containers-operator.v1.13.1
+  trusteeStartingCSV: trustee-operator.v1.2.1
+  installPlanApproval: Manual
+installed:
+  oscCSV: sandboxed-containers-operator.v1.13.1
+  oscImage: registry.redhat.io/openshift-sandboxed-containers/osc-rhel9-operator@sha256:5805a0ec3fce8903af6ff43457072aecd38ef67e19c1719c049244bcbf32a3f5
+  trusteeCSV: trustee-operator.v1.2.1
+  trusteeOperatorImage: registry.redhat.io/build-of-trustee/trustee-rhel9-operator@sha256:193b4d794fc1eeb023c46b485a8804acabeb6fbaca4186a808549ddbef755bf1
+  trusteeOperandImage: registry.redhat.io/build-of-trustee/trustee-rhel9@sha256:85312d29d6ea7b96396b567c96893ae2527d83b9fc7a459044ba610c98593fae
+qualified:
+  gatewayImage: null
+  supervisorImage: null
+  guestImage: null
+  referenceSet: null
+  verifiedIdentityClaim: null
+policyGenerator:
+  image: quay.io/openshift_sandboxed_containers/coco-tools@sha256:ad6e652427ca263faf7e1ab089871c35bf62f8822b817db6ffc5a19d2acfbefb
+  rulesRepository: https://github.com/openshift/kata-containers
+  rulesRevision: b17f640901e87e620ab74db428e8e0883cb91b81
+  rulesPath: src/tools/genpolicy/rules.rego
+  rulesSHA256: 1a755a5cf6cc6433ee79093a9cb48aff74a03dcf6e907da0157ea2860e32754d
+  rulesCodeSHA256: 2655cbb7641829dd88e0647cac76407a6072cdd130c77fda436fa9af08f4b43e
+  settingsPath: src/tools/genpolicy/genpolicy-settings.json
+  settingsSHA256: c542084030cab02298e56dff6f2e070827b519361cdfff1cdc0e5e0e52bdd887
+  environmentRulesSHA256: 2fd6b64642343ce37b71dc6f88377b70e8b2b1b35357fc7c4526b0e046e10240

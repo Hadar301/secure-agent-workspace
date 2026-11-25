@@ -4,6 +4,9 @@ enabled: false
 # exchange volume. false keeps only a best-effort audit log on the sandbox's
 # own volume.
 receipts: true
+# Reserve the same claims before generating measured launch policies.
+# This mode emits no workload, credential resource, Service, or RBAC.
+prepareOnly: false
 trustedNamespace: ""
 runtimeNamespace: ""
 image: ""

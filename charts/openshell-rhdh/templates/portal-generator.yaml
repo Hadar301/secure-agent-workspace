@@ -31,7 +31,8 @@ spec:
       labels:
         app.kubernetes.io/name: saw-workspaces-generator
       annotations:
-        checksum/scripts: {{ printf "%s%s%s" (.Files.Get "files/portal.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") | sha256sum | trunc 16 }}
+        checksum/scripts: {{ printf "%s%s%s%s" (.Files.Get "files/portal.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/attestation.py") | sha256sum | trunc 16 }}
+        checksum/sites: {{ .Values.portal.containerSites | default dict | toJson | sha256sum }}
         checksum/catalog: {{ .Files.Get "files/profile-catalog.json" | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: saw-workspaces-generator
@@ -99,6 +100,7 @@ spec:
           readinessProbe:
             httpGet: { path: /healthz, port: http }
           volumeMounts:
+            {{- include "openshell-rhdh.containerSitesMount" . | nindent 12 }}
             - name: scripts
               mountPath: /opt/saw
               readOnly: true
@@ -122,6 +124,7 @@ spec:
             capabilities: { drop: [ALL] }
             seccompProfile: { type: RuntimeDefault }
       volumes:
+        {{- include "openshell-rhdh.containerSitesVolume" . | nindent 8 }}
         - name: scripts
           configMap:
             name: saw-portal-scripts

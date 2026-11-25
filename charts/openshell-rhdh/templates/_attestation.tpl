@@ -1,0 +1,1 @@
+../../../deploy/confidential/helm/_attestation.tpl

@@ -33,6 +33,10 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- end -}}
 {{- if and .Values.telemetry.agentTraces (not .Values.telemetry.ocsfEndpoint) -}}{{- fail "telemetry.agentTraces relays to the telemetry.ocsfEndpoint collector; set it" -}}{{- end -}}
 {{- if not $k.network.gatewayEgress -}}{{- fail "explicit gateway API/DNS/OIDC/governance/proxy egress rules are required" -}}{{- end -}}
+{{- if $k.confidential.enabled -}}
+{{- if ne .Values.deployment.mode "kata" -}}{{- fail "confidential placement requires kata mode" -}}{{- end -}}
+{{- if or (empty $k.confidential.supervisors) (empty $k.confidential.workloads) -}}{{- fail "confidential supervisor and workload placements are required" -}}{{- end -}}
+{{- end -}}
 {{- range $rule := $k.network.gatewayEgress -}}
 {{- if or (not $rule.to) (not $rule.ports) -}}{{- fail "gateway egress rules need nonempty destinations and ports" -}}{{- end -}}
 {{- range $peer := $rule.to -}}

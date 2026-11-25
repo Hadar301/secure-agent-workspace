@@ -78,7 +78,7 @@ def main():
             catalog["profiles"] = list_profiles(gateway)
             return Reconciler(gateway, state / "core", resources.verify_attachments,
                               verify_shutdown=resources.verify_shutdown,
-                              read_credential=read_credential).reconcile(plan, **kwargs)
+                              read_credential=read_credential, verify_confidential=resources.verify_confidential).reconcile(plan, **kwargs)
 
     def compile_files(files, bindings):
         if "profiles" not in catalog:  # first cycle only

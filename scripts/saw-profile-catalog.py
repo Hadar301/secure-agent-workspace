@@ -12,6 +12,8 @@ Helm chart can only read its own files:
   charts/openshell-rhdh/files/create-workspace.yaml the RHDH template: the
                                                    profiles to pick from, and
                                                    the fields each one needs
+  charts/openshell-rhdh/files/create-confidential-kata-workspace.yaml the
+                                                   reference-only Kata form
   charts/openshell-rhdh/files/delete-workspace.yaml the delete template (the
                                                    same pipeline steps)
 
@@ -25,8 +27,11 @@ It also mirrors the governance provider profiles into the installer:
 
 Canonical workspace projection and Keycloak bootstrap helpers are mirrored
 into the independently installable RHDH chart by the same generation/check.
+Attestation chart assets are relative symlinks to one runtime source file.
+Helm resolves these links when rendering or packaging each chart.
 
-    scripts/saw-profile-catalog.py            write both files
+    scripts/saw-profile-catalog.py            write generated catalog, forms,
+                                                   and mirrored helpers
     scripts/saw-profile-catalog.py --check    fail when they are stale (CI)
     scripts/saw-profile-catalog.py --list     print the files it owns (writes, or removes)
 
@@ -36,6 +41,7 @@ files when charts/saw-bom/profiles changes.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -48,6 +54,7 @@ INSTALLER_PROFILES = ROOT / "charts" / "openshell-saw" / "files" / "provider-pro
 CATALOG_OUTPUTS = [ROOT / "charts" / "saw-users" / "files" / "profile-catalog.json",
                    ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json"]
 TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace.yaml"
+CONFIDENTIAL_TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-confidential-kata-workspace.yaml"
 DELETE_TEMPLATE = ROOT / "charts" / "openshell-rhdh" / "files" / "delete-workspace.yaml"
 ADMIN_TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace-for-user.yaml"
 ADMIN_DELETE_TEMPLATE = ROOT / "charts" / "openshell-rhdh" / "files" / "delete-workspace-for-user.yaml"
@@ -353,7 +360,7 @@ FOR_USER_FIELD = {"title": "User", "type": "string", "pattern": "^[a-z0-9]([a-z0
                                  "their own password."}
 
 
-def render_template(cat, for_user=False):
+def render_template(cat, for_user=False, confidential=False):
     """The RHDH scaffolder template for a new workspace.
 
     Step 1 picks a profile; step 2 asks only for the fields that profile's
@@ -363,10 +370,14 @@ def render_template(cat, for_user=False):
     token, which the pipeline verifies) and start saw-workspace-create, then
     follow it on the run page, one step per pipeline task (each a stage of
     the workspace, until its sandbox UIs answer), then the pipeline's log."""
+    if confidential and for_user:
+        raise ValueError("the confidential request template is for the signed-in owner")
     profiles = cat["profiles"]
     one_of, string_data = [], {"action": "create", "token": "${{ secrets.backstageToken }}",
                                "profile": "${{ parameters.profile }}",
                                "deploymentMode": "${{ parameters.deploymentMode }}"}
+    if confidential:
+        string_data["credentialMode"] = "trustee-reference"
     if for_user:
         string_data["forUser"] = FOR_USER
     who = FOR_USER if for_user else USER_NAME
@@ -380,6 +391,8 @@ def render_template(cat, for_user=False):
                                                 "Keycloak, for you only: " + ", ".join(routes)}
         for sname, spec in sorted(prof["secrets"].items()):
             for field in spec["fields"]:
+                if confidential and field["kind"] == "secret":
+                    continue
                 name = form_name(sname, field["key"])
                 prop = {"title": f"{sname}: {field['title']}", "type": "string"}
                 if field["kind"] == "secret":
@@ -398,7 +411,7 @@ def render_template(cat, for_user=False):
                 if field.get("required"):
                     required.append(name)
         case = {"properties": props, "required": required}
-        if "dedicatedEndpointSecrets" in prof:
+        if not confidential and "dedicatedEndpointSecrets" in prof:
             excluded = {form_name(sname, field["key"]) for sname, item in prof["secrets"].items()
                         if sname not in prof["dedicatedEndpointSecrets"] for field in item["fields"]}
             if excluded:
@@ -407,21 +420,29 @@ def render_template(cat, for_user=False):
                 case["allOf"] = [{"if": {"properties":{"deploymentMode":{"const":"vm"}}},
                                   "then": {"properties":vm_fields, "required":[key for key in required if key in excluded]}}]
         one_of.append(case)
+    create_steps = pipeline_steps(CREATE_TASKS)
+    if confidential:
+        create_steps[0]["name"] = "Verify approved Vault references and register the workspace"
     names = sorted(profiles)
     template = {
         "apiVersion": "scaffolder.backstage.io/v1beta3",
         "kind": "Template",
         "metadata": {
-            "name": "create-saw-workspace-for-user" if for_user else "create-saw-workspace",
-            "title": ("Create or update an agent workspace for a user" if for_user
+            "name": ("create-confidential-kata-saw-workspace" if confidential else
+                     "create-saw-workspace-for-user" if for_user else "create-saw-workspace"),
+            "title": ("Create a confidential Kata workspace" if confidential else
+                      "Create or update an agent workspace for a user" if for_user
                       else "Create or update my agent workspace"),
-            "description": ("Administrators: a Secure Agent Workspace for a user, yourself included, with "
+            "description": ("Confidential Kata workspace. Provider credentials must already exist in "
+                            "your approved Vault paths. The request carries no key values." if confidential else
+                            "Administrators: a Secure Agent Workspace for a user, yourself included, with "
                             "the keys you enter for them; for a user who has one, it changes its profile "
                             "or keys. Keys go to Vault, not to Git." if for_user else
                             "Your own Secure Agent Workspace with OpenShell and the OpenClaw / "
                             "NemoClaw sandboxes of a SAW-BOM profile. If you have one, this changes its "
                             "profile or keys. Keys go to Vault, not to Git."),
             "tags": ["openshell", "openclaw", "nemoclaw", "secure-agent-workspace"]
+                    + (["confidential", "kata"] if confidential else [])
                     + (["admin"] if for_user else []),
             # RBAC shows this template to administrators only; the user's to
             # every user (create or update), but not to administrators.
@@ -437,15 +458,19 @@ def render_template(cat, for_user=False):
                                 else "The workspace is named after you (namespace saw-<your user name>)."),
                 "required": ["profile", "deploymentMode"],
                 "properties": {"deploymentMode": {
-                    "title": "Deployment", "type": "string", "enum": ["vm"],
-                    "enumNames": ["Virtual machine"], "default": "vm",
-                    "description": "Available deployment options are set by your administrator. "
-                                   "An existing workspace keeps its deployment type."},
+                    "title": "Deployment", "type": "string",
+                    "enum": ["kata"] if confidential else ["vm"],
+                    "enumNames": ["Confidential Kata"] if confidential else ["Virtual machine"],
+                    "default": "kata" if confidential else "vm",
+                    "description": ("Uses the confidential Kata runtime approved by your administrator."
+                                    if confidential else "Available deployment options are set by your administrator. "
+                                    "An existing workspace keeps its deployment type.")},
                     "profile": {
                     "title": "Profile", "type": "string", "enum": names,
                     "enumNames": [f"{n}: {profiles[n]['description']}" if profiles[n]["description"]
                                   else n for n in names],
-                    "default": "data-science" if "data-science" in names else names[0]}},
+                    "default": ("kata-data-science" if confidential and "kata-data-science" in names
+                                else "data-science" if "data-science" in names else names[0])}},
                 "dependencies": {"profile": {"oneOf": one_of}},
             }],
             "steps": [
@@ -460,7 +485,7 @@ def render_template(cat, for_user=False):
                  "input": {"method": "POST", "path": "/proxy/saw-pipelineruns",
                            "headers": {"Content-Type": "application/json"},
                            "body": pipeline_run("create", "saw-" + who)}},
-                *pipeline_steps(CREATE_TASKS),
+                *create_steps,
                 status_get("status", "Workspace status", "workspace?user=" + who if for_user else "workspace"),
                 log_step("status-log", "Workspace status report", "status"),
             ],
@@ -558,6 +583,36 @@ def render_delete_template(for_user=False):
             + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None))
 
 
+def attestation_links():
+    source = ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py"
+    charts = ("saw-users", "saw-portal-container", "openshell-rhdh")
+    links = [(ROOT / "charts" / chart / "files/attestation.py",
+              Path(os.path.relpath(source, ROOT / "charts" / chart / "files"))) for chart in charts]
+    preflight = ROOT / "kubernetes-runtime/saw_kubernetes/preflight.py"
+    links += [(ROOT / "charts" / chart / "files/preflight.py",
+               Path(os.path.relpath(preflight, ROOT / "charts" / chart / "files"))) for chart in charts]
+    template = ROOT / "deploy/confidential/helm/_attestation.tpl"
+    return links + [(ROOT / "charts" / chart / "templates/_attestation.tpl",
+                     Path(os.path.relpath(template, ROOT / "charts" / chart / "templates"))) for chart in charts]
+
+
+def sync_source_links(links, check=False):
+    stale = []
+    for path, target in links:
+        if path.is_symlink() and path.readlink() == target:
+            continue
+        if check:
+            stale.append(str(path.relative_to(ROOT)) + " (shared source link)")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Unlink first. Never write through an old or incorrect link.
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        path.symlink_to(target)
+        print(f"linked {path.relative_to(ROOT)} -> {target}")
+    return stale
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail when an output is stale")
@@ -570,6 +625,7 @@ def main(argv=None):
               for src in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}
     extra = [p for p in sorted(INSTALLER_PROFILES.glob("*.yaml")) if p not in mirror]
     lifecycle = TEMPLATE_OUTPUT.with_name("set-workspace-state.yaml")
+    source_links = attestation_links()
     policy_outputs = [
         (ROOT / "charts/openshell-rhdh/files/saw_keycloak_admin.py",
          (ROOT / "charts/openshell-keycloak/files/saw_keycloak_admin.py").read_text()),
@@ -581,8 +637,8 @@ def main(argv=None):
         # Every path this script owns: the generated files, each mirror, and
         # the mirror directory itself, so `git add -A -- <list>` (the hook,
         # the workflow) also stages a mirror this run removed.
-        for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, lifecycle, DELETE_TEMPLATE,
-                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *(p for p, _ in policy_outputs), *mirror, INSTALLER_PROFILES):
+        for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, CONFIDENTIAL_TEMPLATE_OUTPUT, lifecycle, DELETE_TEMPLATE,
+                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *(p for p, _ in policy_outputs), *(p for p, _ in source_links), *mirror, INSTALLER_PROFILES):
             print(path.relative_to(ROOT))
         return 0
     try:
@@ -592,13 +648,15 @@ def main(argv=None):
         return 1
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
+    outputs.append((CONFIDENTIAL_TEMPLATE_OUTPUT,
+                    render_template(json.loads(text), confidential=True)))
     outputs.append((lifecycle, render_lifecycle_template(json.loads(text))))
     outputs.append((DELETE_TEMPLATE, render_delete_template()))
     outputs.append((ADMIN_TEMPLATE_OUTPUT, render_template(json.loads(text), for_user=True)))
     outputs.append((ADMIN_DELETE_TEMPLATE, render_delete_template(for_user=True)))
     outputs += policy_outputs
     outputs += sorted(mirror.items())
-    stale = []
+    stale = sync_source_links(source_links, check=args.check)
     for path in extra:
         if args.check:
             stale.append(f"{path.relative_to(ROOT)} (no longer a governance profile)")

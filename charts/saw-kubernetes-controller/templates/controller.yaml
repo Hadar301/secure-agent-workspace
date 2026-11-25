@@ -45,6 +45,33 @@ kind: ClusterRoleBinding
 metadata: {name: {{ $t }}-{{ $name }}}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $t }}-{{ $name }}}
 subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- with $c.confidentialAttestation }}
+{{- if or (ne (len .settings.references) 7) (not (hasKey .settings.references "peerPods")) (not (hasKey .settings.references "trustee")) (not (hasKey .settings.references "trusteeConfig")) (not (hasKey .settings.references "attestationPolicy")) (not (hasKey .settings.references "resourcePolicy")) (not (hasKey .settings.references "referenceValues")) (not (hasKey .settings.references "qualification")) }}{{ fail "confidential approval references are incomplete" }}{{- end }}
+{{- range $key, $ref := .settings.references }}
+{{- $parts := splitList "/" $ref.path }}
+{{- $expectedPath := "^/api/v1/namespaces/[a-z0-9-]+/configmaps/[a-z0-9-]+$" }}
+{{- $expectedParts := 7 }}{{- $namespaceIndex := 4 }}
+{{- if eq $key "peerPods" }}{{- $expectedPath = "^/api/v1/namespaces/openshift-sandboxed-containers-operator/configmaps/peer-pods-cm$" }}
+{{- else if eq $key "trustee" }}{{- $expectedPath = "^/apis/apps/v1/namespaces/[a-z0-9-]+/deployments/[a-z0-9-]+$" }}{{- $expectedParts = 8 }}{{- $namespaceIndex = 5 }}
+{{- else if eq $key "trusteeConfig" }}{{- $expectedPath = "^/apis/confidentialcontainers.org/v1alpha1/namespaces/[a-z0-9-]+/kbsconfigs/[a-z0-9-]+$" }}{{- $expectedParts = 8 }}{{- $namespaceIndex = 5 }}{{- end }}
+{{- if or (ne (len $parts) $expectedParts) (not (regexMatch $expectedPath $ref.path)) }}{{ fail "confidential approval path is invalid" }}{{- end }}
+{{- $resource := "configmaps" }}{{- $apiGroup := "" }}
+{{- if eq $key "trustee" }}{{- $resource = "deployments" }}{{- $apiGroup = "apps" }}
+{{- else if eq $key "trusteeConfig" }}{{- $resource = "kbsconfigs" }}{{- $apiGroup = "confidentialcontainers.org" }}{{- end }}
+{{- $role := printf "%s-attestation-%s" $name $key }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $role | quote }}, namespace: {{ index $parts $namespaceIndex | quote }}}
+rules: [{apiGroups: [{{ $apiGroup | quote }}], resources: [{{ $resource }}], resourceNames: [{{ base $ref.path | quote }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $role | quote }}, namespace: {{ index $parts $namespaceIndex | quote }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $role | quote }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
+{{- end }}
 {{- range $ns := list $n $t $gov }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

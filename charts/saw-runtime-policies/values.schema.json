@@ -24,6 +24,45 @@
       ]
     },
     "workloadRuntimeClassName": {"type": "string"},
+    "confidentialMode": {"type": "boolean"},
+
+    "confidentialSupervisors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runtime_class_name": {"type": "string", "minLength": 1},
+          "init_data": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+            "maxLength": 200000
+          },
+          "bootstrap_json": {"type": "string", "minLength": 1, "maxLength": 65536}
+        },
+        "required": [
+          "runtime_class_name",
+          "init_data",
+          "bootstrap_json"
+        ]
+      }
+    },
+    "confidentialWorkloads": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runtime_class_name": {"type": "string", "minLength": 1},
+          "init_data": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+            "maxLength": 200000
+          }
+        },
+        "required": ["runtime_class_name", "init_data"]
+      }
+    },
     "network": {
       "type": "object",
       "additionalProperties": false,

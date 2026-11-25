@@ -34,6 +34,7 @@ data:
 {{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
 {{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
 {{- $appsetLabels := .Values.projection.applicationSetControllerLabels | default (dict "app.kubernetes.io/name" (printf "%s-applicationset-controller" $argo)) }}
+{{- include "saw.confidential.readRoles" (dict "sites" .Values.containerSites "namespace" .Release.Namespace "serviceAccount" $name) }}
 {{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
 {{- $identityCode := .Files.Get "files/projector_identity.py" }}
 {{- /* Job templates are immutable: anything in the Pod template goes into the name. */}}
@@ -60,6 +61,8 @@ data:
 {{ .Files.Get "files/workspace.py" | indent 4 }}
   preflight.py: |
 {{ .Files.Get "files/preflight.py" | indent 4 }}
+  attestation.py: |
+{{ .Files.Get "files/attestation.py" | indent 4 }}
   profile-catalog.json: |
 {{ .Files.Get "files/profile-catalog.json" | indent 4 }}
 ---
@@ -224,7 +227,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector, saw.redhat.com/kubernetes-api: allow}
       annotations:
-        checksum/source: {{ printf "%s%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
+        checksum/source: {{ printf "%s%s%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/attestation.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: true

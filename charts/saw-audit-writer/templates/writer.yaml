@@ -6,8 +6,11 @@
 {{- $tn = required "trustedNamespace required" .Values.trustedNamespace }}
 {{- if eq $tn $rn }}{{ fail "writer history requires a separate trusted namespace" }}{{ end }}
 {{- end }}
-{{- $image := required "pinned Node 24 image required" .Values.image }}
+{{- $image := .Values.image }}
+{{- if not .Values.prepareOnly }}
+{{- $image = required "pinned Node 24 image required" $image }}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $image) }}{{ fail "image must be digest pinned" }}{{ end }}
+{{- end }}
 {{- $id := .Values.identity }}
 {{- range $f := list "subject" "username" "workspace" "sandbox" }}{{- $_ := required $f (get $id $f) }}{{- end }}
 {{- $base := .Release.Name }}
@@ -38,7 +41,7 @@ spec:
   accessModes: [{{ if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
   resources: {requests: {storage: 1Gi}}
 {{- end }}
-{{- if $receipts }}
+{{- if and $receipts (not .Values.prepareOnly) }}
 ---
 apiVersion: v1
 kind: Service

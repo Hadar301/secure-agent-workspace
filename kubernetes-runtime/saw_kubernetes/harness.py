@@ -39,7 +39,7 @@ def tool_rules(bundle):
     return shared.harness_tool_rules(shared.describe_harness_tree(bundle_tree(bundle), inline=True))
 
 
-def configure(command, driver, bundle, workspace, sandbox, catalog):
+def configure(command, driver, bundle, workspace, sandbox, catalog, *, whole_volume=False):
     """Add only the approved RO tree and retain the existing signed tool gate."""
     info = shared.describe_harness_tree(bundle_tree(bundle), inline=True)
     attached = {p.type for p in workspace.providers if p.enabled and p.name in sandbox.providers}
@@ -60,12 +60,21 @@ def configure(command, driver, bundle, workspace, sandbox, catalog):
             "skills": config.get("skills.load.extraDirs", []), "plugins": ids,
             "servers": shared.harness_mcp_servers(info)}
     mounts = driver["containers"]["agent"]["volume_mounts"]
-    mounts.append({"name": "saw-gate", "mount_path": shared.HARNESS_MOUNT, "read_only": True,
+    if whole_volume and any(b"/sandbox/briefing" in value[0] for value in bundle_tree(bundle).values()):
+        raise shared.InstallerError("confidential harness requires unsupported briefing storage")
+    if not whole_volume:
+        mounts.append({"name": "saw-gate", "mount_path": shared.HARNESS_MOUNT, "read_only": True,
                    "sub_path": "harness-" + bundle.digest.removeprefix("sha256:")})
     # The bundle's skill and writer agree on /sandbox/briefing. Retain that subtree with its workspace.
-    mounts.append({"name": "saw-workspace", "mount_path": "/sandbox/briefing",
+    if not whole_volume:
+        mounts.append({"name": "saw-workspace", "mount_path": "/sandbox/briefing",
                    "read_only": False, "sub_path": "briefing"})
     start = Path(__file__).with_name("harness_preflight.js").read_text()
+    if whole_volume:
+        root = "/sandbox/.saw/gate-volume/harness-" + bundle.digest.removeprefix("sha256:")
+        spec = json.loads(json.dumps(spec).replace(shared.HARNESS_MOUNT, root))
+        start = start.replace(shared.HARNESS_MOUNT, root).replace(
+            "mountOptions(harnessRoot)", 'mountOptions("/sandbox/.saw/gate-volume")')
     start = start.replace("HARNESS_SPEC", json.dumps(spec, ensure_ascii=True))
     anchor = "const target = process.env.OPENCLAW_CONFIG_PATH;"
     command[2] = command[2].replace(anchor, start + "\n" + anchor)

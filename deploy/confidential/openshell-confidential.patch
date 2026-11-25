@@ -1,0 +1,837 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index f76c9c406f7927a725f1b7f7f948ad94f98fd206..a18ef33a190b9bd6830166ad814b0489c575c855 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4981,6 +4981,7 @@ dependencies = [
+ name = "openshell-driver-kubernetes"
+ version = "0.0.0"
+ dependencies = [
++ "base64 0.22.1",
+  "bytes",
+  "clap",
+  "futures",
+diff --git a/crates/openshell-driver-kubernetes/Cargo.toml b/crates/openshell-driver-kubernetes/Cargo.toml
+index 4b7659ffdd5df751477efb5eb68c9bc6e1ef4db1..3f5e3903fb617db1e1107e48617e9f062a530f73 100644
+--- a/crates/openshell-driver-kubernetes/Cargo.toml
++++ b/crates/openshell-driver-kubernetes/Cargo.toml
+@@ -52,6 +52,7 @@ hyper = { workspace = true }
+ hyper-util = { workspace = true }
+ rustls = { workspace = true }
+ tokio-rustls = { workspace = true }
++base64 = { workspace = true }
+
+ [dev-dependencies]
+ openshell-otel-test-support = { path = "../openshell-otel-test-support" }
+diff --git a/crates/openshell-driver-kubernetes/src/config.rs b/crates/openshell-driver-kubernetes/src/config.rs
+index 82f98cdb547c2cb30946eb8e5321a792fa6b6d71..be97e66d3887f75f910d42238c6482950e9a4735 100644
+--- a/crates/openshell-driver-kubernetes/src/config.rs
++++ b/crates/openshell-driver-kubernetes/src/config.rs
+@@ -1,12 +1,11 @@
+ // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ // SPDX-License-Identifier: Apache-2.0
+
++use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+ pub use openshell_core::DynamicStringAllowlist as OperatorNamespaceAllowlist;
+ use openshell_core::config;
+ use serde::{Deserialize, Deserializer, Serialize};
+-use std::collections::BTreeMap;
+-#[cfg(test)]
+-use std::collections::BTreeSet;
++use std::collections::{BTreeMap, BTreeSet};
+ use std::path::Path;
+ use std::str::FromStr;
+
+@@ -443,6 +442,14 @@ pub struct KubernetesComputeConfig {
+     /// format and reserved domains as `allowed_pod_annotations`. Empty
+     /// (default) rejects every caller-supplied pod label.
+     pub allowed_pod_labels: Vec<String>,
++    /// Require approved per-slot confidential placement for supervisor and workload Pods.
++    #[serde(default)]
++    pub confidential_mode: bool,
++    /// Exact workspace/sandbox slots configured by the administrator; never owner input.
++    #[serde(default)]
++    pub confidential_supervisors: BTreeMap<String, ConfidentialSupervisorPlacement>,
++    #[serde(default)]
++    pub confidential_workloads: BTreeMap<String, ConfidentialWorkloadPlacement>,
+     /// Lifetime (seconds) of the projected `ServiceAccount` token kubelet
+     /// writes into each sandbox pod. Used only for the one-shot
+     /// `IssueSandboxToken` bootstrap exchange — the gateway-minted JWT
+@@ -503,6 +510,24 @@ pub const ANNOTATION_SCC_MCS: &str = "openshift.io/sa.scc.mcs";
+ /// Format: `<start>/<size>` (e.g. `1000000000/10000`).
+ pub const ANNOTATION_SCC_SUPPLEMENTAL_GROUPS: &str = "openshift.io/sa.scc.supplemental-groups";
+
++/// Administrator-owned placement for a confidential supervisor. Workload
++/// placement remains controlled by the approved Sandbox template.
++#[derive(Debug, Clone, Deserialize, Serialize)]
++#[serde(deny_unknown_fields)]
++pub struct ConfidentialSupervisorPlacement {
++    pub runtime_class_name: String,
++    pub init_data: String,
++    /// Public JSON pinned by the measured Kata launch policy. Never credentials.
++    pub bootstrap_json: String,
++}
++
++#[derive(Debug, Clone, Deserialize, Serialize)]
++#[serde(deny_unknown_fields)]
++pub struct ConfidentialWorkloadPlacement {
++    pub runtime_class_name: String,
++    pub init_data: String,
++}
++
+ impl Default for KubernetesComputeConfig {
+     fn default() -> Self {
+         Self {
+@@ -554,6 +579,9 @@ impl Default for KubernetesComputeConfig {
+             supervisor_runtime_class_name: String::new(),
+             allowed_pod_annotations: Vec::new(),
+             allowed_pod_labels: Vec::new(),
++            confidential_mode: false,
++            confidential_supervisors: BTreeMap::new(),
++            confidential_workloads: BTreeMap::new(),
+             sa_token_ttl_secs: 3600,
+             provider_spiffe_workload_api_socket_path: String::new(),
+             sandbox_uid: None,
+@@ -574,7 +602,8 @@ impl KubernetesComputeConfig {
+         self.validate_upstream_proxy_config()?;
+         self.validate_allowed_pod_annotations()?;
+         self.validate_allowed_pod_labels()?;
+-        self.ipv6_egress_config().validate()
++        self.ipv6_egress_config().validate()?;
++        self.validate_confidential_configuration()
+     }
+
+     fn validate_bootstrap_windows(&self) -> Result<(), String> {
+@@ -662,6 +691,52 @@ impl KubernetesComputeConfig {
+         }
+     }
+
++    /// Check that confidential placement is complete and approved per slot.
++    pub fn validate_confidential_configuration(&self) -> Result<(), String> {
++        if !self.confidential_mode {
++            if !self.confidential_supervisors.is_empty() || !self.confidential_workloads.is_empty()
++            {
++                return Err("confidential placement entries require confidential_mode".to_string());
++            }
++            return Ok(());
++        }
++        if !is_dns1123_subdomain(&self.default_runtime_class_name)
++            || self.supervisor_runtime_class_name != self.default_runtime_class_name
++            || self.supervisor_topology.is_some()
++            || self.confidential_supervisors.is_empty()
++            || self
++                .confidential_supervisors
++                .keys()
++                .collect::<BTreeSet<_>>()
++                != self.confidential_workloads.keys().collect::<BTreeSet<_>>()
++        {
++            return Err("confidential placement configuration is incomplete".to_string());
++        }
++        for (slot, supervisor) in &self.confidential_supervisors {
++            let Some((workspace, sandbox)) = slot.split_once('/') else {
++                return Err("confidential slot identity is invalid".to_string());
++            };
++            if slot.matches('/').count() != 1
++                || !is_dns_1123_label(workspace)
++                || !is_dns_1123_label(sandbox)
++                || supervisor.runtime_class_name != self.default_runtime_class_name
++                || !is_dns1123_subdomain(&supervisor.runtime_class_name)
++                || !valid_confidential_bootstrap(&supervisor.bootstrap_json)
++                || !valid_init_data(&supervisor.init_data)
++            {
++                return Err("confidential supervisor placement is invalid".to_string());
++            }
++            let workload = &self.confidential_workloads[slot];
++            if workload.runtime_class_name != self.default_runtime_class_name
++                || !is_dns1123_subdomain(&workload.runtime_class_name)
++                || !valid_init_data(&workload.init_data)
++            {
++                return Err("confidential workload placement is invalid".to_string());
++            }
++        }
++        Ok(())
++    }
++
+     /// Clamp `sa_token_ttl_secs` into the `[MIN_SA_TOKEN_TTL_SECS,
+     /// MAX_SA_TOKEN_TTL_SECS]` range used by the projected-volume spec.
+     /// Invalid (≤0) values fall back to the default 3600.
+@@ -1042,6 +1117,50 @@ pub fn is_dns_1123_label(s: &str) -> bool {
+         .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+ }
+
++pub(crate) fn valid_confidential_bootstrap(raw: &str) -> bool {
++    if raw.is_empty() || raw.len() > 64 * 1024 {
++        return false;
++    }
++    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
++        return false;
++    };
++    let Some(object) = value.as_object() else {
++        return false;
++    };
++    object.len() == 4
++        && object
++            .get("schemaVersion")
++            .and_then(serde_json::Value::as_u64)
++            == Some(1)
++        && object
++            .get("policy")
++            .is_some_and(serde_json::Value::is_object)
++        && object
++            .get("publicCAFile")
++            .and_then(serde_json::Value::as_str)
++            == Some("/run/openshell/saw-proxy-ca.pem")
++        && object
++            .get("resources")
++            .and_then(serde_json::Value::as_object)
++            .is_some_and(|resources| {
++                !resources.is_empty() && resources.values().all(serde_json::Value::is_string)
++            })
++        && serde_json::to_string(&value).ok().as_deref() == Some(raw)
++}
++
++#[cfg(test)]
++pub(crate) const CONFIDENTIAL_BOOTSTRAP_FIXTURE: &str = r#"{"policy":{"allowHosts":["api.example.test"],"bindings":[{"key":"api_key","providers":["nvidia"],"secret":"inference"}],"markerPrefix":"saw","profiles":{"nvidia":["api.example.test"]}},"publicCAFile":"/run/openshell/saw-proxy-ca.pem","resources":{"inference":"default/saw-alice-0123456789abcdef/inference"},"schemaVersion":1}"#;
++
++fn valid_init_data(value: &str) -> bool {
++    if value.is_empty() || value.len() > 200_000 {
++        return false;
++    }
++    BASE64_STANDARD
++        .decode(value)
++        .ok()
++        .is_some_and(|decoded| !decoded.is_empty() && BASE64_STANDARD.encode(decoded) == value)
++}
++
+ /// Validate that a workspace name produces a valid K8s namespace name in
+ /// managed mode (combined length <= 63, DNS-1123 compliant).
+ pub fn validate_managed_namespace_name(gateway_id: &str, workspace: &str) -> Result<(), String> {
+@@ -1533,6 +1652,117 @@ mod tests {
+         assert!(cfg.default_runtime_class_name.is_empty());
+     }
+
++    #[test]
++    fn confidential_placement_is_disabled_by_default() {
++        KubernetesComputeConfig::default()
++            .validate_confidential_configuration()
++            .unwrap();
++    }
++
++    #[test]
++    fn confidential_bootstrap_rejects_unmeasured_inputs() {
++        assert!(valid_confidential_bootstrap(CONFIDENTIAL_BOOTSTRAP_FIXTURE));
++        for invalid in [
++            String::new(),
++            "{}".into(),
++            "x".repeat(65537),
++            format!(" {}", CONFIDENTIAL_BOOTSTRAP_FIXTURE),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE
++                .replace("/run/openshell/saw-proxy-ca.pem", "/unmeasured/ca.pem"),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace(
++                "\"schemaVersion\":1",
++                "\"schemaVersion\":1,\"schemaVersion\":1",
++            ),
++            CONFIDENTIAL_BOOTSTRAP_FIXTURE.replace(
++                "\"schemaVersion\":1",
++                "\"schemaVersion\":1,\"unknown\":true",
++            ),
++        ] {
++            assert!(!valid_confidential_bootstrap(&invalid));
++        }
++    }
++
++    #[test]
++    fn confidential_placement_requires_matching_slots_and_runtime_classes() {
++        let slot = "default/notebook".to_string();
++        let supervisor = ConfidentialSupervisorPlacement {
++            runtime_class_name: "kata-remote".into(),
++            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++            bootstrap_json: CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
++        };
++        let workload = ConfidentialWorkloadPlacement {
++            runtime_class_name: "kata-remote".into(),
++            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++        };
++        let mut cfg = KubernetesComputeConfig {
++            confidential_mode: true,
++            default_runtime_class_name: "kata-remote".into(),
++            supervisor_runtime_class_name: "kata-remote".into(),
++            confidential_supervisors: BTreeMap::from([(slot.clone(), supervisor.clone())]),
++            confidential_workloads: BTreeMap::from([(slot.clone(), workload.clone())]),
++            ..KubernetesComputeConfig::default()
++        };
++        cfg.validate_confidential_configuration().unwrap();
++
++        cfg.supervisor_runtime_class_name = "kata-ordinary".into();
++        assert!(cfg.validate_confidential_configuration().is_err());
++        cfg.supervisor_runtime_class_name = "kata-remote".into();
++        cfg.supervisor_topology = Some(SupervisorTopology::Gateway);
++        assert!(cfg.validate_confidential_configuration().is_err());
++        cfg.supervisor_topology = None;
++
++        cfg.confidential_workloads.clear();
++        assert!(
++            cfg.validate_confidential_configuration()
++                .unwrap_err()
++                .contains("incomplete")
++        );
++        cfg.confidential_workloads = BTreeMap::from([(
++            slot,
++            ConfidentialWorkloadPlacement {
++                runtime_class_name: "kata-ordinary".into(),
++                ..workload
++            },
++        )]);
++        assert!(
++            cfg.validate_confidential_configuration()
++                .unwrap_err()
++                .contains("workload placement is invalid")
++        );
++    }
++
++    #[test]
++    fn confidential_placement_rejects_malformed_init_data() {
++        let slot = "default/notebook".to_string();
++        let cfg = KubernetesComputeConfig {
++            confidential_mode: true,
++            default_runtime_class_name: "kata-remote".into(),
++            supervisor_runtime_class_name: "kata-remote".into(),
++            confidential_supervisors: BTreeMap::from([(
++                slot.clone(),
++                ConfidentialSupervisorPlacement {
++                    runtime_class_name: "kata-remote".into(),
++                    init_data: "not-base64".into(),
++                    bootstrap_json: CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
++                },
++            )]),
++            confidential_workloads: BTreeMap::from([(
++                slot,
++                ConfidentialWorkloadPlacement {
++                    runtime_class_name: "kata-remote".into(),
++                    init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++                },
++            )]),
++            ..KubernetesComputeConfig::default()
++        };
++        assert!(
++            cfg.validate_confidential_configuration()
++                .unwrap_err()
++                .contains("supervisor placement is invalid")
++        );
++    }
++
+     #[test]
+     fn serde_accepts_absolute_provider_spiffe_socket_path() {
+         let json = serde_json::json!({
+diff --git a/crates/openshell-driver-kubernetes/src/driver.rs b/crates/openshell-driver-kubernetes/src/driver.rs
+index 63621d01e16d29ea711d6791dae7a4c3e9bba9bf..dfbd838846ff0fa8505e0ff41c92eca9c71e2092 100644
+--- a/crates/openshell-driver-kubernetes/src/driver.rs
++++ b/crates/openshell-driver-kubernetes/src/driver.rs
+@@ -1213,6 +1213,9 @@ impl KubernetesComputeDriver {
+         config
+             .validate_supervisor_topology()
+             .map_err(KubernetesDriverError::Precondition)?;
++        config
++            .validate_confidential_configuration()
++            .map_err(KubernetesDriverError::Precondition)?;
+         // Read the bundle once at startup so an unreadable path or a
+         // certificate-free file fails the gateway here, rather than as a
+         // repeated sandbox-create failure. The authoritative read still
+@@ -2132,6 +2135,13 @@ impl KubernetesComputeDriver {
+                 "GPU sandbox requested, but the active gateway has no allocatable GPUs. Please refer to documentation and use `openshell doctor` commands to inspect GPU support and gateway configuration.",
+             ));
+         }
++        let slot = format!("{}/{}", sandbox.workspace, sandbox.name);
++        if self.config.confidential_mode && !self.config.confidential_workloads.contains_key(&slot)
++        {
++            return Err(tonic::Status::failed_precondition(
++                "confidential workload placement is missing",
++            ));
++        }
+         Ok(())
+     }
+
+@@ -2159,6 +2169,14 @@ impl KubernetesComputeDriver {
+         };
+         let rendered = sandbox_to_k8s_spec(sandbox.spec.as_ref(), &params)
+             .map_err(tonic::Status::invalid_argument)?;
++        let slot = format!("{}/{}", sandbox.workspace, sandbox.name);
++        let rendered = crate::sandbox_runtime::confidential_workload_spec(
++            rendered,
++            self.config.confidential_mode,
++            &self.config.default_runtime_class_name,
++            self.config.confidential_workloads.get(&slot),
++        )
++        .map_err(tonic::Status::failed_precondition)?;
+         crate::resource_admission::admit(
+             &self.client,
+             &self.config.resource_admission,
+@@ -2173,6 +2191,26 @@ impl KubernetesComputeDriver {
+     async fn admit_stored_resources(&self, object: &DynamicObject) -> Result<(), tonic::Status> {
+         validate_stored_kubernetes_pvc_mounts(&object.data["spec"]["podTemplate"]["spec"])
+             .map_err(tonic::Status::failed_precondition)?;
++        let workspace = annotation_or_label(object, LABEL_SANDBOX_WORKSPACE).ok_or_else(|| {
++            tonic::Status::failed_precondition("sandbox lacks workspace identity")
++        })?;
++        if self.config.confidential_mode {
++            let sandbox_name = annotation_or_label(object, LABEL_SANDBOX_NAME)
++                .ok_or_else(|| tonic::Status::failed_precondition("sandbox lacks name identity"))?;
++            let slot = format!("{workspace}/{sandbox_name}");
++            let expected_placement = crate::sandbox_runtime::confidential_workload_spec(
++                object.data.clone(),
++                true,
++                &self.config.default_runtime_class_name,
++                self.config.confidential_workloads.get(&slot),
++            )
++            .map_err(tonic::Status::failed_precondition)?;
++            if expected_placement != object.data {
++                return Err(tonic::Status::failed_precondition(
++                    "sandbox confidential placement differs from approval",
++                ));
++            }
++        }
+         if self.config.allow_driver_config && !self.config.resource_admission.enabled {
+             return Ok(());
+         }
+@@ -2183,14 +2221,6 @@ impl KubernetesComputeDriver {
+         if !self.config.resource_admission.enabled {
+             return Ok(());
+         }
+-        let workspace = object
+-            .metadata
+-            .labels
+-            .as_ref()
+-            .and_then(|labels| labels.get(LABEL_SANDBOX_WORKSPACE))
+-            .ok_or_else(|| {
+-                tonic::Status::failed_precondition("sandbox lacks workspace identity")
+-            })?;
+         let namespace = object
+             .metadata
+             .namespace
+@@ -2206,7 +2236,7 @@ impl KubernetesComputeDriver {
+         let actual = crate::resource_admission::admit(
+             &self.client,
+             &self.config.resource_admission,
+-            workspace,
++            &workspace,
+             namespace,
+             spec,
+             private_secret,
+@@ -2659,8 +2689,16 @@ impl KubernetesComputeDriver {
+             sandbox_secret_name: &proxy_names.sandbox_secret,
+         };
+         let kube_name = self.config.kube_resource_name(workspace, name);
+-        let mut data = sandbox_to_k8s_spec(sandbox.spec.as_ref(), &params)
++        let data = sandbox_to_k8s_spec(sandbox.spec.as_ref(), &params)
+             .map_err(KubernetesDriverError::InvalidArgument)?;
++        let slot = format!("{workspace}/{name}");
++        let mut data = crate::sandbox_runtime::confidential_workload_spec(
++            data,
++            self.config.confidential_mode,
++            &self.config.default_runtime_class_name,
++            self.config.confidential_workloads.get(&slot),
++        )
++        .map_err(KubernetesDriverError::Precondition)?;
+         self.create_sandbox_runtime_fence(&target_namespace, &proxy_names)
+             .await?;
+         // A missing bootstrap Secret keeps both pods inert as defense in
+@@ -3371,6 +3409,7 @@ impl KubernetesComputeDriver {
+                         names,
+                         &sandbox.id,
+                         &sandbox.name,
++                        &sandbox.workspace,
+                         dependent_owner,
+                         agent_uid,
+                         agent_gid,
+@@ -3526,6 +3565,7 @@ impl KubernetesComputeDriver {
+         names: &SandboxRuntimeNames,
+         sandbox_id: &str,
+         sandbox_name: &str,
++        workspace: &str,
+         owner: OwnerReference,
+         agent_uid: u32,
+         agent_gid: u32,
+@@ -3581,6 +3621,16 @@ impl KubernetesComputeDriver {
+                     &self.supervisor_otlp_environment(),
+                     self.config.sandbox_attach_request_timeout_seconds,
+                 )
++                .and_then(|pod| {
++                    crate::sandbox_runtime::confidential_supervisor_pod(
++                        pod,
++                        self.config.confidential_mode,
++                        &self.config.default_runtime_class_name,
++                        self.config
++                            .confidential_supervisors
++                            .get(&format!("{workspace}/{sandbox_name}")),
++                    )
++                })
+                 .map_err(KubernetesDriverError::Message)?,
+                 &self.config.sandbox_runtime.app_listener,
+             ),
+@@ -4436,6 +4486,11 @@ impl KubernetesComputeDriver {
+                 "Sandbox resource is missing its OpenShell sandbox name".to_string(),
+             )
+         })?;
++        let workspace = annotation_or_label(&object, LABEL_SANDBOX_WORKSPACE).ok_or_else(|| {
++            KubernetesDriverError::Precondition(
++                "Sandbox resource is missing its OpenShell workspace name".to_string(),
++            )
++        })?;
+         let (agent_uid, agent_gid, _) =
+             self.resolve_sandbox_identity_in_namespace(&namespace).await;
+         let mut init_containers = object
+@@ -4461,6 +4516,7 @@ impl KubernetesComputeDriver {
+                         &names,
+                         sandbox_id,
+                         &sandbox_name,
++                        &workspace,
+                         sandbox_runtime_sandbox_owner_reference(
+                             cr_name,
+                             cr_uid,
+diff --git a/crates/openshell-driver-kubernetes/src/lib.rs b/crates/openshell-driver-kubernetes/src/lib.rs
+index f3a1e419ec23e1eda05d95913fad8580c5ada53f..b10b9b61a7aec2aaa71b396cb1049913fdc7128a 100644
+--- a/crates/openshell-driver-kubernetes/src/lib.rs
++++ b/crates/openshell-driver-kubernetes/src/lib.rs
+@@ -13,10 +13,11 @@ mod sandbox_runtime;
+ mod shared_supervisor;
+
+ pub use config::{
+-    DEFAULT_GATEWAY_ID, DEFAULT_SANDBOX_SERVICE_ACCOUNT_NAME, DEFAULT_WORKSPACE_STORAGE_SIZE,
+-    KubernetesComputeConfig, KubernetesControlConnection, KubernetesImagePullPolicy,
+-    KubernetesSandboxRuntimeConfig, ManagedSshIngressConfig, SharedSupervisorConfig,
+-    SupervisorTopology, WorkspaceMode, managed_namespace_prefix,
++    ConfidentialSupervisorPlacement, ConfidentialWorkloadPlacement, DEFAULT_GATEWAY_ID,
++    DEFAULT_SANDBOX_SERVICE_ACCOUNT_NAME, DEFAULT_WORKSPACE_STORAGE_SIZE, KubernetesComputeConfig,
++    KubernetesControlConnection, KubernetesImagePullPolicy, KubernetesSandboxRuntimeConfig,
++    ManagedSshIngressConfig, SharedSupervisorConfig, SupervisorTopology, WorkspaceMode,
++    managed_namespace_prefix,
+ };
+ pub use driver::{KubernetesComputeDriver, KubernetesDriverError};
+ pub use grpc::ComputeDriverService;
+diff --git a/crates/openshell-driver-kubernetes/src/main.rs b/crates/openshell-driver-kubernetes/src/main.rs
+index 9f2b18068ae49f64d7ce908f1d6740b54eb74554..0a37753dd74240a9bd7c1ad3a3e176cb7eafc72b 100644
+--- a/crates/openshell-driver-kubernetes/src/main.rs
++++ b/crates/openshell-driver-kubernetes/src/main.rs
+@@ -135,6 +135,23 @@ struct Args {
+     #[arg(long, env = "OPENSHELL_HOST_GATEWAY_IP")]
+     host_gateway_ip: Option<String>,
+
++    #[arg(long, env = "OPENSHELL_K8S_CONFIDENTIAL_MODE", default_value_t = false)]
++    confidential_mode: bool,
++
++    #[arg(
++        long,
++        env = "OPENSHELL_K8S_CONFIDENTIAL_SUPERVISORS_JSON",
++        default_value = "{}"
++    )]
++    confidential_supervisors_json: String,
++
++    #[arg(
++        long,
++        env = "OPENSHELL_K8S_CONFIDENTIAL_WORKLOADS_JSON",
++        default_value = "{}"
++    )]
++    confidential_workloads_json: String,
++
+     #[arg(long, env = openshell_core::config::SANDBOX_RUNTIME_IMAGE_ENV)]
+     sandbox_runtime_image: Option<String>,
+
+@@ -270,6 +287,11 @@ async fn main() -> Result<()> {
+         .collect::<Result<BTreeMap<_, _>>>()?;
+
+     let supervisor_otlp = args.otlp.supervisor_otlp();
++    let confidential_supervisors = serde_json::from_str(&args.confidential_supervisors_json)
++        .map_err(|_| miette::miette!("confidential supervisor placement JSON is invalid"))?;
++    let confidential_workloads = serde_json::from_str(&args.confidential_workloads_json)
++        .map_err(|_| miette::miette!("confidential workload placement JSON is invalid"))?;
++
+     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+     let driver = KubernetesComputeDriver::new(
+         KubernetesComputeConfig {
+@@ -338,6 +360,9 @@ async fn main() -> Result<()> {
+             .unwrap_or_default(),
+             allowed_pod_annotations: args.allowed_pod_annotations,
+             allowed_pod_labels: args.allowed_pod_labels,
++            confidential_mode: args.confidential_mode,
++            confidential_supervisors,
++            confidential_workloads,
+             sa_token_ttl_secs: args.sa_token_ttl_secs,
+             provider_spiffe_workload_api_socket_path: args
+                 .provider_spiffe_workload_api_socket_path
+diff --git a/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs b/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
+index 807a021fc2c259816b13609d9ef4348e2e5cd65f..e4701c7d755049b52523a581495019b4c20a06d9 100644
+--- a/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
++++ b/crates/openshell-driver-kubernetes/src/sandbox_runtime.rs
+@@ -1831,3 +1831,272 @@ mod tests {
+         assert!(material.private_key_pem.contains("PRIVATE KEY"));
+     }
+ }
++
++/// Add confidential placement after normal OpenShell bootstrap generation.
++/// The guest image must provide SAW's memory-only credential proxy wrapper.
++pub fn confidential_supervisor_pod(
++    mut pod: Pod,
++    required: bool,
++    expected_runtime_class: &str,
++    placement: Option<&crate::config::ConfidentialSupervisorPlacement>,
++) -> Result<Pod, String> {
++    let Some(cfg) = placement.filter(|_| required) else {
++        if required {
++            return Err("confidential supervisor placement is missing".to_string());
++        }
++        if placement.is_some() {
++            return Err("confidential supervisor placement is not enabled".to_string());
++        }
++        return Ok(pod);
++    };
++    let label = |s: &str| {
++        !s.is_empty()
++            && s.len() <= 63
++            && s.bytes()
++                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
++    };
++    if !label(&cfg.runtime_class_name)
++        || !crate::config::valid_confidential_bootstrap(&cfg.bootstrap_json)
++        || cfg.runtime_class_name != expected_runtime_class
++        || cfg.init_data.is_empty()
++        || cfg.init_data.len() > 200_000
++    {
++        return Err("confidential supervisor configuration rejected".to_string());
++    }
++    let spec = pod
++        .spec
++        .as_mut()
++        .ok_or("supervisor specification missing")?;
++    let container = spec
++        .containers
++        .first_mut()
++        .ok_or("supervisor container missing")?;
++    let old = container
++        .command
++        .take()
++        .ok_or("supervisor command missing")?;
++    if old
++        .iter()
++        .any(|s| s == "--upstream-proxy-auth-file" || s == "--upstream-no-proxy")
++    {
++        return Err(
++            "confidential supervisor cannot use external proxy credentials or bypass".to_string(),
++        );
++    }
++    let mut command = vec![
++        "/usr/local/bin/saw-credential-proxy".to_string(),
++        "supervise".to_string(),
++    ];
++    let mut args = old.into_iter();
++    while let Some(arg) = args.next() {
++        if arg == "--upstream-proxy" || arg == "--upstream-proxy-ca-bundle" {
++            args.next();
++        } else if arg != "--upstream-proxy-connect-by-hostname" {
++            command.push(arg);
++        }
++    }
++    command.extend([
++        "--upstream-proxy".to_string(),
++        "http://127.0.0.1:3128".to_string(),
++        "--upstream-proxy-connect-by-hostname".to_string(),
++        "--upstream-proxy-ca-bundle".to_string(),
++        "/run/openshell/saw-proxy-ca.pem".to_string(),
++    ]);
++    container.command = Some(command);
++    let environment = container.env.get_or_insert_default();
++    if environment.iter().any(|env| {
++        env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON" || env.name == "SAW_CONFIDENTIAL_CONFIG"
++    }) {
++        return Err("confidential bootstrap environment is duplicated".to_string());
++    }
++    environment.push(env_var(
++        "SAW_CONFIDENTIAL_BOOTSTRAP_JSON",
++        &cfg.bootstrap_json,
++    ));
++    spec.runtime_class_name = Some(cfg.runtime_class_name.clone());
++    pod.metadata.annotations.get_or_insert_default().insert(
++        "io.katacontainers.config.hypervisor.cc_init_data".to_string(),
++        cfg.init_data.clone(),
++    );
++    Ok(pod)
++}
++
++/// Apply the administrator-approved RuntimeClass and measured init-data to an
++/// Agent Sandbox workload template. Missing confidential placement fails
++/// before the driver creates or starts a Kubernetes resource.
++pub fn confidential_workload_spec(
++    mut resource: serde_json::Value,
++    required: bool,
++    expected_runtime_class: &str,
++    placement: Option<&crate::config::ConfidentialWorkloadPlacement>,
++) -> Result<serde_json::Value, String> {
++    let Some(cfg) = placement.filter(|_| required) else {
++        if required {
++            return Err("confidential workload placement is missing".to_string());
++        }
++        if placement.is_some() {
++            return Err("confidential workload placement is not enabled".to_string());
++        }
++        return Ok(resource);
++    };
++    if cfg.runtime_class_name != expected_runtime_class
++        || cfg.runtime_class_name.is_empty()
++        || cfg.init_data.is_empty()
++        || cfg.init_data.len() > 200_000
++        || !cfg
++            .init_data
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
++    {
++        return Err("confidential workload placement is invalid".to_string());
++    }
++    let spec = resource
++        .pointer_mut("/spec/podTemplate/spec")
++        .and_then(serde_json::Value::as_object_mut)
++        .ok_or("confidential workload Pod specification missing")?;
++    if spec
++        .get("runtimeClassName")
++        .is_some_and(|value| value.as_str() != Some(expected_runtime_class))
++    {
++        return Err("confidential workload RuntimeClass conflicts with approval".to_string());
++    }
++    spec.insert(
++        "runtimeClassName".to_string(),
++        serde_json::Value::String(cfg.runtime_class_name.clone()),
++    );
++    let template = resource
++        .pointer_mut("/spec/podTemplate/metadata")
++        .and_then(serde_json::Value::as_object_mut)
++        .ok_or("confidential workload template metadata missing")?;
++    let annotations = template
++        .entry("annotations")
++        .or_insert_with(|| serde_json::Value::Object(Default::default()))
++        .as_object_mut()
++        .ok_or("confidential workload annotations are invalid")?;
++    let annotation = "io.katacontainers.config.hypervisor.cc_init_data";
++    if annotations
++        .get(annotation)
++        .is_some_and(|value| value.as_str() != Some(cfg.init_data.as_str()))
++    {
++        return Err("confidential workload init-data conflicts with approval".to_string());
++    }
++    annotations.insert(
++        annotation.to_string(),
++        serde_json::Value::String(cfg.init_data.clone()),
++    );
++    Ok(resource)
++}
++
++#[cfg(test)]
++mod confidential_tests {
++    use super::*;
++    #[test]
++    fn applies_placement_and_guest_local_proxy() {
++        let pod = Pod {
++            spec: Some(PodSpec {
++                containers: vec![Container {
++                    name: "supervisor".into(),
++                    command: Some(vec![
++                        "/openshell-supervisor".into(),
++                        "--upstream-proxy".into(),
++                        "https://external.example".into(),
++                    ]),
++                    ..Default::default()
++                }],
++                ..Default::default()
++            }),
++            ..Default::default()
++        };
++        let cfg = crate::config::ConfidentialSupervisorPlacement {
++            runtime_class_name: "kata-remote".into(),
++            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++            bootstrap_json: crate::config::CONFIDENTIAL_BOOTSTRAP_FIXTURE.into(),
++        };
++        let result = confidential_supervisor_pod(pod, true, "kata-remote", Some(&cfg)).unwrap();
++        let spec = result.spec.unwrap();
++        assert_eq!(spec.runtime_class_name.as_deref(), Some("kata-remote"));
++        assert!(spec.volumes.as_ref().is_none_or(|volumes| {
++            !volumes
++                .iter()
++                .any(|volume| volume.name == "saw-confidential")
++        }));
++        let environment = spec.containers[0].env.as_ref().unwrap();
++        assert_eq!(
++            environment
++                .iter()
++                .filter(|env| env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON")
++                .count(),
++            1
++        );
++        assert!(
++            environment
++                .iter()
++                .any(|env| env.name == "SAW_CONFIDENTIAL_BOOTSTRAP_JSON"
++                    && env.value.as_deref() == Some(cfg.bootstrap_json.as_str()))
++        );
++        let command = spec.containers[0].command.as_ref().unwrap();
++        assert_eq!(command[0], "/usr/local/bin/saw-credential-proxy");
++        assert!(!command.iter().any(|arg| arg.contains("external.example")));
++        assert!(command.iter().any(|arg| arg == "http://127.0.0.1:3128"));
++        assert_eq!(
++            result.metadata.annotations.unwrap()["io.katacontainers.config.hypervisor.cc_init_data"],
++            "bWVhc3VyZWQtZml4dHVyZQ=="
++        );
++    }
++    #[test]
++    fn leaves_plain_supervisor_unchanged() {
++        assert_eq!(
++            confidential_supervisor_pod(Pod::default(), false, "", None).unwrap(),
++            Pod::default()
++        );
++    }
++
++    #[test]
++    fn confidential_supervisor_rejects_missing_placement() {
++        assert!(
++            confidential_supervisor_pod(Pod::default(), true, "kata-remote", None)
++                .unwrap_err()
++                .contains("placement is missing")
++        );
++    }
++
++    #[test]
++    fn confidential_workload_sets_class_and_measured_init_data() {
++        let resource = serde_json::json!({"spec":{"podTemplate":{"metadata":{},"spec":{}}}});
++        let placement = crate::config::ConfidentialWorkloadPlacement {
++            runtime_class_name: "kata-remote".into(),
++            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++        };
++        let result =
++            confidential_workload_spec(resource, true, "kata-remote", Some(&placement)).unwrap();
++        assert_eq!(
++            result
++                .pointer("/spec/podTemplate/spec/runtimeClassName")
++                .unwrap(),
++            "kata-remote"
++        );
++        assert_eq!(
++            result.pointer("/spec/podTemplate/metadata/annotations/io.katacontainers.config.hypervisor.cc_init_data").unwrap(),
++            "bWVhc3VyZWQtZml4dHVyZQ=="
++        );
++    }
++
++    #[test]
++    fn confidential_workload_rejects_missing_or_mismatched_placement() {
++        let resource = serde_json::json!({"spec":{"podTemplate":{"metadata":{},"spec":{}}}});
++        assert!(
++            confidential_workload_spec(resource.clone(), true, "kata-remote", None)
++                .unwrap_err()
++                .contains("placement is missing")
++        );
++        let placement = crate::config::ConfidentialWorkloadPlacement {
++            runtime_class_name: "kata-remote".into(),
++            init_data: "bWVhc3VyZWQtZml4dHVyZQ==".into(),
++        };
++        assert!(
++            confidential_workload_spec(resource, true, "kata-ordinary", Some(&placement))
++                .unwrap_err()
++                .contains("invalid")
++        );
++    }
++}

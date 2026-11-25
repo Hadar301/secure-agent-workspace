@@ -1136,13 +1136,25 @@ def tool_gate_identity(owner, subject, workspace, sandbox):
             "sandbox": sandbox, "workspace": workspace}
 
 
-def tool_gate_bundle(here, identity, receipt_key=None, harness_rules=()):
-    """Build the identical policy, identity and OpenClaw extension for both runtimes.
+def tool_gate_paths(*, whole_volume=False):
+    """Fixed mount roots and data directories; callers cannot supply paths."""
+    if type(whole_volume) is not bool:
+        raise InstallerError("tool gate layout must be an explicit boolean")
+    if whole_volume:
+        return {"trustedMount": "/sandbox/.saw/gate-volume",
+                "auditMount": "/sandbox/.saw/audit-volume",
+                "trusted": "/sandbox/.saw/gate-volume/bundle",
+                "audit": "/sandbox/.saw/audit-volume/log"}
+    return {"trustedMount": "/sandbox/.saw/trusted", "auditMount": "/sandbox/.saw/audit",
+            "trusted": "/sandbox/.saw/trusted", "audit": "/sandbox/.saw/audit"}
 
-    `harness_rules` are the enrolled harness's own tool rules
-    (harness_tool_rules). They follow the base rules, so where both name a
-    tool the base rule decides, and the pinned policy hash covers them.
-    """
+
+def tool_gate_bundle(here, identity, receipt_key=None, harness_rules=(), *, whole_volume=False):
+    """Build the identical policy, identity and OpenClaw extension for both runtimes."""
+    paths = tool_gate_paths(whole_volume=whole_volume)
+    def relocate(data):
+        return (data.replace(b"/sandbox/.saw/trusted", paths["trusted"].encode())
+                    .replace(b"/sandbox/.saw/audit", paths["audit"].encode()))
     names = ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
     missing = [name for name in names if not (here / name).is_file()]
     if missing:
@@ -1175,8 +1187,8 @@ def tool_gate_bundle(here, identity, receipt_key=None, harness_rules=()):
         "identity.json": ((json.dumps(identity, sort_keys=True) + "\n").encode(), False),
         "plugin/package.json": (_TOOL_GATE_PACKAGE.encode(), False),
         "plugin/openclaw.plugin.json": (_TOOL_GATE_MANIFEST.encode(), False),
-        "plugin/index.js": (plugin, False),
-        "plugin/tool-gate.mjs": ((here / "tool-gate.mjs").read_bytes(), False),
+        "plugin/index.js": (relocate(plugin), False),
+        "plugin/tool-gate.mjs": (relocate((here / "tool-gate.mjs").read_bytes()), False),
     }
     digest = tree_digest({key: data for key, (data, _) in tree.items()})
     source = f"gate:{digest}"

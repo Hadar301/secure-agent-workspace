@@ -84,7 +84,7 @@ spec:
       containers:
       - name: prep
         image: {{ $e.image | quote }}
-        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}{{ with $gate.receiptKey }}, --receipt-key, {{ . | quote }}{{ end }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
+        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}{{ if $b.confidentialAttestation }}, --whole-volume{{ end }}{{ with $gate.receiptKey }}, --receipt-key, {{ . | quote }}{{ end }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
         volumeMounts: [{name: gate, mountPath: /volume}{{ if $target.ui }}, {name: proof, mountPath: /proof, readOnly: true}{{ end }}{{ if $gate.harness }}, {name: bom, mountPath: /bom, readOnly: true}{{ end }}]
       volumes: [{name: gate, persistentVolumeClaim: {claimName: {{ $gate.trusted.claimName }}}}{{ if $target.ui }}, {name: proof, secret: {secretName: ui-{{ $target.relayID }}-browser-proof, items: [{key: relay-proof, path: relay-proof}]}}{{ end }}{{ if $gate.harness }}, {name: bom, configMap: {name: saw-bom-profiles}}{{ end }}]
@@ -128,12 +128,20 @@ spec:
 {{- with $site.kataRuntimeClass }}
           workloadRuntimeClass: {{ .name | quote }}
 {{- end }}
+{{- if and $site.attestation $site.attestation.enabled }}
+          confidentialProviderPolicy: {{ printf "%s-confidential-provider-policy" $u | quote }}
+          confidentialAttestation:
+            settings: {{ $site.attestation | toJson }}
+            owner: {{ $u | quote }}
+            registration: {{ $reg | quote }}
+            installation: {{ $.Values.installationID | quote }}
+{{- end }}
           intent: saw-runtime-intent
           profile: saw-bom-profiles
           status: saw-runtime-status
           approved: {{ $e.approved | toJson }}
         trustedEgress:
-{{ toYaml $site.stack.identity.values.network.bootstrapEgress | indent 10 }}
+{{ include "saw.workspace.bootstrapEgress" $site | fromJsonArray | toYaml | indent 10 }}
           - to:
             - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $ns }}}}
               podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}

@@ -18,3 +18,7 @@ prepare-gitops:
 	@$(ANSIBLE_RUN) ansible/playbooks/saw-gitops-bootstrap.yaml
 
 pattern-install operator-deploy: prepare-gitops
+
+.PHONY: saw-test-kata-policy
+saw-test-kata-policy:
+	@bash scripts/test-kata-agent-policy.sh

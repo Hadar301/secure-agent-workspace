@@ -57,10 +57,10 @@
         body:
           policy: |
             path "{{ kv_mount }}/data/{{ prefix_base }}/saw-*" {
-              capabilities = ["create", "update", "read"]
+              capabilities = ["create", "update"]
             }
             path "{{ kv_mount }}/metadata/{{ prefix_base }}/saw-*" {
-              capabilities = ["read", "list", "delete"]
+              capabilities = ["read", "delete"]
             }
         status_code: [200, 204]
         validate_certs: true

@@ -2,8 +2,8 @@
 # Let the self-service portal's pipeline write users' keys to Vault.
 #
 # Creates (idempotently) the Vault policy saw-portal-writer, which may write
-# and delete only <kv>/data/<base>/saw-* and <kv>/metadata/<base>/saw-*, and
-# the Kubernetes auth role saw-portal-writer bound to the portal's
+# <kv>/data/<base>/saw-* and read/delete only its metadata, and the Kubernetes
+# auth role saw-portal-writer bound to the portal's
 # provisioner service account. Uses the pattern's Vault root token (secret
 # vaultkeys in namespace imperative), passed to the Vault pod on stdin, not
 # on a command line. The imperative job saw-portal-vault runs the same steps
@@ -30,10 +30,10 @@ set -e
 export VAULT_TOKEN='${root_token}'
 vault policy write ${ROLE} - <<'POLICY'
 path "${KV_MOUNT}/data/${PREFIX_BASE}/saw-*" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update"]
 }
 path "${KV_MOUNT}/metadata/${PREFIX_BASE}/saw-*" {
-  capabilities = ["read", "list", "delete"]
+  capabilities = ["read", "delete"]
 }
 POLICY
 vault write auth/${AUTH_MOUNT}/role/${ROLE} \

@@ -312,3 +312,27 @@ def test_public_https_lets_supervisors_reach_providers_but_not_private_networks(
 
 def test_public_https_is_off_by_default():
     assert packet_action(render()["AdminNetworkPolicy"], ip="203.0.113.7") == "Deny"
+
+
+@pytest.mark.parametrize("confidential", [False, True])
+def test_workload_storage_rules_select_one_fixed_layout(confidential):
+    result = helm_template("--set", "mode=kata", "--set", "workloadRuntimeClassName=kata-remote",
+                          "--set", "confidentialMode=" + str(confidential).lower(),
+                          "--set", "slots.default--notebook.base=notebook",
+                          "--set", "slots.default--notebook.image=registry.example.test/agent@sha256:" + "a" * 64)
+    assert result.returncode == 0, result.stderr
+    pod, = [d for d in yaml.safe_load_all(result.stdout) if d and d["kind"] == "ValidatingAdmissionPolicy"
+            and d["spec"]["matchConstraints"]["resourceRules"][0]["resources"] == ["pods"]]
+    rule, = [v["expression"] for v in pod["spec"]["validations"]
+             if v["message"] == "Workload image and PVC attachments must match the approved sandbox slot."]
+    if confidential:
+        assert "m.mountPath == '/sandbox/.saw/gate-volume'" in rule
+        assert "m.mountPath == '/sandbox/.saw/audit-volume'" in rule
+        assert "m.readOnly && !has(m.subPath)" in rule
+        assert "m.subPath == 'bundle'" not in rule
+        assert "m.subPath == 'log'" not in rule
+        assert "/sandbox/briefing" not in rule
+    else:
+        assert "m.subPath == 'bundle'" in rule
+        assert "m.subPath == 'log'" in rule
+        assert "gate-volume" not in rule and "audit-volume" not in rule

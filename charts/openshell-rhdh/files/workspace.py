@@ -227,6 +227,15 @@ def project_workspace(workspace, defaults, site, catalog, read=None, previous=No
         raise WorkspaceError(f"workspace {workspace.get('name', '?')}: {detail}") from None
 
 
+def _attestation_module():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("saw_workspace_attestation", Path(__file__).with_name("attestation.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _project_workspace(workspace, defaults, site, catalog, read=None):
     """Project an authenticated registration into common saw-users chart values.
 
@@ -309,6 +318,34 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         site.update(lifecycleVersion=1, modelInputs=ws["initialModelInputs"],
                     requestedModels=ws.get("modelInputs", {}), desiredState=ws["desiredState"],
                     restartGeneration=ws["restartGeneration"])
+    attestation = site.get("attestation")
+    if attestation is not None and (not isinstance(attestation, dict)
+                                    or type(attestation.get("enabled")) is not bool):
+        raise WorkspaceError("confidential attestation settings are invalid")
+    confidential = isinstance(attestation, dict) and attestation.get("enabled") is True
+    if confidential:
+        if mode != "kata":
+            raise WorkspaceError("confidential placement requires Kata mode")
+        approved_refs = (site.get("credentialReferences", {}).get(selected)
+                         if isinstance(site.get("credentialReferences"), dict) else None)
+        registered_refs = ws.get("credentialReferences")
+        if (not isinstance(approved_refs, dict) or not approved_refs
+                or registered_refs != approved_refs):
+            raise WorkspaceError("confidential credential references differ from owner approval")
+        site["credentialReferences"] = registered_refs
+        module = _attestation_module()
+        try:
+            module.deployment_settings(site, mode)
+            site["preparedConfidential"] = module.placement_contract(
+                site, ws["name"], ws["registration"], ws["installationID"],
+                sorted(site["targets"]), site["kataRuntimeClass"]["name"])
+        except module.AttestationError as exc:
+            raise WorkspaceError(str(exc)) from None
+    else:
+        if ws.get("credentialReferences") is not None:
+            raise WorkspaceError("credential references require confidential attestation")
+        site.pop("credentialReferences", None)
+        site.pop("preparedConfidential", None)
     values["containerSites"] = {ws["name"]: enrolled_site(site, ws, read)}
     return values
 

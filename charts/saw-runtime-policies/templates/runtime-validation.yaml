@@ -1,4 +1,6 @@
 {{- if .Values.enabled }}
+{{- $confidentialSupervisors := .Values.confidentialSupervisors | toJson }}
+{{- $confidentialWorkloads := .Values.confidentialWorkloads | toJson }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -178,7 +180,7 @@ spec:
         'OPENSHELL_SSH_SOCKET_PATH','OPENSHELL_SSH_SOCKET_SHARED','OPENSHELL_PROXY_TLS_DIR','OPENSHELL_PROXY_CA_CERT',
         'OPENSHELL_PROXY_CA_KEY','OPENSHELL_LOG_LEVEL','OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_NETWORK_RUNTIME_CAPABILITIES',
         'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME','OPENSHELL_GATEWAY_NAME',
-        'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS'{{ if .Values.ocsfEndpoint }},
+        'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS'{{ if .Values.confidentialMode }},'SAW_CONFIDENTIAL_BOOTSTRAP_JSON'{{ end }}{{ if .Values.ocsfEndpoint }},
         'OPENSHELL_OTLP_OCSF_ENDPOINT'{{ end }}{{ if .Values.agentTraceEndpoint }},
         'OPENSHELL_OTLP_AGENT_ENDPOINT'{{ end }}]) &&
         object.spec.containers[0].env.all(e, e.name != 'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS' ||
@@ -195,8 +197,20 @@ spec:
            has(v.secret.items) && v.secret.items.size() == 1 && v.secret.items[0].key == 'ca.crt' && v.secret.items[0].path == 'ca.crt') ||
           (v.name == 'sa-token' && has(v.projected) && v.projected.sources.size() == 1 &&
            has(v.projected.sources[0].serviceAccountToken) && v.projected.sources[0].serviceAccountToken.audience == 'openshell-gateway' &&
-           v.projected.sources[0].serviceAccountToken.path == 'token' && v.projected.sources[0].serviceAccountToken.expirationSeconds <= 3600)))
+           v.projected.sources[0].serviceAccountToken.path == 'token' && v.projected.sources[0].serviceAccountToken.expirationSeconds <= 3600)
+        ))
       message: Supervisor executable, TLS projection and token must match the stock contract.
+{{- if .Values.confidentialMode }}
+    - expression: >-
+        variables.role != 'supervisor' || (variables.slot in {{ $confidentialSupervisors }} &&
+        object.spec.containers[0].env.filter(e, e.name == 'SAW_CONFIDENTIAL_BOOTSTRAP_JSON').size() == 1 &&
+        object.spec.containers[0].env.exists(e, e.name == 'SAW_CONFIDENTIAL_BOOTSTRAP_JSON' &&
+          has(e.value) && e.value == {{ $confidentialSupervisors }}[variables.slot].bootstrap_json) &&
+        (!has(object.spec.containers[0].volumeMounts) ||
+         object.spec.containers[0].volumeMounts.all(m, m.name != 'saw-confidential' && m.mountPath != '/etc/saw-confidential')))
+      message: Confidential supervisor bootstrap must match its measured slot without file fallback.
+      reason: Forbidden
+{{- end }}
     - expression: >-
         variables.role != 'workload' || (object.spec.containers[0].name == 'agent' &&
         (!has(object.spec.containers[0].env) || object.spec.containers[0].env.all(e, e.name in ['TMPDIR',
@@ -226,14 +240,23 @@ spec:
           (m.name == 'data-{{ $i }}' && m.mountPath == {{ $m.mountPath | toJson }} &&
            !has(m.subPath) && m.?readOnly.orValue(false) == {{ $m.readOnly }}) ||
           {{ end -}}
+{{- if $.Values.confidentialMode }}
+          (m.name == 'saw-workspace' && m.mountPath == '/sandbox/workspace' && !has(m.subPath) && !m.?readOnly.orValue(false)) ||
+          (m.name == 'saw-audit' && m.mountPath == '/sandbox/.saw/audit-volume' && !has(m.subPath) && !m.?readOnly.orValue(false)) ||
+{{- else }}
           (m.name == 'saw-workspace' && ((m.mountPath == '/sandbox/workspace' && !has(m.subPath)) || (m.mountPath == '/sandbox/briefing' && m.subPath == 'briefing'))) ||
           (m.name == 'saw-audit' && m.subPath == 'log' && m.mountPath == '/sandbox/.saw/audit') ||
+{{- end }}
           (m.name == 'openshell-runtime' && m.mountPath == '/.openshell/runtime' && m.readOnly) ||
           (m.name == 'openshell-runtime-state' && m.mountPath == '/.openshell/state') ||
           (m.name == 'openshell-pod-identity' && m.mountPath == '/.openshell/pod-identity' && m.readOnly) ||
           (m.name == 'openshell-run' && m.mountPath == '/run') || m.name == 'saw-gate')) &&
         object.spec.containers[0].volumeMounts.all(m,
+{{- if $.Values.confidentialMode }}
+          m.name != 'saw-gate' || (m.readOnly && !has(m.subPath) && m.mountPath == '/sandbox/.saw/gate-volume')) &&
+{{- else }}
           m.name != 'saw-gate' || (m.readOnly && has(m.subPath) && ((m.mountPath == '/sandbox/.saw/trusted' && m.subPath == 'bundle') || (m.mountPath == '/sandbox/harness' && m.subPath.matches('^harness-[a-f0-9]{64}$'))))) &&
+{{- end }}
         object.spec.initContainers[0].volumeMounts.all(m, m.name in ['openshell-sandbox-bootstrap','openshell-runtime','openshell-runtime-state']))
       message: Workload image and PVC attachments must match the approved sandbox slot.
 {{- end }}
@@ -283,7 +306,13 @@ spec:
       message: Only this workspace gateway may create supervisor Pods.
       reason: Forbidden
     - expression: >-
-{{- if eq .Values.mode "kata" }}
+{{- if .Values.confidentialMode }}
+        variables.role != 'supervisor' || (variables.slot in {{ $confidentialSupervisors }} &&
+        has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }} &&
+        has(object.metadata.annotations) &&
+        object.metadata.annotations['io.katacontainers.config.hypervisor.cc_init_data'] == {{ $confidentialSupervisors }}[variables.slot].init_data)
+      message: Confidential supervisor placement must match the approved slot.
+{{- else if eq .Values.mode "kata" }}
         variables.role != 'supervisor' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
       message: Kata supervisors require the approved RuntimeClass, in a VM of their own.
 {{- else }}
@@ -292,7 +321,13 @@ spec:
 {{- end }}
       reason: Forbidden
     - expression: >-
-{{- if eq .Values.mode "kata" }}
+{{- if .Values.confidentialMode }}
+        variables.role != 'workload' || (variables.slot in {{ $confidentialWorkloads }} &&
+        has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }} &&
+        has(object.metadata.annotations) &&
+        object.metadata.annotations['io.katacontainers.config.hypervisor.cc_init_data'] == {{ $confidentialWorkloads }}[variables.slot].init_data)
+      message: Confidential workload placement must match the approved slot.
+{{- else if eq .Values.mode "kata" }}
         variables.role != 'workload' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
       message: Kata workloads require the approved RuntimeClass.
 {{- else }}
