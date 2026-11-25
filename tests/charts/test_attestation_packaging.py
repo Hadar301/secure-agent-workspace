@@ -30,6 +30,9 @@ def test_packaged_chart_contains_shared_attestation_without_source_checkout(tmp_
     canonical = ROOT / "deploy/confidential/helm/_attestation.tpl"
     assert helper.is_symlink() and helper.resolve() == canonical
     assert (unpacked / chart / "templates/_attestation.tpl").read_bytes() == canonical.read_bytes()
+    crio_link = ROOT / "charts" / chart / "files/crio_policy.py"
+    assert crio_link.is_symlink()
+    assert (unpacked / chart / "files/crio_policy.py").read_bytes() == crio_link.resolve().read_bytes()
     # The chart runs after packaging without the canonical repository path.
     preflight_link = ROOT / "charts" / chart / "files/preflight.py"
     assert preflight_link.is_symlink()

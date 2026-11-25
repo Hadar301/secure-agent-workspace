@@ -63,6 +63,8 @@ data:
 {{ .Files.Get "files/preflight.py" | indent 4 }}
   attestation.py: |
 {{ .Files.Get "files/attestation.py" | indent 4 }}
+  crio_policy.py: |
+{{ .Files.Get "files/crio_policy.py" | indent 4 }}
   profile-catalog.json: |
 {{ .Files.Get "files/profile-catalog.json" | indent 4 }}
 ---
@@ -227,7 +229,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector, saw.redhat.com/kubernetes-api: allow}
       annotations:
-        checksum/source: {{ printf "%s%s%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/attestation.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
+        checksum/source: {{ printf "%s%s%s%s%s%s" (.Files.Get "files/crio_policy.py") (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/attestation.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: true

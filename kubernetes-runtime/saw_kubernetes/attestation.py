@@ -921,6 +921,20 @@ def trustee_resources(site, owner, registration, policy, secret_store):
                          "engineVersion": "v2", "data": templates}}, "data": data}}
 
 
+def _host_mcs_label(security):
+    # OSC clears the host process and mount labels when guest SELinux is off.
+    # The locked rules separately require both incoming guest labels to be
+    # empty. Accept only the OpenShift admission MCS shape, never a custom
+    # SELinux user, role, type, or unreviewed security setting.
+    if "seLinuxOptions" in security:
+        value = security["seLinuxOptions"]
+        if (not isinstance(value, dict) or set(value) != {"level"}
+                or not isinstance(value["level"], str)
+                or not re.fullmatch(r"s0:c[0-9]{1,4},c[0-9]{1,4}", value["level"])):
+            raise ValueError()
+        del security["seLinuxOptions"]
+
+
 def launch_policy_input(pod):
     """Adapt a nonroot Pod to the pinned generator without ignoring fields.
 
@@ -980,6 +994,7 @@ def launch_policy_input(pod):
             if pod_security["sysctls"] != [{"name": "net.ipv4.ip_unprivileged_port_start", "value": "0"}]:
                 raise ValueError()
             del pod_security["sysctls"]
+        _host_mcs_label(pod_security)
         inherited_seccomp = pod_security.pop("seccompProfile", None)
         inherited_nonroot = pod_security.pop("runAsNonRoot", None)
         for group in ("containers", "initContainers"):
@@ -988,6 +1003,7 @@ def launch_policy_input(pod):
                 raise ValueError()
             for container in containers:
                 security = container.setdefault("securityContext", {})
+                _host_mcs_label(security)
                 uid = security.get("runAsUser", pod_security.get("runAsUser"))
                 nonroot = security.pop("runAsNonRoot", inherited_nonroot)
                 if (type(uid) is not int or uid <= 0 or nonroot is not True
@@ -1146,7 +1162,18 @@ def _pvc_launch_mounts(pod, data, *, restore=False):
                 policy_mount["options"] = ["rbind", "rprivate", "rw" if restore else "ro"]
 
 
-def compile_launch_policy(pod, generated):
+def _crio_module():
+    # The same canonical module is linked into each packaged chart.
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "saw_crio_policy", Path(__file__).with_name("crio_policy.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def compile_launch_policy(pod, generated, runtime_profile=None):
     """Create an identity-bearing template from reviewed rules and Pod output.
 
     This does not qualify a driver, approve resource release, or enable enrollment.
@@ -1246,8 +1273,11 @@ def compile_launch_policy(pod, generated):
         if encoded.count(json.dumps(IDENTITY_MARKER)) != 1:
             raise ValueError()
         encoded = encoded.replace(json.dumps(IDENTITY_MARKER), IDENTITY_MARKER)
-        return prefix + "\n\npolicy_data := " + encoded + "\n"
-    except (ValueError, TypeError, KeyError, AttributeError):
+        result = prefix + "\n\npolicy_data := " + encoded + "\n"
+        if runtime_profile is not None:
+            result = _crio_module().compile_policy(pod, result, runtime_profile)
+        return result
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OSError):
         raise AttestationError("LaunchPolicyRejected") from None
 
 
@@ -1289,7 +1319,8 @@ def validate_launch_policies(policies, expected_digest):
                     or not isinstance(roles, dict) or set(roles) != {"supervisor", "workload"}):
                 raise ValueError()
             for role, entry in roles.items():
-                if not isinstance(entry, dict) or set(entry) != {"pod", "template"}:
+                if (not isinstance(entry, dict)
+                        or set(entry) not in ({"pod", "template"}, {"pod", "template", "runtimeProfile"})):
                     raise ValueError()
                 pod_spec = entry["pod"]["spec"]
                 if role == "supervisor":
@@ -1310,15 +1341,17 @@ def validate_launch_policies(policies, expected_digest):
                 template = entry["template"]
                 if not isinstance(template, str) or template.count(IDENTITY_MARKER) != 1:
                     raise ValueError()
-                match, = list(POLICY_DATA.finditer(template))
-                data = json.loads(template[match.end()-1:].replace(IDENTITY_MARKER, "null"))
+                source = (_crio_module().source_template(template)
+                          if "runtimeProfile" in entry else template)
+                match, = list(POLICY_DATA.finditer(source))
+                data = json.loads(source[match.end()-1:].replace(IDENTITY_MARKER, "null"))
                 if "saw_identity" not in data or data.pop("saw_identity") is not None:
                     raise ValueError()
                 _pvc_launch_mounts(entry["pod"], data, restore=True)
                 _supervisor_runtime_identity(entry["pod"], data, restore=True)
-                generated = template[:match.start()] + "policy_data := " + canonical(data) + "\n"
-                if compile_launch_policy(entry["pod"], generated) != template:
+                generated = source[:match.start()] + "policy_data := " + canonical(data) + "\n"
+                if compile_launch_policy(entry["pod"], generated, entry.get("runtimeProfile")) != template:
                     raise ValueError()
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError, AttestationError):
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, AttestationError, OSError):
         raise AttestationError("AttestationLaunchPolicyRejected") from None
     return expected_digest

@@ -17,3 +17,5 @@ data:
 {{ .Files.Get "files/preflight.py" | indent 4 }}
   attestation.py: |
 {{ .Files.Get "files/attestation.py" | indent 4 }}
+  crio_policy.py: |
+{{ .Files.Get "files/crio_policy.py" | indent 4 }}

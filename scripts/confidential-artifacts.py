@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--secret-store")
     parser.add_argument("--policy")
     parser.add_argument("--pod")
+    parser.add_argument("--runtime-profile", help="Reviewed public CRI-O profile JSON")
     parser.add_argument("--output")
     args=parser.parse_args()
     if args.action in ("launch-input", "launch-policy"):
@@ -49,7 +50,8 @@ def main():
             if args.action == "launch-input":
                 encoded = yaml.safe_dump(a.launch_policy_input(pod), sort_keys=False)
             else:
-                encoded = a.compile_launch_policy(pod, Path(args.policy).read_text())
+                encoded = a.compile_launch_policy(pod, Path(args.policy).read_text(),
+                    json.loads(Path(args.runtime_profile).read_text()) if args.runtime_profile else None)
             # No manifest on stdout. Do not overwrite inputs or follow a link.
             fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w") as stream:

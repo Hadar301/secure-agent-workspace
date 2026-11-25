@@ -27,9 +27,32 @@ guest image. Trustee runs with verified HTTPS. The first credential-free guest r
 the Kata agent. Its measured policy
 rejected the infrastructure container: the pinned generator emits containerd
 metadata, while OpenShift sends CRI-O metadata and a different pause process.
-The probe was removed and its Trustee approval was revoked. Strict CRI-O
-policy generation and verification of the pause image remain required. No
-real workspace or provider credential release is qualified on this cluster.
+The probe was removed and its Trustee approval was revoked. An explicit
+CRI-O 1.34 / OCI 1.2.1 profile now passes executable offline checks against the
+captured request and public fixtures. A new live attestation test remains
+required. No real workspace or provider credential release is qualified.
+
+The pinned [guest image handler](https://github.com/openshift/kata-containers/blob/b17f640901e87e620ab74db428e8e0883cb91b81/src/agent/src/storage/image_pull_handler.rs)
+uses the signed, measured guest's embedded `/pause_bundle` for sandbox storage.
+It does not fetch CRI-O's host pause image inside the guest. Application pulls
+use `storage.source`. The CRI-O profile binds that source and its metadata to
+the approved application image. It rejects a change between sandbox and
+application storage paths.
+
+The next probe passed infrastructure startup. Its application request was
+rejected before execution because CRI-O added an unapproved host subscription
+mount at `/run/secrets`. The profile now models the verified runtime marker,
+bind flags, and fixed `NSS_SDB_USE_CACHE=no` value. It still rejects the host
+subscription mount and conflicting environment entries.
+
+For a dedicated confidential worker pool, the reviewed
+[host-mount configuration](../deploy/confidential/bootstrap/crio-host-mounts.yaml)
+creates an override with no optional subscription mounts. Review the pool
+selector before applying it. This changes all Pods on that pool and can cause
+a drain and reboot. Keep this step separate from workspace creation. Verify
+the pool and Trustee are Ready before another credential-free test. Removing
+the MachineConfig restores the vendor defaults and can cause another reboot.
+Do not allow an opaque host directory to satisfy the guest launch policy.
 
 The earlier results below are historical component tests. They do not establish
 qualification of this new cluster or the OpenShell 0.1.10 image pairing.
@@ -276,7 +299,11 @@ the exact `openshell.ai/bootstrap` scheduling gate, and `OnRootMismatch` volume
 ownership handling from generator input. These API fields do not become guest
 OCI fields. Numeric `fsGroup` remains, so additional groups stay constrained.
 Other ownership shapes, scheduling gates, or volume ownership policies are
-rejected. Other unsupported fields remain for genpolicy to reject. The actual
+rejected. The conversion removes only an admission MCS label with the shape
+`seLinuxOptions: {level: s0:c29,c19}` from generator input. The enrolled Pod
+retains it. The pinned runtime clears host labels when guest SELinux is off,
+and the locked agent rules require empty guest process and mount labels.
+Custom SELinux user, role, type, or level shapes are rejected. Other unsupported fields remain for genpolicy to reject. The actual
 deployment manifest is not modified.
 
 The pinned generator models projected volumes as read-only shared mounts, but
@@ -296,6 +323,29 @@ uv run --with pyyaml scripts/confidential-artifacts.py launch-policy \
   --pod approved-pod.yaml --policy generated-policy.rego \
   --output launch-template.rego
 ```
+
+For the supported CRI-O format, provide an administrator-reviewed JSON file:
+
+```json
+{
+  "name": "crio-1.34-oci-1.2.1-v1",
+  "pauseImage": "registry.example.test/infra@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+```
+
+Use the actual infrastructure image digest from the approved cluster release.
+Add `--runtime-profile runtime-profile.json` to `launch-policy`. Include that
+same object as `runtimeProfile` beside `pod` and `template` in each launch
+bundle entry. The bundle digest enrolls this selection. Unknown profiles and
+fields fail closed. Omit the flag only for the existing containerd format.
+
+The canonical `crio_policy.py` validates native identity and guest-pull metadata,
+then passes an equivalent request to the pinned vendor checks. It checks the
+root infrastructure process separately. Application and supervisor processes
+must remain nonroot with no privilege escalation. Host execution, policy
+replacement, and diagnostic streams remain denied. Enrollment recovers the
+original generator data, recompiles the complete template, and requires an
+exact match. A change to the adapter or profile requires a new reviewed bundle.
 
 The validator accepts only the exact locked rules code followed by JSON policy
 data. It requires the Pod's image digest, command, namespace, UID, read-only-root

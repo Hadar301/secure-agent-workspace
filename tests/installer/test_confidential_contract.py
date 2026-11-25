@@ -1879,3 +1879,25 @@ def test_real_kata_notebook_harness_uses_verified_whole_volume(confidential_agen
     assert "/sandbox/harness" not in spec["command"][2]
     assert "harness digest mismatch" in spec["command"][2]
     assert not any("credentialRef" in p for p in plan["workspaces"][0]["providers"])
+
+
+@pytest.mark.parametrize("scope", ["pod", "container"])
+def test_admission_mcs_label_is_host_only(launch_pod, scope):
+    import copy
+    security = (launch_pod["spec"]["securityContext"] if scope == "pod"
+                else launch_pod["spec"]["containers"][0]["securityContext"])
+    security["seLinuxOptions"] = {"level": "s0:c29,c19"}
+    original = copy.deepcopy(launch_pod)
+    result = a.launch_policy_input(launch_pod)
+    assert launch_pod == original
+    converted = (result["spec"]["securityContext"] if scope == "pod"
+                 else result["spec"]["containers"][0]["securityContext"])
+    assert "seLinuxOptions" not in converted
+
+
+@pytest.mark.parametrize("value", [{"type": "unconfined_t"}, {"level": "s0"},
+    {"level": "s0:c1,c2", "user": "system_u"}, {"level": 1}, "s0:c1,c2"])
+def test_custom_selinux_conversion_is_rejected(launch_pod, value):
+    launch_pod["spec"]["securityContext"]["seLinuxOptions"] = value
+    with pytest.raises(a.AttestationError, match="^LaunchPolicyInputRejected$"):
+        a.launch_policy_input(launch_pod)

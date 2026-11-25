@@ -1,0 +1,17 @@
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-saw-confidential-host-mounts
+  labels:
+    machineconfiguration.openshift.io/role: kata-oc
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      files:
+      - path: /etc/containers/mounts.conf
+        mode: 420
+        overwrite: true
+        contents:
+          source: data:text/plain;base64,IyBObyBvcHRpb25hbCBob3N0IHN1YnNjcmlwdGlvbiBtb3VudHMgb24gY29uZmlkZW50aWFsIHdvcmtlcnMuCg==

@@ -1,0 +1,279 @@
+{
+  "OCI": {
+    "Annotations": {
+      "app.kubernetes.io/part-of": "qualification",
+      "io.container.manager": "cri-o",
+      "io.katacontainers.config.hypervisor.default_memory": "512",
+      "io.katacontainers.config.hypervisor.default_vcpus": "1",
+      "io.katacontainers.pkg.oci.bundle_path": "/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata",
+      "io.katacontainers.pkg.oci.container_type": "pod_sandbox",
+      "io.kubernetes.container.name": "POD",
+      "io.kubernetes.cri-o.CgroupParent": "kubepods-besteffort-pod22222222_2222_4222_8222_222222222222.slice",
+      "io.kubernetes.cri-o.ContainerID": "1111111111111111111111111111111111111111111111111111111111111111",
+      "io.kubernetes.cri-o.ContainerName": "k8s_POD_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0",
+      "io.kubernetes.cri-o.ContainerType": "sandbox",
+      "io.kubernetes.cri-o.Created": "2026-01-01T00:00:00Z",
+      "io.kubernetes.cri-o.HostName": "qualification-agent",
+      "io.kubernetes.cri-o.HostNetwork": "false",
+      "io.kubernetes.cri-o.HostnamePath": "/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/hostname",
+      "io.kubernetes.cri-o.Image": "registry.example.test/infra@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "io.kubernetes.cri-o.ImageName": "registry.example.test/infra@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "io.kubernetes.cri-o.KubeName": "qualification-agent",
+      "io.kubernetes.cri-o.Labels": "{\"io.kubernetes.pod.name\":\"qualification-agent\",\"io.kubernetes.pod.namespace\":\"saw-alice\",\"io.kubernetes.pod.uid\":\"22222222-2222-4222-8222-222222222222\",\"io.kubernetes.container.name\":\"POD\",\"app.kubernetes.io/part-of\":\"saw-confidential-qualification\"}",
+      "io.kubernetes.cri-o.LogPath": "/var/log/pods/saw-alice_qualification-agent_22222222-2222-4222-8222-222222222222/1111111111111111111111111111111111111111111111111111111111111111.log",
+      "io.kubernetes.cri-o.Metadata": "{\"name\":\"qualification-agent\",\"uid\":\"22222222-2222-4222-8222-222222222222\",\"namespace\":\"saw-alice\"}",
+      "io.kubernetes.cri-o.MountPoint": "/var/lib/containers/storage/overlay/4444444444444444444444444444444444444444444444444444444444444444/merged",
+      "io.kubernetes.cri-o.Name": "k8s_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0",
+      "io.kubernetes.cri-o.Namespace": "saw-alice",
+      "io.kubernetes.cri-o.NamespaceOptions": "{\"pid\":1,\"userns_options\":{\"mode\":2}}",
+      "io.kubernetes.cri-o.PortMappings": "[]",
+      "io.kubernetes.cri-o.PrivilegedRuntime": "false",
+      "io.kubernetes.cri-o.ResolvPath": "/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/resolv.conf",
+      "io.kubernetes.cri-o.RuntimeHandler": "kata-remote",
+      "io.kubernetes.cri-o.SandboxID": "1111111111111111111111111111111111111111111111111111111111111111",
+      "io.kubernetes.cri-o.SandboxName": "k8s_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0",
+      "io.kubernetes.cri-o.SeccompProfilePath": "RuntimeDefault",
+      "io.kubernetes.cri-o.ShmPath": "/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/shm",
+      "io.kubernetes.pod.name": "qualification-agent",
+      "io.kubernetes.pod.namespace": "saw-alice",
+      "io.kubernetes.pod.uid": "22222222-2222-4222-8222-222222222222",
+      "kubernetes.io/config.seen": "2026-01-01T00:00:00Z",
+      "kubernetes.io/config.source": "api",
+      "nerdctl/network-namespace": "/var/run/netns/33333333-3333-4333-8333-333333333333",
+      "openshift.io/scc": "restricted-v2",
+      "seccomp.security.alpha.kubernetes.io/pod": "runtime/default",
+      "security.openshift.io/validated-scc-subject-type": "user"
+    },
+    "Hooks": null,
+    "Hostname": "qualification-agent",
+    "Linux": {
+      "CgroupsPath": "kubepods-besteffort-pod22222222_2222_4222_8222_222222222222.slice:crio:1111111111111111111111111111111111111111111111111111111111111111",
+      "Devices": [],
+      "GIDMappings": [],
+      "IntelRdt": null,
+      "MaskedPaths": [],
+      "MountLabel": "",
+      "Namespaces": [
+        {
+          "Path": "",
+          "Type": "ipc"
+        },
+        {
+          "Path": "",
+          "Type": "uts"
+        },
+        {
+          "Path": "",
+          "Type": "mount"
+        },
+        {
+          "Path": "/run/netns/podns",
+          "Type": "network"
+        }
+      ],
+      "ReadonlyPaths": [],
+      "Resources": {
+        "BlockIO": null,
+        "CPU": {
+          "Cpus": "",
+          "Mems": "",
+          "Period": 0,
+          "Quota": 0,
+          "RealtimePeriod": 0,
+          "RealtimeRuntime": 0,
+          "Shares": 2
+        },
+        "Devices": [],
+        "HugepageLimits": [],
+        "Memory": null,
+        "Network": null,
+        "Pids": null
+      },
+      "RootfsPropagation": "",
+      "Seccomp": null,
+      "Sysctl": {
+        "net.ipv4.ping_group_range": "0 2147483647"
+      },
+      "UIDMappings": []
+    },
+    "Mounts": [
+      {
+        "destination": "/proc",
+        "options": [
+          "nosuid",
+          "noexec",
+          "nodev"
+        ],
+        "source": "proc",
+        "type_": "proc"
+      },
+      {
+        "destination": "/dev",
+        "options": [
+          "nosuid",
+          "strictatime",
+          "mode=755",
+          "size=65536k"
+        ],
+        "source": "tmpfs",
+        "type_": "tmpfs"
+      },
+      {
+        "destination": "/dev/pts",
+        "options": [
+          "nosuid",
+          "noexec",
+          "newinstance",
+          "ptmxmode=0666",
+          "mode=0620",
+          "gid=5"
+        ],
+        "source": "devpts",
+        "type_": "devpts"
+      },
+      {
+        "destination": "/dev/mqueue",
+        "options": [
+          "nosuid",
+          "noexec",
+          "nodev"
+        ],
+        "source": "mqueue",
+        "type_": "mqueue"
+      },
+      {
+        "destination": "/sys",
+        "options": [
+          "nosuid",
+          "noexec",
+          "nodev",
+          "ro"
+        ],
+        "source": "sysfs",
+        "type_": "sysfs"
+      },
+      {
+        "destination": "/etc/resolv.conf",
+        "options": [
+          "ro",
+          "bind",
+          "nodev",
+          "nosuid",
+          "noexec"
+        ],
+        "source": "/run/kata-containers/shared/containers/1111111111111111111111111111111111111111111111111111111111111111-5555555555555555-resolv.conf",
+        "type_": "bind"
+      },
+      {
+        "destination": "/dev/shm",
+        "options": [
+          "rbind"
+        ],
+        "source": "/run/kata-containers/sandbox/shm",
+        "type_": "bind"
+      },
+      {
+        "destination": "/etc/hostname",
+        "options": [
+          "ro",
+          "bind",
+          "nodev",
+          "nosuid",
+          "noexec"
+        ],
+        "source": "/run/kata-containers/shared/containers/1111111111111111111111111111111111111111111111111111111111111111-5555555555555555-hostname",
+        "type_": "bind"
+      }
+    ],
+    "Process": {
+      "ApparmorProfile": "",
+      "Args": [
+        "/usr/bin/pod"
+      ],
+      "Capabilities": {
+        "Ambient": [],
+        "Bounding": [
+          "CAP_CHOWN",
+          "CAP_DAC_OVERRIDE",
+          "CAP_FSETID",
+          "CAP_FOWNER",
+          "CAP_SETGID",
+          "CAP_SETUID",
+          "CAP_SETPCAP",
+          "CAP_NET_BIND_SERVICE",
+          "CAP_KILL"
+        ],
+        "Effective": [
+          "CAP_CHOWN",
+          "CAP_DAC_OVERRIDE",
+          "CAP_FSETID",
+          "CAP_FOWNER",
+          "CAP_SETGID",
+          "CAP_SETUID",
+          "CAP_SETPCAP",
+          "CAP_NET_BIND_SERVICE",
+          "CAP_KILL"
+        ],
+        "Inheritable": [],
+        "Permitted": [
+          "CAP_CHOWN",
+          "CAP_DAC_OVERRIDE",
+          "CAP_FSETID",
+          "CAP_FOWNER",
+          "CAP_SETGID",
+          "CAP_SETUID",
+          "CAP_SETPCAP",
+          "CAP_NET_BIND_SERVICE",
+          "CAP_KILL"
+        ]
+      },
+      "ConsoleSize": null,
+      "Cwd": "/",
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TERM=xterm"
+      ],
+      "NoNewPrivileges": false,
+      "OOMScoreAdj": -998,
+      "Rlimits": [],
+      "SelinuxLabel": "",
+      "Terminal": false,
+      "User": {
+        "AdditionalGids": [],
+        "GID": 0,
+        "UID": 0,
+        "Username": ""
+      }
+    },
+    "Root": {
+      "Path": "/run/kata-containers/1111111111111111111111111111111111111111111111111111111111111111/rootfs",
+      "Readonly": true
+    },
+    "Solaris": null,
+    "Version": "1.2.1",
+    "Windows": null
+  },
+  "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "devices": [],
+  "exec_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sandbox_pidns": false,
+  "shared_mounts": [],
+  "stderr_port": 0,
+  "stdin_port": 0,
+  "stdout_port": 0,
+  "storages": [
+    {
+      "driver": "image_guest_pull",
+      "driver_options": [
+        "image_guest_pull={\"metadata\":{\"app.kubernetes.io/part-of\":\"qualification\",\"io.container.manager\":\"cri-o\",\"io.katacontainers.config.hypervisor.default_memory\":\"512\",\"io.katacontainers.config.hypervisor.default_vcpus\":\"1\",\"io.katacontainers.pkg.oci.bundle_path\":\"/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata\",\"io.katacontainers.pkg.oci.container_type\":\"pod_sandbox\",\"io.kubernetes.container.name\":\"POD\",\"io.kubernetes.cri-o.CgroupParent\":\"kubepods-besteffort-pod22222222_2222_4222_8222_222222222222.slice\",\"io.kubernetes.cri-o.ContainerID\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"io.kubernetes.cri-o.ContainerName\":\"k8s_POD_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0\",\"io.kubernetes.cri-o.ContainerType\":\"sandbox\",\"io.kubernetes.cri-o.Created\":\"2026-01-01T00:00:00Z\",\"io.kubernetes.cri-o.HostName\":\"qualification-agent\",\"io.kubernetes.cri-o.HostNetwork\":\"false\",\"io.kubernetes.cri-o.HostnamePath\":\"/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/hostname\",\"io.kubernetes.cri-o.Image\":\"registry.example.test/infra@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"io.kubernetes.cri-o.ImageName\":\"registry.example.test/infra@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"io.kubernetes.cri-o.KubeName\":\"qualification-agent\",\"io.kubernetes.cri-o.Labels\":\"{\\\"io.kubernetes.pod.name\\\":\\\"qualification-agent\\\",\\\"io.kubernetes.pod.namespace\\\":\\\"saw-alice\\\",\\\"io.kubernetes.pod.uid\\\":\\\"22222222-2222-4222-8222-222222222222\\\",\\\"io.kubernetes.container.name\\\":\\\"POD\\\",\\\"app.kubernetes.io/part-of\\\":\\\"saw-confidential-qualification\\\"}\",\"io.kubernetes.cri-o.LogPath\":\"/var/log/pods/saw-alice_qualification-agent_22222222-2222-4222-8222-222222222222/1111111111111111111111111111111111111111111111111111111111111111.log\",\"io.kubernetes.cri-o.Metadata\":\"{\\\"name\\\":\\\"qualification-agent\\\",\\\"uid\\\":\\\"22222222-2222-4222-8222-222222222222\\\",\\\"namespace\\\":\\\"saw-alice\\\"}\",\"io.kubernetes.cri-o.MountPoint\":\"/var/lib/containers/storage/overlay/4444444444444444444444444444444444444444444444444444444444444444/merged\",\"io.kubernetes.cri-o.Name\":\"k8s_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0\",\"io.kubernetes.cri-o.Namespace\":\"saw-alice\",\"io.kubernetes.cri-o.NamespaceOptions\":\"{\\\"pid\\\":1,\\\"userns_options\\\":{\\\"mode\\\":2}}\",\"io.kubernetes.cri-o.PortMappings\":\"[]\",\"io.kubernetes.cri-o.PrivilegedRuntime\":\"false\",\"io.kubernetes.cri-o.ResolvPath\":\"/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/resolv.conf\",\"io.kubernetes.cri-o.RuntimeHandler\":\"kata-remote\",\"io.kubernetes.cri-o.SandboxID\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"io.kubernetes.cri-o.SandboxName\":\"k8s_qualification-agent_saw-alice_22222222-2222-4222-8222-222222222222_0\",\"io.kubernetes.cri-o.SeccompProfilePath\":\"RuntimeDefault\",\"io.kubernetes.cri-o.ShmPath\":\"/run/containers/storage/overlay-containers/1111111111111111111111111111111111111111111111111111111111111111/userdata/shm\",\"io.kubernetes.pod.name\":\"qualification-agent\",\"io.kubernetes.pod.namespace\":\"saw-alice\",\"io.kubernetes.pod.uid\":\"22222222-2222-4222-8222-222222222222\",\"kubernetes.io/config.seen\":\"2026-01-01T00:00:00Z\",\"kubernetes.io/config.source\":\"api\",\"nerdctl/network-namespace\":\"/var/run/netns/33333333-3333-4333-8333-333333333333\",\"openshift.io/scc\":\"restricted-v2\",\"seccomp.security.alpha.kubernetes.io/pod\":\"runtime/default\",\"security.openshift.io/validated-scc-subject-type\":\"user\"}}"
+      ],
+      "fs_group": null,
+      "fstype": "overlay",
+      "mount_point": "/run/kata-containers/1111111111111111111111111111111111111111111111111111111111111111/rootfs",
+      "options": [],
+      "shared": false,
+      "source": "pause"
+    }
+  ],
+  "string_user": null
+}
