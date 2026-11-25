@@ -82,13 +82,20 @@ by Veritas. Azure reported ConfidentialVM with vTPM enabled. The earlier
 64-byte evidence request returned HTTP 500; the successful 32-byte request
 isolates that diagnostic input issue. The probe's `/version` check returned 404.
 
-The small diagnostic process exited, but Kubernetes continued to report
-Running. Enabling CloseStdin did not resolve this. A control test with the
-production stream restrictions is separate from the attestation result. A
-preceding larger application image failed during layer unpacking. Guest volume
-transport and audit file ownership also remain unqualified. Keep real
+Process exit remains unqualified. A signed small program slept for three
+seconds and returned. On the same worker, the default runtime reported
+Succeeded with exit code 0. The confidential runtime continued to report
+Running. This also occurred with production stream restrictions and CloseStdin
+allowed. It narrows the failure to the confidential runtime path; it does not
+identify a specific failing component or prove that an upgrade will fix it.
+
+A preceding larger application image failed during layer unpacking. Guest
+volume transport and audit file ownership also remain unqualified. Keep real
 enrollment blocked until these gates pass. All guest tests used public image
-policy resources and no provider credentials.
+policy resources and no provider credentials. After the tests, the previous
+Trustee approvals were restored. The diagnostic VMs were removed and their
+absence was checked independently in Azure. CRI-O still retains orphaned
+test sandbox records, so host runtime cleanup remains incomplete.
 
 ## Deployment integration (2026-11-25)
 
