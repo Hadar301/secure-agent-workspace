@@ -380,11 +380,11 @@ def test_kbs_probe_maps_transport_errors_to_safe_reason(approved, failure):
 
 
 @pytest.mark.parametrize("chart",["saw-portal-container","saw-users","openshell-rhdh"])
-def test_no_confidential_request_can_fall_back_to_legacy_proxy(approved,chart):
+def test_no_confidential_request_can_deploy_probe_policy(approved,chart):
     site,objects=approved
     spec=importlib.util.spec_from_file_location("preflight_"+chart,ROOT/"charts"/chart/"files/preflight.py")
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    with pytest.raises(module.PreflightError,match="^AttestationIntegrationUnavailable$"):
+    with pytest.raises(module.PreflightError,match="^AttestationLaunchPolicyRequired$"):
         module.verify_attestation(site,"kata",objects.__getitem__,
                                   lambda request, context, timeout: _ProbeResponse(401))
 
@@ -1582,3 +1582,270 @@ def test_guest_image_policy_rejects_wrong_key_encoding_safely(approved, fault):
     site["attestation"]["imagePolicy"]["transports"]["docker"]["registry.example.test"] = [rule]
     with pytest.raises(a.AttestationError, match="^GuestImagePolicyKeyRejected$"):
         a.validate(site)
+
+
+@pytest.fixture
+def deployable_launch_site(launch_site, approved):
+    import copy
+    site = copy.deepcopy(launch_site)
+    _, source_objects = approved
+    objects = copy.deepcopy(source_objects)
+    ref = site["attestation"]["references"]["qualification"]
+    objects[ref["path"]]["data"]["policyDigest"] = site["attestation"]["policyDigest"]
+    ref["sha256"] = a.digest(objects[ref["path"]]["data"])
+    return site, objects
+
+
+@pytest.mark.parametrize("chart", ["saw-portal-container", "saw-users", "openshell-rhdh"])
+def test_qualified_launch_preflight_passes_without_secret_reads(deployable_launch_site, monkeypatch, chart):
+    site, objects = deployable_launch_site
+    spec = importlib.util.spec_from_file_location("qualified_preflight_" + chart,
+        ROOT / "charts" / chart / "files/preflight.py")
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    # Use the same pinned-rule test module as the launch-policy fixture.
+    monkeypatch.setattr(module, "_attestation_module", lambda: a)
+    calls = []
+    def read(path):
+        calls.append(path)
+        return objects[path]
+    result = module.verify_attestation(site, "kata", read,
+        lambda request, context, timeout: _ProbeResponse(401))
+    assert result == a.digest(site["attestation"])
+    assert set(calls) == {ref["path"] for ref in site["attestation"]["references"].values()}
+    assert all("/secrets/" not in path for path in calls)
+
+
+@pytest.mark.parametrize("change", ["changed", "missing", "denied", "unqualified"])
+def test_deployment_approval_failure_stops_before_endpoint_probe(deployable_launch_site, change):
+    site, objects = deployable_launch_site
+    ref = site["attestation"]["references"]["qualification"]
+    if change == "changed": objects[ref["path"]]["metadata"]["uid"] = "replaced"
+    if change == "missing": del objects[ref["path"]]
+    if change == "unqualified":
+        obj = objects[ref["path"]]
+        obj["data"]["negativeTests"] = "pending"
+        ref["sha256"] = a.digest(obj["data"])
+    def read(path):
+        if change == "denied": raise PermissionError("private input")
+        return objects[path]
+    expected = "AttestationQualificationMissing" if change == "unqualified" else (
+        "AttestationApprovalChanged" if change == "changed" else "AttestationDependencyUnavailable")
+    with pytest.raises(a.AttestationError, match="^" + expected + "$"):
+        a.verify_deployment(site, read, probe_kbs=lambda *args: pytest.fail("endpoint read after approval failure"))
+
+
+def test_legacy_policy_cannot_reach_deployment_api_or_endpoint(approved):
+    site, _ = approved
+    with pytest.raises(a.AttestationError, match="^AttestationLaunchPolicyRequired$"):
+        a.verify_deployment(site, lambda *args: pytest.fail("legacy policy reached API"),
+                            probe_kbs=lambda *args: pytest.fail("legacy policy reached Trustee"))
+
+
+def test_projector_scopes_approval_reads_to_one_validated_site(deployable_launch_site, monkeypatch):
+    site, _ = deployable_launch_site
+    source = ROOT / "charts/saw-users/files"
+    for name in ("workspace", "preflight"):
+        spec = importlib.util.spec_from_file_location(name, source / (name + ".py"))
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(sys.modules["preflight"], "_attestation_module", lambda: a)
+    spec = importlib.util.spec_from_file_location("scoped_projector", source / "projector.py")
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    reader = object.__new__(module.Publications)
+    calls = []
+    reader.get = lambda path: calls.append(path) or {"metadata": {"uid": UID}}
+    path = site["attestation"]["references"]["trustee"]["path"]
+    with pytest.raises(module.ProjectionError): reader.preflight_resource(path)
+    scoped = reader.preflight_for_site(site, "kata")
+    assert scoped(path)["metadata"]["uid"] == UID
+    for foreign in ("/api/v1/namespaces/trustee-system/secrets/private",
+                    "/apis/apps/v1/namespaces/trustee-system/deployments/foreign"):
+        with pytest.raises(module.ProjectionError): scoped(foreign)
+    assert calls == [path]
+
+
+
+def test_projection_prepares_public_placement_before_first_enrollment(launch_site, monkeypatch):
+    import copy
+    spec = importlib.util.spec_from_file_location("launch_workspace", ROOT / "charts/saw-users/files/workspace.py")
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_attestation_module", lambda: a)
+    site = copy.deepcopy(launch_site)
+    references = {"inference": "secret/data/hub/saw-alice/credentials/inference"}
+    site.update(subject=UID, automaticEnrollment={"enabled": False},
+                kataRuntimeClass={"name": "kata-remote", "uid": UID, "sha256": "a"*64},
+                credentialReferences={"developer": references}, preparedConfidential={"untrusted": True})
+    before = copy.deepcopy(site)
+    owner = {"name": "alice", "registration": "0123456789abcdef", "installationID": UID,
+             "ownerSubject": UID, "profiles": ["developer"], "credentialReferences": references,
+             "values": {"deployment": {"mode": "kata"}}}
+    catalog = {"developer": {"workspaces": [{"name": "default", "enabled": True, "sandboxes": [
+        {"name": "notebook", "enabled": True, "image": IMAGE}]}]}}
+    result = module.project_workspace(owner, {}, site, catalog, lambda _: {})
+    prepared = result["containerSites"]["alice"]
+    assert "enrollment" not in prepared
+    assert prepared["preparedConfidential"] == a.placement_contract(
+        site, "alice", "0123456789abcdef", UID, ["default/notebook"], "kata-remote")
+    assert prepared["credentialReferences"] == references
+    assert site == before
+
+
+def test_confidential_approval_set_matches_the_enrollment_chart(launch_site, monkeypatch):
+    from saw_kubernetes import boundary
+    monkeypatch.setattr(boundary, "attestation", a)
+    config = {"namespace": "saw-alice", "trustedNamespace": "saw-ctl-0123456789abcdef",
+              "governanceNamespace": "governance", "gateway": "alice", "ownerID": UID,
+              "mode": "kata", "confidentialProviderPolicy": "alice-confidential-provider-policy",
+              "confidentialAttestation": {"settings": launch_site["attestation"], "owner": "alice",
+                  "registration": "0123456789abcdef", "installation": UID}}
+    result = boundary.objects(config)
+    assert len(result) == 31
+    assert not {"proxy", "proxyNetwork", "proxyPolicy", "publicCA"}.intersection(result)
+    assert {"confidential"+key[0].upper()+key[1:] for key in launch_site["attestation"]["references"]} <= result.keys()
+
+
+
+@pytest.fixture
+def trustee_deployment_spec():
+    base = {"name": "repository-dir", "mountPath": "/opt/confidential-containers/storage/repository"}
+    return {"replicas": 1, "template": {"spec": {
+        "volumes": [{"name": "repository-dir", "emptyDir": {"medium": "Memory"}}],
+        "initContainers": [{"name": "secret-converter", "image": IMAGE, "volumeMounts": [dict(base)]}],
+        "containers": [{"name": "kbs", "image": IMAGE, "volumeMounts": [dict(base)]}]}}}
+
+
+def add_trustee_resource_mount(spec, name):
+    pod = spec["template"]["spec"]
+    pod["volumes"].append({"name": name, "secret": {"secretName": name, "defaultMode": 420}})
+    pod["initContainers"][0]["volumeMounts"].append({"name": name, "mountPath": "/tmp/kbs-secrets/" + name})
+
+
+def test_trustee_resource_mounts_do_not_invalidate_code_approval(trustee_deployment_spec):
+    spec = trustee_deployment_spec
+    approved = a.trustee_deployment_digest(spec)
+    add_trustee_resource_mount(spec, "saw-alice-0123456789abcdef")
+    assert a.trustee_deployment_digest(spec) == approved
+    add_trustee_resource_mount(spec, "saw-bob-fedcba9876543210")
+    assert a.trustee_deployment_digest(spec) == approved
+    # An unrelated application resource stays in the approval hash.
+    spec["template"]["spec"]["volumes"].append({"name": "unrelated-resource", "secret": {"secretName": "other", "defaultMode": 420}})
+    assert a.trustee_deployment_digest(spec) != approved
+
+
+@pytest.mark.parametrize("change", ["source", "permissions", "path", "subPath", "reader", "missing", "duplicate"])
+def test_changed_trustee_input_mount_is_not_normalized(trustee_deployment_spec, change):
+    spec = trustee_deployment_spec
+    name = "saw-alice-0123456789abcdef"
+    add_trustee_resource_mount(spec, name)
+    pod = spec["template"]["spec"]
+    volume = pod["volumes"][-1]
+    mount = pod["initContainers"][0]["volumeMounts"][-1]
+    if change == "source": volume["secret"]["secretName"] = "foreign-secret"
+    if change == "permissions": volume["secret"]["defaultMode"] = 511
+    if change == "path": mount["mountPath"] = "/etc/unapproved"
+    if change == "subPath": mount["subPath"] = "inference"
+    if change == "reader":
+        pod["containers"][0]["volumeMounts"].append(mount)
+        pod["initContainers"][0]["volumeMounts"].pop()
+    if change == "missing": pod["initContainers"][0]["volumeMounts"].pop()
+    if change == "duplicate": pod["volumes"].append(dict(volume))
+    with pytest.raises(a.AttestationError, match="^TrusteeResourceMountRejected$"):
+        a.trustee_deployment_digest(spec)
+
+
+@pytest.mark.parametrize("change", ["image", "command", "security", "repository"])
+def test_trustee_code_and_security_stay_pinned(trustee_deployment_spec, change):
+    spec = trustee_deployment_spec
+    before = a.trustee_deployment_digest(spec)
+    add_trustee_resource_mount(spec, "saw-alice-0123456789abcdef")
+    pod = spec["template"]["spec"]
+    if change == "image": pod["containers"][0]["image"] = "registry.example.test/other@sha256:" + "f"*64
+    if change == "command": pod["initContainers"][0]["command"] = ["unapproved-command"]
+    if change == "security": pod["containers"][0]["securityContext"] = {"privileged": True}
+    if change == "repository": pod["volumes"][0]["emptyDir"]["medium"] = ""
+    assert a.trustee_deployment_digest(spec) != before
+
+
+@pytest.mark.parametrize("state", ["ready", "missing", "old-generation", "old-pod", "unready", "code-change"])
+def test_enrollment_waits_for_own_resource_rollout(deployable_launch_site, trustee_deployment_spec, state):
+    site, objects = deployable_launch_site
+    ref = site["attestation"]["references"]["trustee"]
+    ref["sha256"] = a.trustee_deployment_digest(trustee_deployment_spec)
+    obj = {"metadata": {"uid": ref["uid"], "generation": 2}, "spec": trustee_deployment_spec,
+           "status": {"observedGeneration": 2, "readyReplicas": 1, "updatedReplicas": 1, "replicas": 1}}
+    if state != "missing": add_trustee_resource_mount(obj["spec"], "saw-alice-0123456789abcdef")
+    if state == "old-generation": obj["status"]["observedGeneration"] = 1
+    if state == "old-pod": obj["status"]["replicas"] = 2
+    if state == "unready": obj["status"]["readyReplicas"] = 0
+    if state == "code-change": obj["spec"]["template"]["spec"]["containers"][0]["command"] = ["foreign"]
+    objects[ref["path"]] = obj
+    if state == "ready":
+        assert a.verify_resource_rollout(site, "alice", "0123456789abcdef", objects.__getitem__)
+    else:
+        reason = "AttestationApprovalChanged" if state == "code-change" else "CredentialResourceUnavailable"
+        with pytest.raises(a.AttestationError, match="^" + reason + "$"):
+            a.verify_resource_rollout(site, "alice", "0123456789abcdef", objects.__getitem__)
+
+
+def test_enrollment_reads_fresh_membership_and_rollout_after_patch(
+        deployable_launch_site, trustee_deployment_spec, monkeypatch):
+    """Execute the real enrollment function with API snapshots, without its CLI."""
+    import ast
+    import copy
+    import urllib.error
+    site, objects = deployable_launch_site
+    cfg = site["attestation"]
+    trustee_ref = cfg["references"]["trustee"]
+    trustee_ref["sha256"] = a.trustee_deployment_digest(trustee_deployment_spec)
+    objects[trustee_ref["path"]] = {
+        "metadata": {"uid": trustee_ref["uid"], "generation": 1}, "spec": trustee_deployment_spec,
+        "status": {"observedGeneration": 1, "replicas": 1, "readyReplicas": 1, "availableReplicas": 1, "updatedReplicas": 1}}
+    config_ref = cfg["references"]["trusteeConfig"]
+    objects[config_ref["path"]]["metadata"]["resourceVersion"] = "1"
+    eso_path, eso = _trustee_external_secret(site)
+    objects[eso_path] = eso
+    objects["/api/v1/namespaces/saw-alice"] = {
+        "metadata": {"uid": UID, "labels": {"saw.redhat.com/runtime-owner": UID}}}
+    objects["/apis/node.k8s.io/v1/runtimeclasses/kata-remote"] = {}
+    objects["/apis/kataconfiguration.openshift.io/v1/kataconfigs"] = {"items": []}
+    objects["/api/v1/nodes"] = {"items": []}
+    objects["/apis/config.openshift.io/v1/clusterversions/version"] = {}
+    objects["/apis/admissionregistration.k8s.io/v1"] = {}
+    for name in ("kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
+                 "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io"):
+        objects["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name] = {}
+    calls = []
+    def api(path, patch=None):
+        calls.append((path, patch is not None))
+        if patch is not None:
+            assert path == config_ref["path"]
+            assert patch["metadata"]["resourceVersion"] == "1"
+            objects[path]["spec"].update(patch["spec"])
+            objects[path]["metadata"]["resourceVersion"] = "2"
+            deployment = objects[trustee_ref["path"]]
+            add_trustee_resource_mount(deployment["spec"], "saw-alice-0123456789abcdef")
+            deployment["metadata"]["generation"] = 2
+            deployment["status"]["observedGeneration"] = 2
+        return copy.deepcopy(objects[path])
+    class Captured(Exception): pass
+    class RetryEnrollment(Exception): pass
+    def capture(config, read):
+        assert read(config_ref["path"])["metadata"]["resourceVersion"] == "2"
+        assert read(trustee_ref["path"])["metadata"]["generation"] == 2
+        raise Captured()
+    monkeypatch.setattr(a, "verify_kbs_reachability", lambda *args: True)
+    source = ROOT / "charts/saw-portal-container/files/enroll.py"
+    function = next(node for node in ast.parse(source.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "once")
+    namespace = {"api": api, "attestation": a, "capture": capture,
+                 "RetryEnrollment": RetryEnrollment, "PreflightError": ValueError,
+                 "urllib": urllib, "verify_kata_platform": lambda *args: None,
+                 "crd_established": lambda *args: True, "api_resources_available": lambda *args: True}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
+    with pytest.raises(Captured):
+        namespace["once"]({"user": "alice", "registration": "0123456789abcdef", "subject": UID,
+                           "installation": UID, "governance": "governance", "reference": {},
+                           "targets": {"default/notebook": {}}, "attestation": cfg,
+                           "kataRuntimeClass": {"name": "kata-remote"}})
+    assert sum(patch for _, patch in calls) == 1
+    assert all("/secrets/" not in path for path, _ in calls)

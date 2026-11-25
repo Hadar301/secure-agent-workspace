@@ -1,0 +1,12 @@
+{{- $_ := include "openshell-rhdh.containerSitesConfigured" . -}}
+{{- if not .Values.portal.containerSitesSecretName -}}
+{{- $sites := .Values.portal.containerSites | default dict | toJson -}}
+{{- if gt (len $sites) (int (mul 900 1024)) -}}{{ fail "SiteConfigurationTooLarge" }}{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-portal-sites
+  namespace: {{ .Values.portal.namespace }}
+data:
+  container-sites.json: {{ $sites | quote }}
+{{- end }}

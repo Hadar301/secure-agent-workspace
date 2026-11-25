@@ -1,6 +1,9 @@
 {{- $s := .Values.site | default dict }}{{- $a := $s.automaticEnrollment | default dict }}
 {{- if and $a (ne (get $a "enabled" | toString) "false") }}
-{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) (ternary 27 25 (not (empty $s.kataRuntimeClass)))) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
+{{- $referenceCount := ternary 27 25 (not (empty $s.kataRuntimeClass)) }}
+{{- if ($s.attestation | default dict).enabled }}{{- $referenceCount = add $referenceCount 4 }}{{- end }}
+{{- $bootstrapEgress := include "saw.workspace.bootstrapEgress" $s | fromJsonArray }}
+{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) (int $referenceCount)) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
 {{- $observer := $s.observer | default dict }}
 {{- $r := .Values.registration }}{{- $g := .Values.owner }}{{- $n := .Release.Namespace }}
 {{- $t := printf "saw-ctl-%s" $r }}{{- $archive := printf "saw-history-%s" $r }}
@@ -164,7 +167,7 @@ spec:
   podSelector: {matchLabels: {app: {{ $name }}}}
   policyTypes: [Egress]
   egress:
-{{ toYaml $s.stack.proxy.values.network.bootstrapEgress | indent 4 }}
+{{ toYaml $bootstrapEgress | indent 4 }}
     - to:
       - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $archive }}}}
         podSelector: {matchExpressions: [{key: saw-audit-writer, operator: In, values: {{ $bases | toJson }}}]}

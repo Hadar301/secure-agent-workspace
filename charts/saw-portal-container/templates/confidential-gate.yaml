@@ -1,3 +1,1 @@
-{{- if ((.Values.site | default dict).attestation | default dict).enabled }}
-{{- fail "AttestationIntegrationUnavailable: confidential enrollment requires the qualified driver and boundary adapter" }}
-{{- end }}
+{{- include "saw.confidential.gate" (.Values.site | default dict) -}}

@@ -132,7 +132,7 @@ spec:
           status: saw-runtime-status
           approved: {{ $e.approved | toJson }}
         trustedEgress:
-{{ toYaml $site.stack.proxy.values.network.bootstrapEgress | indent 10 }}
+{{ include "saw.workspace.bootstrapEgress" $site | fromJsonArray | toYaml | indent 10 }}
           - to:
             - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $ns }}}}
               podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}

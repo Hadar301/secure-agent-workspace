@@ -2621,3 +2621,33 @@ def test_portal_rejects_wrong_site_placement_before_registration(portal, world, 
     fake.request("saw-req-placement", ds_request(signer, deploymentMode=requested, profile="audited-openclaw"))
     assert portal.main(["create", "saw-req-placement"]) != 0
     assert not fake.vault and REGISTRY not in fake.objects
+
+
+def test_large_site_file_is_loaded_without_environment_payload(portal, tmp_path, monkeypatch):
+    subject = "11111111-1111-4111-8111-111111111111"
+    site = {"subject": subject, "publicLaunchPolicy": "x" * (160 * 1024)}
+    path = tmp_path / "sites.json"
+    path.write_text(json.dumps({"alice": site}))
+    monkeypatch.setenv("SAW_CONTAINER_SITES_FILE", str(path))
+    monkeypatch.delenv("SAW_CONTAINER_SITES", raising=False)
+    assert portal.container_site("alice") == site
+    assert portal.container_site("bob") is None
+    # Mounted configuration updates are read again, without a process restart.
+    path.write_text(json.dumps({"bob": {"subject": subject}}))
+    assert portal.container_site("alice") is None
+    assert portal.container_site("bob") == {"subject": subject}
+
+
+@pytest.mark.parametrize("fault", ["missing", "malformed", "too-large", "wrong-shape", "ambiguous"])
+def test_invalid_site_file_never_uses_environment_fallback(portal, tmp_path, monkeypatch, fault):
+    marker = "private-input-must-not-appear"
+    path = tmp_path / "sites.json"
+    raw = {"malformed": "[" + marker, "too-large": " " * (1024 * 1024 + 1),
+           "wrong-shape": "[]", "ambiguous": "{}"}.get(fault)
+    if raw is not None: path.write_text(raw)
+    monkeypatch.setenv("SAW_CONTAINER_SITES_FILE", str(path))
+    monkeypatch.delenv("SAW_CONTAINER_SITES", raising=False)
+    if fault == "ambiguous": monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": marker}))
+    with pytest.raises(portal.PortalError) as error:
+        portal.container_site("alice")
+    assert marker not in str(error.value)

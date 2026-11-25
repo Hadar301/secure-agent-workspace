@@ -93,8 +93,7 @@ def once(x):
         try:
             if attestation.enabled(attestation_site):
                 if mode!="kata":raise attestation.AttestationError("AttestationConfigurationRejected")
-                attestation.verify_platform(attestation_site,get,mode)
-                attestation.verify_kbs_reachability(attestation_site)
+                attestation.verify_deployment(attestation_site,get,mode)
                 try:
                     attestation.verify_resource_secret_ready(attestation_site,u,r,get)
                 except attestation.AttestationError as exc:
@@ -102,8 +101,16 @@ def once(x):
                         raise RetryEnrollment() from None
                     raise
                 attestation.ensure_resource_membership(
-                    attestation_site,u,r,get,lambda path,body:api(path,body))
-                attestation.verify_resource_membership(attestation_site,u,r,get)
+                    attestation_site,u,r,api,lambda path,body:api(path,body))
+                attestation.verify_resource_membership(attestation_site,u,r,api)
+                try:
+                    attestation.verify_resource_rollout(attestation_site,u,r,api)
+                except attestation.AttestationError as exc:
+                    if exc.reason == "CredentialResourceUnavailable":
+                        raise RetryEnrollment() from None
+                    raise
+                for key in ("trusteeConfig", "trustee"):
+                    cache.pop(attestation_settings["references"][key]["path"], None)
                 confidential=dict(settings=attestation_settings,owner=u,registration=r,installation=ident)
         except RetryEnrollment:
             raise

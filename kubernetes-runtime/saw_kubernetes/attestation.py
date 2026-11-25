@@ -137,6 +137,66 @@ def trustee_config_digest(spec):
     stable = {key: value for key, value in spec.items() if key != "kbsSecretResources"}
     return digest(stable)
 
+SAW_RESOURCE_NAME = re.compile(r"saw-[a-z0-9](?:[-a-z0-9]{0,17}[a-z0-9])?-[a-f0-9]{16}\Z")
+
+
+def trustee_deployment_digest(spec):
+    """Exclude only validated operator-generated SAW resource input mounts.
+
+    Membership is checked separately against KbsConfig. Keep operator images,
+    commands, security settings, all non-SAW volumes, and repository mounts pinned.
+    """
+    if not isinstance(spec, dict):
+        raise AttestationError("TrusteeConfigurationRejected")
+    stable = copy.deepcopy(spec)
+    pod = stable.get("template", {}).get("spec", {})
+    volumes = pod.get("volumes", [])
+    if not isinstance(volumes, list):
+        raise AttestationError("TrusteeConfigurationRejected")
+    names = set()
+    retained = []
+    for volume in volumes:
+        if not isinstance(volume, dict):
+            raise AttestationError("TrusteeConfigurationRejected")
+        name = volume.get("name", "")
+        secret = volume.get("secret", {})
+        if not isinstance(name, str) or not isinstance(secret, dict):
+            raise AttestationError("TrusteeConfigurationRejected")
+        secret_name = secret.get("secretName", "")
+        if not isinstance(secret_name, str):
+            raise AttestationError("TrusteeConfigurationRejected")
+        if not (SAW_RESOURCE_NAME.fullmatch(name) or SAW_RESOURCE_NAME.fullmatch(secret_name)):
+            retained.append(volume)
+            continue
+        if (name in names or not SAW_RESOURCE_NAME.fullmatch(name)
+                or set(volume) != {"name", "secret"}
+                or volume["secret"] != {"secretName": name, "defaultMode": 420}):
+            raise AttestationError("TrusteeResourceMountRejected")
+        names.add(name)
+    if not names:
+        return digest(stable)
+    seen = set()
+    for group in ("initContainers", "containers"):
+        for container in pod.get(group, []):
+            mounts = []
+            for mount in container.get("volumeMounts", []):
+                if mount.get("name") not in names:
+                    mounts.append(mount)
+                    continue
+                name = mount["name"]
+                if (group != "initContainers" or container.get("name") != "secret-converter"
+                        or name in seen
+                        or mount != {"name": name, "mountPath": "/tmp/kbs-secrets/" + name}):
+                    raise AttestationError("TrusteeResourceMountRejected")
+                seen.add(name)
+            if "volumeMounts" in container:
+                container["volumeMounts"] = mounts
+    if seen != names:
+        raise AttestationError("TrusteeResourceMountRejected")
+    pod["volumes"] = retained
+    return digest(stable)
+
+
 def _unique_json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -352,6 +412,24 @@ def verify_kbs_reachability(site, open_url=None):
     return True
 
 
+def deployment_settings(site, mode="kata"):
+    """Deployment requires restrictive per-role launch policies, never probe policy."""
+    cfg = validate(site, mode)
+    if cfg is not None and cfg["schemaVersion"] != 2:
+        raise AttestationError("AttestationLaunchPolicyRequired")
+    return cfg
+
+
+def verify_deployment(site, read, mode="kata", probe_kbs=None):
+    """Verify administrator approvals and live dependencies before enrollment."""
+    cfg = deployment_settings(site, mode)
+    if cfg is None:
+        return None
+    result = verify_platform(site, read, mode)
+    verify_kbs_reachability(site, probe_kbs)
+    return result
+
+
 def verify_platform(site, read, mode="kata"):
     cfg = validate(site, mode)
     if cfg is None:
@@ -362,8 +440,8 @@ def verify_platform(site, read, mode="kata"):
             obj = read(ref["path"])
             field = "spec" if key in {"trustee", "trusteeConfig"} else "data"
             meta = obj["metadata"]
-            observed_digest = (trustee_config_digest(obj[field]) if key == "trusteeConfig"
-                               else digest(obj[field]))
+            observed_digest = (trustee_config_digest(obj[field]) if key == "trusteeConfig" else
+                               trustee_deployment_digest(obj[field]) if key == "trustee" else digest(obj[field]))
             if (meta.get("deletionTimestamp") or meta["uid"] != ref["uid"]
                     or observed_digest != ref["sha256"]):
                 raise AttestationError("AttestationApprovalChanged")
@@ -420,6 +498,38 @@ def verify_resource_membership(site, owner, registration, read):
         raise
     except Exception:
         raise AttestationError("AttestationDependencyUnavailable") from None
+
+
+def verify_resource_rollout(site, owner, registration, read):
+    """Wait for the approved Trustee rollout to include this resource input."""
+    cfg = deployment_settings(site)
+    if cfg is None:
+        raise AttestationError("AttestationConfigurationRejected")
+    name = resource(owner, registration, "inference").split("/")[1]
+    ref = cfg["references"]["trustee"]
+    try:
+        obj = read(ref["path"])
+        meta, spec, status = obj["metadata"], obj["spec"], obj.get("status", {})
+        if (meta.get("deletionTimestamp") or meta.get("uid") != ref["uid"]
+                or trustee_deployment_digest(spec) != ref["sha256"]):
+            raise AttestationError("AttestationApprovalChanged")
+        pod = spec["template"]["spec"]
+        expected_volume = {"name": name, "secret": {"secretName": name, "defaultMode": 420}}
+        converter = [c for c in pod.get("initContainers", []) if c.get("name") == "secret-converter"]
+        mount = {"name": name, "mountPath": "/tmp/kbs-secrets/" + name}
+        if (pod.get("volumes", []).count(expected_volume) != 1 or len(converter) != 1
+                or converter[0].get("volumeMounts", []).count(mount) != 1
+                or status.get("observedGeneration") != meta.get("generation")
+                or status.get("readyReplicas", 0) != spec.get("replicas", 1)
+                or status.get("updatedReplicas", 0) != spec.get("replicas", 1)
+                or status.get("replicas", 0) != spec.get("replicas", 1)
+                or spec.get("replicas", 1) < 1):
+            raise AttestationError("CredentialResourceUnavailable")
+    except AttestationError:
+        raise
+    except (KeyError, TypeError, AttributeError, ValueError):
+        raise AttestationError("CredentialResourceUnavailable") from None
+    return True
 
 
 def verify_resource_secret_ready(site, owner, registration, read):

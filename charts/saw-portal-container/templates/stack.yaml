@@ -3,6 +3,7 @@
 {{- $site := .Values.site | default dict }}
 {{- $stack := $site.stack | default dict }}
 {{- if $stack }}
+{{- $bootstrapEgress := include "saw.workspace.bootstrapEgress" $site | fromJsonArray }}
 {{- $u := .Values.owner }}
 {{- $reg := .Values.registration }}
 {{- $runtime := .Release.Namespace }}
@@ -20,7 +21,7 @@
 {{- $policyConfidentialWorkloads := dict }}
 {{- if $confidentialEnabled }}
 {{- if not $site.kataRuntimeClass }}{{ fail "confidential attestation requires an approved Kata RuntimeClass" }}{{ end }}
-{{- $confidentialBinding := dig "enrollment" "intent" "bindings" "confidentialAttestation" dict $site }}
+{{- $confidentialBinding := dig "enrollment" "intent" "bindings" "confidentialAttestation" ($site.preparedConfidential | default dict) $site }}
 {{- $placements := get $confidentialBinding "placements" }}
 {{- if not (kindIs "map" $placements) }}{{ fail "confidential enrollment placements are missing" }}{{ end }}
 {{- $resources := dict }}
@@ -82,7 +83,7 @@ metadata: {name: identity-api, namespace: {{ $trusted }}}
 spec:
   podSelector: {matchLabels: {openshell.pattern/role: identity-bootstrap}}
   policyTypes: [Egress]
-  egress: {{ $stack.proxy.values.network.bootstrapEgress | toJson }}
+  egress: {{ $bootstrapEgress | toJson }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

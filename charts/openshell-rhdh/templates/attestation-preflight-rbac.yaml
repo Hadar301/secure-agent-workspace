@@ -1,0 +1,5 @@
+{{- $sites := .Values.portal.containerSites | default dict -}}
+{{- include "saw.confidential.readRoles" (dict "sites" $sites "namespace" .Values.portal.namespace "serviceAccount" .Values.portal.provisionerServiceAccount "paths" .Values.portal.attestationPreflightRefs) -}}
+{{- if ne .Values.portal.provisionerServiceAccount "saw-workspaces-generator" -}}
+{{- include "saw.confidential.readRoles" (dict "sites" $sites "namespace" .Values.portal.namespace "serviceAccount" "saw-workspaces-generator" "paths" .Values.portal.attestationPreflightRefs) -}}
+{{- end -}}

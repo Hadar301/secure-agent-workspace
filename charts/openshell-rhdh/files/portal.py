@@ -429,7 +429,23 @@ def trustee_kbs_config_allowlist():
 
 def container_site(user):
     """Trusted site inventory, never names/URLs supplied by the request."""
-    sites = json.loads(os.environ.get("SAW_CONTAINER_SITES", "{}"))
+    filename = os.environ.get("SAW_CONTAINER_SITES_FILE")
+    legacy = os.environ.get("SAW_CONTAINER_SITES", "{}")
+    if filename and legacy.strip() not in ("", "{}"):
+        raise PortalError("Choose one container site configuration source")
+    try:
+        if filename:
+            with open(filename, encoding="utf-8") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+        else:
+            raw = legacy
+        if len(raw.encode("utf-8")) > 1024 * 1024:
+            raise ValueError()
+        sites = json.loads(raw)
+        if not isinstance(sites, dict):
+            raise ValueError()
+    except (OSError, UnicodeError, ValueError):
+        raise PortalError("Container site configuration is unavailable or invalid") from None
     site = sites.get(user)
     if not isinstance(site, dict) or not re.fullmatch(
             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(site.get("subject", ""))):

@@ -1,6 +1,54 @@
 # Confidential Kata workspaces with Trustee
 
-Status: implementation in progress. Confidential enrollment is disabled.
+Status: implementation in progress. Deployment requires restrictive launch
+policies and verified platform approvals. The real NVIDIA workspace is not yet
+qualified.
+
+## Deployment integration (2026-11-25)
+
+The shared preflight now checks the approved platform and Trustee endpoint
+instead of rejecting all confidential deployments. It accepts schema version 2
+launch bundles. Schema version 1 remains available only for isolated artifact
+and probe checks; deployment rejects it with `AttestationLaunchPolicyRequired`.
+Missing qualifications, changed object identities or hashes, and dependency
+failures still block deployment. A passing local fixture does not qualify a
+live platform or authorize credential release.
+
+The projector generates public init-data placements before the first
+enrollment. It derives them from the reviewed launch policies and registration
+identity. This removes the dependency on a publication that enrollment has not
+yet created. Confidential enrollment uses 31 approval entries, including the
+Trustee objects and public provider policy, with no external proxy approval.
+Set `bootstrapEgress` on a confidential site for trusted control-plane access.
+The ordinary container and Kata paths retain their existing proxy configuration.
+
+GitOps and RHDH readers get `get` access to named public approval objects. They
+receive no Trustee Secret permission. For RHDH sites supplied through
+`portal.containerSitesSecretName`, list those exact public API paths in
+`portal.attestationPreflightRefs`. These permissions do not approve the objects;
+preflight still verifies their UIDs, hashes, qualification, and readiness.
+
+RHDH mounts site settings at `/etc/saw-sites/container-sites.json` and passes
+only that path through `SAW_CONTAINER_SITES_FILE`. Large launch policies do not
+enter an environment value. Inline values use a ConfigMap; Secret-backed sites
+keep their existing Secret. The loader checks size and JSON structure, reads
+file updates again, and reports safe errors. It does not fall back to another
+source after a file failure. The legacy environment interface remains available
+for existing direct callers, but the charts use files.
+
+Enrollment reads KbsConfig again after changing membership and waits for the
+Trustee Deployment to include the exact resource input and finish its rollout.
+Approval hashing excludes only validated SAW Secret input volumes and their
+exact `secret-converter` mounts under `/tmp/kbs-secrets/`. All operator code,
+commands, security settings, non-SAW volumes, and repository mounts stay pinned.
+This fixes first-registration approval invalidation. Shared resource-policy
+and RVPS approval scope, rotation reload, guest storage access, and complete
+live workspace qualification still require verification.
+
+The charts package one canonical Python preflight, one attestation module,
+and one shared Helm gate through source links. No provider keys are embedded
+in these assets. Build and pin an updated runtime image before live enrollment;
+old controller images do not contain these integration fixes.
 
 ## Latest verification (2026-11-24)
 

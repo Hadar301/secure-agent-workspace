@@ -115,6 +115,9 @@ portal:
   # to add or revoke one owner-registration resource name. Keep old paths here
   # until workspaces enrolled against them have been deleted.
   trusteeKbsConfigRefs: []
+  # Named public approval reads for sites supplied by containerSitesSecretName.
+  # These permissions do not approve an object or grant Secret access.
+  attestationPreflightRefs: []
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
   # Python 3 with the standard library is all portal.py needs.

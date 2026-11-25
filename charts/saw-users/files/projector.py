@@ -40,14 +40,18 @@ class Publications:
             raise ProjectionError("publication is outside the workspace scope")
         return self.get(path, publication=True)
 
-    def preflight_resource(self, path):
+    def preflight_for_site(self, site, mode):
+        approved = preflight.attestation_paths(site, mode)
+        return lambda path: self.preflight_resource(path, approved_paths=approved)
+
+    def preflight_resource(self, path, *, approved_paths=frozenset()):
         fixed = {
             "/apis/config.openshift.io/v1/clusterversions/version",
             "/apis/kataconfiguration.openshift.io/v1/kataconfigs",
             "/api/v1/nodes",
             "/apis/admissionregistration.k8s.io/v1",
         }
-        allowed = (path in fixed or re.fullmatch(
+        allowed = (path in approved_paths or path in fixed or re.fullmatch(
             r"/api/v1/namespaces/saw-[a-z0-9-]+", path) or re.fullmatch(
             r"/apis/node.k8s.io/v1/runtimeclasses/[a-z0-9-]+", path) or re.fullmatch(
             r"/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"
@@ -188,9 +192,11 @@ def parameters(config, catalog, read):
             profile = (owner.get("profiles") or [None])[0]
             preflight.verify_profile_image_access(site, profile, catalog)
             values = workspace.project_workspace(owner, defaults, site, catalog, read, getattr(read, "previous", None))
-            live_read = getattr(read, "preflight_resource", None)
+            mode = owner["values"]["deployment"]["mode"]
+            scoped = getattr(read, "preflight_for_site", None)
+            live_read = (scoped(values["containerSites"][name], mode) if callable(scoped)
+                         else getattr(read, "preflight_resource", None))
             if callable(live_read):
-                mode = owner["values"]["deployment"]["mode"]
                 verify_gitops_preflight(owner, values["containerSites"][name], mode, live_read)
         except preflight.PreflightError as exc:
             raise ProjectionError("workspace " + name + ": preflight failed: " + exc.reason) from None

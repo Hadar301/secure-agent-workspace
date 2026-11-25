@@ -367,7 +367,7 @@ def confidential_references():
     }
 
 
-def confidential_site(site):
+def confidential_site(site, *, structural=False):
     """Add synthetic, non-deployable Kata placement inputs for chart rendering."""
     site["targets"] = {"default/notebook": {
         "workspace": "default", "sandbox": "notebook", "ui": True,
@@ -384,6 +384,26 @@ def confidential_site(site):
             "workload": {"runtime_class_name": "kata-remote", "init_data": "e30="},
         }
     }}
+    if structural:
+        # Public structural fixture only. Python rejects its unmeasured policy.
+        settings = site["attestation"]
+        settings.update(schemaVersion=2, tee="snp", kbsURL="https://trustee.example.test",
+                        kbsCA="structural-fixture", policyDigest="d"*64, referenceSet="e"*64,
+                        imagePolicy={"default": [{"type": "reject"}]},
+                        launchPolicies={"default/notebook": {
+                            role: {"pod": {"kind": "Pod"}, "template": "unmeasured-structural-fixture"}
+                            for role in ("supervisor", "workload")}})
+        settings["driver"].update(capability="saw-confidential-v1", sourceRevision="f"*40)
+        for ref in settings["references"].values():
+            ref.update(uid="11111111-1111-4111-8111-111111111111", sha256="a"*64)
+        reference = site["automaticEnrollment"]["reference"]
+        for key in ("proxy", "proxyPolicy", "proxyNetwork", "publicCA"):
+            reference.pop(key, None)
+        reference.update({"confidential"+key[0].upper()+key[1:]: "a"*64
+                          for key in settings["references"]})
+        reference["confidentialProviderPolicy"] = "a"*64
+        site["bootstrapEgress"] = site["stack"].pop("proxy")["values"]["network"]["bootstrapEgress"]
+        site["preparedConfidential"] = copy.deepcopy(bindings["confidentialAttestation"])
     return site
 
 
@@ -396,14 +416,11 @@ def test_confidential_enrollment_reads_only_approved_namespaced_objects(tmp_path
         "inference": f"secret/data/hub/saw-{U}/credentials/inference",
         "web-search": f"secret/data/hub/saw-{U}/credentials/web-search",
     }
-    confidential_site(site)
+    confidential_site(site, structural=True)
     site["automaticEnrollment"]["reference"]["sandboxPlacement"] = "a" * 64
     site["automaticEnrollment"]["reference"]["sandboxPlacementBinding"] = "a" * 64
     chart_copy = tmp_path / "saw-portal-container"
     shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
-    # The real chart intentionally fails closed until the driver is qualified.
-    # Remove only that gate from this temporary copy to exercise the RBAC output.
-    (chart_copy / "templates/confidential-gate.yaml").unlink()
     resources = render("saw-portal-container", U, "saw-" + U, {
         "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
         "installationID": user()["installationID"], "vaultPrefix": user()["vaultPrefix"],
@@ -468,10 +485,9 @@ def test_enrolled_controller_receives_the_approved_confidential_identity(tmp_pat
                              "ownerLogin": U, "receiptKey": "fixture-public-key"},
                 "browser": {"ownerLogin": U,
                             "origin": "https://alice-default-notebook-ui.apps.cluster.example.com"}}}}}}
-    confidential_site(site)
+    confidential_site(site, structural=True)
     chart_copy = tmp_path / "saw-portal-container"
     shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
-    (chart_copy / "templates/confidential-gate.yaml").unlink()
     docs = render("saw-portal-container", U, "saw-" + U, {
         "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
         "installationID": user()["installationID"], "intentGeneration": 1,
@@ -496,13 +512,11 @@ def test_confidential_stack_pins_both_runtime_pod_classes_and_init_data(tmp_path
         "inference": f"secret/data/hub/saw-{U}/credentials/inference",
         "web-search": f"secret/data/hub/saw-{U}/credentials/web-search",
     }
-    confidential_site(site)
+    confidential_site(site, structural=True)
     site["automaticEnrollment"]["reference"]["sandboxPlacement"] = "a" * 64
     site["automaticEnrollment"]["reference"]["sandboxPlacementBinding"] = "a" * 64
     chart_copy = tmp_path / "saw-portal-container"
     shutil.copytree(ROOT / "charts/saw-portal-container", chart_copy)
-    # This copy bypasses the qualification gate to test the rendered contract.
-    (chart_copy / "templates/confidential-gate.yaml").unlink()
     docs = render("saw-portal-container", U, "saw-" + U, {
         "site": site, "owner": U, "ownerSubject": site["subject"], "registration": REG,
         "installationID": user()["installationID"], "vaultPrefix": user()["vaultPrefix"],
@@ -652,5 +666,28 @@ def test_confidential_enrollment_cannot_use_legacy_secret_path(chart):
         values=dict(owner=U,ownerSubject=site["subject"],registration=REG,
                     installationID=user()["installationID"],vaultPrefix=user()["vaultPrefix"],site=site,**{"global":GLOBAL})
         ns="saw-"+U
-    with pytest.raises(AssertionError,match="AttestationIntegrationUnavailable"):
+    with pytest.raises(AssertionError,match="AttestationLaunchPolicyRequired"):
         render(chart,U,ns,values)
+
+
+
+def test_confidential_first_install_renders_without_published_enrollment():
+    site = copy.deepcopy(SITE)
+    site["kataRuntimeClass"] = {"name": "kata-remote", "uid": "11111111-1111-4111-8111-111111111111", "sha256": "a"*64}
+    site["attestation"] = {"enabled": True, "references": confidential_references()}
+    site["credentialReferences"] = {"inference": f"secret/data/hub/saw-{U}/credentials/inference",
+                                    "web-search": f"secret/data/hub/saw-{U}/credentials/web-search"}
+    confidential_site(site, structural=True)
+    site["automaticEnrollment"]["reference"].update(sandboxPlacement="a"*64, sandboxPlacementBinding="a"*64)
+    site.pop("enrollment")
+    assert "proxy" not in site["stack"]
+    docs = render("saw-portal-container", U, "saw-"+U, dict(
+        owner=U, ownerSubject=site["subject"], registration=REG,
+        installationID=user()["installationID"], vaultPrefix=user()["vaultPrefix"], site=site,
+        **{"global": GLOBAL}))
+    assert any(o["kind"] == "Job" for o in docs)
+    assert not any(o["kind"] == "Application" and o["spec"]["source"]["path"] == "charts/saw-kubernetes-proxy" for o in docs)
+    bootstrap = next(o for o in docs if o["kind"] == "ConfigMap" and "config.json" in o.get("data", {}))
+    assert len(json.loads(bootstrap["data"]["config.json"])["reference"]) == 31
+    provider = [o for o in docs if o["kind"] == "ExternalSecret"]
+    assert provider and all(o["metadata"]["namespace"] == "trustee-system" for o in provider)

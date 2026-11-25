@@ -381,3 +381,16 @@ def test_cluster_version_must_be_available_and_at_least_422():
         }})
     with pytest.raises(preflight.PreflightError, match="ClusterVersionUnavailable"):
         preflight.verify_cluster_version({"status": {"desired": {"version": "4.22.22"}}})
+
+
+
+def test_confidential_configuration_uses_control_plane_egress_without_proxy():
+    import copy
+    import yaml
+    site = copy.deepcopy(yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"])
+    site["attestation"] = {"enabled": True}
+    site["bootstrapEgress"] = site["stack"].pop("proxy")["values"]["network"]["bootstrapEgress"]
+    assert preflight.configuration_facts(site)["network"]
+    assert preflight.configuration_facts(site)["revisions"]
+    site["bootstrapEgress"] = []
+    assert not preflight.configuration_facts(site)["network"]

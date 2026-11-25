@@ -26,7 +26,14 @@ def test_packaged_chart_contains_shared_attestation_without_source_checkout(tmp_
         assert member.isfile()
         assert archive.extractfile(member).read() == source.read_bytes()
         archive.extractall(unpacked, filter="data")
+    helper = ROOT / "charts" / chart / "templates/_attestation.tpl"
+    canonical = ROOT / "deploy/confidential/helm/_attestation.tpl"
+    assert helper.is_symlink() and helper.resolve() == canonical
+    assert (unpacked / chart / "templates/_attestation.tpl").read_bytes() == canonical.read_bytes()
     # The chart runs after packaging without the canonical repository path.
+    preflight_link = ROOT / "charts" / chart / "files/preflight.py"
+    assert preflight_link.is_symlink()
+    assert preflight_link.resolve() == ROOT / "kubernetes-runtime/saw_kubernetes/preflight.py"
     preflight = unpacked / chart / "files/preflight.py"
     spec = importlib.util.spec_from_file_location("packaged_preflight", preflight)
     module = importlib.util.module_from_spec(spec)

@@ -42,9 +42,10 @@ def _confidential_context(config):
 
 
 def approval_fingerprint(key, value):
-    if key == "confidentialTrusteeConfig":
+    if key in {"confidentialTrusteeConfig", "confidentialTrustee"}:
         try:
-            return attestation.trustee_config_digest(value)
+            return (attestation.trustee_config_digest(value) if key == "confidentialTrusteeConfig"
+                    else attestation.trustee_deployment_digest(value))
         except attestation.AttestationError as exc:
             raise BoundaryError(str(exc)) from None
     return fingerprint(value)
@@ -305,8 +306,10 @@ def verify(config, plan, get):
     if confidential is not None:
         site = {"attestation": confidential["settings"]}
         try:
-            attestation.verify_platform(site, get, "kata")
+            attestation.verify_deployment(site, get, "kata")
             attestation.verify_resource_membership(
+                site, confidential["owner"], confidential["registration"], get)
+            attestation.verify_resource_rollout(
                 site, confidential["owner"], confidential["registration"], get)
         except attestation.AttestationError as exc:
             raise BoundaryError(str(exc)) from None

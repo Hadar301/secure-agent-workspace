@@ -25,6 +25,7 @@ data:
 {{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
 {{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
 {{- if not .Values.projection.applicationSetControllerLabels }}{{ fail "projection requires the actual ApplicationSet controller Pod labels" }}{{ end }}
+{{- include "saw.confidential.readRoles" (dict "sites" .Values.containerSites "namespace" .Release.Namespace "serviceAccount" $name) }}
 {{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
 {{- $identityCode := .Files.Get "files/projector_identity.py" }}
 {{- $bootstrapRevision := dict "config" $identity "source" $identityCode "image" .Values.projection.image | toJson | sha256sum | trunc 12 }}

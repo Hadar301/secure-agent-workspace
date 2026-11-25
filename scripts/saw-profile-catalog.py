@@ -585,9 +585,15 @@ def render_delete_template(for_user=False):
 
 def attestation_links():
     source = ROOT / "kubernetes-runtime/saw_kubernetes/attestation.py"
-    return [(ROOT / "charts" / chart / "files/attestation.py",
-             Path(os.path.relpath(source, ROOT / "charts" / chart / "files")))
-            for chart in ("saw-users", "saw-portal-container", "openshell-rhdh")]
+    charts = ("saw-users", "saw-portal-container", "openshell-rhdh")
+    links = [(ROOT / "charts" / chart / "files/attestation.py",
+              Path(os.path.relpath(source, ROOT / "charts" / chart / "files"))) for chart in charts]
+    preflight = ROOT / "kubernetes-runtime/saw_kubernetes/preflight.py"
+    links += [(ROOT / "charts" / chart / "files/preflight.py",
+               Path(os.path.relpath(preflight, ROOT / "charts" / chart / "files"))) for chart in charts]
+    template = ROOT / "deploy/confidential/helm/_attestation.tpl"
+    return links + [(ROOT / "charts" / chart / "templates/_attestation.tpl",
+                     Path(os.path.relpath(template, ROOT / "charts" / chart / "templates"))) for chart in charts]
 
 
 def sync_source_links(links, check=False):
