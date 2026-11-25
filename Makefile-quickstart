@@ -449,6 +449,13 @@ saw-prepare-confidential: .check-saw-name .check-deployment-mode ## Check confid
 saw-prepare-confidential-apply: .check-saw-name .check-deployment-mode ## Reserve confidential storage without enrollment or credentials
 	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/confidential-prepare.py --apply
 
+.PHONY: saw-rotation-plan saw-rotate-confidential
+saw-rotation-plan: ## Check controlled Trustee rotation without changing resources
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/confidential-rotate.py
+
+saw-rotate-confidential: ## Reload Trustee and stop/start one approved confidential registration
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/confidential-rotate.py --apply
+
 saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 	@$(SCRIPTS_DIR)/saw-configure.sh
 # Keep the token saved by `openshell gateway add`. The separate make-login token

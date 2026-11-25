@@ -57,6 +57,31 @@ Do not allow an opaque host directory to satisfy the guest launch policy.
 The earlier results below are historical component tests. They do not establish
 qualification of this new cluster or the OpenShell 0.1.10 image pairing.
 
+## Latest lab results (2026-11-25)
+
+The Validated Pattern foundation install completed. All 12 foundation Argo
+applications reported Synced and Healthy. The user list remains empty. The
+`kata-data-science` profile is present. No real workspace has been qualified.
+
+The Vault KV v2 → External Secrets → KBS bridge passed a generated-value test
+with verified Vault TLS and Kubernetes authentication. The test role could read
+its exact Vault path. A foreign path returned HTTP 403. The resulting provider
+Secret existed only in the Trustee namespace. KBS loaded the expected value.
+This verifies the storage transfer, not release to an attested supervisor.
+
+A later Vault value did not reach KBS automatically. The controlled reload
+below passed with generated values: ESO acknowledged the refresh, a replacement
+KBS Pod loaded the new value, and the deny-by-default resource policy stayed
+unchanged. The test removed its Vault data, role, policy, service account,
+ExternalSecret, SecretStore, and KBS membership. No NVIDIA key was used.
+The full supervisor rotation remains unverified.
+
+The latest small credential-free image started inside the guest. Its evidence
+request returned HTTP 500. The process exited, but Kubernetes continued to
+report Running until the Pod deadline. A preceding larger image failed during
+layer unpacking. These are separate failures. Guest volume transport and audit
+file ownership also remain unqualified. Keep real enrollment blocked.
+
 ## Deployment integration (2026-11-25)
 
 The shared preflight now checks the approved platform and Trustee endpoint
@@ -873,6 +898,63 @@ Provider plaintext may exist in Vault and, with the approved bridge, in the
 Trustee namespace's Kubernetes Secret. Cluster administrators remain trusted in
 this initial model. No provider Secret may exist in a workspace, controller, or
 portal request namespace for the confidential path.
+
+## Administrator-controlled credential rotation
+
+Use this workflow only for an enrolled confidential RHDH registration that
+already supports managed stop/start (`lifecycleVersion: 1`). Its existing model
+and audit gates still apply. A fixed-model registration without that lifecycle
+fails with `RotationManagedLifecycleRequired`. This command does not upgrade
+its lifecycle or relax an audit requirement.
+
+1. Update the credential through the approved Vault administration procedure.
+   Do not put its value in Make arguments, manifests, or a shell command line.
+2. Set these public selectors for the current registration:
+
+   ```bash
+   export SAW_CONTEXT='<kubeconfig-context>'
+   export OPENSHELL_SAW_NAME='<owner>'
+   export SAW_REGISTRATION='<16-hex-registration>'
+   export SAW_TRUSTEE_SECRET_STORE='<trustee-scoped-store>'
+   make saw-rotation-plan
+   ```
+
+3. Review the plan. Then run `make saw-rotate-confidential` during an approved
+   maintenance window. A single-replica Trustee briefly stops accepting new
+   attestations. The affected registration's supervisor and workload Pods also
+   restart. Existing PVC data remains in place.
+
+The command reads enrolled public configuration and the approved boundary.
+It checks the RuntimeClass UID and placement digest, the measured supervisor
+image and init-data, the Trustee identity, and the exact Vault resource scope.
+It checks write permissions before changing resources. It never reads a
+Kubernetes Secret or a Vault value. Its SecretStore must be restricted to the
+Trustee namespace and use verified TLS with Vault KV v2 and Kubernetes auth.
+
+A shared `saw-credential-rotation` Lease serializes these commands. The command
+forces an ESO refresh and waits for the exact metadata acknowledgement used by
+ESO 1.3. An unknown acknowledgement format fails before Trustee is restarted.
+It then evicts only the approved Trustee operand Pod. The eviction has UID and
+resourceVersion preconditions and respects PodDisruptionBudgets. It does not
+change the approved Deployment or policy. Multi-replica Trustee is rejected
+until that topology has been qualified.
+
+After Trustee is Ready, the command changes the selected portal source entry
+to Stopped, waits for the controller barrier, then changes it to Running. It
+waits for a complete set of new supervisor Pod UIDs under the same measured
+placement. OpenShell requires this fresh sandbox generation when a dedicated
+supervisor is replaced. The workflow keeps the gateway running.
+
+The default timeout is 900 seconds. The CLI accepts `--timeout` from 60 to
+1800 seconds. Any error stops the sequence with a fixed reason. A failed start
+can leave the selected registration Stopped. Collect status before recovery;
+do not bypass its enrollment or use a provider Secret as fallback. A killed
+command can leave the maintenance Lease held. An administrator must verify
+that no rotation command remains active before releasing that stale lock.
+
+`RotationComplete` confirms the controlled restart and Pod placement. Verify
+a fresh owner inference request separately. Provider-side key revocation and
+release-denial tests remain separate acceptance checks.
 
 ## Verification sequence
 
