@@ -1,7 +1,7 @@
 schemaVersion: 1
 status: blocked
 base:
-  saw: eb287284697a21aea54245173687858485146324
+  saw: c44caef718307454d1d92f3b5d43139d485b65ba
   openshell: c2775b8df05619cdd57cb354ea8cd829ec79ee40
   agentSandbox: b1277676f8bf0e82ea299928997ecf5d696a92f1
   agentSandboxImage: registry.k8s.io/agent-sandbox/agent-sandbox-controller@sha256:ef1a1a3076afc996e711c44b388fbb7ffb7cd6858953d7e685166b299d77bd38

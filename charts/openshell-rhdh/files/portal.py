@@ -1949,6 +1949,10 @@ def handle(action, request_name):
                     if previous.get("credentialReferences") is not None or credential_references is not None:
                         raise PortalError("changing confidential credential references requires a new registration")
                 lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
+                try:
+                    _workspace.validate_model_audit(site, lifecycle, catalog[profile])
+                except _workspace.WorkspaceError as exc:
+                    raise PortalError(str(exc)) from exc
                 if previous and not lifecycle and previous.get("modelInputs", {}) != models:
                     raise PortalError("changing model selection requires a new container registration")
             check_namespace_is_ours(k8s, user)
