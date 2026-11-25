@@ -3,6 +3,9 @@ kind: ConfigMap
 metadata:
   name: saw-portal-scripts
   namespace: {{ .Values.portal.namespace }}
+  annotations:
+    # The script bundle exceeds client-side apply's annotation limit.
+    argocd.argoproj.io/sync-options: ServerSideApply=true
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 data:

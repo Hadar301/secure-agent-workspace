@@ -976,3 +976,29 @@ def test_attestation_preflight_cannot_grant_secret_or_wildcard_access(tmp_path, 
     file.write_text(yaml.safe_dump({"portal": {"attestationPreflightRefs": [path]}}))
     with pytest.raises(AssertionError, match="AttestationApprovalPathRejected"):
         render("-f", str(file))
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("site_args", [[], ["--set-string", "portal.containerSitesSecretName=owner-sites"]])
+def test_portal_site_settings_are_environment_not_volumes(site_args):
+    docs = render(*site_args, "--set-string", "global.targetRevision=test-revision",
+                  "--set-json", 'containerDefaults={"deployment":{"mode":"kata"}}')
+    generator = one(docs, "Deployment", "saw-workspaces-generator")["spec"]["template"]["spec"]
+    task = one(docs, "Task", "saw-workspace")["spec"]
+    for pod, container in ((generator, generator["containers"][0]),
+                           (task, next(step for step in task["steps"] if step["name"] == "run"))):
+        env = {entry["name"]: entry.get("value") for entry in container["env"]}
+        assert json.loads(env["SAW_CONTAINER_DEFAULTS"]) == {"deployment": {"mode": "kata"}}
+        assert env["SAW_TARGET_REVISION"] == "test-revision"
+        assert env["SAW_CONTAINER_SITES_FILE"] == "/etc/saw-sites/container-sites.json"
+        for volume in pod["volumes"]:
+            assert "value" not in volume
+            assert volume["name"] == volume["name"].lower()
+
+
+@pytest.mark.ci_external
+def test_large_portal_script_bundle_uses_server_apply(docs):
+    scripts = one(docs, "ConfigMap", "saw-portal-scripts")
+    # A client-side apply annotation cannot hold this serialized bundle.
+    assert len(json.dumps(scripts).encode()) > 262144
+    assert scripts["metadata"]["annotations"]["argocd.argoproj.io/sync-options"] == "ServerSideApply=true"

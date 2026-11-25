@@ -176,6 +176,13 @@ from the release is enough and keeps renders stable.
 {{- define "openshell-rhdh.containerSitesEnv" -}}
 - name: SAW_CONTAINER_SITES_FILE
   value: /etc/saw-sites/container-sites.json
+{{- /* Shared site for every owner without their own entry (saw-users'
+containerDefaults, from overrides/saw-container-defaults.yaml). Subjects come
+from the owner directory; unset chart revisions follow the pattern branch. */}}
+- name: SAW_CONTAINER_DEFAULTS
+  value: {{ .Values.containerDefaults | default dict | toJson | quote }}
+- name: SAW_TARGET_REVISION
+  value: {{ .Values.global.targetRevision | default "" | quote }}
 {{- end -}}
 
 {{- define "openshell-rhdh.containerSitesMount" -}}
@@ -194,13 +201,6 @@ from the release is enough and keeps renders stable.
   configMap:
     name: saw-portal-sites
   {{- end }}
-{{- /* Shared site for every owner without their own entry (saw-users'
-containerDefaults, from overrides/saw-container-defaults.yaml). Subjects come
-from the owner directory; unset chart revisions follow the pattern branch. */}}
-- name: SAW_CONTAINER_DEFAULTS
-  value: {{ .Values.containerDefaults | default dict | toJson | quote }}
-- name: SAW_TARGET_REVISION
-  value: {{ .Values.global.targetRevision | default "" | quote }}
 {{- end -}}
 
 {{/* Generated forms have vm as their safe default; project the administrator's
