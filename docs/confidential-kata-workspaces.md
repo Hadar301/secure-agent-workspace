@@ -29,8 +29,8 @@ rejected the infrastructure container: the pinned generator emits containerd
 metadata, while OpenShift sends CRI-O metadata and a different pause process.
 The probe was removed and its Trustee approval was revoked. An explicit
 CRI-O 1.34 / OCI 1.2.1 profile now passes executable offline checks against the
-captured request and public fixtures. A new live attestation test remains
-required. No real workspace or provider credential release is qualified.
+captured request and public fixtures. Those offline checks did not qualify a real workspace or provider credential
+release. Later guest results are listed below.
 
 The pinned [guest image handler](https://github.com/openshift/kata-containers/blob/b17f640901e87e620ab74db428e8e0883cb91b81/src/agent/src/storage/image_pull_handler.rs)
 uses the signed, measured guest's embedded `/pause_bundle` for sandbox storage.
@@ -76,11 +76,19 @@ unchanged. The test removed its Vault data, role, policy, service account,
 ExternalSecret, SecretStore, and KBS membership. No NVIDIA key was used.
 The full supervisor rotation remains unverified.
 
-The latest small credential-free image started inside the guest. Its evidence
-request returned HTTP 500. The process exited, but Kubernetes continued to
-report Running until the Pod deadline. A preceding larger image failed during
-layer unpacking. These are separate failures. Guest volume transport and audit
-file ownership also remain unqualified. Keep real enrollment blocked.
+A later credential-free guest produced hardware evidence with a 32-byte nonce
+and received a Trustee token. Its PCR08 claim matched the reference generated
+by Veritas. Azure reported ConfidentialVM with vTPM enabled. The earlier
+64-byte evidence request returned HTTP 500; the successful 32-byte request
+isolates that diagnostic input issue. The probe's `/version` check returned 404.
+
+The small diagnostic process exited, but Kubernetes continued to report
+Running. Enabling CloseStdin did not resolve this. A control test with the
+production stream restrictions is separate from the attestation result. A
+preceding larger application image failed during layer unpacking. Guest volume
+transport and audit file ownership also remain unqualified. Keep real
+enrollment blocked until these gates pass. All guest tests used public image
+policy resources and no provider credentials.
 
 ## Deployment integration (2026-11-25)
 
@@ -120,8 +128,8 @@ Approval hashing excludes only validated SAW Secret input volumes and their
 exact `secret-converter` mounts under `/tmp/kbs-secrets/`. All operator code,
 commands, security settings, non-SAW volumes, and repository mounts stay pinned.
 This fixes first-registration approval invalidation. Shared resource-policy
-and RVPS approval scope, rotation reload, guest storage access, and complete
-live workspace qualification still require verification.
+and RVPS approval scope, complete supervisor rotation, guest storage access,
+and live workspace qualification still require verification.
 
 The charts package one canonical Python preflight, one attestation module,
 and one shared Helm gate through source links. No provider keys are embedded
@@ -931,8 +939,10 @@ It checks write permissions before changing resources. It never reads a
 Kubernetes Secret or a Vault value. Its SecretStore must be restricted to the
 Trustee namespace and use verified TLS with Vault KV v2 and Kubernetes auth.
 
-A shared `saw-credential-rotation` Lease serializes these commands. The command
-forces an ESO refresh and waits for the exact metadata acknowledgement used by
+A shared `saw-credential-rotation` Lease serializes these commands. A process
+crash leaves the lock held. An administrator must confirm that no maintenance
+command is active before clearing it. The workflow never takes over a held
+lock automatically. The command forces an ESO refresh and waits for the exact metadata acknowledgement used by
 ESO 1.3. An unknown acknowledgement format fails before Trustee is restarted.
 It then evicts only the approved Trustee operand Pod. The eviction has UID and
 resourceVersion preconditions and respects PodDisruptionBudgets. It does not
