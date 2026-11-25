@@ -27,6 +27,14 @@ def command(*args):
     return result.stdout.strip()
 
 
+def bootstrap_path(site):
+    settings = site.get("attestation") if isinstance(site, dict) else None
+    if settings is not None and (not isinstance(settings, dict)
+                                 or type(settings.get("enabled")) is not bool):
+        raise ValueError("invalid attestation topology configuration")
+    return ("bootstrapEgress",) if settings and settings["enabled"] else BOOTSTRAP
+
+
 def path_value(obj, path, default=None):
     for key in path:
         if not isinstance(obj, dict):
@@ -151,7 +159,8 @@ def container_overlay(values, probe, container=None):
                 put(out, path, issuer)
             for path in [GATEWAY + ("kubernetes", "network", "gatewayEgress"), RELAY + ("egress",)]:
                 put(out, path, egress(site, path, common + checked[issuer]))
-            put(out, BOOTSTRAP, egress(site, BOOTSTRAP, common))
+            bootstrap = bootstrap_path(site)
+            put(out, bootstrap, egress(site, bootstrap, common))
             put(overlay, scope + ("containerSites", owner), out)
         if not scope and sites:
             put(overlay, ("projection", "egress"), egress(values, ("projection", "egress"), common))
@@ -163,9 +172,10 @@ def container_overlay(values, probe, container=None):
 def install_values(config, owner, overlay_file, probe, container, verify):
     """Consume only managed fields from this owner's reviewed overlay."""
     site_path = ("containerSites", owner)
+    bootstrap = bootstrap_path(path_value(config, site_path))
     paths = [("projection", "egress")] + [site_path + path for path in [
         GATEWAY + ("oidc", "issuerUrl"), RELAY + ("issuer",),
-        GATEWAY + ("kubernetes", "network", "gatewayEgress"), RELAY + ("egress",), BOOTSTRAP]]
+        GATEWAY + ("kubernetes", "network", "gatewayEgress"), RELAY + ("egress",), bootstrap]]
     expected = None
     if verify:
         if not probe:

@@ -268,3 +268,29 @@ print(json.dumps(data))
     monkeypatch.setenv("MOCK_ISSUER_IP", "10.10.10.111")
     drift = subprocess.run([*make, "check-container-topology"], text=True, cwd=ROOT, capture_output=True)
     assert drift.returncode and "topology drift" in drift.stderr
+
+
+
+def test_confidential_overlay_never_recreates_external_proxy(base, cluster, tmp_path):
+    site = base["containerSites"]["alice"]
+    site["attestation"] = {"enabled": True}
+    site["stack"].pop("proxy", None)
+    trusted_rule = topo.host_rule("10.10.20.30", 443)
+    site["bootstrapEgress"] = [trusted_rule]
+    original = copy.deepcopy(base)
+    overlay = topo.container_overlay(base, "trusted-tools/network-probe")
+    projected = overlay["containerSites"]["alice"]
+    assert "proxy" not in projected["stack"]
+    assert projected["bootstrapEgress"][0] == trusted_rule
+    assert topo.host_rule("172.30.0.1", 443) in projected["bootstrapEgress"]
+    assert base == original
+    path = tmp_path / "reviewed-topology.yaml"
+    topo.install_values(base, "alice", path, "trusted-tools/network-probe", None, verify=True)
+    assert "proxy" not in base["containerSites"]["alice"]["stack"]
+    assert base["containerSites"]["alice"]["bootstrapEgress"] == projected["bootstrapEgress"]
+
+
+@pytest.mark.parametrize("settings", ["invalid", {"enabled": "true"}, {}])
+def test_invalid_attestation_topology_has_no_proxy_fallback(settings):
+    with pytest.raises(ValueError, match="invalid attestation topology"):
+        topo.bootstrap_path({"attestation": settings})
