@@ -224,3 +224,36 @@ def test_conflicting_duplicate_environment_is_denied(tmp_path, artifacts, entry)
     request = application_request(artifacts)
     request['OCI']['Process']['Env'].append(entry)
     assert evaluate(tmp_path, a.compile_launch_policy(pod, generated, profile), request) is False
+
+
+
+@pytest.mark.parametrize("cached", ["c"*64, "sha256:"+"c"*64])
+def test_cached_config_id_does_not_select_guest_image(tmp_path, artifacts, cached):
+    pod, generated, profile, _ = artifacts
+    request = application_request(artifacts)
+    annotations = request["OCI"]["Annotations"]
+    approved = annotations["io.kubernetes.cri-o.ImageName"]
+    annotations["io.kubernetes.cri-o.Image"] = cached
+    storage = next(s for s in request["storages"] if s["driver"] == "image_guest_pull")
+    metadata = json.loads(storage["driver_options"][0].split("=",1)[1])["metadata"]
+    metadata["io.kubernetes.cri-o.Image"] = cached
+    storage["driver_options"] = ["image_guest_pull="+a.canonical({"metadata":metadata})]
+    template = a.compile_launch_policy(pod, generated, profile)
+    result = evaluate(tmp_path, template, request)
+    assert isinstance(result, dict) and result["allowed"] is True
+    assert storage["source"] == approved
+    storage["source"] = "registry.example.test/foreign@sha256:"+"d"*64
+    assert evaluate(tmp_path, template, request) is False
+
+
+@pytest.mark.parametrize("hint", ["registry.example.test/agent:latest",
+    "registry.example.test/foreign@sha256:"+"d"*64, "unknown", "c"*63])
+def test_unrecognized_or_conflicting_image_hint_is_denied(tmp_path, artifacts, hint):
+    pod, generated, profile, _ = artifacts
+    request = application_request(artifacts)
+    request["OCI"]["Annotations"]["io.kubernetes.cri-o.Image"] = hint
+    storage = next(s for s in request["storages"] if s["driver"] == "image_guest_pull")
+    metadata = json.loads(storage["driver_options"][0].split("=",1)[1])["metadata"]
+    metadata["io.kubernetes.cri-o.Image"] = hint
+    storage["driver_options"] = ["image_guest_pull="+a.canonical({"metadata":metadata})]
+    assert evaluate(tmp_path, a.compile_launch_policy(pod,generated,profile), request) is False

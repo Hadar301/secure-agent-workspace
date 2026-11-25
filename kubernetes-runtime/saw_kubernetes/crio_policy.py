@@ -66,7 +66,7 @@ saw_crio_identity if {
     object.get(a, "io.kubernetes.cri-o.PrivilegedRuntime", "false") == "false"
     a["io.katacontainers.pkg.oci.bundle_path"] == concat("", ["/run/containers/storage/overlay-containers/", input.container_id, "/userdata"])
     input.OCI.Root.Path == concat("", ["/run/kata-containers/", input.container_id, "/rootfs"])
-    a["io.kubernetes.cri-o.Image"] == a["io.kubernetes.cri-o.ImageName"]
+    saw_crio_image_hint(a)
     saw_crio_kind(a)
     # A second identity vocabulary must not change the interpretation.
     not saw_crio_conflicting_annotation
@@ -75,6 +75,18 @@ saw_crio_identity if {
     labels["io.kubernetes.pod.namespace"] == c.namespace
     labels["io.kubernetes.pod.uid"] == a["io.kubernetes.pod.uid"]
     labels["io.kubernetes.container.name"] == a["io.kubernetes.container.name"]
+}
+
+# The Image field can become the node's cached config ID. It does not
+# select guest content. The pinned runtime uses ImageName as storage.source;
+# both remain bound to the approved manifest in kind and storage checks.
+saw_crio_image_hint(a) if {
+    a["io.kubernetes.cri-o.Image"] == a["io.kubernetes.cri-o.ImageName"]
+}
+
+saw_crio_image_hint(a) if {
+    a["io.kubernetes.cri-o.ContainerType"] == "container"
+    regex.match("^(sha256:)?[a-f0-9]{64}$", a["io.kubernetes.cri-o.Image"])
 }
 
 saw_crio_conflicting_annotation if {

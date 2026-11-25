@@ -339,6 +339,13 @@ same object as `runtimeProfile` beside `pod` and `template` in each launch
 bundle entry. The bundle digest enrolls this selection. Unknown profiles and
 fields fail closed. Omit the flag only for the existing containerd format.
 
+CRI-O can send a cold-cache pull reference or a warm-cache image configuration
+ID in `io.kubernetes.cri-o.Image`. That field is a node cache hint. The profile
+accepts the approved pull reference or the strict SHA256 cache-ID form. It
+keeps `io.kubernetes.cri-o.ImageName` and guest `storage.source` bound to the
+approved manifest digest. A cached ID cannot select different guest content.
+Tests cover both cache forms and reject a changed pull source.
+
 The canonical `crio_policy.py` validates native identity and guest-pull metadata,
 then passes an equivalent request to the pinned vendor checks. It checks the
 root infrastructure process separately. Application and supervisor processes
