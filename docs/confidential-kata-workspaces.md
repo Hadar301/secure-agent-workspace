@@ -23,9 +23,13 @@ checks its digest. It does not add a subpath mount. Harnesses that require the
 separate briefing mount remain rejected.
 
 A fresh Azure lab has one ready peer-pod worker and an imported confidential
-guest image. Trustee runs with verified HTTPS. The next live gate is hardware
-attestation under an exact image-and-command guest policy. No real workspace
-or provider credential release is qualified on this cluster.
+guest image. Trustee runs with verified HTTPS. The first credential-free guest reached
+the Kata agent. Its measured policy
+rejected the infrastructure container: the pinned generator emits containerd
+metadata, while OpenShift sends CRI-O metadata and a different pause process.
+The probe was removed and its Trustee approval was revoked. Strict CRI-O
+policy generation and verification of the pause image remain required. No
+real workspace or provider credential release is qualified on this cluster.
 
 The earlier results below are historical component tests. They do not establish
 qualification of this new cluster or the OpenShell 0.1.10 image pairing.

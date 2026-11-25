@@ -1,4 +1,4 @@
-{{/* Configuration fields verified against stock ODH OpenShell 305c8b3. */}}
+{{/* Configuration fields use ODH OpenShell c2775b8 and the pinned confidential port. */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
