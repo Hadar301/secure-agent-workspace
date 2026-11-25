@@ -309,6 +309,21 @@ checks the approved RuntimeClass identity and placement, storage-class
 existence, ownership, permissions, and admission. It is not the full
 confidential preflight. The enrollment and credential-release gates stay closed.
 
+## Bounded diagnostic results
+
+The measured policy denies `ReadStreamRequest`. Empty `oc logs` output does not
+show whether a guest application ran. Keep this protection enabled. A
+credential-free diagnostic image can write fixed status codes, booleans, and
+public measurement hashes to its termination message. Never write a Trustee
+token, TEE private key, raw credential response, or provider key there.
+
+Set a diagnostic Pod's `activeDeadlineSeconds` to at most 300 seconds. The
+shared input conversion accepts only an integer from 1 through 300. It removes
+this Kubernetes lifecycle field only from generator input, because the pinned
+generator rejects it. The deployed and enrolled Pod retains the deadline.
+Guest launch permissions remain unchanged. A terminating Pod or an Azure VM
+removal timeout is a failed lifecycle check, not successful completion.
+
 ## Preparing measured launch policies
 
 `deploy/confidential/source-lock.yaml` pins the Red Hat tools image and the

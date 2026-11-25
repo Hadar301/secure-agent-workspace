@@ -960,6 +960,13 @@ def launch_policy_input(pod):
                 raise ValueError()
             del metadata["ownerReferences"]
         spec = result["spec"]
+        # A bounded diagnostic deadline is enforced by Kubernetes, not OCI.
+        # Keep it in the original Pod. The locked generator lacks this field.
+        if "activeDeadlineSeconds" in spec:
+            deadline = spec["activeDeadlineSeconds"]
+            if type(deadline) is not int or not 1 <= deadline <= 300:
+                raise ValueError()
+            del spec["activeDeadlineSeconds"]
         # The driver removes this API scheduling gate before guest startup.
         if "schedulingGates" in spec:
             if spec["schedulingGates"] != [{"name": "openshell.ai/bootstrap"}]:

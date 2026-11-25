@@ -857,6 +857,24 @@ def test_unsafe_launch_input_is_rejected(launch_pod,change):
         a.launch_policy_input(launch_pod)
 
 
+@pytest.mark.parametrize("deadline", [1, 240, 300])
+def test_diagnostic_deadline_stays_in_original_pod(launch_pod, deadline):
+    import copy
+    launch_pod["spec"]["activeDeadlineSeconds"] = deadline
+    original = copy.deepcopy(launch_pod)
+    result = a.launch_policy_input(launch_pod)
+    assert launch_pod == original
+    assert "activeDeadlineSeconds" not in result["spec"]
+    assert result["spec"]["containers"][0]["securityContext"]["allowPrivilegeEscalation"] is False
+
+
+@pytest.mark.parametrize("deadline", [True, False, None, 0, -1, 301, 1.0, "300", {}])
+def test_unbounded_or_invalid_diagnostic_deadline_fails(launch_pod, deadline):
+    launch_pod["spec"]["activeDeadlineSeconds"] = deadline
+    with pytest.raises(a.AttestationError, match="^LaunchPolicyInputRejected$"):
+        a.launch_policy_input(launch_pod)
+
+
 def test_launch_input_keeps_other_unsupported_fields_for_generator_rejection(launch_pod):
     launch_pod["spec"]["unknownSecurityField"]={"enabled":True}
     assert a.launch_policy_input(launch_pod)["spec"]["unknownSecurityField"]=={"enabled":True}
@@ -905,6 +923,15 @@ def generated_launch(launch_pod, monkeypatch):
                 "Root":{"Readonly":True},"Process":{"Args":["/approved-supervisor"],
                 "Env":[a.BOOTSTRAP_ENV+"="+bootstrap],"User":{"UID":1001},"NoNewPrivileges":True}}}]}
     return launch_pod,prefix,data
+
+
+def test_diagnostic_deadline_does_not_change_guest_permissions(generated_launch):
+    pod, prefix, data = generated_launch
+    generated = prefix + "\n\npolicy_data := " + json.dumps(data)
+    expected = a.compile_launch_policy(pod, generated)
+    pod["spec"]["activeDeadlineSeconds"] = 300
+    assert a.compile_launch_policy(pod, generated) == expected
+    assert pod["spec"]["activeDeadlineSeconds"] == 300
 
 
 def test_launch_template_uses_verified_rules_and_one_identity_marker(generated_launch):
