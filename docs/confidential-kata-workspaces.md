@@ -50,6 +50,29 @@ and one shared Helm gate through source links. No provider keys are embedded
 in these assets. Build and pin an updated runtime image before live enrollment;
 old controller images do not contain these integration fixes.
 
+## Storage gate (2026-11-25)
+
+A live check of a reserved Azure File audit claim failed the file ownership
+precondition in `saw_kubernetes.prepare_audit`. The check created an empty file
+under the configured workspace UID, but the filesystem reported a different
+owner. File flag reads succeeded. Setting the append-only flag was not tested.
+The check removed its temporary file and Pod. It used the default runtime and
+no provider credentials. It does not qualify confidential guest volume access.
+
+A Bound claim is insufficient for enrollment. Verify the CSI transport inside
+the confidential guest, UID/GID mapping, gate mount modes, audit append-only
+semantics, and persistence. Keep enrollment disabled until these checks pass.
+Use dedicated storage configuration for workspace UID mapping; do not change
+the shared default StorageClass to fix one owner.
+
+The inspected [OSC 1.13 Azure CSI wrapper example](https://github.com/openshift/cloud-api-adaptor/blob/ab140f1932a6f369a422677f92bb4c47aee085f9/src/csi-wrapper/examples/azure/README.md)
+targets AKS. It changes controller and node driver socket paths and adds
+[root, privileged guest storage containers](https://github.com/openshift/cloud-api-adaptor/blob/ab140f1932a6f369a422677f92bb4c47aee085f9/src/csi-wrapper/examples/azure/file/nginx-kata-with-my-pvc-and-csi-wrapper.yaml).
+It is not a drop-in configuration for managed OpenShift CSI drivers. Adding
+such helpers changes the measured workspace boundary and requires review of
+their pinned images, commands, mounts, privileges, and rollback. Do not enable
+a driver flag or replace the guest policy and report storage as qualified.
+
 ## Latest verification (2026-11-24)
 
 Credential-free Azure SNP image checks passed: a signed agent image ran,
