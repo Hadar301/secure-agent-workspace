@@ -19,6 +19,8 @@ containerDefaults:
   profileImageOverrides:
     data-science:
       notebook: "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2"
+    kata-data-science:
+      notebook: "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2"
     custom-inference:
       notebook: "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2"
   automaticEnrollment:

@@ -26,12 +26,12 @@ spec:
       profile:
         title: Profile
         type: string
-        enum: [ci-nvidia, custom-inference, data-science, personal-assistant]
+        enum: [ci-nvidia, custom-inference, data-science, kata-data-science, personal-assistant]
         enumNames: ['ci-nvidia: CI workspace with NVIDIA inference', 'custom-inference: Agent workspace
             backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)', 'data-science: Data science
             workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference',
-          'personal-assistant: Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack
-            and Gmail briefing']
+          'kata-data-science: NVIDIA inference workspace for Kata runtime qualification', 'personal-assistant:
+            Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing']
         default: data-science
     dependencies:
       profile:
@@ -73,6 +73,14 @@ spec:
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
+        - properties:
+            profile: {const: kata-data-science}
+            uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
+                signed in with Keycloak, for you only: notebook (default)'}
+            inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider nvidia)}
+            inference__model: {title: 'inference: Model (Kata notebook)', type: string, default: nvidia/nemotron-3.5-lightning-30b-a3b}
+          required: [inference__api_key]
         - properties:
             profile: {const: personal-assistant}
             uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
