@@ -214,6 +214,41 @@ It also rejects private-key labels, malformed PEM, and simultaneous `keyData`
 and `keyPath`. This is an encoding check. Registry verification and live guest
 acceptance and rejection tests are still required.
 
+## Guest image-signature artifact format
+
+The pinned OSC image-rs verifier reads legacy Cosign Simple Signing artifacts
+from the `sha256-<manifest-digest>.sig` tag. A successful default Cosign 3
+verification can instead verify a newer bundle. That result does not prove
+that the guest can find and verify the legacy signature.
+
+For this pinned guest, publish and verify the legacy format explicitly:
+
+```bash
+cosign sign --key SIGNING_KEY --new-bundle-format=false \
+  --registry-referrers-mode=legacy IMAGE@sha256:DIGEST
+cosign verify --key PUBLIC_KEY --new-bundle-format=false \
+  IMAGE@sha256:DIGEST
+skopeo inspect --raw docker://REPOSITORY:sha256-DIGEST.sig
+```
+
+Check that the signature manifest has a
+`application/vnd.dev.cosign.simplesigning.v1+json` layer and the
+`dev.cosignproject.cosign/signature` annotation. The tag check proves artifact
+availability, not signature validity. Keep the public-key verification and
+then test the pinned guest. `--registry-referrers-mode=legacy` alone does not
+select the legacy bundle format in Cosign 3.
+
+The credential-free CRI-O probe reached Trustee and passed Azure SNP
+endorsement verification on 2026-11-25. Trustee released its public image
+policy. Application launch then failed at the signature rule because only
+the newer bundle existed. No provider key was used. The compatible artifact
+was added without changing the approved image manifest or guest policy.
+The corrected guest launch still requires a live retest. This result does
+not qualify provider credential release or the complete workspace.
+
+See the pinned [Cosign 3.1.4 signing options](https://github.com/sigstore/cosign/blob/v3.1.4/cmd/cosign/cli/options/sign.go)
+and [image-rs Cosign verifier](https://github.com/openshift/confidential-containers-guest-components/blob/ba72d6d13db4bf66d21f407a90b62c8b890a7bb0/image-rs/src/signature/policy/cosign/mod.rs).
+
 ## Measured public bootstrap configuration
 
 The confidential supervisor receives `SAW_CONFIDENTIAL_BOOTSTRAP_JSON`.
