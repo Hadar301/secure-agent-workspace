@@ -22,8 +22,11 @@ func env(name, fallback string) string {
 }
 
 func run() error {
+	if len(os.Args) >= 3 && os.Args[1] == "supervise" {
+		return confidential(os.Args[2:])
+	}
 	if len(os.Args) != 2 {
-		return fmt.Errorf("usage: saw-credential-proxy serve|init-ca")
+		return fmt.Errorf("usage: saw-credential-proxy serve|init-ca|supervise /openshell-supervisor [args]")
 	}
 	switch os.Args[1] {
 	case "init-ca":

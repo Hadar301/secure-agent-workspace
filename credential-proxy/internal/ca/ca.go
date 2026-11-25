@@ -20,6 +20,7 @@ import (
 
 type Authority struct {
 	certPath, keyPath string
+	certPEM, keyPEM   []byte
 	mu                sync.Mutex
 	digest            [32]byte
 	cert              *x509.Certificate
@@ -31,6 +32,11 @@ func New(certPath, keyPath string) *Authority {
 	return &Authority{certPath: certPath, keyPath: keyPath, cache: map[string]tls.Certificate{}}
 }
 
+// NewMemory retains the private CA key only in the confidential process.
+func NewMemory(certPEM, keyPEM []byte) *Authority {
+	return &Authority{certPEM: append([]byte(nil), certPEM...), keyPEM: append([]byte(nil), keyPEM...), cache: map[string]tls.Certificate{}}
+}
+
 func (a *Authority) Ready() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -38,11 +44,17 @@ func (a *Authority) Ready() error {
 }
 
 func (a *Authority) reload() error {
-	certPEM, err := os.ReadFile(a.certPath)
+	certPEM, keyPEM := a.certPEM, a.keyPEM
+	var err error
+	if certPEM == nil {
+		certPEM, err = os.ReadFile(a.certPath)
+	}
 	if err != nil {
 		return fmt.Errorf("read proxy CA certificate: %w", err)
 	}
-	keyPEM, err := os.ReadFile(a.keyPath)
+	if keyPEM == nil {
+		keyPEM, err = os.ReadFile(a.keyPath)
+	}
 	if err != nil {
 		return fmt.Errorf("read proxy CA key: %w", err)
 	}
@@ -126,7 +138,7 @@ func Generate() (certPEM, keyPEM []byte, err error) {
 		Subject:      pkix.Name{Organization: []string{"SAW"}, CommonName: "saw-credential-proxy-ca"},
 		NotBefore:    now.Add(-5 * time.Minute), NotAfter: now.AddDate(10, 0, 0),
 		IsCA: true, BasicConstraintsValid: true,
-		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		SubjectKeyId: keyID, AuthorityKeyId: keyID,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)

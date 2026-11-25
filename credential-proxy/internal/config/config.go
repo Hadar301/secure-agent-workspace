@@ -1,12 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
 	"errors"
 	"fmt"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -48,6 +50,7 @@ type Store struct {
 	Broker     *oauth.Broker
 	path       string
 	secretsDir string
+	material   map[string]map[string]string
 	mu         sync.RWMutex
 	policy     Policy
 }
@@ -63,7 +66,67 @@ func New(path, secretsDir string) (*Store, error) {
 	return s, nil
 }
 
+// NewMemory never opens credential files. Material comes from an attested CDH
+// fetch and is copied so callers cannot change a running proxy's credentials.
+func NewMemory(path string, material map[string]map[string]string) (*Store, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("CredentialPolicyRejected")
+	}
+	return NewMemoryData(raw, material)
+}
+
+// NewMemoryData reads no policy or credential file. The public policy bytes
+// come from the measured bootstrap environment and are parsed once.
+func NewMemoryData(raw []byte, material map[string]map[string]string) (*Store, error) {
+	var policy Policy
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var trailing any
+	if decoder.Decode(&policy) != nil || decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("CredentialPolicyRejected")
+	}
+	s := &Store{Broker: &oauth.Broker{}}
+	if s.setPolicy(policy) != nil {
+		return nil, errors.New("CredentialPolicyRejected")
+	}
+
+	s.material = make(map[string]map[string]string)
+	for _, b := range s.policy.Bindings {
+		if b.Refresh != nil {
+			return nil, errors.New("CredentialRefreshUnsupported")
+		}
+		fields, ok := material[b.Secret]
+		if !ok {
+			return nil, errors.New("CredentialMaterialMissing")
+		}
+		copied := make(map[string]string)
+		for k, v := range fields {
+			copied[k] = v
+		}
+		s.material[b.Secret] = copied
+	}
+	if _, _, err := s.Snapshot(); err != nil {
+		return nil, errors.New("CredentialMaterialRejected")
+	}
+	return s, nil
+}
+
+func (s *Store) field(secret, key string) ([]byte, error) {
+	if s.material != nil {
+		value, ok := s.material[secret][key]
+		if !ok {
+			return nil, errors.New("CredentialMaterialMissing")
+		}
+		return []byte(value), nil
+	}
+	return os.ReadFile(filepath.Join(s.secretsDir, secret, key))
+}
+
 func (s *Store) Reload() error {
+	if s.material != nil {
+		return errors.New("CredentialPolicyImmutable")
+	}
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		return fmt.Errorf("read policy: %w", err)
@@ -72,6 +135,10 @@ func (s *Store) Reload() error {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("decode policy: %w", err)
 	}
+	return s.setPolicy(p)
+}
+
+func (s *Store) setPolicy(p Policy) error {
 	if p.MarkerPrefix == "" || !keyRE.MatchString(p.MarkerPrefix) {
 		return errors.New("invalid marker prefix")
 	}
@@ -161,14 +228,17 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 		var value []byte
 		var err error
 		if b.Refresh != nil {
+			if s.material != nil {
+				return p, nil, errors.New("CredentialRefreshUnsupported")
+			}
 			_, err = oauth.ReadMaterial(*b.Refresh, base)
 		} else {
-			value, err = os.ReadFile(filepath.Join(base, b.Key))
+			value, err = s.field(b.Secret, b.Key)
 		}
 		if err != nil {
 			return p, nil, fmt.Errorf("Secret %s key %s is missing or empty", b.Secret, b.Key)
 		}
-		providerRaw, _ := os.ReadFile(filepath.Join(base, "provider"))
+		providerRaw, _ := s.field(b.Secret, "provider")
 		typ := strings.TrimSpace(string(providerRaw))
 		types := b.Providers
 		if typ != "" {
@@ -196,7 +266,7 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 			}
 		}
 		plainHTTP := false
-		urlRaw, _ := os.ReadFile(filepath.Join(base, "url"))
+		urlRaw, _ := s.field(b.Secret, "url")
 		if custom := strings.TrimSpace(string(urlRaw)); custom != "" {
 			u, err := url.Parse(custom)
 			if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
