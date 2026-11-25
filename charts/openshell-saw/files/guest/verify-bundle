@@ -145,7 +145,7 @@ manifest_text() {
   for extra in tool-actions.yaml tool-gate.mjs tool-gate-plugin.mjs saw-gateway-pki openshell-gateway-pki.conf; do
     files+=("$extra")
   done
-  mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
+  mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
   for f in "${files[@]}"; do
     [[ -f "${dir}/${f}" ]] || return 1
     hash=$(sha256sum "${dir}/${f}") || return 1

@@ -360,7 +360,8 @@ def _manifest_text(directory, names):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
-def test_edited_bundle_fails_enforce_and_warns(tmp_path):
+@pytest.mark.parametrize("collation", ["C", "en_US.UTF-8"])
+def test_edited_bundle_fails_enforce_and_warns(tmp_path, collation):
     """A test key signs the manifest covering the three installer files.
     Editing apply_bom.py changes its hash, which changes the manifest and
     makes enforce stop and warn continue, without touching an already
@@ -400,7 +401,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     installed.write_text("old-binary\n")
     status = tmp_path / "status.json"
     staged_apply_bom = tmp_path / "verified" / "installer" / "apply_bom.py"
-    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+    env = {**os.environ, "LC_ALL": collation, "PATH": f"{bindir}:{os.environ['PATH']}",
            "SAW_INSTALLER_DIR": str(installer), "SAW_TRUST_DIR": str(trust),
            "SAW_STATUS_FILE": str(status), "SAW_STAGE_ROOT": str(tmp_path / "verified")}
 
