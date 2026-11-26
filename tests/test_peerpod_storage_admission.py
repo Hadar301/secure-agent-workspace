@@ -96,3 +96,25 @@ def test_refuses_unverified_admission_expressions():
 
 def test_accepts_only_the_checked_inactive_stage():
     MODULE.verify_inactive(InactiveApi(), "saw-ppvc-0123456789abcdef")
+
+
+def test_bearer_identity_cannot_mix_with_impersonation(monkeypatch):
+    api = MODULE.Api("test-context")
+    api.base = "http://127.0.0.1:12345"
+    def unexpected(*args, **kwargs):
+        pytest.fail("Mixed identity request was sent")
+    monkeypatch.setattr(MODULE, "urlopen", unexpected)
+    with pytest.raises(MODULE.CheckError, match="^LabMixedIdentityRejected$"):
+        api.request("GET", "/api/v1/namespaces/lab", bearer="test-only-value", actor="admin")
+
+
+def test_bearer_is_sent_only_in_header(monkeypatch):
+    def send(request, timeout):
+        assert request.get_header("Authorization") == "Bearer test-only-value"
+        assert "test-only-value" not in request.full_url
+        assert not request.data
+        return Response(b'{}')
+    monkeypatch.setattr(MODULE, "urlopen", send)
+    api = MODULE.Api("test-context")
+    api.base = "http://127.0.0.1:12345"
+    api.request("GET", "/api/v1/namespaces/lab", bearer="test-only-value")

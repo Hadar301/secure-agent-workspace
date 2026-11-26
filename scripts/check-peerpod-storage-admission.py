@@ -65,7 +65,7 @@ class Api:
     def __exit__(self, *_):
         self.close()
 
-    def request(self, method, path, body=None, *, dry_run=False, actor=None, pod_uid=None):
+    def request(self, method, path, body=None, *, dry_run=False, actor=None, pod_uid=None, bearer=None):
         parsed = urlsplit(unquote(path))
         if (not path.startswith(("/api/v1/", "/apis/"))
                 or parsed.netloc or parsed.fragment
@@ -75,7 +75,11 @@ class Api:
             raise CheckError("LabApiPathRejected")
         if dry_run:
             path += ("&" if "?" in path else "?") + "dryRun=All"
+        if bearer and (actor or pod_uid):
+            raise CheckError("LabMixedIdentityRejected")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if bearer:
+            headers["Authorization"] = "Bearer " + bearer
         if actor:
             headers["Impersonate-User"] = actor
         if pod_uid:

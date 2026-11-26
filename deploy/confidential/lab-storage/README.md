@@ -102,6 +102,29 @@ registry names and live results outside Git.
 No real workspace request is allowed until guest volume transport and normal
 cleanup pass. The chart retains disks. Do not assume uninstall removes data.
 
+## Actual Pod-bound API identity check
+
+After the host stage is ready, run this check with the lab registration:
+
+```sh
+uv run --locked python scripts/check-peerpod-storage-identity.py \
+  --context "$LAB_CONTEXT" --registration "$LAB_REGISTRATION" \
+  --output "$LAB_IDENTITY_RESULT"
+```
+
+It creates a Pod with a scheduling gate and no runtime class. The Pod never
+runs. The API issues a short-lived token bound to its UID. A SelfSubjectReview
+must confirm that exact identity before the checker uses it. It then tests an
+own-record update and rejects foreign Pod and disk updates with server dry runs.
+The token stays in memory. Temporary objects are deleted with UID preconditions.
+This does not qualify guest API connectivity or attestation.
+
+`guest.Containerfile` can package the vendor driver tools and the lab wrapper
+in one guest image. Supply only approved digest references for both build
+arguments. It contains no cloud configuration, Kubernetes token or provider key.
+Sign the resulting digest and verify it before admitting a guest. The resulting
+image remains experimental until the measured launch and mount checks pass.
+
 ## Acceptance gates
 
 - The managed CSI specifications and identities stay unchanged.
