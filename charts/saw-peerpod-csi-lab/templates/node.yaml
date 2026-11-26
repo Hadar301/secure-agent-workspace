@@ -1,0 +1,93 @@
+{{- if .Values.enabled }}
+{{- include "saw-peerpod-csi-lab.validate" . }}
+{{- $ns := .Release.Namespace }}
+{{- $driver := include "saw-peerpod-csi-lab.driver" . }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: node, namespace: {{ $ns }}}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: '{{ $ns }}-node'}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: '{{ $ns }}-node'}
+      annotations: {openshift.io/required-scc: '{{ $ns }}-node'}
+    spec:
+      serviceAccountName: node
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.nodeName | quote }}
+        {{- if not .Values.activate }}
+        saw.redhat.com/storage-lab-disabled: {{ .Values.registration | quote }}
+        {{- end }}
+      {{- if .Values.activate }}
+      initContainers:
+      - name: owned-helper-marker
+        image: {{ .Values.images.wrapper | quote }}
+        command: [/saw-lab-marker]
+        args: ['--mode=prepare', '--root=/host/direct-volumes', '--registration={{ .Values.registration }}']
+        resources: {requests: {cpu: 5m, memory: 16Mi}, limits: {memory: 64Mi}}
+        securityContext: {privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}
+        volumeMounts: [{name: direct-volumes, mountPath: /host/direct-volumes}]
+      {{- end }}
+      containers:
+      - name: azure-disk
+        image: {{ .Values.images.azureDisk | quote }}
+        command: [/usr/bin/azurediskplugin]
+        args: ['--drivername={{ $driver }}', '--endpoint=unix:///csi/backend.sock', '--nodeid=$(NODE_NAME)', '--cloud-config-secret-name=', '--cloud-config-secret-namespace=', '--remove-not-ready-taint=false', '--never-stop-taint-removal=false', '--enable-migration-monitor=false', '--get-node-info-from-labels=true', '--v=2']
+        env:
+        - {name: NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+        - {name: AZURE_CREDENTIAL_FILE, value: /etc/kubernetes/azure.json}
+        resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}
+        securityContext: {privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+        - {name: kubelet, mountPath: /var/lib/kubelet, mountPropagation: Bidirectional}
+        - {name: devices, mountPath: /dev}
+        - {name: sys, mountPath: /sys, readOnly: true}
+        - {name: cloud, mountPath: /etc/kubernetes, readOnly: true}
+        - {name: tmp, mountPath: /tmp}
+      - name: wrapper
+        image: {{ .Values.images.wrapper | quote }}
+        command: [/csi-node-wrapper]
+        args: ['--endpoint=/csi/wrapper.sock', '--target-endpoint=/csi/backend.sock', '--namespace={{ $ns }}', '--vm-id-information-endpoint=/run/peerpod/hypervisor.sock', '--v=0']
+        resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 256Mi}}
+        securityContext: {privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+        - {name: kubelet, mountPath: /var/lib/kubelet}
+        - {name: peerpod, mountPath: /run/peerpod, readOnly: true}
+        - {name: direct-volumes, mountPath: /run/kata-containers/shared/direct-volumes}
+      - name: registrar
+        image: {{ .Values.images.registrar | quote }}
+        args: ['--csi-address=/csi/wrapper.sock', '--kubelet-registration-path=/var/lib/kubelet/plugins/{{ $driver }}/wrapper.sock', '--v=2']
+        resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 128Mi}}
+        securityContext: {runAsUser: 0, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+        volumeMounts: [{name: socket, mountPath: /csi}, {name: registration, mountPath: /registration}]
+      - name: liveness
+        image: {{ .Values.images.liveness | quote }}
+        args: ['--csi-address=/csi/wrapper.sock', '--http-endpoint=0.0.0.0:9808', '--probe-timeout=3s', '--v=2']
+        resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 128Mi}}
+        securityContext: {runAsUser: 65532, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        readinessProbe: {httpGet: {path: /healthz, port: 9808}, initialDelaySeconds: 5, periodSeconds: 5}
+        volumeMounts: [{name: socket, mountPath: /csi}]
+      volumes:
+      - name: socket
+        hostPath: {path: '/var/lib/kubelet/plugins/{{ $driver }}', type: DirectoryOrCreate}
+      - name: registration
+        hostPath: {path: /var/lib/kubelet/plugins_registry, type: Directory}
+      - name: kubelet
+        hostPath: {path: /var/lib/kubelet, type: Directory}
+      - name: devices
+        hostPath: {path: /dev, type: Directory}
+      - name: sys
+        hostPath: {path: /sys, type: Directory}
+      - name: peerpod
+        hostPath: {path: /run/peerpod, type: Directory}
+      - name: direct-volumes
+        hostPath: {path: /run/kata-containers/shared/direct-volumes, type: DirectoryOrCreate}
+      - {name: tmp, emptyDir: {}}
+      - name: cloud
+        secret:
+          secretName: {{ .Values.cloudConfigSecret }}
+          defaultMode: 0400
+          items: [{key: azure.json, path: azure.json}]
+{{- end }}

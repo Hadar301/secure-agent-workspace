@@ -1,0 +1,144 @@
+# Experimental Azure peer-pod storage lab
+
+Status: **experimental and unqualified**. This component is not part of the
+SAW pattern. It must not carry provider credentials or production data.
+
+This lab tests an alternative to waiting for a documented Red Hat ARO storage
+procedure. It does not establish Red Hat support. It does not replace the
+ARO-managed Azure Disk CSI deployment, driver name, socket or StorageClass.
+
+## Design and limits
+
+The chart uses one registration, one test namespace and one canary worker.
+Each release has its own CSI driver name, socket, RBAC and StorageClass.
+The backend uses the installed vendor Azure Disk image by digest. The wrapper
+uses the pinned Cloud API Adaptor source and the reviewed isolation patch.
+See `source-lock.yaml` for the source and build inputs. A completed image build
+is not proof that a guest can mount a volume.
+
+The wrapper rejects foreign claim namespaces, foreign staging paths, CSI secret
+references and credential-bearing CSI requests. The guest can update a volume
+record only with a Pod-bound identity that matches its recorded Pod UID.
+These controls supplement RBAC. They do not remove the trust placed in the
+privileged host plugin or a guest helper with storage access.
+
+The host plugin requires privileged access to the selected worker's kubelet
+mounts, devices, CSI registration directory and Kata direct-volume registry.
+The backend runs outside the confidential VM. It uses an Azure configuration
+Secret in the lab control namespace. This is an infrastructure credential;
+it must not contain an NVIDIA key. Neither the driver nor the guest receives
+Kubernetes Secret read permissions through this chart.
+
+An explicit init container creates the `/var/lib/kubelet` direct-volume marker.
+The marker tool refuses foreign ownership, symlinks, changed contents and removal
+while sandbox references remain. **Only one lab registration can own this marker
+on each worker.** This design does not yet qualify two owners on the same worker.
+Do not remove or replace an existing marker to bypass this check.
+
+A guest helper is also required. Its image, commands, privileges, mount targets,
+API identity and network access must be part of a reviewed measured policy.
+The current chart does not deploy this helper or a guest Pod. Do not relax the
+normal SAW launch policy to admit an unmeasured helper.
+
+## Build and local checks
+
+Build `Containerfile` with a repository-root build context. It fetches the exact
+upstream revision, checks the patch hash, runs Go tests, and builds static AMD64
+binaries. Its context needs only the public lab source files. Do not include a
+local credentials directory or a values file with secrets.
+
+```sh
+uv run --locked pytest tests/charts/test_peerpod_csi_lab.py tests/test_peerpod_storage_admission.py
+helm lint charts/saw-peerpod-csi-lab
+```
+
+Record the build UID, source hashes, test result and output digest in the private
+acceptance record. Use a digest for each chart image. Keep site values, personal
+registry names and live results outside Git.
+
+## Install stages
+
+1. Read the current managed driver UIDs and specifications. Save a hash baseline.
+   Check that the proposed namespace, release, driver, StorageClass and policy
+   names do not exist. Stop on a collision. Do not adopt an existing resource.
+2. Prepare public site values from the chart defaults. Set `enabled: true`,
+   `activate: false`, and `enforceGuards: false`. Pin all six images. Supply the
+   exact API endpoint CIDRs and an ordinary lab Azure resource group.
+   `wrapperBuildNamespace` can grant image pulls to the two lab service accounts.
+3. Verify the `PeerpodVolume` CRD. If absent, create the supplied CRD after a
+   server dry run. If present, compare its schema and ownership. Do not replace
+   an existing CRD without a separate review.
+4. Render the chart. For a new release namespace, create only its rendered
+   Namespace with Helm release ownership metadata. Then install the chart.
+   Both namespaces have Helm's `keep` policy. Do not copy the Azure credential.
+   Confirm controller replicas and scheduled node Pods are both zero.
+5. Wait for the four admission policies to pass server type checking. Enable
+   `enforceGuards`, with `activate` still false. Run the checker:
+
+   ```sh
+   uv run --locked python scripts/check-peerpod-storage-admission.py \
+     --context "$LAB_CONTEXT" --values "$LAB_VALUES" \
+     --output "$LAB_ADMISSION_RESULT" --exercise
+   ```
+
+   The checker creates one public `PeerpodVolume` record. It tests claims,
+   volumes and guest updates with server dry runs, then removes its own record
+   with a UID precondition. It never reads a Secret. It verifies that dry-run
+   resources and updates did not persist. Impersonation tests do not qualify
+   the claims from a real guest token; test those separately inside the guest.
+6. Prepare an exact activation and rollback proposal. Get review for the new
+   credential location, privileged node plugin and shared mount marker. Do not
+   set either acknowledgement to true before this review.
+7. After approval, copy only the dedicated Azure identity's required fields into
+   the lab configuration Secret. Do not print the value. Set both
+   `acknowledgePrivilegedNodeAccess` and `acknowledgeGuestKubeletMarker` to true,
+   then set `activate: true`. Verify only the selected worker runs the plugin.
+8. Before a guest launch, verify the measured helper policy, image signatures,
+   Trustee reference values, API identity and restricted network rules. Launch
+   one credential-free guest. Stop after a failure and collect safe evidence.
+
+No real workspace request is allowed until guest volume transport and normal
+cleanup pass. The chart retains disks. Do not assume uninstall removes data.
+
+## Acceptance gates
+
+- The managed CSI specifications and identities stay unchanged.
+- Only the lab namespace can request its StorageClass.
+- The driver rejects foreign claims, paths, disk records and CSI secret input.
+- The actual guest token cannot change another Pod's record.
+- Each mounted filesystem supports the configured UID/GID and a read-only mount.
+- Three separate volumes support the SAW workspace and standard audit paths.
+  Check actual log writes; do not apply the obsolete inode-sealing requirement
+  to the default `localAudit` path. Signed receipts need separate qualification.
+- A restart and a recreated VM preserve public test data.
+- Normal Pod, PeerPod, Azure VM, volume attachment, CSI record and runtime cleanup
+  completes. Allow for the configured kubelet stopped-container retention time.
+- A second registration cannot use the first registration's disk or marker.
+- Trustee, Argo CD and the SAW foundation remain healthy.
+
+Keep `realCredentialUseAllowed: false` until these checks pass. A successful
+admission dry run is not a successful mount or attestation test.
+
+## Rollback
+
+1. Keep the lab CSI components running while deleting the guest normally.
+   Wait for detach, PeerPod and Azure VM removal. Do not force-delete or restart
+   CRI-O to make a failed cleanup appear successful.
+2. Confirm there are no live attachments, guest processes or runtime sandbox
+   references for this registration. Save identifiers and safe status reasons.
+3. Set `activate: false`. Wait for the controller and node Pods to stop.
+4. Run the same pinned image's `/saw-lab-marker --mode=remove` in a reviewed,
+   canary-only privileged cleanup Job. Mount only the direct-volume registry.
+   Pass the same registration. Stop if the tool reports a foreign owner, changed
+   marker or remaining sandbox reference. Never remove the registry recursively.
+5. Uninstall only this release. The namespaces and disks remain. Confirm the
+   managed driver baseline still matches. Remove the lab credential copy and
+   pull binding after checking ownership; preserve the original OSC credential.
+6. Review retained PVCs, PVs and Azure disk IDs before deleting test data. Remove
+   only the lab's detached disks and empty namespaces. Do not delete shared
+   Secrets, the original Azure identity, its roles or ARO-managed resources.
+7. Remove the CRD only if this lab created it and no instance exists in any
+   namespace. Preserve it if another application now uses it.
+
+If normal detach fails, stop and diagnose it with the storage components still
+available. Do not change host software or the confidential runtime as rollback.

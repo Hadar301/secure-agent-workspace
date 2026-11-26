@@ -1,0 +1,23 @@
+# Lab only. Not included in the SAW pattern. Stage inactive before activation.
+# No credential values belong here.
+enabled: false
+activate: false
+acknowledgePrivilegedNodeAccess: false
+registration: ''
+nodeName: ''
+region: ''
+resourceGroup: ''
+cloudConfigSecret: azure-cloud-config
+wrapperPatchSHA256: 19dc5bc07961b49b3988b9f03d503ce9f483ffff853a970ddf40710764ecc2b8
+images:
+  azureDisk: ''
+  wrapper: ''
+  provisioner: ''
+  attacher: ''
+  registrar: ''
+  liveness: ''
+apiServerCIDRs: []
+enforceGuards: false
+acknowledgeGuestKubeletMarker: false
+# Optional pull grant for an image in an SAW build namespace.
+wrapperBuildNamespace: ''

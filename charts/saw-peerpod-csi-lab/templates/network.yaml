@@ -1,0 +1,55 @@
+{{- if .Values.enabled }}
+{{- include "saw-peerpod-csi-lab.validate" . }}
+{{- $ns := .Release.Namespace }}
+{{- $guest := include "saw-peerpod-csi-lab.guestNamespace" . }}
+{{- range $namespace := list $ns $guest }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: {{ $namespace }}}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: controller-egress, namespace: {{ $ns }}}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+      podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+    ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}, {protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}]
+  - to:
+    {{- range $cidr := .Values.apiServerCIDRs }}
+    - ipBlock: {cidr: {{ $cidr | quote }}}
+    {{- end }}
+    ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+  - to: [{ipBlock: {cidr: 0.0.0.0/0}}, {ipBlock: {cidr: '::/0'}}]
+    ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata: {name: default, namespace: {{ $ns }}}
+spec:
+  egress:
+  {{- range $host := list "management.azure.com" "login.microsoftonline.com" }}
+  - type: Allow
+    to: {dnsName: {{ $host }}}
+    ports: [{protocol: TCP, port: 443}]
+  {{- end }}
+  {{- range $cidr := .Values.apiServerCIDRs }}
+  - type: Allow
+    to: {cidrSelector: {{ $cidr | quote }}}
+    ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+  {{- end }}
+  - type: Allow
+    to: {cidrSelector: 0.0.0.0/0}
+    ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}, {protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}]
+  - type: Allow
+    to: {cidrSelector: '::/0'}
+    ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}, {protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}]
+  - {type: Deny, to: {cidrSelector: 0.0.0.0/0}}
+  - {type: Deny, to: {cidrSelector: '::/0'}}
+{{- end }}

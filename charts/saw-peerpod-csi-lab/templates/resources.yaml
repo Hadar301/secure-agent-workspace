@@ -1,0 +1,190 @@
+{{- if .Values.enabled }}
+{{- include "saw-peerpod-csi-lab.validate" . }}
+{{- $ns := .Release.Namespace }}
+{{- $guest := include "saw-peerpod-csi-lab.guestNamespace" . }}
+{{- $driver := include "saw-peerpod-csi-lab.driver" . }}
+{{- range $namespace := list $ns $guest }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace }}
+  annotations: {helm.sh/resource-policy: keep}
+  labels:
+    saw.redhat.com/peerpod-storage-lab: {{ $.Values.registration | quote }}
+    pod-security.kubernetes.io/enforce: privileged
+{{- end }}
+{{- range $sa := list "controller" "node" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $sa }}, namespace: {{ $ns }}}
+automountServiceAccountToken: true
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: storage-guest, namespace: {{ $guest }}}
+automountServiceAccountToken: false
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: {{ $driver }}
+spec:
+  attachRequired: true
+  podInfoOnMount: true
+  fsGroupPolicy: File
+  volumeLifecycleModes: [Persistent]
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $ns }}
+provisioner: {{ $driver }}
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+parameters:
+  skuName: StandardSSD_LRS
+  resourceGroup: {{ .Values.resourceGroup | quote }}
+  location: {{ .Values.region | quote }}
+  peerpod: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $ns }}-controller}
+rules:
+- apiGroups: [""]
+  resources: [persistentvolumes]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [persistentvolumeclaims, nodes]
+  verbs: [get, list, watch]
+- apiGroups: [storage.k8s.io]
+  resources: [storageclasses, csinodes]
+  verbs: [get, list, watch]
+- apiGroups: [storage.k8s.io]
+  resources: [volumeattachments, volumeattachments/status]
+  verbs: [get, list, watch, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $ns }}-controller}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $ns }}-controller}
+subjects: [{kind: ServiceAccount, name: controller, namespace: {{ $ns }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: controller, namespace: {{ $guest }}}
+rules:
+- apiGroups: [""]
+  resources: [persistentvolumeclaims]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: controller, namespace: {{ $guest }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: controller}
+subjects: [{kind: ServiceAccount, name: controller, namespace: {{ $ns }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: coordination, namespace: {{ $ns }}}
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: coordination, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: coordination}
+subjects: [{kind: ServiceAccount, name: controller, namespace: {{ $ns }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $ns }}-node}
+rules:
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $ns }}-node}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $ns }}-node}
+subjects: [{kind: ServiceAccount, name: node, namespace: {{ $ns }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: volume-records, namespace: {{ $ns }}}
+rules:
+- apiGroups: [confidentialcontainers.org]
+  resources: [peerpodvolumes, peerpodvolumes/status]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: volume-records, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: volume-records}
+subjects:
+- {kind: ServiceAccount, name: controller, namespace: {{ $ns }}}
+- {kind: ServiceAccount, name: node, namespace: {{ $ns }}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: guest-volume-records, namespace: {{ $ns }}}
+rules:
+- apiGroups: [confidentialcontainers.org]
+  resources: [peerpodvolumes, peerpodvolumes/status]
+  verbs: [get, list, watch, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: guest-volume-records, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: guest-volume-records}
+subjects: [{kind: ServiceAccount, name: storage-guest, namespace: {{ $guest }}}]
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata: {name: {{ $ns }}-node}
+allowPrivilegedContainer: true
+allowPrivilegeEscalation: true
+allowHostDirVolumePlugin: true
+allowHostNetwork: false
+allowHostPID: false
+allowHostIPC: false
+allowedCapabilities: ['*']
+runAsUser: {type: RunAsAny}
+seLinuxContext: {type: RunAsAny}
+fsGroup: {type: RunAsAny}
+supplementalGroups: {type: RunAsAny}
+volumes: [hostPath, emptyDir, projected, secret, configMap, downwardAPI]
+users: [{{ printf "system:serviceaccount:%s:node" $ns | quote }}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: controller-nonroot, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: 'system:openshift:scc:nonroot-v2'}
+subjects: [{kind: ServiceAccount, name: controller, namespace: {{ $ns }}}]
+{{- end }}
+
+{{- if and .Values.enabled .Values.wrapperBuildNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-image-pull
+  namespace: {{ .Values.wrapperBuildNamespace }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: 'system:image-puller'}
+subjects:
+- {kind: ServiceAccount, name: controller, namespace: {{ .Release.Namespace }}}
+- {kind: ServiceAccount, name: node, namespace: {{ .Release.Namespace }}}
+{{- end }}

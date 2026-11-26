@@ -1,0 +1,344 @@
+--- a/src/csi-wrapper/pkg/wrapper/nodeservice.go
++++ b/src/csi-wrapper/pkg/wrapper/nodeservice.go
+@@ -10,6 +10,7 @@
+ 	"fmt"
+ 	"net"
+ 	"os"
++	"regexp"
+ 	"strings"
+ 
+ 	podvminfo "github.com/confidential-containers/cloud-api-adaptor/src/cloud-api-adaptor/proto/podvminfo"
+@@ -24,7 +25,9 @@
+ 	"github.com/golang/glog"
+ 	"github.com/golang/protobuf/jsonpb"
+ 	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
+ 	"google.golang.org/grpc/credentials/insecure"
++	"google.golang.org/grpc/status"
+ )
+ 
+ const (
+@@ -41,23 +44,17 @@
+ }
+ 
+ // Leverage Kata’s mechanism of direct block device assignment to prevent CSI mount source from replacing by Kata shim code
+-func addKataDirectVolume(volumePath string) {
+-	err := volume.Add(volumePath, DefaultMountInfo)
+-	if err != nil {
+-		glog.Warningf("Failed to add kata direct volume: %v", err.Error())
+-	}
+-}
+-
+-func removeKataDirectVolume(volumePath string) {
+-	err := volume.Remove(volumePath)
+-	if err != nil {
+-		glog.Warningf("Failed to remove kata direct volume: %v", err.Error())
+-	}
++func addKataDirectVolume(volumePath string) error {
++	return volume.Add(volumePath, DefaultMountInfo)
++}
++
++func removeKataDirectVolume(volumePath string) error {
++	return volume.Remove(volumePath)
+ }
+ 
+ func NewNodeService(targetEndpoint, namespace string, peerpodvolumeClientSet *peerpodvolume.Clientset, vmIDInformationEndpoint string) *NodeService {
+-	addKataDirectVolume(DefaultKubeletLibDir)
+-	addKataDirectVolume(DefaultKubeletDataDir)
++	// Lab isolation: register only an admitted PVC target in NodePublishVolume.
++	// Broad kubelet roots affect unrelated Kata volumes on the same worker.
+ 
+ 	return &NodeService{
+ 		Namespace:               namespace,
+@@ -82,17 +79,30 @@
+ 
+ 	return nil
+ }
+-func (s *NodeService) getPodUIDandVolumeName(targetPath string) (podUID, volumeName string) {
+-	// /var/lib/kubelet/pods/69576836-28c2-447e-a726-fdf8866a0622/volumes/kubernetes.io~csi/pvc-e9d79b06-fd06-487f-ac93-ea6424819a7d/mount
+-	paths := strings.Split(targetPath, "/")
+-	glog.Infof("split paths is :%v", paths)
+-	podUID = paths[5]
+-	volumeName = paths[8]
+-	glog.Infof("podUid is :%v, volumeName is: %v", podUID, volumeName)
+-	return
++
++var labVolumeTarget = regexp.MustCompile(`^/var/(?:lib|data)/kubelet/pods/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/volumes/kubernetes[.]io~csi/([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)/mount$`)
++
++func (s *NodeService) getPodUIDandVolumeName(targetPath string) (string, string, error) {
++	parts := labVolumeTarget.FindStringSubmatch(targetPath)
++	if len(parts) != 3 || strings.Contains(parts[2], "..") {
++		return "", "", status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++	}
++	return parts[1], parts[2], nil
++}
++
++func (s *NodeService) validateStagingTarget(path string) error {
++	prefix := "/var/(?:lib|data)/kubelet/plugins/kubernetes[.]io/csi/" + regexp.QuoteMeta(s.Namespace+".disk.csi.saw.redhat.com")
++	pattern := regexp.MustCompile("^" + prefix + "/[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}/globalmount$")
++	if !pattern.MatchString(path) || strings.Contains(path, "..") {
++		return status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++	}
++	return nil
+ }
+ 
+ func (s *NodeService) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (res *csi.NodePublishVolumeResponse, err error) {
++	if err := labNoRequestSecrets(req.GetSecrets()); err != nil {
++		return nil, err
++	}
+ 	volumeID := utils.NormalizeVolumeID(req.GetVolumeId())
+ 	savedPeerpodvolume, err := s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).Get(context.Background(), volumeID, metav1.GetOptions{})
+ 	if err != nil {
+@@ -103,6 +113,16 @@
+ 			return nil, e
+ 		}
+ 	} else {
++		podUID, volumeName, pathErr := s.getPodUIDandVolumeName(req.GetTargetPath())
++		if pathErr != nil {
++			return nil, pathErr
++		}
++		if savedPeerpodvolume.Spec.VolumeName != volumeName && savedPeerpodvolume.Spec.VolumeName != peerpodVolumeNamePlaceholder {
++			return nil, status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++		}
++		if savedPeerpodvolume.Spec.PodUID != "" && savedPeerpodvolume.Spec.PodUID != podUID {
++			return nil, status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++		}
+ 		// Do fake action for NodePublishVolume on worker node
+ 		publishContext := req.GetPublishContext()
+ 		stagingTargetPath := req.GetStagingTargetPath()
+@@ -115,7 +135,9 @@
+ 		glog.Infof("The targetPath is :%v", targetPath)
+ 		glog.Infof("The publishContext is :%v", publishContext)
+ 
+-		addKataDirectVolume(targetPath)
++		if markerErr := addKataDirectVolume(targetPath); markerErr != nil {
++			return nil, status.Error(codes.FailedPrecondition, "LabVolumeMarkerCreateRejected")
++		}
+ 
+ 		var reqBuf bytes.Buffer
+ 		if err := (&jsonpb.Marshaler{}).Marshal(&reqBuf, req); err != nil {
+@@ -124,7 +146,6 @@
+ 		nodePublishVolumeRequest := reqBuf.String()
+ 		glog.Infof("NodePublishVolumeRequest JSON string: %s\n", nodePublishVolumeRequest)
+ 		savedPeerpodvolume.Spec.TargetPath = targetPath
+-		podUID, volumeName := s.getPodUIDandVolumeName(targetPath)
+ 		savedPeerpodvolume.Labels["podUid"] = podUID
+ 		savedPeerpodvolume.Spec.PodUID = podUID
+ 		savedVolumeName := savedPeerpodvolume.Spec.VolumeName
+@@ -172,15 +193,24 @@
+ 			return nil, e
+ 		}
+ 	} else {
+-		// Do fake action for NodeUnpublishVolume on worker node
++		// Never remove another Pod target, even for an existing volume record.
+ 		targetPath := req.GetTargetPath()
++		podUID, volumeName, pathErr := s.getPodUIDandVolumeName(targetPath)
++		if pathErr != nil {
++			return nil, pathErr
++		}
++		if savedPeerpodvolume.Spec.TargetPath != targetPath || savedPeerpodvolume.Spec.PodUID != podUID || savedPeerpodvolume.Spec.VolumeName != volumeName {
++			return nil, status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++		}
+ 		glog.Infof("The targetPath is :%v", targetPath)
+-		osErr := os.RemoveAll(targetPath)
+-		if osErr != nil {
+-			glog.Warningf("Failed to remove fake targetPath, err is: %v", osErr)
+-		}
+-
+-		removeKataDirectVolume(targetPath)
++		osErr := os.Remove(targetPath)
++		if osErr != nil && !os.IsNotExist(osErr) {
++			return nil, status.Error(codes.FailedPrecondition, "LabVolumeTargetCleanupRejected")
++		}
++
++		if markerErr := removeKataDirectVolume(targetPath); markerErr != nil {
++			return nil, status.Error(codes.FailedPrecondition, "LabVolumeMarkerCleanupRejected")
++		}
+ 
+ 		var reqBuf bytes.Buffer
+ 		if err := (&jsonpb.Marshaler{}).Marshal(&reqBuf, req); err != nil {
+@@ -198,7 +228,7 @@
+ 		updatedPeerpodvolume.Status = peerpodvolumeV1alpha1.PeerpodVolumeStatus{
+ 			State: peerpodvolumeV1alpha1.NodeUnpublishVolumeCached,
+ 		}
+-		_, err = s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).UpdateStatus(context.Background(), savedPeerpodvolume, metav1.UpdateOptions{})
++		_, err = s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).UpdateStatus(context.Background(), updatedPeerpodvolume, metav1.UpdateOptions{})
+ 		if err != nil {
+ 			glog.Errorf("Error happens while Update PeerpodVolume status to NodeUnpublishVolumeCached, err: %v", err.Error())
+ 			return
+@@ -211,6 +241,9 @@
+ }
+ 
+ func (s *NodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (res *csi.NodeStageVolumeResponse, err error) {
++	if err := labNoRequestSecrets(req.GetSecrets()); err != nil {
++		return nil, err
++	}
+ 	volumeID := utils.NormalizeVolumeID(req.GetVolumeId())
+ 	savedPeerpodvolume, err := s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).Get(context.Background(), volumeID, metav1.GetOptions{})
+ 	if err != nil {
+@@ -224,7 +257,12 @@
+ 		// Create empty dummy folders on worker node
+ 		publishContext := req.GetPublishContext()
+ 		stagingTargetPath := req.GetStagingTargetPath()
+-		_ = os.MkdirAll(stagingTargetPath, os.FileMode(0755)) // TODO: error check
++		if pathErr := s.validateStagingTarget(stagingTargetPath); pathErr != nil {
++			return nil, pathErr
++		}
++		if makeErr := os.MkdirAll(stagingTargetPath, os.FileMode(0755)); makeErr != nil {
++			return nil, status.Error(codes.FailedPrecondition, "LabVolumeTargetCreateRejected")
++		}
+ 		glog.Infof("The stagingTargetPath for volume %v is :%v", volumeID, stagingTargetPath)
+ 		glog.Infof("The publishContext is :%v", publishContext)
+ 
+@@ -272,9 +310,15 @@
+ 		// Do fake action for NodeUnstageVolume  on worker node
+ 		stagingTargetPath := req.GetStagingTargetPath()
+ 		glog.Infof("The stagingTargetPath for volume %v is :%v", volumeID, stagingTargetPath)
+-		osErr := os.RemoveAll(stagingTargetPath)
+-		if osErr != nil {
+-			glog.Warningf("Failed to remove fake stagingTargetPath for volume %v, err is: %v", volumeID, osErr)
++		if pathErr := s.validateStagingTarget(stagingTargetPath); pathErr != nil {
++			return nil, pathErr
++		}
++		if stagingTargetPath != savedPeerpodvolume.Spec.StagingTargetPath {
++			return nil, status.Error(codes.InvalidArgument, "LabVolumeTargetRejected")
++		}
++		osErr := os.Remove(stagingTargetPath)
++		if osErr != nil && !os.IsNotExist(osErr) {
++			return nil, status.Error(codes.FailedPrecondition, "LabVolumeTargetCleanupRejected")
+ 		}
+ 
+ 		var reqBuf bytes.Buffer
+@@ -293,7 +337,7 @@
+ 		updatedPeerpodvolume.Status = peerpodvolumeV1alpha1.PeerpodVolumeStatus{
+ 			State: peerpodvolumeV1alpha1.NodeUnstageVolumeCached,
+ 		}
+-		_, err = s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).UpdateStatus(context.Background(), savedPeerpodvolume, metav1.UpdateOptions{})
++		_, err = s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).UpdateStatus(context.Background(), updatedPeerpodvolume, metav1.UpdateOptions{})
+ 		if err != nil {
+ 			glog.Errorf("Error happens while Update PeerpodVolume status to NodeUnstageVolumeCached, err: %v", err.Error())
+ 			return
+--- a/src/csi-wrapper/pkg/wrapper/controllerservice.go
++++ b/src/csi-wrapper/pkg/wrapper/controllerservice.go
+@@ -19,7 +19,10 @@
+ 	"github.com/golang/glog"
+ 	"github.com/golang/protobuf/jsonpb"
+ 	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
+ 	"google.golang.org/grpc/credentials/insecure"
++	"google.golang.org/grpc/status"
++	apierrors "k8s.io/apimachinery/pkg/api/errors"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ )
+ 
+@@ -82,6 +85,9 @@
+ }
+ 
+ func (s *ControllerService) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (res *csi.CreateVolumeResponse, err error) {
++	if err := labCreateScope(s.Namespace, req); err != nil {
++		return nil, err
++	}
+ 	if e := s.redirect(ctx, req, func(ctx context.Context, client csi.ControllerClient) {
+ 		peerpod := req.Parameters[PeerpodParamKey]
+ 		if peerpod != "" {
+@@ -91,6 +97,13 @@
+ 
+ 		volumeName := req.Name
+ 		res, err = client.CreateVolume(ctx, req)
++		if err != nil {
++			return
++		}
++		if res == nil || res.GetVolume() == nil || res.GetVolume().GetVolumeId() == "" {
++			err = status.Error(codes.Internal, "LabBackendVolumeResponseRejected")
++			return
++		}
+ 		glog.Infof("Created volume response: %s\n", res)
+ 
+ 		// Create PeerpodVolume CRD object only when peerpod parameter is found in request
+@@ -107,6 +120,9 @@
+ }
+ 
+ func (s *ControllerService) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (res *csi.DeleteVolumeResponse, err error) {
++	if err := labNoRequestSecrets(req.GetSecrets()); err != nil {
++		return nil, err
++	}
+ 	if e := s.redirect(ctx, req, func(ctx context.Context, client csi.ControllerClient) {
+ 		res, err = client.DeleteVolume(ctx, req)
+ 
+@@ -130,32 +146,16 @@
+ }
+ 
+ func (s *ControllerService) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (res *csi.ControllerPublishVolumeResponse, err error) {
++	if err := labNoRequestSecrets(req.GetSecrets()); err != nil {
++		return nil, err
++	}
+ 	volumeID := utils.NormalizeVolumeID(req.GetVolumeId())
+ 	savedPeerpodvolume, err := s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).Get(context.Background(), volumeID, metav1.GetOptions{})
+ 	if err != nil {
+-		glog.Infof("Not found PeerpodVolume with volumeID: %v, err: %v", volumeID, err.Error())
+-
+-		// ControllerPublishVolume was called without a matching peerpod volume object existing.
+-		// This can happen when the persistent volume was manually created, e.g. to consume an existing storage backend.
+-		// In this case, we need to create the peerpod volume object here.
+-		peerPod := req.VolumeContext[PeerpodParamKey]
+-		if peerPod == "" {
+-			if e := s.redirect(ctx, req, func(ctx context.Context, client csi.ControllerClient) {
+-				res, err = client.ControllerPublishVolume(ctx, req)
+-			}); e != nil {
+-				return nil, e
+-			}
+-		}
+-		glog.Info("PeerPod parameter found in ControllerPublishVolumeRequest. Creating a new PeerpodVolume object")
+-
+-		// Delete peerpod key from req parameters because csi driver may check parameters strictly.
+-		delete(req.VolumeContext, PeerpodParamKey)
+-
+-		volumeName := peerpodVolumeNamePlaceholder
+-		savedPeerpodvolume, err = s.createPeerpodVolume(volumeID, volumeName)
+-		if err != nil {
+-			return nil, err
+-		}
++		if apierrors.IsNotFound(err) {
++			return nil, status.Error(codes.PermissionDenied, "LabVolumeRecordRequired")
++		}
++		return nil, status.Error(codes.Unavailable, "LabVolumeRecordUnavailable")
+ 	}
+ 
+ 	nodeID := req.GetNodeId()
+@@ -207,6 +207,9 @@
+ }
+ 
+ func (s *ControllerService) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (res *csi.ControllerUnpublishVolumeResponse, err error) {
++	if err := labNoRequestSecrets(req.GetSecrets()); err != nil {
++		return nil, err
++	}
+ 	volumeID := utils.NormalizeVolumeID(req.GetVolumeId())
+ 	savedPeerpodvolume, err := s.PeerpodvolumeClient.ConfidentialcontainersV1alpha1().PeerpodVolumes(s.Namespace).Get(context.Background(), volumeID, metav1.GetOptions{})
+ 	if err != nil {
+--- /dev/null
++++ b/src/csi-wrapper/pkg/wrapper/lab_scope.go
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: Apache-2.0
++package wrapper
++
++import (
++	"github.com/container-storage-interface/spec/lib/go/csi"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++	"regexp"
++	"strings"
++)
++
++func labNoRequestSecrets(secrets map[string]string) error {
++	if len(secrets) != 0 {
++		return status.Error(codes.InvalidArgument, "LabCsiSecretRejected")
++	}
++	return nil
++}
++func labCreateScope(namespace string, req *csi.CreateVolumeRequest) error {
++	registration := strings.TrimPrefix(namespace, "saw-ppvc-")
++	if namespace == registration || !regexp.MustCompile(`^[a-f0-9]{16}$`).MatchString(registration) || req.GetParameters()["csi.storage.k8s.io/pvc/namespace"] != "saw-ppvc-probe-"+registration || req.GetParameters()["peerpod"] != "true" {
++		return status.Error(codes.PermissionDenied, "LabClaimScopeRejected")
++	}
++	return labNoRequestSecrets(req.GetSecrets())
++}

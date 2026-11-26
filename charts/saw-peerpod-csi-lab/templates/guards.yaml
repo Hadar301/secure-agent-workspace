@@ -1,0 +1,121 @@
+{{- if .Values.enabled }}
+{{- include "saw-peerpod-csi-lab.validate" . }}
+{{- $ns := .Release.Namespace }}
+{{- $driver := include "saw-peerpod-csi-lab.driver" . }}
+{{- $guest := include "saw-peerpod-csi-lab.guestNamespace" . }}
+{{- $controllerUser := printf "system:serviceaccount:%s:controller" $ns }}
+{{- $guestUser := printf "system:serviceaccount:%s:storage-guest" $guest }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: {{ $ns }}-claims}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [persistentvolumeclaims]
+  validations:
+  - expression: >-
+      !has(object.spec.storageClassName) || object.spec.storageClassName != '{{ $ns }}' || request.namespace == '{{ $guest }}'
+    message: LabClaimNamespaceRejected
+{{- if .Values.enforceGuards }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: {{ $ns }}-claims}
+spec: {policyName: '{{ $ns }}-claims', validationActions: [Deny]}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: {{ $ns }}-volumes}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE, DELETE]
+      resources: [persistentvolumes]
+  variables:
+  - {name: volume, expression: "request.operation == 'DELETE' ? oldObject : object"}
+  validations:
+  - expression: >-
+      request.userInfo.username != '{{ $controllerUser }}' || (has(variables.volume.spec.csi) && variables.volume.spec.csi.driver == '{{ $driver }}' && has(variables.volume.spec.claimRef) && variables.volume.spec.claimRef.namespace == '{{ $guest }}')
+    message: LabForeignVolumeRejected
+  - expression: >-
+      !has(variables.volume.spec.csi) || variables.volume.spec.csi.driver != '{{ $driver }}' || (has(variables.volume.spec.claimRef) && variables.volume.spec.claimRef.namespace == '{{ $guest }}')
+    message: LabVolumeNamespaceRejected
+  {{- range $field := list "controllerPublishSecretRef" "nodeStageSecretRef" "nodePublishSecretRef" "controllerExpandSecretRef" "nodeExpandSecretRef" }}
+  - expression: >-
+      !has(variables.volume.spec.csi) || variables.volume.spec.csi.driver != '{{ $driver }}' || !has(variables.volume.spec.csi.{{ $field }})
+    message: LabCsiSecretReferenceRejected
+  {{- end }}
+{{- if .Values.enforceGuards }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: {{ $ns }}-volumes}
+spec: {policyName: '{{ $ns }}-volumes', validationActions: [Deny]}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: {{ $ns }}-attachments}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [storage.k8s.io]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE, DELETE]
+      resources: [volumeattachments, volumeattachments/status]
+  variables:
+  - {name: attachment, expression: "request.operation == 'DELETE' ? oldObject : object"}
+  validations:
+  - expression: >-
+      request.userInfo.username != '{{ $controllerUser }}' || variables.attachment.spec.attacher == '{{ $driver }}'
+    message: LabForeignAttachmentRejected
+{{- if .Values.enforceGuards }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: {{ $ns }}-attachments}
+spec: {policyName: '{{ $ns }}-attachments', validationActions: [Deny]}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: {{ $ns }}-guest-records}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [confidentialcontainers.org]
+      apiVersions: [v1alpha1]
+      operations: [UPDATE]
+      resources: [peerpodvolumes, peerpodvolumes/status]
+  matchConditions:
+  - {name: guest-account, expression: "request.userInfo.username == '{{ $guestUser }}'"}
+  validations:
+  - expression: >-
+      request.namespace == '{{ $ns }}' && has(request.userInfo.extra) && 'authentication.kubernetes.io/pod-uid' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/pod-uid']) == 1 && has(oldObject.spec.podUid) && oldObject.spec.podUid == request.userInfo.extra['authentication.kubernetes.io/pod-uid'][0] && has(object.spec.podUid) && object.spec.podUid == oldObject.spec.podUid
+    message: LabBoundGuestIdentityRequired
+  {{- range $field := list "nodeID" "volumeID" "volumeName" "vmID" "vmName" "devicePath" "stagingTargetPath" "targetPath" "wrapperControllerPublishVolumeReq" "wrapperControllerPublishVolumeRes" "wrapperNodeStageVolumeReq" "wrapperNodePublishVolumeReq" "wrapperNodeUnpublishVolumeReq" "wrapperNodeUnstageVolumeReq" }}
+  - expression: >-
+      has(object.spec.{{ $field }}) == has(oldObject.spec.{{ $field }}) && (!has(oldObject.spec.{{ $field }}) || object.spec.{{ $field }} == oldObject.spec.{{ $field }})
+    message: LabGuestVolumeMutationRejected
+  {{- end }}
+  - expression: >-
+      has(object.spec.podNamespace) && object.spec.podNamespace == '{{ $guest }}'
+    message: LabGuestNamespaceRejected
+{{- if .Values.enforceGuards }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: {{ $ns }}-guest-records}
+spec: {policyName: '{{ $ns }}-guest-records', validationActions: [Deny]}
+{{- end }}
+{{- end }}

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enabled",
+    "activate",
+    "acknowledgePrivilegedNodeAccess",
+    "registration",
+    "nodeName",
+    "region",
+    "resourceGroup",
+    "cloudConfigSecret",
+    "wrapperPatchSHA256",
+    "images",
+    "apiServerCIDRs",
+    "enforceGuards",
+    "acknowledgeGuestKubeletMarker",
+    "wrapperBuildNamespace"
+  ],
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "activate": {
+      "type": "boolean"
+    },
+    "acknowledgePrivilegedNodeAccess": {
+      "type": "boolean"
+    },
+    "registration": {
+      "type": "string"
+    },
+    "nodeName": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "resourceGroup": {
+      "type": "string"
+    },
+    "cloudConfigSecret": {
+      "type": "string"
+    },
+    "wrapperPatchSHA256": {
+      "type": "string"
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "azureDisk",
+        "wrapper",
+        "provisioner",
+        "attacher",
+        "registrar",
+        "liveness"
+      ],
+      "properties": {
+        "azureDisk": {
+          "type": "string"
+        },
+        "wrapper": {
+          "type": "string"
+        },
+        "provisioner": {
+          "type": "string"
+        },
+        "attacher": {
+          "type": "string"
+        },
+        "registrar": {
+          "type": "string"
+        },
+        "liveness": {
+          "type": "string"
+        }
+      }
+    },
+    "apiServerCIDRs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "enforceGuards": {
+      "type": "boolean"
+    },
+    "acknowledgeGuestKubeletMarker": {
+      "type": "boolean"
+    },
+    "wrapperBuildNamespace": {
+      "type": "string"
+    }
+  }
+}

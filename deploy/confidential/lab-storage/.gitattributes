@@ -1,0 +1,2 @@
+# Unified diff context uses a leading space before source indentation.
+csi-wrapper-isolation.patch -whitespace

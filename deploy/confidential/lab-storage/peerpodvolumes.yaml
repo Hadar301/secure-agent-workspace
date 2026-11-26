@@ -1,0 +1,75 @@
+# Source: openshift/cloud-api-adaptor 1aec1b36f2fa5120376c78d4f53bb299152aa029
+# Lab correction: preserve both cached cleanup requests.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: peerpodvolumes.confidentialcontainers.org
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  group: confidentialcontainers.org
+  names:
+    kind: PeerpodVolume
+    singular: peerpodvolume
+    plural: peerpodvolumes
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            type: object
+            properties:
+              podName:
+                type: string
+              podNamespace:
+                type: string
+              podUid:
+                type: string
+              nodeID:
+                type: string
+              nodeName:
+                type: string
+              volumeID:
+                type: string
+              volumeName:
+                type: string
+              vmID:
+                type: string
+              vmName:
+                type: string
+              devicePath:
+                type: string
+              stagingTargetPath:
+                type: string
+              targetPath:
+                type: string
+              wrapperControllerPublishVolumeReq:
+                type: string
+              wrapperControllerPublishVolumeRes:
+                type: string
+              wrapperNodeStageVolumeReq:
+                type: string
+              wrapperNodePublishVolumeReq:
+                type: string
+              wrapperNodeUnpublishVolumeReq:
+                type: string
+              wrapperNodeUnstageVolumeReq:
+                type: string
+          status:
+            type: object
+            properties:
+              state:
+                type: string
+    subresources:
+      status: {}

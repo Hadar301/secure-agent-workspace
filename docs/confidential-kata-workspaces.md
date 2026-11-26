@@ -237,6 +237,19 @@ and one shared Helm gate through source links. No provider keys are embedded
 in these assets. Build and pin an updated runtime image before live enrollment;
 old controller images do not contain these integration fixes.
 
+## Isolated experimental peer-pod storage lab
+
+An optional [storage lab](../deploy/confidential/lab-storage/README.md) tests a
+separate Azure Disk CSI wrapper and StorageClass. It is not installed by the
+SAW pattern. It stays disabled by default and has separate inactive and active
+stages. The inactive stage verifies admission rules without scheduling CSI Pods.
+
+Activation needs review of the privileged host plugin, its Azure credential
+location and an owned shared Kata mount marker. Only one lab registration can
+own that marker on a worker. A measured guest helper and real guest-token tests
+are still required. Do not use this component for provider keys or production
+data. It does not qualify storage, two owners on one worker, or vendor support.
+
 ## Storage gate (2026-11-25)
 
 A live check of a reserved Azure File audit claim failed the file ownership
