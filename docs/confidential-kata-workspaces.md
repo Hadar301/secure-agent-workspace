@@ -130,8 +130,22 @@ Native CRI-O metadata now uses OCI 1.3.0. The canonical policy adapter adds
 `crio-1.35-oci-1.3.0-v1` alongside `crio-1.34-oci-1.2.1-v1`. Each profile binds
 one exact OCI version and the observed pause image. Rebuild measured policies
 with the matching profile before another guest test. The focused executable
-policy, contract and packaging run passed 435 tests. Normal confidential
-lifecycle and the remaining workspace acceptance still need live verification.
+policy, contract and packaging run passed 435 tests.
+
+The signed three-second public control then passed normal confidential
+lifecycle. The host reported exit code 0, and Kubernetes reported Succeeded.
+Normal deletion removed the Pod and PeerPod. An independent Azure query
+confirmed VM absence. The shim exited, and kubelet removed the stopped CRI
+record after its configured six-minute container retention. No direct process
+wait, forced removal, runtime restart, or provider credential was used.
+The temporary Trustee resource and measurement approval were removed. The
+loaded default-deny policy was restored. All 12 foundation Argo applications
+were Synced and Healthy.
+
+This result resolves the observed process-exit blocker for the tested vendor
+host and guest pair. It does not qualify application image startup, guest
+volume transport, supervisor credential release, or the NVIDIA workspace.
+Keep the source-lock qualification fields unset until those gates pass.
 
 ## Latest lab results (2026-11-25)
 
