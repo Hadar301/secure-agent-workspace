@@ -24,7 +24,7 @@ helperMarker:
 guestPolicy:
   status: preview-only
   contractSource: scripts/peerpod_storage_contract.py
-  contractSHA256: e54e219bc5e622cb4508f86c0f0c100a8fd85c77cec4d8042db7e808b5bc537e
+  contractSHA256: 8333cd3e1dabd488b17cc548daa1ad25ce364dd8e79631e264e2597ff1a1665d
   canonicalRuntimeAdapter: kubernetes-runtime/saw_kubernetes/crio_policy.py
   canonicalRuntimeAdapterSHA256: 8bd80d261aad7a01557f91d1b8dd0fb14b50a4cd632b83e4156cd90e2261ff26
   requiresPrivilegedWithoutHostDevices: true

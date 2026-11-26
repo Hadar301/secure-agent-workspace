@@ -224,3 +224,15 @@ a cluster-wide list is insufficient with namespaced RBAC. The lab patch rejects
 an empty or invalid namespace and scopes both the list and watch requests. Its
 HTTP regression test checks the actual API paths. Do not grant cluster-wide
 volume-record access to hide an informer configuration error.
+
+A Bound claim or an attached VolumeAttachment does not prove guest access. The
+wrapper returns a placeholder publish response before it attaches the disk to
+the peer VM. Qualification requires the real VM identity, a physical device path,
+completed guest stage/publish operations, and an application write/read result.
+Do not report the placeholder response as Azure disk attachment.
+
+OpenShift adds public build name and namespace variables to each built image.
+The compiler validates these two values as DNS labels and keeps their exact
+values in the measured launch policy. A new build may change these labels.
+All other base image environment variables retain their pinned hash. Missing,
+duplicate, invalid or unknown environment values fail closed.

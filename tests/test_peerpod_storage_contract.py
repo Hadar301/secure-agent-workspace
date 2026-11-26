@@ -288,3 +288,28 @@ def test_admitted_generator_preserves_role_seccomp(site, admitted_case):
         {"type": "Unconfined"}, {"type": "RuntimeDefault"}, {"type": "RuntimeDefault"}]
     assert result["spec"]["containers"][0]["resources"]["limits"] == {"kata.peerpods.io/vm": "1"}
     assert result["metadata"]["annotations"]["io.katacontainers.config.hypervisor.default_memory"] == "1536"
+
+
+def test_public_image_build_metadata_stays_measured(site, generated):
+    import json
+    prefix, source = generated
+    source = copy.deepcopy(source)
+    for container in source["containers"][1:]:
+        env = container["OCI"]["Process"]["Env"]
+        env[:] = [v.replace("OPENSHIFT_BUILD_NAME=lab-helper-1", "OPENSHIFT_BUILD_NAME=lab-helper-2") for v in env]
+    policy = compiled(site, (prefix, source))
+    assert "OPENSHIFT_BUILD_NAME=lab-helper-2" in policy
+    assert "OPENSHIFT_BUILD_NAME=lab-helper-1" not in policy
+
+
+@pytest.mark.parametrize("change", ["duplicate", "missing", "unsafe", "unknown"])
+def test_image_build_metadata_cannot_add_authority(site, generated, change):
+    prefix, source = generated
+    source = copy.deepcopy(source)
+    env = source["containers"][1]["OCI"]["Process"]["Env"]
+    if change == "duplicate": env.append("OPENSHIFT_BUILD_NAME=another-build")
+    elif change == "missing": env.remove("OPENSHIFT_BUILD_NAMESPACE=lab-build")
+    elif change == "unsafe": env[env.index("OPENSHIFT_BUILD_NAME=lab-helper-1")] = "OPENSHIFT_BUILD_NAME=$(id)"
+    else: env.append("OPENSHIFT_EXEC_OVERRIDE=/bin/sh")
+    with pytest.raises(M.ContractError, match="^LabGuestPolicyRejected$"):
+        compiled(site, (prefix, source))

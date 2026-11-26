@@ -220,7 +220,7 @@ FIXED_LAYOUT = {'azure-disk-helper': {'Linux': '553515bed708b2e2b6b2b98919c6f103
                  'Mounts': '38835ad18a3638b8c31774cbf0d04e04eecad8ac0d9adc0801afbde725e62618'},
  'volume-wrapper': {'Linux': '0f135a21f851f9f3441efd08be44bbc84c5108e6e56c2d7f78dd8f34f73d55b4',
                     'Mounts': 'b8ecdc982d5ce55a673e33c48cab6a85cc9a3f9b2e345831f7b1f9f04117bbdf'}}
-BASE_ENV_SHA256 = '0ab3e89661a5f07a2bddcd726dba242c96235659de751e427056fcaa1fd31921'
+BASE_ENV_SHA256 = 'e13a8b9ce2da83fe5d731877149240cc230b63d448299a856196e4bc59ee9c0f'
 
 
 def compile_policy(pod, site, generated, runtime_profile, *, admission_context=None):
@@ -275,7 +275,15 @@ def compile_policy(pod, site, generated, runtime_profile, *, admission_context=N
                 raise ValueError()
             declared_env = {entry["name"] for entry in declared["env"]}
             base_env = [v for v in process["Env"] if v.split("=", 1)[0] not in declared_env]
-            if a.digest(base_env) != BASE_ENV_SHA256:
+            # OpenShift injects public build labels as image environment. Keep
+            # their exact values in the measured policy, but permit a new build
+            # without accepting any change to executable environment variables.
+            build_keys = {"OPENSHIFT_BUILD_NAME", "OPENSHIFT_BUILD_NAMESPACE"}
+            build_env = [v for v in base_env if v.split("=", 1)[0] in build_keys]
+            if (len(build_env) != 2 or {v.split("=", 1)[0] for v in build_env} != build_keys
+                    or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", v.split("=", 1)[1]) for v in build_env)):
+                raise ValueError()
+            if a.digest([v for v in base_env if v.split("=", 1)[0] not in build_keys]) != BASE_ENV_SHA256:
                 raise ValueError()
             propagation = "rshared" if name == "azure-disk-helper" else "rslave" if name == "mount-check" else ""
             roles[name] = {"uid": uid, "noNewPrivileges": not privileged, "rootfsPropagation": propagation}
