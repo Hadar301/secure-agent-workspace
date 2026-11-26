@@ -96,7 +96,20 @@ host and guest as a pair; do not replace the guest with an unverified image.
 The [ARO compatibility table](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13/html/deploying_confidential_containers_on_microsoft_azure_red_hat_openshift/cc-discover_aro-cc)
 lists `4.21.24+` in its 4.21 column. A public OCP 4.21.24 release exists, but
 neither its EOF repair nor its availability as an ARO upgrade was verified.
-Obtain vendor confirmation before selecting it as the repair.
+Check the actual host package before selecting a release as the repair.
+
+The AMD64 [OCP 4.22.22 package list](https://amd64.ocp.releases.ci.openshift.org/releasetag/4.22.22?from=4.22.15)
+includes `kata-containers-3.31.0-6.rhaos4.22.el9.x86_64`. Its
+[official Red Hat source RPM](https://ftp.redhat.com/pub/redhat/linux/enterprise/9Base/en/RHOSE/SRPMS/kata-containers-3.31.0-6.rhaos4.22.el9.src.rpm)
+contains the empty-response EOF conversion. The three vendor patches leave
+that handler intact. The RPM was obtained over HTTPS. Its RPM signature has
+not been independently verified. Use normal release signature verification,
+then verify the installed shim and normal lifecycle after the update.
+
+For ARO, `az aro get-versions` lists new-install targets. Existing-cluster
+updates follow the OpenShift update graph and the cluster recommendation.
+Use the [Microsoft ARO update procedure](https://learn.microsoft.com/en-us/azure/openshift/howto-upgrade)
+and review the 4.22 boot image management setting before a minor update.
 
 The replay also exposed an undefined `GetMetricsRequest` policy query. The
 canonical CRI-O adapter now returns an explicit denial for this request. It
