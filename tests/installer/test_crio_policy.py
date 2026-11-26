@@ -16,14 +16,16 @@ from saw_kubernetes import attestation as a, crio_policy as crio
 FIXTURES = ROOT / 'tests/fixtures/confidential'
 
 
-@pytest.fixture
-def artifacts():
+@pytest.fixture(params=tuple(crio.OCI_VERSIONS))
+def artifacts(request):
     pod = json.loads((FIXTURES/'crio-pod.json').read_text())
     data = json.loads((FIXTURES/'crio-generator-data.json').read_text())
+    profile_name = request.param
     request = json.loads((FIXTURES/'crio-pause-request.json').read_text())
+    request['OCI']['Version'] = crio.OCI_VERSIONS[profile_name]
     prefix = (FIXTURES/'osc-1.13-rules.rego').read_text().rstrip()
     assert hashlib.sha256(prefix.encode()).hexdigest() == a.GENPOLICY_RULES_SHA256
-    profile = {'name': crio.PROFILE, 'pauseImage': request['OCI']['Annotations']['io.kubernetes.cri-o.ImageName']}
+    profile = {'name': profile_name, 'pauseImage': request['OCI']['Annotations']['io.kubernetes.cri-o.ImageName']}
     generated = prefix+'\n\npolicy_data := '+a.canonical(data)+'\n'
     return pod, generated, profile, request
 
@@ -131,6 +133,7 @@ def application_request(artifacts):
     # Independent runtime fixture. The canary configuration removes the
     # optional host subscription mount; every other native field stays.
     request = json.loads((FIXTURES / 'crio-application-request.json').read_text())
+    request['OCI']['Version'] = crio.OCI_VERSIONS[artifacts[2]['name']]
     request['OCI']['Mounts'] = [m for m in request['OCI']['Mounts']
                                if m['destination'] != '/run/secrets']
     return request
@@ -157,13 +160,13 @@ def test_application_rejects_changed_process(tmp_path,artifacts,change):
     assert evaluate(tmp_path,a.compile_launch_policy(pod,generated,profile),request) is False
 
 
-def crio_launch_bundle():
+def crio_launch_bundle(profile_name=crio.PROFILE):
     """Use pinned generator output for both measured roles, without a cluster."""
     base=ROOT/'tests/fixtures/confidential'
     pod=json.loads((base/'crio-pod.json').read_text())
     data=json.loads((base/'crio-generator-data.json').read_text())
     prefix=(base/'osc-1.13-rules.rego').read_text().rstrip()
-    runtime={'name':'crio-1.34-oci-1.2.1-v1','pauseImage':'registry.example.test/infra@sha256:'+'b'*64}
+    runtime={'name':profile_name,'pauseImage':'registry.example.test/infra@sha256:'+'b'*64}
     entries={}
     for role in ('supervisor','workload'):
         p=copy.deepcopy(pod); d=copy.deepcopy(data)
@@ -184,29 +187,33 @@ def crio_launch_bundle():
     return {'default/notebook':entries}
 
 
-def test_crio_launch_bundle_revalidates_the_exact_profile():
-    bundle=crio_launch_bundle()
+@pytest.mark.parametrize('profile_name', tuple(crio.OCI_VERSIONS))
+def test_crio_launch_bundle_revalidates_the_exact_profile(profile_name):
+    bundle=crio_launch_bundle(profile_name)
     assert a.validate_launch_policies(bundle,a.digest(bundle))==a.digest(bundle)
 
 
-@pytest.mark.parametrize('change',['rules','profile','source','adapted-command','extra-profile'])
-def test_crio_launch_bundle_rejects_tampering(change):
-    bundle=crio_launch_bundle(); entry=bundle['default/notebook']['workload']
-    if change=='rules':entry['template']=entry['template'].replace('input.OCI.Version == "1.2.1"','true')
+@pytest.mark.parametrize('profile_name', tuple(crio.OCI_VERSIONS))
+@pytest.mark.parametrize('change',['rules','profile','source','adapted-command','adapted-oci','extra-profile'])
+def test_crio_launch_bundle_rejects_tampering(change, profile_name):
+    bundle=crio_launch_bundle(profile_name); entry=bundle['default/notebook']['workload']
+    if change=='rules':entry['template']=entry['template'].replace('input.OCI.Version == c.ociVersion','true')
     elif change=='profile':entry['runtimeProfile']['pauseImage']='registry.example.test/foreign@sha256:'+'c'*64
     elif change=='source':entry['template']=entry['template'].replace('"saw_crio_source":{','"saw_crio_source":{"unexpected":true,')
     elif change=='adapted-command':entry['template']=entry['template'].replace('["/usr/bin/pod"]','["/bin/sh"]')
+    elif change=='adapted-oci':entry['template']=entry['template'].replace('"ociVersion":'+a.canonical(crio.OCI_VERSIONS[profile_name]), '"ociVersion":"1.4.0"')
     else:entry['runtimeProfile']['permissive']=True
     with pytest.raises(a.AttestationError,match='^AttestationLaunchPolicyRejected$'):
         a.validate_launch_policies(bundle,a.digest(bundle))
 
 
 
-def test_adapter_source_matches_the_reviewed_lock():
+@pytest.mark.parametrize("profile_key", ["crio", "crio135"])
+def test_adapter_source_matches_the_reviewed_lock(profile_key):
     import yaml
     lock = yaml.safe_load((ROOT / "deploy/confidential/source-lock.yaml").read_text())
-    profile = lock["policyGenerator"]["runtimeProfiles"]["crio"]
-    assert profile["name"] == crio.PROFILE
+    profile = lock["policyGenerator"]["runtimeProfiles"][profile_key]
+    assert crio.OCI_VERSIONS[profile["name"]] == profile["ociVersion"]
     assert hashlib.sha256((ROOT / profile["module"]).read_bytes()).hexdigest() == profile["moduleSHA256"]
 
 
@@ -214,6 +221,7 @@ def test_adapter_source_matches_the_reviewed_lock():
 def test_opaque_host_subscription_mount_is_denied(tmp_path, artifacts):
     pod, generated, profile, _ = artifacts
     request = json.loads((FIXTURES / 'crio-application-request.json').read_text())
+    request['OCI']['Version'] = crio.OCI_VERSIONS[profile['name']]
     assert any(m['destination'] == '/run/secrets' for m in request['OCI']['Mounts'])
     assert evaluate(tmp_path, a.compile_launch_policy(pod, generated, profile), request) is False
 
@@ -266,3 +274,12 @@ def test_unrecognized_or_conflicting_image_hint_is_denied(tmp_path, artifacts, h
     metadata["io.kubernetes.cri-o.Image"] = hint
     storage["driver_options"] = ["image_guest_pull="+a.canonical({"metadata":metadata})]
     assert evaluate(tmp_path, a.compile_launch_policy(pod,generated,profile), request) is False
+
+
+def test_native_oci_version_must_match_the_approved_profile(tmp_path, artifacts):
+    pod, generated, profile, request = artifacts
+    other_version = next(version for name, version in crio.OCI_VERSIONS.items()
+                         if name != profile["name"])
+    request["OCI"]["Version"] = other_version
+    template = a.compile_launch_policy(pod, generated, profile)
+    assert evaluate(tmp_path, template, request) is False

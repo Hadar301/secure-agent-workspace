@@ -38,6 +38,12 @@ policyGenerator:
     crio:
       name: crio-1.34-oci-1.2.1-v1
       module: kubernetes-runtime/saw_kubernetes/crio_policy.py
-      moduleSHA256: 1ab4f304823e41802439b90485218c462bf57eec3bc5ae8be4b5ea6ee57112e1
+      moduleSHA256: 8bd80d261aad7a01557f91d1b8dd0fb14b50a4cd632b83e4156cd90e2261ff26
       ociVersion: 1.2.1
+      guestPauseSource: embedded-measured-guest-pause-bundle
+    crio135:
+      name: crio-1.35-oci-1.3.0-v1
+      module: kubernetes-runtime/saw_kubernetes/crio_policy.py
+      moduleSHA256: 8bd80d261aad7a01557f91d1b8dd0fb14b50a4cd632b83e4156cd90e2261ff26
+      ociVersion: 1.3.0
       guestPauseSource: embedded-measured-guest-pause-bundle

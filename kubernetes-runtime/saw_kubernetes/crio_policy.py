@@ -1,4 +1,4 @@
-"""Explicit CRI-O 1.34 / OCI 1.2.1 adapter for the pinned OSC rules.
+"""Explicit CRI-O runtime profiles for the pinned OSC rules.
 
 The adapter validates native identity and guest-pull metadata before it passes
 an equivalent request to the vendor's unchanged process/Linux/storage checks.
@@ -10,6 +10,10 @@ import json
 import re
 
 PROFILE = "crio-1.34-oci-1.2.1-v1"
+OCI_VERSIONS = {
+    PROFILE: "1.2.1",
+    "crio-1.35-oci-1.3.0-v1": "1.3.0",
+}
 IMAGE = re.compile(r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)+@sha256:[a-f0-9]{64}\Z")
 MARKER = "__SAW_IDENTITY_JSON__"
 VENDOR_RULES_SHA256 = "2655cbb7641829dd88e0647cac76407a6072cdd130c77fda436fa9af08f4b43e"
@@ -55,7 +59,7 @@ saw_crio_bad_nss_env if {
 saw_crio_identity if {
     a := input.OCI.Annotations
     c := policy_data.saw_crio
-    input.OCI.Version == "1.2.1"
+    input.OCI.Version == c.ociVersion
     a["io.container.manager"] == "cri-o"
     regex.match("^[a-f0-9]{64}$", input.container_id)
     input.exec_id == input.container_id
@@ -210,7 +214,8 @@ def canonical(value):
 
 def profile(value):
     if (not isinstance(value, dict) or set(value) != {"name", "pauseImage"}
-            or value["name"] != PROFILE or not isinstance(value["pauseImage"], str)
+            or not isinstance(value["name"], str) or value["name"] not in OCI_VERSIONS
+            or not isinstance(value["pauseImage"], str)
             or not IMAGE.fullmatch(value["pauseImage"])):
         raise ValueError("LaunchRuntimeProfileRejected")
     return copy.deepcopy(value)
@@ -240,6 +245,7 @@ def compile_policy(pod, template, runtime_profile):
     name_pattern = pause["OCI"]["Annotations"]["io.kubernetes.cri.sandbox-name"]
     data['saw_crio'] = {
         'name': config['name'], 'pauseImage': config['pauseImage'],
+        'ociVersion': OCI_VERSIONS[config['name']],
         'namePattern': name_pattern, 'namespace': pod['metadata']['namespace'],
         'runtimeHandler': pod['spec']['runtimeClassName'],
         'images': {c['name']: c['image'] for c in pod['spec']['containers'] + pod['spec'].get('initContainers', [])},
@@ -252,7 +258,7 @@ def compile_policy(pod, template, runtime_profile):
     original_containers = {c['name']: c for c in pod['spec']['containers'] + pod['spec'].get('initContainers', [])}
     for container in data['containers']:
         oci = container['OCI']
-        oci['Version'] = '1.2.1'
+        oci['Version'] = OCI_VERSIONS[config['name']]
         oci['Annotations']['io.katacontainers.pkg.oci.bundle_path'] = '/run/containers/storage/overlay-containers/$(bundle-id)/userdata'
         if container is pause:
             continue

@@ -123,6 +123,16 @@ original Trustee policy and reference inputs were restored. Provider release,
 confidential storage, normal lifecycle and the real NVIDIA workspace remain
 unqualified. Keep enrollment blocked until these gates pass.
 
+During the approved 4.22.22 update, the canary installed the expected vendor
+Kata 3.31.0-6 host package. Its shim content digest matched the RPM metadata.
+Offline disassembly confirmed the EOF conversion in the installed binary.
+Native CRI-O metadata now uses OCI 1.3.0. The canonical policy adapter adds
+`crio-1.35-oci-1.3.0-v1` alongside `crio-1.34-oci-1.2.1-v1`. Each profile binds
+one exact OCI version and the observed pause image. Rebuild measured policies
+with the matching profile before another guest test. The focused executable
+policy, contract and packaging run passed 435 tests. Normal confidential
+lifecycle and the remaining workspace acceptance still need live verification.
+
 ## Latest lab results (2026-11-25)
 
 The Validated Pattern foundation install completed. All 12 foundation Argo
