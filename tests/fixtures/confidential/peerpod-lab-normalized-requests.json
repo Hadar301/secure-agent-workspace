@@ -14,7 +14,7 @@
       "Hooks": null,
       "Hostname": "storage-mount-lab",
       "Linux": {
-        "CgroupsPath": "kubepods-besteffort-podeb59941f_f809_4f41_a4a5_89ff845b7895.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
+        "CgroupsPath": "kubepods-besteffort-pod01234567_89ab_4cde_8fab_0123456789ab.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
         "Devices": [],
         "GIDMappings": [],
         "IntelRdt": null,
@@ -581,7 +581,7 @@
       "Hooks": null,
       "Hostname": "storage-mount-lab",
       "Linux": {
-        "CgroupsPath": "kubepods-besteffort-podeb59941f_f809_4f41_a4a5_89ff845b7895.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
+        "CgroupsPath": "kubepods-besteffort-pod01234567_89ab_4cde_8fab_0123456789ab.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
         "Devices": [],
         "GIDMappings": [],
         "IntelRdt": null,

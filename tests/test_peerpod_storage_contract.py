@@ -394,6 +394,7 @@ def normalized_helpers():
 def test_complete_crio_helper_request_passes_vendor_checks(tmp_path, site, generated, normalized_helpers, name):
     # Captured OCI shapes use only portable public test identities. They pass
     # the entire pinned vendor validator, not just the added lab predicates.
+    assert site["podUID"].replace("-", "_") in normalized_helpers[name]["OCI"]["Linux"]["CgroupsPath"]
     result = opa_query(tmp_path, site, generated, normalized_helpers[name],
                        "data.agent_policy.saw_containerd_CreateContainerRequest")
     assert result["allowed"] is True
