@@ -257,6 +257,57 @@ FIXED_LAYOUT = {'azure-disk-helper': {'Linux': '553515bed708b2e2b6b2b98919c6f103
 BASE_ENV_SHA256 = 'e13a8b9ce2da83fe5d731877149240cc230b63d448299a856196e4bc59ee9c0f'
 
 
+def _crio_guest_layout(data, gid):
+    """Bind the reviewed CRI-O local volumes and privileged guest fields."""
+    local_volumes = {"azure-disk-helper": {"/csi": "socket", "/tmp": "tmp"},
+                     "volume-wrapper": {"/csi": "socket"}}
+    for container in data["containers"]:
+        oci = container["OCI"]
+        name = oci["Annotations"].get("io.kubernetes.cri.container-name")
+        volumes = local_volumes.get(name)
+        if not volumes:
+            continue
+        original = {"driver": "", "driver_options": ["encryption_key=ephemeral"],
+                    "fs_group": {"group_change_policy": 0, "group_id": gid},
+                    "fstype": "ext4", "mount_point": "$(spath)/$(b64_device_id)",
+                    "options": [], "shared": True, "source": ""}
+        if container["storages"] != [original] * len(volumes):
+            raise ValueError()
+        container["storages"] = []
+        for mount in oci["Mounts"]:
+            volume = volumes.get(mount["destination"])
+            if volume is None:
+                continue
+            source = "^/run/kata-containers/shared/containers/$(sandbox-id)/rootfs/local/" + volume + "$"
+            mount.update(type_="local", source=source)
+            container["storages"].append({"driver": "local", "driver_options": [],
+                "fs_group": None, "fstype": "local", "mount_point": source,
+                "options": ["mode=0777", "fsgid=" + str(gid)],
+                "shared": False, "source": "local"})
+        if len(container["storages"]) != len(volumes):
+            raise ValueError()
+        if name != "azure-disk-helper":
+            continue
+        # CRI-O applies all capabilities to this explicitly privileged role.
+        # The host runtime must keep privileged_without_host_devices enabled.
+        oci["Process"]["Capabilities"] = {key: ["$(privileged_caps)"]
+                                            for key in oci["Process"]["Capabilities"]}
+        options = {
+            "/proc": ["nosuid", "noexec", "nodev", "rw"],
+            "/dev": ["nosuid", "strictatime", "mode=755", "size=65536k", "rw"],
+            "/dev/pts": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5", "rw"],
+            "/dev/mqueue": ["nosuid", "noexec", "nodev", "rw"],
+            "/sys": ["nosuid", "noexec", "nodev", "rw", "rslave"],
+            "/sys/fs/cgroup": ["nosuid", "noexec", "nodev", "rw", "relatime", "rslave"],
+            "/etc/resolv.conf": ["bind", "nodev", "nosuid", "noexec", "rw"],
+            "/etc/hostname": ["bind", "rw"],
+            "/run/.containerenv": ["bind", "rw"],
+        }
+        for mount in oci["Mounts"]:
+            if mount["destination"] in options:
+                mount["options"] = options[mount["destination"]]
+
+
 def compile_policy(pod, site, generated, runtime_profile, *, admission_context=None):
     """Compile only the closed lab preview. Never enables SAW enrollment."""
     normalized = generator_input(pod, site, admission_context=admission_context)
@@ -344,6 +395,30 @@ def compile_policy(pod, site, generated, runtime_profile, *, admission_context=N
             raise ValueError()
         rules = rules.replace(propagation_check, "    saw_storage_lab_propagation(i_oci)")
         rules += '\n\nsaw_storage_lab_propagation(oci) if {\n    oci.Annotations["io.kubernetes.cri.container-type"] == "sandbox"\n    count(oci.Linux.RootfsPropagation) == 0\n}\n\nsaw_storage_lab_propagation(oci) if {\n    oci.Annotations["io.kubernetes.cri.container-type"] == "container"\n    name := oci.Annotations["io.kubernetes.cri.container-name"]\n    oci.Linux.RootfsPropagation == policy_data.saw_storage_lab.roles[name].rootfsPropagation\n}\n'
+        label_check = "    count(i_linux.MountLabel) == 0"
+        if rules.count(label_check) != 1:
+            raise ValueError()
+        rules = rules.replace(label_check, "    saw_storage_lab_mount_label(i_oci)")
+        # The host-generated MCS label is not a workspace identity claim.
+        # Permit its bounded format only on the approved privileged role.
+        rules += r'''
+
+saw_storage_lab_mount_label(oci) if {
+    oci.Linux.MountLabel == ""
+}
+
+saw_storage_lab_mount_label(oci) if {
+    oci.Annotations["io.kubernetes.cri.container-type"] == "container"
+    oci.Annotations["io.kubernetes.cri.container-name"] == "azure-disk-helper"
+    label := oci.Linux.MountLabel
+    regex.match("^system_u:object_r:container_file_t:s0:c[0-9]{1,4},c[0-9]{1,4}$", label)
+    categories := split(trim_prefix(label, "system_u:object_r:container_file_t:s0:c"), ",c")
+    low := to_number(categories[0])
+    high := to_number(categories[1])
+    low < high
+    high <= 1023
+}
+'''
         converted_data = json.loads(encoded.replace(a.IDENTITY_MARKER, "null"))
         converted_data["saw_storage_lab"] = {"podUID": site["podUID"], "roles": roles, "originalPodSHA256": a.digest(pod), "previewOnly": admission_context is None, "admissionContextSHA256": a.digest(admission_context)}
         # Generated HostToContainer uses rprivate. CRI-O uses rslave for it.
@@ -361,6 +436,7 @@ def compile_policy(pod, site, generated, runtime_profile, *, admission_context=N
         root_mount["source"] = "/var/lib/kubelet"
         converted_data["saw_storage_lab"]["directMounts"] = {"azure-disk-helper": [copy.deepcopy(root_mount)], "mount-check": [copy.deepcopy(mount)]}
         rules += '\n\nsaw_storage_lab_mounts if {\n    input.OCI.Annotations["io.kubernetes.cri-o.ContainerType"] == "sandbox"\n}\n\nsaw_storage_lab_mounts if {\n    input.OCI.Annotations["io.kubernetes.cri-o.ContainerType"] == "container"\n    name := input.OCI.Annotations["io.kubernetes.container.name"]\n    every expected in object.get(policy_data.saw_storage_lab.directMounts, name, []) {\n        actual := [m | m := input.OCI.Mounts[_]; m.destination == expected.destination]\n        count(actual) == 1\n        actual[0] == expected\n    }\n}\n'
+        _crio_guest_layout(converted_data, site["applicationUID"])
         converted_data["saw_identity"] = a.IDENTITY_MARKER
         return rules + "\n\npolicy_data := " + a.canonical(converted_data).replace(json.dumps(a.IDENTITY_MARKER), a.IDENTITY_MARKER) + "\n"
     except (ValueError, KeyError, TypeError, IndexError, AttributeError):

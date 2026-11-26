@@ -248,3 +248,15 @@ context. The lab policy requires that exact pause annotation. Application OCI
 requests must omit it or set it to false. This exception is confined to the lab
 compiler. The production CRI-O policy still rejects privileged runtime contexts.
 The handler must continue to exclude host devices.
+
+The lab compiler also checks CRI-O's guest-local `emptyDir` representation.
+The helper socket and temporary directory use the `local` storage driver.
+Their paths must select the same sandbox ID. Their type, options, group and
+storage count remain fixed. A foreign sandbox path fails the policy.
+
+The privileged disk helper has a separate, fixed CRI-O mount and capability
+layout. Only this role can use the bounded `container_file_t` MCS mount label.
+The label does not prove workspace identity. The wrapper keeps all capabilities
+dropped. Complete portable helper requests test the pinned vendor validator,
+including rejected command, identity, capability and storage changes. These
+checks do not qualify live storage or enable production enrollment.

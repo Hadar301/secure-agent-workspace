@@ -1,0 +1,923 @@
+{
+  "azure-disk-helper": {
+    "OCI": {
+      "Annotations": {
+        "io.katacontainers.pkg.oci.bundle_path": "/run/containers/storage/overlay-containers/6666666666666666666666666666666666666666666666666666666666666666/userdata",
+        "io.katacontainers.pkg.oci.container_type": "pod_container",
+        "io.kubernetes.cri.container-name": "azure-disk-helper",
+        "io.kubernetes.cri.container-type": "container",
+        "io.kubernetes.cri.image-name": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "io.kubernetes.cri.sandbox-id": "3333333333333333333333333333333333333333333333333333333333333333",
+        "io.kubernetes.cri.sandbox-name": "storage-mount-lab",
+        "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef"
+      },
+      "Hooks": null,
+      "Hostname": "storage-mount-lab",
+      "Linux": {
+        "CgroupsPath": "kubepods-besteffort-podeb59941f_f809_4f41_a4a5_89ff845b7895.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
+        "Devices": [],
+        "GIDMappings": [],
+        "IntelRdt": null,
+        "MaskedPaths": [],
+        "MountLabel": "system_u:object_r:container_file_t:s0:c123,c456",
+        "Namespaces": [
+          {
+            "Path": "",
+            "Type": "ipc"
+          },
+          {
+            "Path": "",
+            "Type": "uts"
+          },
+          {
+            "Path": "",
+            "Type": "mount"
+          },
+          {
+            "Path": "/run/netns/podns",
+            "Type": "network"
+          }
+        ],
+        "ReadonlyPaths": [],
+        "Resources": {
+          "BlockIO": null,
+          "CPU": {
+            "Cpus": "",
+            "Mems": "",
+            "Period": 100000,
+            "Quota": 0,
+            "RealtimePeriod": 0,
+            "RealtimeRuntime": 0,
+            "Shares": 2
+          },
+          "Devices": [],
+          "HugepageLimits": [
+            {
+              "Limit": 0,
+              "Pagesize": "2MB"
+            },
+            {
+              "Limit": 0,
+              "Pagesize": "1GB"
+            }
+          ],
+          "Memory": null,
+          "Network": null,
+          "Pids": null
+        },
+        "RootfsPropagation": "rshared",
+        "Seccomp": null,
+        "Sysctl": {},
+        "UIDMappings": []
+      },
+      "Mounts": [
+        {
+          "destination": "/proc",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "rw"
+          ],
+          "source": "proc",
+          "type_": "proc"
+        },
+        {
+          "destination": "/dev",
+          "options": [
+            "nosuid",
+            "strictatime",
+            "mode=755",
+            "size=65536k",
+            "rw"
+          ],
+          "source": "tmpfs",
+          "type_": "tmpfs"
+        },
+        {
+          "destination": "/dev/pts",
+          "options": [
+            "nosuid",
+            "noexec",
+            "newinstance",
+            "ptmxmode=0666",
+            "mode=0620",
+            "gid=5",
+            "rw"
+          ],
+          "source": "devpts",
+          "type_": "devpts"
+        },
+        {
+          "destination": "/dev/mqueue",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "rw"
+          ],
+          "source": "mqueue",
+          "type_": "mqueue"
+        },
+        {
+          "destination": "/sys",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "rw",
+            "rslave"
+          ],
+          "source": "sysfs",
+          "type_": "sysfs"
+        },
+        {
+          "destination": "/sys/fs/cgroup",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "rw",
+            "relatime",
+            "rslave"
+          ],
+          "source": "cgroup",
+          "type_": "cgroup"
+        },
+        {
+          "destination": "/dev/shm",
+          "options": [
+            "rbind"
+          ],
+          "source": "/run/kata-containers/sandbox/shm",
+          "type_": "bind"
+        },
+        {
+          "destination": "/etc/resolv.conf",
+          "options": [
+            "bind",
+            "nodev",
+            "nosuid",
+            "noexec",
+            "rw"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-resolv.conf",
+          "type_": "bind"
+        },
+        {
+          "destination": "/etc/hostname",
+          "options": [
+            "bind",
+            "rw"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-hostname",
+          "type_": "bind"
+        },
+        {
+          "destination": "/run/.containerenv",
+          "options": [
+            "bind",
+            "rw"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-.containerenv",
+          "type_": "bind"
+        },
+        {
+          "destination": "/csi",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/socket",
+          "type_": "local"
+        },
+        {
+          "destination": "/tmp",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/tmp",
+          "type_": "local"
+        },
+        {
+          "destination": "/etc/hosts",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-hosts",
+          "type_": "bind"
+        },
+        {
+          "destination": "/dev/termination-log",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-termination-log",
+          "type_": "bind"
+        },
+        {
+          "destination": "/var/lib/kubelet",
+          "options": [
+            "rbind",
+            "rshared",
+            "rw",
+            "bind"
+          ],
+          "source": "/var/lib/kubelet",
+          "type_": "bind"
+        }
+      ],
+      "Process": {
+        "ApparmorProfile": "",
+        "Args": [
+          "/bin/sh",
+          "-ec",
+          "mount -t devtmpfs none /dev && exec /usr/bin/azurediskplugin --drivername=saw-ppvc-0123456789abcdef.disk.csi.saw.redhat.com --endpoint=unix:///csi/backend.sock --nodeid=$KUBE_NODE_NAME --allow-empty-cloud-config=true --cloud-config-secret-name= --cloud-config-secret-namespace= --remove-not-ready-taint=false --never-stop-taint-removal=false --enable-migration-monitor=false --v=2"
+        ],
+        "Capabilities": {
+          "Ambient": [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_FOWNER",
+            "CAP_FSETID",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
+            "CAP_IPC_LOCK",
+            "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE",
+            "CAP_SYS_RAWIO",
+            "CAP_SYS_CHROOT",
+            "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT",
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_BOOT",
+            "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE",
+            "CAP_SYS_TIME",
+            "CAP_SYS_TTY_CONFIG",
+            "CAP_MKNOD",
+            "CAP_LEASE",
+            "CAP_AUDIT_WRITE",
+            "CAP_AUDIT_CONTROL",
+            "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE",
+            "CAP_MAC_ADMIN",
+            "CAP_SYSLOG",
+            "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND",
+            "CAP_AUDIT_READ",
+            "CAP_PERFMON",
+            "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+          ],
+          "Bounding": [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_FOWNER",
+            "CAP_FSETID",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
+            "CAP_IPC_LOCK",
+            "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE",
+            "CAP_SYS_RAWIO",
+            "CAP_SYS_CHROOT",
+            "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT",
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_BOOT",
+            "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE",
+            "CAP_SYS_TIME",
+            "CAP_SYS_TTY_CONFIG",
+            "CAP_MKNOD",
+            "CAP_LEASE",
+            "CAP_AUDIT_WRITE",
+            "CAP_AUDIT_CONTROL",
+            "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE",
+            "CAP_MAC_ADMIN",
+            "CAP_SYSLOG",
+            "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND",
+            "CAP_AUDIT_READ",
+            "CAP_PERFMON",
+            "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+          ],
+          "Effective": [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_FOWNER",
+            "CAP_FSETID",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
+            "CAP_IPC_LOCK",
+            "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE",
+            "CAP_SYS_RAWIO",
+            "CAP_SYS_CHROOT",
+            "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT",
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_BOOT",
+            "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE",
+            "CAP_SYS_TIME",
+            "CAP_SYS_TTY_CONFIG",
+            "CAP_MKNOD",
+            "CAP_LEASE",
+            "CAP_AUDIT_WRITE",
+            "CAP_AUDIT_CONTROL",
+            "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE",
+            "CAP_MAC_ADMIN",
+            "CAP_SYSLOG",
+            "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND",
+            "CAP_AUDIT_READ",
+            "CAP_PERFMON",
+            "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+          ],
+          "Inheritable": [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_FOWNER",
+            "CAP_FSETID",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
+            "CAP_IPC_LOCK",
+            "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE",
+            "CAP_SYS_RAWIO",
+            "CAP_SYS_CHROOT",
+            "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT",
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_BOOT",
+            "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE",
+            "CAP_SYS_TIME",
+            "CAP_SYS_TTY_CONFIG",
+            "CAP_MKNOD",
+            "CAP_LEASE",
+            "CAP_AUDIT_WRITE",
+            "CAP_AUDIT_CONTROL",
+            "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE",
+            "CAP_MAC_ADMIN",
+            "CAP_SYSLOG",
+            "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND",
+            "CAP_AUDIT_READ",
+            "CAP_PERFMON",
+            "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+          ],
+          "Permitted": [
+            "CAP_CHOWN",
+            "CAP_DAC_OVERRIDE",
+            "CAP_DAC_READ_SEARCH",
+            "CAP_FOWNER",
+            "CAP_FSETID",
+            "CAP_KILL",
+            "CAP_SETGID",
+            "CAP_SETUID",
+            "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE",
+            "CAP_NET_BIND_SERVICE",
+            "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
+            "CAP_IPC_LOCK",
+            "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE",
+            "CAP_SYS_RAWIO",
+            "CAP_SYS_CHROOT",
+            "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT",
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_BOOT",
+            "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE",
+            "CAP_SYS_TIME",
+            "CAP_SYS_TTY_CONFIG",
+            "CAP_MKNOD",
+            "CAP_LEASE",
+            "CAP_AUDIT_WRITE",
+            "CAP_AUDIT_CONTROL",
+            "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE",
+            "CAP_MAC_ADMIN",
+            "CAP_SYSLOG",
+            "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND",
+            "CAP_AUDIT_READ",
+            "CAP_PERFMON",
+            "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+          ]
+        },
+        "ConsoleSize": null,
+        "Cwd": "/",
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "container=oci",
+          "GODEBUG=x509ignoreCN=0,madvdontneed=1",
+          "ART_BUILD_ENGINE=konflux",
+          "ART_BUILD_DEPS_METHOD=cachi2",
+          "ART_BUILD_NETWORK=hermetic",
+          "ART_BUILD_DEPS_MODE=default",
+          "__doozer=merge",
+          "BUILD_RELEASE=202611031655.p2.g51bdc52.assembly.stream.el9",
+          "BUILD_VERSION=v4.22.0",
+          "OS_GIT_MAJOR=4",
+          "OS_GIT_MINOR=22",
+          "OS_GIT_PATCH=0",
+          "OS_GIT_TREE_STATE=clean",
+          "OS_GIT_VERSION=4.22.0-202611031655.p2.g51bdc52.assembly.stream.el9-51bdc52",
+          "SOURCE_GIT_TREE_STATE=clean",
+          "__doozer_group=openshift-4.22",
+          "__doozer_key=ose-azure-disk-csi-driver",
+          "__doozer_uuid_tag=ose-azure-disk-csi-driver-rhel9-v4.22.0-20261103.173239",
+          "__doozer_version=v4.22.0",
+          "OS_GIT_COMMIT=51bdc52",
+          "SOURCE_DATE_EPOCH=1792103751",
+          "SOURCE_GIT_COMMIT=51bdc527ae1b9723965fe5e911a3834ede228da0",
+          "SOURCE_GIT_TAG=v0.9.0-3940-g51bdc527",
+          "SOURCE_GIT_URL=https://github.com/openshift/azure-disk-csi-driver",
+          "OPENSHIFT_BUILD_NAME=lab-helper-1",
+          "OPENSHIFT_BUILD_NAMESPACE=lab-build",
+          "HOSTNAME=$(host-name)",
+          "KUBE_NODE_NAME=lab-worker"
+        ],
+        "NoNewPrivileges": false,
+        "OOMScoreAdj": 1000,
+        "Rlimits": [],
+        "SelinuxLabel": "",
+        "Terminal": false,
+        "User": {
+          "AdditionalGids": [
+            0,
+            65534
+          ],
+          "GID": 0,
+          "UID": 0,
+          "Username": ""
+        }
+      },
+      "Root": {
+        "Path": "/run/kata-containers/6666666666666666666666666666666666666666666666666666666666666666/rootfs",
+        "Readonly": true
+      },
+      "Solaris": null,
+      "Version": "1.3.0",
+      "Windows": null
+    },
+    "container_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "devices": [],
+    "exec_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "sandbox_pidns": false,
+    "shared_mounts": [],
+    "stderr_port": 0,
+    "stdin_port": 0,
+    "stdout_port": 0,
+    "storages": [
+      {
+        "driver": "image_guest_pull",
+        "driver_options": [],
+        "fs_group": null,
+        "fstype": "overlay",
+        "mount_point": "/run/kata-containers/6666666666666666666666666666666666666666666666666666666666666666/rootfs",
+        "options": [],
+        "shared": false,
+        "source": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "driver": "local",
+        "driver_options": [],
+        "fs_group": null,
+        "fstype": "local",
+        "mount_point": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/socket",
+        "options": [
+          "mode=0777",
+          "fsgid=65534"
+        ],
+        "shared": false,
+        "source": "local"
+      },
+      {
+        "driver": "local",
+        "driver_options": [],
+        "fs_group": null,
+        "fstype": "local",
+        "mount_point": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/tmp",
+        "options": [
+          "mode=0777",
+          "fsgid=65534"
+        ],
+        "shared": false,
+        "source": "local"
+      }
+    ],
+    "string_user": null
+  },
+  "volume-wrapper": {
+    "OCI": {
+      "Annotations": {
+        "io.katacontainers.pkg.oci.bundle_path": "/run/containers/storage/overlay-containers/6666666666666666666666666666666666666666666666666666666666666666/userdata",
+        "io.katacontainers.pkg.oci.container_type": "pod_container",
+        "io.kubernetes.cri.container-name": "volume-wrapper",
+        "io.kubernetes.cri.container-type": "container",
+        "io.kubernetes.cri.image-name": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "io.kubernetes.cri.sandbox-id": "3333333333333333333333333333333333333333333333333333333333333333",
+        "io.kubernetes.cri.sandbox-name": "storage-mount-lab",
+        "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef"
+      },
+      "Hooks": null,
+      "Hostname": "storage-mount-lab",
+      "Linux": {
+        "CgroupsPath": "kubepods-besteffort-podeb59941f_f809_4f41_a4a5_89ff845b7895.slice:crio:6666666666666666666666666666666666666666666666666666666666666666",
+        "Devices": [],
+        "GIDMappings": [],
+        "IntelRdt": null,
+        "MaskedPaths": [
+          "/proc/acpi",
+          "/proc/asound",
+          "/proc/interrupts",
+          "/proc/kcore",
+          "/proc/keys",
+          "/proc/latency_stats",
+          "/proc/sched_debug",
+          "/proc/scsi",
+          "/proc/timer_list",
+          "/proc/timer_stats",
+          "/sys/devices/virtual/powercap",
+          "/sys/firmware",
+          "/sys/fs/selinux"
+        ],
+        "MountLabel": "",
+        "Namespaces": [
+          {
+            "Path": "",
+            "Type": "ipc"
+          },
+          {
+            "Path": "",
+            "Type": "uts"
+          },
+          {
+            "Path": "",
+            "Type": "mount"
+          },
+          {
+            "Path": "/run/netns/podns",
+            "Type": "network"
+          }
+        ],
+        "ReadonlyPaths": [
+          "/proc/bus",
+          "/proc/fs",
+          "/proc/irq",
+          "/proc/sys",
+          "/proc/sysrq-trigger"
+        ],
+        "Resources": {
+          "BlockIO": null,
+          "CPU": {
+            "Cpus": "",
+            "Mems": "",
+            "Period": 100000,
+            "Quota": 0,
+            "RealtimePeriod": 0,
+            "RealtimeRuntime": 0,
+            "Shares": 2
+          },
+          "Devices": [],
+          "HugepageLimits": [
+            {
+              "Limit": 0,
+              "Pagesize": "2MB"
+            },
+            {
+              "Limit": 0,
+              "Pagesize": "1GB"
+            }
+          ],
+          "Memory": null,
+          "Network": null,
+          "Pids": null
+        },
+        "RootfsPropagation": "",
+        "Seccomp": null,
+        "Sysctl": {},
+        "UIDMappings": []
+      },
+      "Mounts": [
+        {
+          "destination": "/proc",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "proc",
+          "type_": "proc"
+        },
+        {
+          "destination": "/dev",
+          "options": [
+            "nosuid",
+            "strictatime",
+            "mode=755",
+            "size=65536k"
+          ],
+          "source": "tmpfs",
+          "type_": "tmpfs"
+        },
+        {
+          "destination": "/dev/pts",
+          "options": [
+            "nosuid",
+            "noexec",
+            "newinstance",
+            "ptmxmode=0666",
+            "mode=0620",
+            "gid=5"
+          ],
+          "source": "devpts",
+          "type_": "devpts"
+        },
+        {
+          "destination": "/dev/mqueue",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev"
+          ],
+          "source": "mqueue",
+          "type_": "mqueue"
+        },
+        {
+          "destination": "/sys",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "ro"
+          ],
+          "source": "sysfs",
+          "type_": "sysfs"
+        },
+        {
+          "destination": "/sys/fs/cgroup",
+          "options": [
+            "nosuid",
+            "noexec",
+            "nodev",
+            "relatime",
+            "ro"
+          ],
+          "source": "cgroup",
+          "type_": "cgroup"
+        },
+        {
+          "destination": "/dev/shm",
+          "options": [
+            "rbind"
+          ],
+          "source": "/run/kata-containers/sandbox/shm",
+          "type_": "bind"
+        },
+        {
+          "destination": "/etc/resolv.conf",
+          "options": [
+            "ro",
+            "bind",
+            "nodev",
+            "nosuid",
+            "noexec"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-resolv.conf",
+          "type_": "bind"
+        },
+        {
+          "destination": "/etc/hostname",
+          "options": [
+            "ro",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-hostname",
+          "type_": "bind"
+        },
+        {
+          "destination": "/run/.containerenv",
+          "options": [
+            "ro",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-.containerenv",
+          "type_": "bind"
+        },
+        {
+          "destination": "/csi",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/socket",
+          "type_": "local"
+        },
+        {
+          "destination": "/etc/hosts",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-hosts",
+          "type_": "bind"
+        },
+        {
+          "destination": "/dev/termination-log",
+          "options": [
+            "rbind",
+            "rprivate",
+            "rw",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-termination-log",
+          "type_": "bind"
+        },
+        {
+          "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "options": [
+            "rbind",
+            "rprivate",
+            "ro",
+            "bind"
+          ],
+          "source": "/run/kata-containers/shared/containers/6666666666666666666666666666666666666666666666666666666666666666-7777777777777777-serviceaccount",
+          "type_": "bind"
+        }
+      ],
+      "Process": {
+        "ApparmorProfile": "",
+        "Args": [
+          "/usr/local/bin/csi-podvm-wrapper",
+          "--endpoint=/csi/guest.sock",
+          "--target-endpoint=/csi/backend.sock",
+          "--namespace=saw-ppvc-0123456789abcdef",
+          "--v=0"
+        ],
+        "Capabilities": {
+          "Ambient": [],
+          "Bounding": [],
+          "Effective": [],
+          "Inheritable": [],
+          "Permitted": []
+        },
+        "ConsoleSize": null,
+        "Cwd": "/",
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "container=oci",
+          "GODEBUG=x509ignoreCN=0,madvdontneed=1",
+          "ART_BUILD_ENGINE=konflux",
+          "ART_BUILD_DEPS_METHOD=cachi2",
+          "ART_BUILD_NETWORK=hermetic",
+          "ART_BUILD_DEPS_MODE=default",
+          "__doozer=merge",
+          "BUILD_RELEASE=202611031655.p2.g51bdc52.assembly.stream.el9",
+          "BUILD_VERSION=v4.22.0",
+          "OS_GIT_MAJOR=4",
+          "OS_GIT_MINOR=22",
+          "OS_GIT_PATCH=0",
+          "OS_GIT_TREE_STATE=clean",
+          "OS_GIT_VERSION=4.22.0-202611031655.p2.g51bdc52.assembly.stream.el9-51bdc52",
+          "SOURCE_GIT_TREE_STATE=clean",
+          "__doozer_group=openshift-4.22",
+          "__doozer_key=ose-azure-disk-csi-driver",
+          "__doozer_uuid_tag=ose-azure-disk-csi-driver-rhel9-v4.22.0-20261103.173239",
+          "__doozer_version=v4.22.0",
+          "OS_GIT_COMMIT=51bdc52",
+          "SOURCE_DATE_EPOCH=1792103751",
+          "SOURCE_GIT_COMMIT=51bdc527ae1b9723965fe5e911a3834ede228da0",
+          "SOURCE_GIT_TAG=v0.9.0-3940-g51bdc527",
+          "SOURCE_GIT_URL=https://github.com/openshift/azure-disk-csi-driver",
+          "OPENSHIFT_BUILD_NAME=lab-helper-1",
+          "OPENSHIFT_BUILD_NAMESPACE=lab-build",
+          "HOSTNAME=$(host-name)",
+          "POD_NAME=storage-mount-lab",
+          "POD_NAME_SPACE=saw-ppvc-probe-0123456789abcdef",
+          "POD_UID=01234567-89ab-4cde-8fab-0123456789ab",
+          "POD_NODE_NAME=lab-worker",
+          "KUBERNETES_SERVICE_HOST=192.0.2.10",
+          "KUBERNETES_SERVICE_PORT=443"
+        ],
+        "NoNewPrivileges": true,
+        "OOMScoreAdj": 1000,
+        "Rlimits": [],
+        "SelinuxLabel": "",
+        "Terminal": false,
+        "User": {
+          "AdditionalGids": [
+            0,
+            65534
+          ],
+          "GID": 0,
+          "UID": 0,
+          "Username": ""
+        }
+      },
+      "Root": {
+        "Path": "/run/kata-containers/6666666666666666666666666666666666666666666666666666666666666666/rootfs",
+        "Readonly": true
+      },
+      "Solaris": null,
+      "Version": "1.3.0",
+      "Windows": null
+    },
+    "container_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "devices": [],
+    "exec_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "sandbox_pidns": false,
+    "shared_mounts": [],
+    "stderr_port": 0,
+    "stdin_port": 0,
+    "stdout_port": 0,
+    "storages": [
+      {
+        "driver": "image_guest_pull",
+        "driver_options": [],
+        "fs_group": null,
+        "fstype": "overlay",
+        "mount_point": "/run/kata-containers/6666666666666666666666666666666666666666666666666666666666666666/rootfs",
+        "options": [],
+        "shared": false,
+        "source": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "driver": "local",
+        "driver_options": [],
+        "fs_group": null,
+        "fstype": "local",
+        "mount_point": "/run/kata-containers/shared/containers/3333333333333333333333333333333333333333333333333333333333333333/rootfs/local/socket",
+        "options": [
+          "mode=0777",
+          "fsgid=65534"
+        ],
+        "shared": false,
+        "source": "local"
+      }
+    ],
+    "string_user": null
+  }
+}

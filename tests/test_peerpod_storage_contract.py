@@ -382,3 +382,67 @@ def test_complete_pause_request_checks_lab_privilege(tmp_path, site, generated, 
             storage["driver_options"] = ["image_guest_pull=" + json.dumps(config)]
     result = opa_query(tmp_path, site, generated, request, "data.agent_policy.CreateContainerRequest")
     assert bool(isinstance(result, dict) and result.get("allowed")) is (privileged == "true")
+
+
+@pytest.fixture
+def normalized_helpers():
+    import json
+    return json.loads((ROOT / "tests/fixtures/confidential/peerpod-lab-normalized-requests.json").read_text())
+
+
+@pytest.mark.parametrize("name", ["azure-disk-helper", "volume-wrapper"])
+def test_complete_crio_helper_request_passes_vendor_checks(tmp_path, site, generated, normalized_helpers, name):
+    # Captured OCI shapes use only portable public test identities. They pass
+    # the entire pinned vendor validator, not just the added lab predicates.
+    result = opa_query(tmp_path, site, generated, normalized_helpers[name],
+                       "data.agent_policy.saw_containerd_CreateContainerRequest")
+    assert result["allowed"] is True
+
+
+@pytest.mark.parametrize("name", ["azure-disk-helper", "volume-wrapper"])
+@pytest.mark.parametrize("change", ["command", "uid", "capability", "foreign-socket", "socket-driver", "storage-option", "extra-storage"])
+def test_complete_helper_rejects_changed_authority(tmp_path, site, generated, normalized_helpers, name, change):
+    request = normalized_helpers[name]
+    if change == "command":
+        request["OCI"]["Process"]["Args"] = ["/bin/sh"]
+    elif change == "uid":
+        request["OCI"]["Process"]["User"]["UID"] = 1000
+    elif change == "capability":
+        request["OCI"]["Process"]["Capabilities"]["Ambient"] = ["CAP_SYS_ADMIN"]
+    elif change == "foreign-socket":
+        # Changing both the mount and storage cannot select another guest.
+        request["storages"][1]["mount_point"] = request["storages"][1]["mount_point"].replace("3" * 64, "4" * 64)
+        mount = next(m for m in request["OCI"]["Mounts"] if m["destination"] == "/csi")
+        mount["source"] = request["storages"][1]["mount_point"]
+    elif change == "socket-driver":
+        next(m for m in request["OCI"]["Mounts"] if m["destination"] == "/csi")["type_"] = "bind"
+    elif change == "storage-option":
+        request["storages"][1]["options"].append("mode=0770")
+    else:
+        request["storages"].append(copy.deepcopy(request["storages"][1]))
+    assert opa_query(tmp_path, site, generated, request,
+                     "data.agent_policy.saw_containerd_CreateContainerRequest") is False
+
+
+@pytest.mark.parametrize("name,label,allowed", [
+    ("azure-disk-helper", "system_u:object_r:container_file_t:s0:c1,c1023", True),
+    ("azure-disk-helper", "system_u:object_r:container_file_t:s0:c1,c1024", False),
+    ("azure-disk-helper", "system_u:object_r:container_file_t:s0:c2,c2", False),
+    ("azure-disk-helper", "system_u:object_r:container_file_t:s0:c3,c2", False),
+    ("azure-disk-helper", "system_u:object_r:foreign_t:s0:c1,c2", False),
+    ("volume-wrapper", "system_u:object_r:container_file_t:s0:c1,c2", False),
+    ("mount-check", "system_u:object_r:container_file_t:s0:c1,c2", False),
+])
+def test_mcs_mount_label_is_bounded_and_role_scoped(tmp_path, site, generated, name, label, allowed):
+    request = {"OCI": {"Annotations": {"io.kubernetes.cri.container-type": "container",
+                "io.kubernetes.cri.container-name": name}, "Linux": {"MountLabel": label}}}
+    assert opa_query(tmp_path, site, generated, request,
+                     "data.agent_policy.saw_storage_lab_mount_label(input.OCI)") is allowed
+
+
+def test_compiler_rejects_changed_generated_storage(site, generated):
+    prefix, data = generated
+    data = copy.deepcopy(data)
+    data["containers"][1]["storages"][0]["source"] = "/foreign"
+    with pytest.raises(M.ContractError, match="^LabGuestPolicyRejected$"):
+        compiled(site, (prefix, data))
