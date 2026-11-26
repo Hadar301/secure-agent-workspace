@@ -329,6 +329,15 @@ def compile_policy(pod, site, generated, runtime_profile, *, admission_context=N
             raise ValueError()
         rules = rules.replace(needle, "    input.OCI.Process.User.UID == policy_data.saw_storage_lab.roles[name].uid\n    input.OCI.Process.NoNewPrivileges == policy_data.saw_storage_lab.roles[name].noNewPrivileges")
         rules = rules.replace("    saw_crio_identity\n", "    saw_crio_identity\n    saw_storage_lab_identity\n    saw_storage_lab_mounts\n")
+        # CRI-O marks the infra container privileged when this reviewed Pod
+        # contains the privileged disk helper. Child OCI annotations omit it.
+        identity_privilege = '    object.get(a, "io.kubernetes.cri-o.PrivilegedRuntime", "false") == "false"'
+        sandbox_privilege = '    a["io.kubernetes.cri-o.PrivilegedRuntime"] == "false"'
+        if rules.count(identity_privilege) != 1 or rules.count(sandbox_privilege) != 1:
+            raise ValueError()
+        rules = rules.replace(identity_privilege, "    saw_storage_lab_privilege_context(a)")
+        rules = rules.replace(sandbox_privilege, '    a["io.kubernetes.cri-o.PrivilegedRuntime"] == "true"')
+        rules += '\n\nsaw_storage_lab_privilege_context(a) if {\n    a["io.kubernetes.cri-o.ContainerType"] == "sandbox"\n    a["io.kubernetes.cri-o.PrivilegedRuntime"] == "true"\n}\n\nsaw_storage_lab_privilege_context(a) if {\n    a["io.kubernetes.cri-o.ContainerType"] == "container"\n    object.get(a, "io.kubernetes.cri-o.PrivilegedRuntime", "false") == "false"\n}\n'
         rules += '\n\nsaw_storage_lab_identity if {\n    input.OCI.Annotations["io.kubernetes.pod.uid"] == policy_data.saw_storage_lab.podUID\n}\n'
         propagation_check = "    count(i_linux.RootfsPropagation) == 0"
         if rules.count(propagation_check) != 1:

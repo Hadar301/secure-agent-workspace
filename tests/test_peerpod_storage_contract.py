@@ -145,7 +145,9 @@ def opa_query(tmp_path, site, generated, request, query):
     policy.write_text(compiled(site, generated).replace("__SAW_IDENTITY_JSON__", json.dumps({"owner": "lab", "registration": site["registration"]})))
     input_file = tmp_path / "input.json"
     input_file.write_text(json.dumps(request))
-    result = subprocess.run([opa, "eval", "--format=json", "-d", str(policy), "-i", str(input_file), query], capture_output=True, text=True, check=True)
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"pstate":{}}')
+    result = subprocess.run([opa, "eval", "--format=json", "-d", str(policy), "-d", str(state_file), "-i", str(input_file), query], capture_output=True, text=True, check=True)
     document = json.loads(result.stdout)
     return document["result"][0]["expressions"][0]["value"] if document.get("result") else False
 
@@ -342,3 +344,41 @@ def test_launch_requires_canonical_measured_annotation(site, admitted_case, chan
     else:
         with pytest.raises(M.ContractError, match="^LabInitdataAnnotationRejected$"):
             M.launch_input(pod, site, context, expected)
+
+
+@pytest.mark.parametrize("kind,value,allowed", [
+    ("sandbox", "true", True), ("sandbox", "false", False), ("sandbox", None, False),
+    ("container", None, True), ("container", "false", True), ("container", "true", False),
+])
+def test_lab_privilege_annotation_matches_container_role(tmp_path, site, generated, kind, value, allowed):
+    annotations = {"io.kubernetes.cri-o.ContainerType": kind}
+    if value is not None:
+        annotations["io.kubernetes.cri-o.PrivilegedRuntime"] = value
+    assert opa_query(tmp_path, site, generated, {"OCI": {"Annotations": annotations}},
+                     "data.agent_policy.saw_storage_lab_privilege_context(input.OCI.Annotations)") is allowed
+
+
+@pytest.mark.parametrize("privileged", ["true", "false"])
+def test_complete_pause_request_checks_lab_privilege(tmp_path, site, generated, privileged):
+    import json
+    request = json.loads((ROOT / "tests/fixtures/confidential/crio-pause-request.json").read_text())
+    request["OCI"]["Version"] = "1.3.0"
+    annotations = request["OCI"]["Annotations"]
+    annotations.update({"io.kubernetes.pod.name": "storage-mount-lab",
+                        "io.kubernetes.pod.namespace": "saw-ppvc-probe-" + site["registration"],
+                        "io.kubernetes.pod.uid": site["podUID"],
+                        "io.kubernetes.cri-o.Namespace": "saw-ppvc-probe-" + site["registration"],
+                        "io.kubernetes.cri-o.KubeName": "storage-mount-lab", "io.kubernetes.cri-o.HostName": "storage-mount-lab",
+                        "io.kubernetes.cri-o.PrivilegedRuntime": privileged,
+                        "io.kubernetes.cri-o.RuntimeHandler": site["runtimeClass"],
+                        "io.kubernetes.cri-o.ImageName": "registry.example.test/infra@sha256:" + "b" * 64,
+                        "io.kubernetes.cri-o.Image": "registry.example.test/infra@sha256:" + "b" * 64})
+    annotations["io.kubernetes.cri-o.Metadata"] = json.dumps({"name": "storage-mount-lab", "namespace": annotations["io.kubernetes.pod.namespace"], "uid": site["podUID"]})
+    annotations["io.kubernetes.cri-o.Labels"] = json.dumps({"io.kubernetes.pod.name": "storage-mount-lab", "io.kubernetes.pod.namespace": annotations["io.kubernetes.pod.namespace"], "io.kubernetes.pod.uid": site["podUID"], "io.kubernetes.container.name": "POD"})
+    for storage in request["storages"]:
+        if storage["driver"] == "image_guest_pull":
+            config = json.loads(storage["driver_options"][0].split("=", 1)[1])
+            config["metadata"].update(annotations)
+            storage["driver_options"] = ["image_guest_pull=" + json.dumps(config)]
+    result = opa_query(tmp_path, site, generated, request, "data.agent_policy.CreateContainerRequest")
+    assert bool(isinstance(result, dict) and result.get("allowed")) is (privileged == "true")

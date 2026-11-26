@@ -242,3 +242,9 @@ check imports the production init-data annotation constant. It rejects a missing
 key, a wrong key, duplicate aliases, malformed or oversized compressed data, and
 a digest mismatch. Local policy generation and a healthy guest do not prove that
 the runtime received init-data. Record fresh attestation evidence separately.
+
+The reviewed helper makes CRI-O mark the infra container as a privileged runtime
+context. The lab policy requires that exact pause annotation. Application OCI
+requests must omit it or set it to false. This exception is confined to the lab
+compiler. The production CRI-O policy still rejects privileged runtime contexts.
+The handler must continue to exclude host devices.
