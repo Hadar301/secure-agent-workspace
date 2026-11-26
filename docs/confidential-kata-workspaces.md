@@ -87,6 +87,17 @@ The current lab will use a vendor-fixed runtime only. Obtain a compatible
 host and guest pair and the supported update and recovery procedure. Do not
 substitute a locally built shim.
 
+The OSC 1.13 source pinned at `b17f640` contains the empty-response check in
+[`readProcessStream`](https://github.com/openshift/kata-containers/blob/b17f640901e87e620ab74db428e8e0883cb91b81/src/runtime/virtcontainers/kata_agent.go).
+That source is not proof that the installed RHCOS host binary contains it.
+The tested guest image also matches the installed OSC CSV operand. Check the
+host and guest as a pair; do not replace the guest with an unverified image.
+
+The [ARO compatibility table](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13/html/deploying_confidential_containers_on_microsoft_azure_red_hat_openshift/cc-discover_aro-cc)
+lists `4.21.24+` in its 4.21 column. A public OCP 4.21.24 release exists, but
+neither its EOF repair nor its availability as an ARO upgrade was verified.
+Obtain vendor confirmation before selecting it as the repair.
+
 The replay also exposed an undefined `GetMetricsRequest` policy query. The
 canonical CRI-O adapter now returns an explicit denial for this request. It
 retains the existing denied access and avoids an internal policy-evaluation
