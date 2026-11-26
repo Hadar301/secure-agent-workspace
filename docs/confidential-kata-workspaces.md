@@ -57,6 +57,31 @@ Do not allow an opaque host directory to satisfy the guest launch policy.
 The earlier results below are historical component tests. They do not establish
 qualification of this new cluster or the OpenShell 0.1.10 image pairing.
 
+## Experimental peer-pod storage gates
+
+The [isolated storage lab](../deploy/confidential/lab-storage/README.md) is not
+part of production enrollment. Its approved Pod has two storage helpers and one
+non-root test application. Normal SAW launch validation does not accept this
+multi-container privileged shape. Do not use a lab StorageClass as a workspace
+qualification marker.
+
+Compile a lab policy from the server-admitted Pod and actual volume identities.
+The adapter accepts only the pinned peer-pod resource conversion and known API
+defaults. It keeps the exact VM sizing, image, command, mount and role authority.
+The lab infra-container privilege context is explicit. The normal CRI-O adapter
+continues to reject privileged runtime contexts.
+
+Before releasing the scheduling gate, call the shared lab `launch_input` check.
+It imports the production init-data annotation constant and validates the bounded
+compressed payload against its verified hash. Reject wrong keys, aliases and
+admission-time payload changes. Local OPA success, a Bound claim, an attachment
+placeholder or a running guest is not proof of measured policy enforcement.
+Verify the live guest's policy decision and the actual application mount.
+
+Keep provider credentials out of these component tests. A full workspace still
+requires qualified audit storage, workload startup, attested supervisor release,
+normal lifecycle, isolation and the Make, GitOps and RHDH acceptance cases.
+
 ## Latest lab results (2026-11-26)
 
 The worker recovered from stale runtime state. CRI-O and kubelet passed the
