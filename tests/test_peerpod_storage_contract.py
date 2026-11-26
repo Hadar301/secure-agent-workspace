@@ -313,3 +313,32 @@ def test_image_build_metadata_cannot_add_authority(site, generated, change):
     else: env.append("OPENSHIFT_EXEC_OVERRIDE=/bin/sh")
     with pytest.raises(M.ContractError, match="^LabGuestPolicyRejected$"):
         compiled(site, (prefix, source))
+
+
+@pytest.mark.parametrize("change", [None, "wrong-key", "duplicate-key", "missing", "hash", "encoding", "compression", "oversize"])
+def test_launch_requires_canonical_measured_annotation(site, admitted_case, change):
+    import base64, gzip, hashlib
+    pod, context = admitted_case
+    raw = b'version = "0.1.0"\nalgorithm = "sha256"\n[data]\n'
+    expected = hashlib.sha256(raw).hexdigest()
+    key = M._attestation_module().ANNOTATION
+    annotation = base64.b64encode(gzip.compress(raw, mtime=0)).decode()
+    pod["metadata"]["annotations"][key] = annotation
+    if change == "wrong-key": pod["metadata"]["annotations"]["io.katacontainers.config.runtime.cc_init_data"] = pod["metadata"]["annotations"].pop(key)
+    elif change == "duplicate-key": pod["metadata"]["annotations"]["io.katacontainers.config.runtime.cc_init_data"] = annotation
+    elif change == "missing": pod["metadata"]["annotations"].pop(key)
+    elif change == "hash": expected = "0" * 64
+    elif change == "encoding": pod["metadata"]["annotations"][key] = "not-base64"
+    elif change == "compression": pod["metadata"]["annotations"][key] = base64.b64encode(b"not-gzip").decode()
+    elif change == "oversize":
+        oversized = b"x" * (512 * 1024 + 1)
+        expected = hashlib.sha256(oversized).hexdigest()
+        pod["metadata"]["annotations"][key] = base64.b64encode(gzip.compress(oversized)).decode()
+    before = copy.deepcopy(pod)
+    if change is None:
+        result = M.launch_input(pod, site, context, expected)
+        assert key not in result["metadata"]["annotations"]
+        assert pod == before
+    else:
+        with pytest.raises(M.ContractError, match="^LabInitdataAnnotationRejected$"):
+            M.launch_input(pod, site, context, expected)

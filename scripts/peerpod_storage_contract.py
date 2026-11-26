@@ -1,5 +1,8 @@
 """Closed lab-only Pod contract. Does not enable production enrollment."""
 import copy
+import base64
+import gzip
+import io
 import ipaddress
 import hashlib
 import importlib.util
@@ -205,6 +208,37 @@ def generator_input(pod, site, *, admission_context=None):
     return result
 
 
+def _attestation_module():
+    """Use the production constants and compiler. Do not copy them."""
+    spec = importlib.util.spec_from_file_location("lab_canonical_attestation", Path(__file__).resolve().parents[1] / "kubernetes-runtime/saw_kubernetes/attestation.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def launch_input(pod, site, context, expected_sha256):
+    """Require the canonical measured init-data annotation before gate release."""
+    try:
+        if not isinstance(expected_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+            raise ValueError()
+        candidate = copy.deepcopy(pod)
+        annotations = candidate["metadata"]["annotations"]
+        key = _attestation_module().ANNOTATION
+        if {k for k in annotations if k.endswith("cc_init_data")} != {key}:
+            raise ValueError()
+        encoded = annotations.pop(key)
+        if not isinstance(encoded, str) or len(encoded) > 200_000:
+            raise ValueError()
+        compressed = base64.b64decode(encoded, validate=True)
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+            raw = stream.read(512 * 1024 + 1)
+        if len(raw) > 512 * 1024 or hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise ValueError()
+        return admitted_input(candidate, site, context)
+    except (ValueError, TypeError, KeyError, AttributeError, OSError, EOFError):
+        raise ContractError("LabInitdataAnnotationRejected") from None
+
+
 FIXED_DATA = {
     "common": "fe72866b3840675364daa789dff7f93602b5bde4ddea5b66ad1f898ad944c4bc",
     "sandbox": "ed9bcaa593756ab3759f4401a35a52bcd9499f8251fb788bbec7825b18c1606d",
@@ -226,9 +260,7 @@ BASE_ENV_SHA256 = 'e13a8b9ce2da83fe5d731877149240cc230b63d448299a856196e4bc59ee9
 def compile_policy(pod, site, generated, runtime_profile, *, admission_context=None):
     """Compile only the closed lab preview. Never enables SAW enrollment."""
     normalized = generator_input(pod, site, admission_context=admission_context)
-    spec = importlib.util.spec_from_file_location("lab_canonical_attestation", Path(__file__).resolve().parents[1] / "kubernetes-runtime/saw_kubernetes/attestation.py")
-    a = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(a)
+    a = _attestation_module()
     try:
         if not isinstance(generated, str) or len(generated.encode()) > 512 * 1024 or a.IDENTITY_MARKER in generated:
             raise ValueError()

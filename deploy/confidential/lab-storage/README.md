@@ -227,7 +227,7 @@ volume-record access to hide an informer configuration error.
 
 A Bound claim or an attached VolumeAttachment does not prove guest access. The
 wrapper returns a placeholder publish response before it attaches the disk to
-the peer VM. Qualification requires the real VM identity, a physical device path,
+the peer VM. Qualification requires the real VM identity, provider-specific device identification,
 completed guest stage/publish operations, and an application write/read result.
 Do not report the placeholder response as Azure disk attachment.
 
@@ -236,3 +236,9 @@ The compiler validates these two values as DNS labels and keeps their exact
 values in the measured launch policy. A new build may change these labels.
 All other base image environment variables retain their pinned hash. Missing,
 duplicate, invalid or unknown environment values fail closed.
+
+Before removing a scheduling gate, call `launch_input` on the actual Pod. This
+check imports the production init-data annotation constant. It rejects a missing
+key, a wrong key, duplicate aliases, malformed or oversized compressed data, and
+a digest mismatch. Local policy generation and a healthy guest do not prove that
+the runtime received init-data. Record fresh attestation evidence separately.
