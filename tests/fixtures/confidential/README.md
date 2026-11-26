@@ -11,3 +11,9 @@ the CRI-O 1.34 / OCI 1.2.1 request format and locked generator output. They
 contain no cluster hostname, provider key, token, or live attestation report.
 The executable tests also exercise application requests, storage source
 binding, denied host access, and full enrollment revalidation.
+
+The `peerpod-lab-generator-data.json` file comes from an offline pinned-generator
+preview. Its workspace, worker, image reference, Pod UID and API address use
+cluster-independent values. It contains no live run result or credential. The
+vendor build environment remains as image metadata so the compiler can check
+its unchanged public base-environment digest.

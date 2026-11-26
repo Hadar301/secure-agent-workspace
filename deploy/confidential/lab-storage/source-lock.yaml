@@ -20,3 +20,12 @@ helperMarker:
   sourceSHA256: bd53830caf7f1c6e358c904d39cd24e9d9cac5d313b85e9b9c16c8d1119f1329
   testsSHA256: 65b12d3f7dc43b8b747b6b52ceadb5cbd09b9cf73afa205669e244a8cd05867e
   workerApplicationApproved: false
+guestPolicy:
+  status: preview-only
+  contractSource: scripts/peerpod_storage_contract.py
+  contractSHA256: adff42efcb68e272d170f73f826c54e783e833f693a7d852da1f0a815bfc0224
+  canonicalRuntimeAdapter: kubernetes-runtime/saw_kubernetes/crio_policy.py
+  canonicalRuntimeAdapterSHA256: 8bd80d261aad7a01557f91d1b8dd0fb14b50a4cd632b83e4156cd90e2261ff26
+  requiresPrivilegedWithoutHostDevices: true
+  productionEnrollmentEnabled: false
+  liveGuestAccepted: false

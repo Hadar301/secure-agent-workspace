@@ -125,6 +125,43 @@ arguments. It contains no cloud configuration, Kubernetes token or provider key.
 Sign the resulting digest and verify it before admitting a guest. The resulting
 image remains experimental until the measured launch and mount checks pass.
 
+## Measured lab policy preview
+
+`scripts/peerpod_storage_contract.py` defines one closed Pod shape. It is a
+separate administrator tool. The normal SAW compiler still rejects this shape.
+It does not add a portal option or enable confidential workspace enrollment.
+
+The disk helper has guest mount authority. The wrapper runs as root with all
+capabilities dropped and a read-only projected API token. The application runs
+as a non-root user and has no API identity mount. Every role uses one signed
+image digest and a fixed command. Unknown fields, extra roles, changed tokens,
+foreign claims and new mounts fail validation.
+
+The generator adapter removes only verified API-only controls and projection
+sources that the pinned parser cannot read. It resolves the four known downward
+fields to the reviewed Pod name, namespace, UID and worker. The original Pod
+keeps those fields and all projection sources. Numeric UID, privilege,
+capabilities, seccomp and mount authority remain in the generator input.
+
+The lab compiler calls the canonical CRI-O converter. It then adds a separate
+role-specific UID and no-new-privileges guard, an exact Pod UID, and direct mount
+sources. Only the disk helper gets shared root propagation. The application
+gets slave propagation. Host execution, policy replacement, stream access and
+diagnostic requests stay denied. Its changed rule prefix cannot pass normal
+SAW enrollment validation.
+
+Before using it, verify the selected runtime has
+`privileged_without_host_devices=true`. Do not permit host devices or loosen
+that runtime setting. The reviewed generator settings permit CloseStdinRequest
+for normal lifecycle handling. Record this one change from vendor defaults;
+keep the other host-control defaults denied.
+
+Generated preview identities are not reserved Kubernetes or volume identities.
+They must never be used for a guest launch. The actual Pod must pass server
+admission and be held by a scheduling gate while its real UID and volume name
+are bound into the measured policy. Verify fresh reference values before release.
+A preview that compiles is not proof of a guest mount or a complete workspace.
+
 ## Acceptance gates
 
 - The managed CSI specifications and identities stay unchanged.

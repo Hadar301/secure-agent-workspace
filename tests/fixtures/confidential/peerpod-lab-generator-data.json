@@ -1,0 +1,1228 @@
+{
+  "containers": [
+    {
+      "OCI": {
+        "Version": "1.1.0",
+        "Process": {
+          "Terminal": false,
+          "User": {
+            "UID": 65535,
+            "GID": 65535,
+            "AdditionalGids": [
+              65535
+            ],
+            "Username": ""
+          },
+          "Args": [
+            "/pause"
+          ],
+          "Env": [
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          ],
+          "Cwd": "/",
+          "Capabilities": {
+            "Ambient": [],
+            "Bounding": [
+              "$(default_caps)"
+            ],
+            "Effective": [
+              "$(default_caps)"
+            ],
+            "Inheritable": [],
+            "Permitted": [
+              "$(default_caps)"
+            ]
+          },
+          "NoNewPrivileges": true
+        },
+        "Root": {
+          "Path": "$(root_path)",
+          "Readonly": true
+        },
+        "Mounts": [
+          {
+            "destination": "/proc",
+            "source": "proc",
+            "type_": "proc",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/dev",
+            "source": "tmpfs",
+            "type_": "tmpfs",
+            "options": [
+              "nosuid",
+              "strictatime",
+              "mode=755",
+              "size=65536k"
+            ]
+          },
+          {
+            "destination": "/dev/pts",
+            "source": "devpts",
+            "type_": "devpts",
+            "options": [
+              "nosuid",
+              "noexec",
+              "newinstance",
+              "ptmxmode=0666",
+              "mode=0620",
+              "gid=5"
+            ]
+          },
+          {
+            "destination": "/dev/shm",
+            "source": "/run/kata-containers/sandbox/shm",
+            "type_": "bind",
+            "options": [
+              "rbind"
+            ]
+          },
+          {
+            "destination": "/dev/mqueue",
+            "source": "mqueue",
+            "type_": "mqueue",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/sys",
+            "source": "sysfs",
+            "type_": "sysfs",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/etc/resolv.conf",
+            "source": "$(sfprefix)resolv.conf$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "ro",
+              "nosuid",
+              "nodev",
+              "noexec"
+            ]
+          }
+        ],
+        "Annotations": {
+          "io.confidentialcontainers.org.peerpodvolumes.target_path": "/var/lib/kubelet/pods/01234567-89ab-4cde-8fab-0123456789ab/volumes/kubernetes.io~csi/pvc-public-work/mount",
+          "io.katacontainers.pkg.oci.bundle_path": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$(bundle-id)",
+          "io.katacontainers.pkg.oci.container_type": "pod_sandbox",
+          "io.kubernetes.cri.container-type": "sandbox",
+          "io.kubernetes.cri.sandbox-id": "^[a-z0-9]{64}$",
+          "io.kubernetes.cri.sandbox-log-directory": "^/var/log/pods/$(sandbox-namespace)_$(sandbox-name)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "io.kubernetes.cri.sandbox-name": "^storage-mount-lab$",
+          "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef",
+          "nerdctl/network-namespace": "^/var/run/netns/cni-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "openshift.io/required-scc": "saw-ppvc-0123456789abcdef-guest"
+        },
+        "Linux": {
+          "Namespaces": [
+            {
+              "Type": "ipc",
+              "Path": ""
+            },
+            {
+              "Type": "uts",
+              "Path": ""
+            },
+            {
+              "Type": "mount",
+              "Path": ""
+            }
+          ],
+          "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/asound",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/proc/sched_debug",
+            "/sys/firmware",
+            "/proc/scsi"
+          ],
+          "ReadonlyPaths": [
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger"
+          ],
+          "Devices": [],
+          "Sysctl": {
+            "net.ipv4.ip_unprivileged_port_start": "0",
+            "net.ipv4.ping_group_range": "0 2147483647"
+          }
+        }
+      },
+      "storages": [],
+      "devices": [],
+      "sandbox_pidns": false,
+      "exec_commands": [],
+      "runtime_anno_patterns": {}
+    },
+    {
+      "OCI": {
+        "Version": "1.1.0",
+        "Process": {
+          "Terminal": false,
+          "User": {
+            "UID": 0,
+            "GID": 0,
+            "AdditionalGids": [
+              0,
+              65534
+            ],
+            "Username": ""
+          },
+          "Args": [
+            "/bin/sh",
+            "-ec",
+            "mount -t devtmpfs none /dev && exec /usr/bin/azurediskplugin --drivername=saw-ppvc-0123456789abcdef.disk.csi.saw.redhat.com --endpoint=unix:///csi/backend.sock --nodeid=$KUBE_NODE_NAME --allow-empty-cloud-config=true --cloud-config-secret-name= --cloud-config-secret-namespace= --remove-not-ready-taint=false --never-stop-taint-removal=false --enable-migration-monitor=false --v=2"
+          ],
+          "Env": [
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "container=oci",
+            "GODEBUG=x509ignoreCN=0,madvdontneed=1",
+            "ART_BUILD_ENGINE=konflux",
+            "ART_BUILD_DEPS_METHOD=cachi2",
+            "ART_BUILD_NETWORK=hermetic",
+            "ART_BUILD_DEPS_MODE=default",
+            "__doozer=merge",
+            "BUILD_RELEASE=202611031655.p2.g51bdc52.assembly.stream.el9",
+            "BUILD_VERSION=v4.22.0",
+            "OS_GIT_MAJOR=4",
+            "OS_GIT_MINOR=22",
+            "OS_GIT_PATCH=0",
+            "OS_GIT_TREE_STATE=clean",
+            "OS_GIT_VERSION=4.22.0-202611031655.p2.g51bdc52.assembly.stream.el9-51bdc52",
+            "SOURCE_GIT_TREE_STATE=clean",
+            "__doozer_group=openshift-4.22",
+            "__doozer_key=ose-azure-disk-csi-driver",
+            "__doozer_uuid_tag=ose-azure-disk-csi-driver-rhel9-v4.22.0-20261103.173239",
+            "__doozer_version=v4.22.0",
+            "OS_GIT_COMMIT=51bdc52",
+            "SOURCE_DATE_EPOCH=1792103751",
+            "SOURCE_GIT_COMMIT=51bdc527ae1b9723965fe5e911a3834ede228da0",
+            "SOURCE_GIT_TAG=v0.9.0-3940-g51bdc527",
+            "SOURCE_GIT_URL=https://github.com/openshift/azure-disk-csi-driver",
+            "OPENSHIFT_BUILD_NAME=saw-peerpod-guest-lab-1",
+            "OPENSHIFT_BUILD_NAMESPACE=saw-confidential-build",
+            "HOSTNAME=$(host-name)",
+            "KUBE_NODE_NAME=lab-worker"
+          ],
+          "Cwd": "/",
+          "Capabilities": {
+            "Ambient": [],
+            "Bounding": [
+              "$(privileged_caps)"
+            ],
+            "Effective": [
+              "$(privileged_caps)"
+            ],
+            "Inheritable": [],
+            "Permitted": [
+              "$(privileged_caps)"
+            ]
+          },
+          "NoNewPrivileges": false
+        },
+        "Root": {
+          "Path": "$(root_path)",
+          "Readonly": true
+        },
+        "Mounts": [
+          {
+            "destination": "/proc",
+            "source": "proc",
+            "type_": "proc",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/dev",
+            "source": "tmpfs",
+            "type_": "tmpfs",
+            "options": [
+              "nosuid",
+              "strictatime",
+              "mode=755",
+              "size=65536k"
+            ]
+          },
+          {
+            "destination": "/dev/pts",
+            "source": "devpts",
+            "type_": "devpts",
+            "options": [
+              "nosuid",
+              "noexec",
+              "newinstance",
+              "ptmxmode=0666",
+              "mode=0620",
+              "gid=5"
+            ]
+          },
+          {
+            "destination": "/dev/shm",
+            "source": "/run/kata-containers/sandbox/shm",
+            "type_": "bind",
+            "options": [
+              "rbind"
+            ]
+          },
+          {
+            "destination": "/dev/mqueue",
+            "source": "mqueue",
+            "type_": "mqueue",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/sys",
+            "source": "sysfs",
+            "type_": "sysfs",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/sys/fs/cgroup",
+            "source": "cgroup",
+            "type_": "cgroup",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "relatime",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/etc/hosts",
+            "source": "$(sfprefix)hosts$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/dev/termination-log",
+            "source": "$(sfprefix)termination-log$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/etc/hostname",
+            "source": "$(sfprefix)hostname$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/etc/resolv.conf",
+            "source": "$(sfprefix)resolv.conf$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "source": "$(sfprefix)serviceaccount$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/azure/tokens",
+            "source": "$(sfprefix)tokens$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/lib/kubelet",
+            "source": "$(sfprefix)kubelet$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rshared",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/csi",
+            "source": "",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/tmp",
+            "source": "",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          }
+        ],
+        "Annotations": {
+          "io.confidentialcontainers.org.peerpodvolumes.target_path": "/var/lib/kubelet/pods/01234567-89ab-4cde-8fab-0123456789ab/volumes/kubernetes.io~csi/pvc-public-work/mount",
+          "io.katacontainers.pkg.oci.bundle_path": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$(bundle-id)",
+          "io.katacontainers.pkg.oci.container_type": "pod_container",
+          "io.kubernetes.cri.container-name": "azure-disk-helper",
+          "io.kubernetes.cri.container-type": "container",
+          "io.kubernetes.cri.image-name": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "io.kubernetes.cri.sandbox-id": "^[a-z0-9]{64}$",
+          "io.kubernetes.cri.sandbox-name": "^storage-mount-lab$",
+          "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef",
+          "openshift.io/required-scc": "saw-ppvc-0123456789abcdef-guest"
+        },
+        "Linux": {
+          "Namespaces": [
+            {
+              "Type": "ipc",
+              "Path": ""
+            },
+            {
+              "Type": "uts",
+              "Path": ""
+            },
+            {
+              "Type": "mount",
+              "Path": ""
+            }
+          ],
+          "MaskedPaths": [],
+          "ReadonlyPaths": [],
+          "Devices": [],
+          "Sysctl": {
+            "net.ipv4.ip_unprivileged_port_start": "0",
+            "net.ipv4.ping_group_range": "0 2147483647"
+          }
+        }
+      },
+      "storages": [
+        {
+          "driver": "",
+          "driver_options": [
+            "encryption_key=ephemeral"
+          ],
+          "source": "",
+          "fstype": "ext4",
+          "options": [],
+          "mount_point": "$(spath)/$(b64_device_id)",
+          "fs_group": {
+            "group_id": 65534,
+            "group_change_policy": 0
+          },
+          "shared": true
+        },
+        {
+          "driver": "",
+          "driver_options": [
+            "encryption_key=ephemeral"
+          ],
+          "source": "",
+          "fstype": "ext4",
+          "options": [],
+          "mount_point": "$(spath)/$(b64_device_id)",
+          "fs_group": {
+            "group_id": 65534,
+            "group_change_policy": 0
+          },
+          "shared": true
+        }
+      ],
+      "devices": [],
+      "sandbox_pidns": false,
+      "exec_commands": [],
+      "runtime_anno_patterns": {
+        "^io\\.kubernetes\\.container\\.terminationMessagePath$": "^/.*$",
+        "^io\\.kubernetes\\.container\\.terminationMessagePolicy$": "^(File|FallbackToLogsOnError)$"
+      }
+    },
+    {
+      "OCI": {
+        "Version": "1.1.0",
+        "Process": {
+          "Terminal": false,
+          "User": {
+            "UID": 0,
+            "GID": 0,
+            "AdditionalGids": [
+              0,
+              65534
+            ],
+            "Username": ""
+          },
+          "Args": [
+            "/usr/local/bin/csi-podvm-wrapper",
+            "--endpoint=/csi/guest.sock",
+            "--target-endpoint=/csi/backend.sock",
+            "--namespace=saw-ppvc-0123456789abcdef",
+            "--v=0"
+          ],
+          "Env": [
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "container=oci",
+            "GODEBUG=x509ignoreCN=0,madvdontneed=1",
+            "ART_BUILD_ENGINE=konflux",
+            "ART_BUILD_DEPS_METHOD=cachi2",
+            "ART_BUILD_NETWORK=hermetic",
+            "ART_BUILD_DEPS_MODE=default",
+            "__doozer=merge",
+            "BUILD_RELEASE=202611031655.p2.g51bdc52.assembly.stream.el9",
+            "BUILD_VERSION=v4.22.0",
+            "OS_GIT_MAJOR=4",
+            "OS_GIT_MINOR=22",
+            "OS_GIT_PATCH=0",
+            "OS_GIT_TREE_STATE=clean",
+            "OS_GIT_VERSION=4.22.0-202611031655.p2.g51bdc52.assembly.stream.el9-51bdc52",
+            "SOURCE_GIT_TREE_STATE=clean",
+            "__doozer_group=openshift-4.22",
+            "__doozer_key=ose-azure-disk-csi-driver",
+            "__doozer_uuid_tag=ose-azure-disk-csi-driver-rhel9-v4.22.0-20261103.173239",
+            "__doozer_version=v4.22.0",
+            "OS_GIT_COMMIT=51bdc52",
+            "SOURCE_DATE_EPOCH=1792103751",
+            "SOURCE_GIT_COMMIT=51bdc527ae1b9723965fe5e911a3834ede228da0",
+            "SOURCE_GIT_TAG=v0.9.0-3940-g51bdc527",
+            "SOURCE_GIT_URL=https://github.com/openshift/azure-disk-csi-driver",
+            "OPENSHIFT_BUILD_NAME=saw-peerpod-guest-lab-1",
+            "OPENSHIFT_BUILD_NAMESPACE=saw-confidential-build",
+            "HOSTNAME=$(host-name)",
+            "POD_NAME=storage-mount-lab",
+            "POD_NAME_SPACE=saw-ppvc-probe-0123456789abcdef",
+            "POD_UID=01234567-89ab-4cde-8fab-0123456789ab",
+            "POD_NODE_NAME=lab-worker",
+            "KUBERNETES_SERVICE_HOST=192.0.2.10",
+            "KUBERNETES_SERVICE_PORT=443"
+          ],
+          "Cwd": "/",
+          "Capabilities": {
+            "Ambient": [],
+            "Bounding": [],
+            "Effective": [],
+            "Inheritable": [],
+            "Permitted": []
+          },
+          "NoNewPrivileges": true
+        },
+        "Root": {
+          "Path": "$(root_path)",
+          "Readonly": true
+        },
+        "Mounts": [
+          {
+            "destination": "/proc",
+            "source": "proc",
+            "type_": "proc",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/dev",
+            "source": "tmpfs",
+            "type_": "tmpfs",
+            "options": [
+              "nosuid",
+              "strictatime",
+              "mode=755",
+              "size=65536k"
+            ]
+          },
+          {
+            "destination": "/dev/pts",
+            "source": "devpts",
+            "type_": "devpts",
+            "options": [
+              "nosuid",
+              "noexec",
+              "newinstance",
+              "ptmxmode=0666",
+              "mode=0620",
+              "gid=5"
+            ]
+          },
+          {
+            "destination": "/dev/shm",
+            "source": "/run/kata-containers/sandbox/shm",
+            "type_": "bind",
+            "options": [
+              "rbind"
+            ]
+          },
+          {
+            "destination": "/dev/mqueue",
+            "source": "mqueue",
+            "type_": "mqueue",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/sys",
+            "source": "sysfs",
+            "type_": "sysfs",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/sys/fs/cgroup",
+            "source": "cgroup",
+            "type_": "cgroup",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "relatime",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/etc/hosts",
+            "source": "$(sfprefix)hosts$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/dev/termination-log",
+            "source": "$(sfprefix)termination-log$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/etc/hostname",
+            "source": "$(sfprefix)hostname$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/etc/resolv.conf",
+            "source": "$(sfprefix)resolv.conf$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "source": "$(sfprefix)serviceaccount$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/azure/tokens",
+            "source": "$(sfprefix)tokens$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/csi",
+            "source": "",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          }
+        ],
+        "Annotations": {
+          "io.confidentialcontainers.org.peerpodvolumes.target_path": "/var/lib/kubelet/pods/01234567-89ab-4cde-8fab-0123456789ab/volumes/kubernetes.io~csi/pvc-public-work/mount",
+          "io.katacontainers.pkg.oci.bundle_path": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$(bundle-id)",
+          "io.katacontainers.pkg.oci.container_type": "pod_container",
+          "io.kubernetes.cri.container-name": "volume-wrapper",
+          "io.kubernetes.cri.container-type": "container",
+          "io.kubernetes.cri.image-name": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "io.kubernetes.cri.sandbox-id": "^[a-z0-9]{64}$",
+          "io.kubernetes.cri.sandbox-name": "^storage-mount-lab$",
+          "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef",
+          "openshift.io/required-scc": "saw-ppvc-0123456789abcdef-guest"
+        },
+        "Linux": {
+          "Namespaces": [
+            {
+              "Type": "ipc",
+              "Path": ""
+            },
+            {
+              "Type": "uts",
+              "Path": ""
+            },
+            {
+              "Type": "mount",
+              "Path": ""
+            }
+          ],
+          "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/proc/sched_debug",
+            "/proc/scsi",
+            "/sys/firmware"
+          ],
+          "ReadonlyPaths": [
+            "/proc/asound",
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger"
+          ],
+          "Devices": [],
+          "Sysctl": {
+            "net.ipv4.ip_unprivileged_port_start": "0",
+            "net.ipv4.ping_group_range": "0 2147483647"
+          }
+        }
+      },
+      "storages": [
+        {
+          "driver": "",
+          "driver_options": [
+            "encryption_key=ephemeral"
+          ],
+          "source": "",
+          "fstype": "ext4",
+          "options": [],
+          "mount_point": "$(spath)/$(b64_device_id)",
+          "fs_group": {
+            "group_id": 65534,
+            "group_change_policy": 0
+          },
+          "shared": true
+        }
+      ],
+      "devices": [],
+      "sandbox_pidns": false,
+      "exec_commands": [],
+      "runtime_anno_patterns": {
+        "^io\\.kubernetes\\.container\\.terminationMessagePath$": "^/.*$",
+        "^io\\.kubernetes\\.container\\.terminationMessagePolicy$": "^(File|FallbackToLogsOnError)$"
+      }
+    },
+    {
+      "OCI": {
+        "Version": "1.1.0",
+        "Process": {
+          "Terminal": false,
+          "User": {
+            "UID": 65534,
+            "GID": 0,
+            "AdditionalGids": [
+              0,
+              65534
+            ],
+            "Username": ""
+          },
+          "Args": [
+            "/bin/sh",
+            "-ec",
+            "set -eu; printf saw-storage-lab > /work/saw-storage-check; test \"$(cat /work/saw-storage-check)\" = saw-storage-lab; printf 'StorageWritePassed\\n'; sleep 120"
+          ],
+          "Env": [
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "container=oci",
+            "GODEBUG=x509ignoreCN=0,madvdontneed=1",
+            "ART_BUILD_ENGINE=konflux",
+            "ART_BUILD_DEPS_METHOD=cachi2",
+            "ART_BUILD_NETWORK=hermetic",
+            "ART_BUILD_DEPS_MODE=default",
+            "__doozer=merge",
+            "BUILD_RELEASE=202611031655.p2.g51bdc52.assembly.stream.el9",
+            "BUILD_VERSION=v4.22.0",
+            "OS_GIT_MAJOR=4",
+            "OS_GIT_MINOR=22",
+            "OS_GIT_PATCH=0",
+            "OS_GIT_TREE_STATE=clean",
+            "OS_GIT_VERSION=4.22.0-202611031655.p2.g51bdc52.assembly.stream.el9-51bdc52",
+            "SOURCE_GIT_TREE_STATE=clean",
+            "__doozer_group=openshift-4.22",
+            "__doozer_key=ose-azure-disk-csi-driver",
+            "__doozer_uuid_tag=ose-azure-disk-csi-driver-rhel9-v4.22.0-20261103.173239",
+            "__doozer_version=v4.22.0",
+            "OS_GIT_COMMIT=51bdc52",
+            "SOURCE_DATE_EPOCH=1792103751",
+            "SOURCE_GIT_COMMIT=51bdc527ae1b9723965fe5e911a3834ede228da0",
+            "SOURCE_GIT_TAG=v0.9.0-3940-g51bdc527",
+            "SOURCE_GIT_URL=https://github.com/openshift/azure-disk-csi-driver",
+            "OPENSHIFT_BUILD_NAME=saw-peerpod-guest-lab-1",
+            "OPENSHIFT_BUILD_NAMESPACE=saw-confidential-build",
+            "HOSTNAME=$(host-name)"
+          ],
+          "Cwd": "/",
+          "Capabilities": {
+            "Ambient": [],
+            "Bounding": [],
+            "Effective": [],
+            "Inheritable": [],
+            "Permitted": []
+          },
+          "NoNewPrivileges": true
+        },
+        "Root": {
+          "Path": "$(root_path)",
+          "Readonly": true
+        },
+        "Mounts": [
+          {
+            "destination": "/proc",
+            "source": "proc",
+            "type_": "proc",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/dev",
+            "source": "tmpfs",
+            "type_": "tmpfs",
+            "options": [
+              "nosuid",
+              "strictatime",
+              "mode=755",
+              "size=65536k"
+            ]
+          },
+          {
+            "destination": "/dev/pts",
+            "source": "devpts",
+            "type_": "devpts",
+            "options": [
+              "nosuid",
+              "noexec",
+              "newinstance",
+              "ptmxmode=0666",
+              "mode=0620",
+              "gid=5"
+            ]
+          },
+          {
+            "destination": "/dev/shm",
+            "source": "/run/kata-containers/sandbox/shm",
+            "type_": "bind",
+            "options": [
+              "rbind"
+            ]
+          },
+          {
+            "destination": "/dev/mqueue",
+            "source": "mqueue",
+            "type_": "mqueue",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev"
+            ]
+          },
+          {
+            "destination": "/sys",
+            "source": "sysfs",
+            "type_": "sysfs",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/sys/fs/cgroup",
+            "source": "cgroup",
+            "type_": "cgroup",
+            "options": [
+              "nosuid",
+              "noexec",
+              "nodev",
+              "relatime",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/etc/hosts",
+            "source": "$(sfprefix)hosts$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/dev/termination-log",
+            "source": "$(sfprefix)termination-log$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          },
+          {
+            "destination": "/etc/hostname",
+            "source": "$(sfprefix)hostname$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/etc/resolv.conf",
+            "source": "$(sfprefix)resolv.conf$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "source": "$(sfprefix)serviceaccount$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/var/run/secrets/azure/tokens",
+            "source": "$(sfprefix)tokens$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "ro"
+            ]
+          },
+          {
+            "destination": "/work",
+            "source": "$(sfprefix)work$",
+            "type_": "bind",
+            "options": [
+              "rbind",
+              "rprivate",
+              "rw"
+            ]
+          }
+        ],
+        "Annotations": {
+          "io.confidentialcontainers.org.peerpodvolumes.target_path": "/var/lib/kubelet/pods/01234567-89ab-4cde-8fab-0123456789ab/volumes/kubernetes.io~csi/pvc-public-work/mount",
+          "io.katacontainers.pkg.oci.bundle_path": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$(bundle-id)",
+          "io.katacontainers.pkg.oci.container_type": "pod_container",
+          "io.kubernetes.cri.container-name": "mount-check",
+          "io.kubernetes.cri.container-type": "container",
+          "io.kubernetes.cri.image-name": "registry.example.test/lab/helper@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "io.kubernetes.cri.sandbox-id": "^[a-z0-9]{64}$",
+          "io.kubernetes.cri.sandbox-name": "^storage-mount-lab$",
+          "io.kubernetes.cri.sandbox-namespace": "saw-ppvc-probe-0123456789abcdef",
+          "openshift.io/required-scc": "saw-ppvc-0123456789abcdef-guest"
+        },
+        "Linux": {
+          "Namespaces": [
+            {
+              "Type": "ipc",
+              "Path": ""
+            },
+            {
+              "Type": "uts",
+              "Path": ""
+            },
+            {
+              "Type": "mount",
+              "Path": ""
+            }
+          ],
+          "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/proc/sched_debug",
+            "/proc/scsi",
+            "/sys/firmware"
+          ],
+          "ReadonlyPaths": [
+            "/proc/asound",
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger"
+          ],
+          "Devices": [],
+          "Sysctl": {
+            "net.ipv4.ip_unprivileged_port_start": "0",
+            "net.ipv4.ping_group_range": "0 2147483647"
+          }
+        }
+      },
+      "storages": [],
+      "devices": [],
+      "sandbox_pidns": false,
+      "exec_commands": [],
+      "runtime_anno_patterns": {
+        "^io\\.kubernetes\\.container\\.terminationMessagePath$": "^/.*$",
+        "^io\\.kubernetes\\.container\\.terminationMessagePolicy$": "^(File|FallbackToLogsOnError)$"
+      }
+    }
+  ],
+  "common": {
+    "cpath": "/run/kata-containers/shared/containers(?:/passthrough)?",
+    "root_path": "/run/kata-containers/$(bundle-id)/rootfs",
+    "sfprefix": "^$(cpath)/(watchable/)?$(bundle-id)-[a-z0-9]{16}-",
+    "spath": "/run/kata-containers/sandbox/storage",
+    "ipv4_a": "(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])",
+    "ip_p": "[0-9]{1,5}",
+    "svc_name_downward_env": "[A-Z](?:[A-Z0-9_]{0,61}[A-Z0-9])?",
+    "dns_label": "[a-zA-Z0-9_\\.\\-]+",
+    "default_caps": [
+      "CAP_CHOWN",
+      "CAP_DAC_OVERRIDE",
+      "CAP_FSETID",
+      "CAP_FOWNER",
+      "CAP_MKNOD",
+      "CAP_NET_RAW",
+      "CAP_SETGID",
+      "CAP_SETUID",
+      "CAP_SETFCAP",
+      "CAP_SETPCAP",
+      "CAP_NET_BIND_SERVICE",
+      "CAP_SYS_CHROOT",
+      "CAP_KILL",
+      "CAP_AUDIT_WRITE"
+    ],
+    "privileged_caps": [
+      "CAP_CHOWN",
+      "CAP_DAC_OVERRIDE",
+      "CAP_DAC_READ_SEARCH",
+      "CAP_FOWNER",
+      "CAP_FSETID",
+      "CAP_KILL",
+      "CAP_SETGID",
+      "CAP_SETUID",
+      "CAP_SETPCAP",
+      "CAP_LINUX_IMMUTABLE",
+      "CAP_NET_BIND_SERVICE",
+      "CAP_NET_BROADCAST",
+      "CAP_NET_ADMIN",
+      "CAP_NET_RAW",
+      "CAP_IPC_LOCK",
+      "CAP_IPC_OWNER",
+      "CAP_SYS_MODULE",
+      "CAP_SYS_RAWIO",
+      "CAP_SYS_CHROOT",
+      "CAP_SYS_PTRACE",
+      "CAP_SYS_PACCT",
+      "CAP_SYS_ADMIN",
+      "CAP_SYS_BOOT",
+      "CAP_SYS_NICE",
+      "CAP_SYS_RESOURCE",
+      "CAP_SYS_TIME",
+      "CAP_SYS_TTY_CONFIG",
+      "CAP_MKNOD",
+      "CAP_LEASE",
+      "CAP_AUDIT_WRITE",
+      "CAP_AUDIT_CONTROL",
+      "CAP_SETFCAP",
+      "CAP_MAC_OVERRIDE",
+      "CAP_MAC_ADMIN",
+      "CAP_SYSLOG",
+      "CAP_WAKE_ALARM",
+      "CAP_BLOCK_SUSPEND",
+      "CAP_AUDIT_READ",
+      "CAP_PERFMON",
+      "CAP_BPF",
+      "CAP_CHECKPOINT_RESTORE"
+    ]
+  },
+  "sandbox": {
+    "storages": [
+      {
+        "driver": "ephemeral",
+        "driver_options": [],
+        "source": "shm",
+        "fstype": "tmpfs",
+        "options": [
+          "noexec",
+          "nosuid",
+          "nodev",
+          "mode=1777",
+          "size=67108864"
+        ],
+        "mount_point": "/run/kata-containers/sandbox/shm",
+        "fs_group": null,
+        "shared": false
+      }
+    ]
+  },
+  "request_defaults": {
+    "CreateContainerRequest": {
+      "allow_env_regex": [
+        "^HOSTNAME=$(dns_label)$",
+        "^$(svc_name_downward_env)_PORT_$(ip_p)_(TCP|UDP)=(tcp|udp)://$(ipv4_a):$(ip_p)$",
+        "^$(svc_name_downward_env)_PORT_$(ip_p)_(TCP|UDP)_PROTO=(tcp|udp)$",
+        "^$(svc_name_downward_env)_PORT_$(ip_p)_(TCP|UDP)_PORT=$(ip_p)$",
+        "^$(svc_name_downward_env)_PORT_$(ip_p)_(TCP|UDP)_ADDR=$(ipv4_a)$",
+        "^$(svc_name_downward_env)_SERVICE_HOST=$(ipv4_a)$",
+        "^$(svc_name_downward_env)_SERVICE_PORT=$(ip_p)$",
+        "^$(svc_name_downward_env)_SERVICE_PORT_$(dns_label)=$(ip_p)$",
+        "^$(svc_name_downward_env)_PORT=(tcp|udp)://$(ipv4_a):$(ip_p)$",
+        "^JOB_COMPLETION_INDEX=[0-9]+$",
+        "^AZURE_CLIENT_ID=[A-Fa-f0-9-]*$",
+        "^AZURE_TENANT_ID=[A-Fa-f0-9-]*$",
+        "^AZURE_FEDERATED_TOKEN_FILE=/var/run/secrets/azure/tokens/azure-identity-token$",
+        "^AZURE_AUTHORITY_HOST=https://login\\.microsoftonline\\.com/$",
+        "^TERM=xterm$"
+      ]
+    },
+    "CopyFileRequest": [
+      "$(sfprefix)"
+    ],
+    "ExecProcessRequest": {
+      "allowed_commands": [],
+      "regex": []
+    },
+    "UpdateRoutesRequest": {
+      "forbidden_device_names": [
+        "lo"
+      ],
+      "forbidden_source_regex": [
+        "^(?:0{0,4}:){0,7}0{0,3}1$",
+        "^127\\.(?:[0-9]{1,3}\\.){2}[0-9]{1,3}$"
+      ]
+    },
+    "UpdateInterfaceRequest": {
+      "allow_raw_flags": 128,
+      "forbidden_names": [
+        "lo"
+      ],
+      "forbidden_hw_addrs": [
+        "00:00:00:00:00:00"
+      ]
+    },
+    "AddARPNeighborsRequest": {
+      "forbidden_device_names": [
+        "lo"
+      ],
+      "forbidden_cidrs_regex": [
+        "^127\\.(?:[0-9]{1,3}\\.){2}[0-9]{1,3}$"
+      ],
+      "allowed_states": [
+        2,
+        128
+      ]
+    },
+    "CloseStdinRequest": true,
+    "ReadStreamRequest": false,
+    "UpdateEphemeralMountsRequest": false,
+    "WriteStreamRequest": false,
+    "GetDiagnosticDataRequest": false
+  },
+  "devices": {
+    "vfio": {
+      "device_path": "/dev/vfio/devices/vfio",
+      "nvidia": {}
+    }
+  },
+  "cluster_config": {
+    "pause_container_image": "mcr.microsoft.com/oss/kubernetes/pause:3.6",
+    "guest_pull": true,
+    "pause_container_id_policy": "v1",
+    "encrypted_emptydir": true,
+    "cgroup_mount_extras_allowed": [
+      "nsdelegate",
+      "memory_recursiveprot"
+    ]
+  }
+}
