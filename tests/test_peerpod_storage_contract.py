@@ -226,3 +226,65 @@ def test_contract_source_lock_and_fixture_are_portable():
         assert annotations["io.kubernetes.cri.sandbox-namespace"] == "saw-ppvc-probe-0123456789abcdef"
         if annotations["io.kubernetes.cri.container-type"] == "container":
             assert annotations["io.kubernetes.cri.image-name"].startswith("registry.example.test/")
+
+
+@pytest.fixture
+def admitted_case(site):
+    context = {"runtimeClass": {"name": site["runtimeClass"], "uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "handler": "kata-remote", "nodeSelector": {"example.test/confidential": "true"}, "overhead": {"cpu": "250m", "memory": "120Mi"}}, "imagePullSecrets": [{"name": "node-registry-pull"}]}
+    pod = M.build(site)
+    pod["metadata"].update(uid=site["podUID"], resourceVersion="1", generation=1, creationTimestamp="2026-01-01T00:00:00Z")
+    pod["metadata"]["annotations"].update({"openshift.io/scc": "saw-ppvc-" + site["registration"] + "-guest", "security.openshift.io/validated-scc-subject-type": "user", "seccomp.security.alpha.kubernetes.io/pod": "runtime/default", "io.katacontainers.config.hypervisor.default_memory": "1536", "io.katacontainers.config.hypervisor.default_vcpus": "1"})
+    spec = pod["spec"]
+    spec.update(serviceAccount="storage-guest", dnsPolicy="ClusterFirst", schedulerName="default-scheduler", priority=0, preemptionPolicy="PreemptLowerPriority", imagePullSecrets=context["imagePullSecrets"], overhead=context["runtimeClass"]["overhead"], tolerations=[{"effect": "NoExecute", "key": "node.kubernetes.io/not-ready", "operator": "Exists", "tolerationSeconds": 300}, {"effect": "NoExecute", "key": "node.kubernetes.io/unreachable", "operator": "Exists", "tolerationSeconds": 300}, {"effect": "NoSchedule", "key": "node.kubernetes.io/memory-pressure", "operator": "Exists"}])
+    spec["nodeSelector"].update(context["runtimeClass"]["nodeSelector"])
+    spec["securityContext"]["seccompProfile"] = {"type": "RuntimeDefault"}
+    for i, container in enumerate(spec["containers"]):
+        container["resources"] = {"requests": {"kata.peerpods.io/vm": "1"}, "limits": {"kata.peerpods.io/vm": "1"}} if i == 0 else {}
+        container.update(terminationMessagePath="/dev/termination-log", terminationMessagePolicy="File")
+        for env in container["env"]:
+            if "valueFrom" in env:
+                env["valueFrom"]["fieldRef"]["apiVersion"] = "v1"
+    spec["volumes"][-1]["projected"]["sources"][-1]["downwardAPI"]["items"][0]["fieldRef"]["apiVersion"] = "v1"
+    return pod, context
+
+
+def test_known_admission_keeps_guest_authority(site, admitted_case):
+    pod, context = admitted_case
+    snapshot = copy.deepcopy(pod)
+    normalized = M.admitted_input(pod, site, context)
+    assert pod == snapshot
+    assert normalized["metadata"]["annotations"]["io.katacontainers.config.hypervisor.default_memory"] == "1536"
+    assert normalized["spec"]["containers"][0]["securityContext"] == M.build(site)["spec"]["containers"][0]["securityContext"]
+    assert normalized["spec"]["containers"][2]["volumeMounts"] == M.build(site)["spec"]["containers"][2]["volumeMounts"]
+    assert normalized["spec"]["containers"][1]["resources"] == {}
+
+
+@pytest.mark.parametrize("change", ["uid", "gate", "security", "sizing", "quota", "pull-ref", "host-network", "token", "field-api", "selector", "overhead", "unknown"])
+def test_admission_rejects_unexpected_changes(site, admitted_case, change):
+    pod, context = admitted_case
+    if change == "uid": pod["metadata"]["uid"] = context["runtimeClass"]["uid"]
+    elif change == "gate": pod["spec"].pop("schedulingGates")
+    elif change == "security": pod["spec"]["containers"][2]["securityContext"]["privileged"] = True
+    elif change == "sizing": pod["metadata"]["annotations"]["io.katacontainers.config.hypervisor.default_memory"] = "8192"
+    elif change == "quota": pod["spec"]["containers"][0]["resources"]["requests"]["kata.peerpods.io/vm"] = "2"
+    elif change == "pull-ref": pod["spec"]["imagePullSecrets"] = [{"name": "foreign"}]
+    elif change == "host-network": pod["spec"]["hostNetwork"] = True
+    elif change == "token": pod["spec"]["volumes"][-1]["projected"]["sources"][0]["serviceAccountToken"]["audience"] = "foreign"
+    elif change == "field-api": pod["spec"]["containers"][0]["env"][0]["valueFrom"]["fieldRef"]["apiVersion"] = "v2"
+    elif change == "selector": pod["spec"]["nodeSelector"]["kubernetes.io/hostname"] = "foreign-worker"
+    elif change == "overhead": pod["spec"]["overhead"] = {"cpu": "1"}
+    else: pod["spec"]["unknownSecurityField"] = True
+    with pytest.raises(M.ContractError, match="^LabGuestAdmissionRejected$"):
+        M.admitted_input(pod, site, context)
+
+
+def test_admitted_generator_preserves_role_seccomp(site, admitted_case):
+    pod, context = admitted_case
+    snapshot = copy.deepcopy(pod)
+    result = M.generator_input(pod, site, admission_context=context)
+    assert pod == snapshot
+    assert "seccompProfile" not in result["spec"]["securityContext"]
+    assert [c["securityContext"]["seccompProfile"] for c in result["spec"]["containers"]] == [
+        {"type": "Unconfined"}, {"type": "RuntimeDefault"}, {"type": "RuntimeDefault"}]
+    assert result["spec"]["containers"][0]["resources"]["limits"] == {"kata.peerpods.io/vm": "1"}
+    assert result["metadata"]["annotations"]["io.katacontainers.config.hypervisor.default_memory"] == "1536"

@@ -101,11 +101,94 @@ def validate(pod, site):
         raise ContractError("LabGuestContractRejected") from None
 
 
-def generator_input(pod, site):
+def admitted_input(pod, site, context):
+    """Check the observed OSC conversion and known API defaults. Keep authority."""
+    try:
+        expected = build(site)
+        if set(context) != {"runtimeClass", "imagePullSecrets"}:
+            raise ValueError()
+        rc = context["runtimeClass"]
+        if (set(rc) != {"name", "uid", "handler", "nodeSelector", "overhead"}
+                or rc["name"] != site["runtimeClass"] or rc["handler"] != "kata-remote"
+                or str(uuid.UUID(rc["uid"])) != rc["uid"]):
+            raise ValueError()
+        if not isinstance(rc["nodeSelector"], dict) or not isinstance(rc["overhead"], dict):
+            raise ValueError()
+        refs = context["imagePullSecrets"]
+        if not isinstance(refs, list) or any(set(x) != {"name"} or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", x["name"]) for x in refs):
+            raise ValueError()
+        candidate = copy.deepcopy(pod)
+        metadata = candidate["metadata"]
+        if metadata.get("uid") != site["podUID"] or candidate["spec"].get("nodeName"):
+            raise ValueError()
+        for field in ["uid", "creationTimestamp", "resourceVersion", "generation", "managedFields"]:
+            metadata.pop(field, None)
+        candidate.pop("status", None)
+        annotations = metadata["annotations"]
+        required_scc = expected["metadata"]["annotations"]["openshift.io/required-scc"]
+        for key, value in {"openshift.io/scc": required_scc,
+                           "security.openshift.io/validated-scc-subject-type": "user",
+                           "seccomp.security.alpha.kubernetes.io/pod": "runtime/default"}.items():
+            if annotations.pop(key, None) != value:
+                raise ValueError()
+        if "saw.redhat.com/storage-lab-stage" in annotations:
+            if annotations.pop("saw.redhat.com/storage-lab-stage") != "reserved-no-vm":
+                raise ValueError()
+        # Pinned peer-pod webhook: aggregate limits (CPU falls back to requests),
+        # record guest sizing, remove container resources, allocate one PodVM.
+        expected["metadata"]["annotations"].update({
+            "io.katacontainers.config.hypervisor.default_memory": "1536",
+            "io.katacontainers.config.hypervisor.default_vcpus": "1"})
+        for i, container in enumerate(expected["spec"]["containers"]):
+            container["resources"] = {"limits": {"kata.peerpods.io/vm": "1"}, "requests": {"kata.peerpods.io/vm": "1"}} if i == 0 else {}
+        actual = candidate["spec"]
+        for key, value in {"serviceAccount": "storage-guest", "dnsPolicy": "ClusterFirst",
+                           "schedulerName": "default-scheduler", "priority": 0,
+                           "preemptionPolicy": "PreemptLowerPriority"}.items():
+            if actual.pop(key, None) != value:
+                raise ValueError()
+        if actual.pop("imagePullSecrets", []) != refs or actual.pop("overhead", {}) != rc["overhead"]:
+            raise ValueError()
+        tolerations = actual.pop("tolerations", [])
+        known = [{"effect": "NoExecute", "key": "node.kubernetes.io/not-ready", "operator": "Exists", "tolerationSeconds": 300},
+                 {"effect": "NoExecute", "key": "node.kubernetes.io/unreachable", "operator": "Exists", "tolerationSeconds": 300},
+                 {"effect": "NoSchedule", "key": "node.kubernetes.io/memory-pressure", "operator": "Exists"}]
+        if sorted(json.dumps(x, sort_keys=True) for x in tolerations) != sorted(json.dumps(x, sort_keys=True) for x in known):
+            raise ValueError()
+        for key, value in rc["nodeSelector"].items():
+            if key in expected["spec"]["nodeSelector"] and expected["spec"]["nodeSelector"][key] != value:
+                raise ValueError()
+            expected["spec"]["nodeSelector"][key] = value
+        expected["spec"]["securityContext"]["seccompProfile"] = {"type": "RuntimeDefault"}
+        for container in actual["containers"]:
+            if container.pop("terminationMessagePath", None) != "/dev/termination-log" or container.pop("terminationMessagePolicy", None) != "File":
+                raise ValueError()
+            container.setdefault("env", [])
+            for env in container["env"]:
+                if "valueFrom" in env and "fieldRef" in env["valueFrom"]:
+                    if env["valueFrom"]["fieldRef"].pop("apiVersion", None) != "v1":
+                        raise ValueError()
+        projection = actual["volumes"][-1]["projected"]["sources"][-1]["downwardAPI"]["items"][0]["fieldRef"]
+        if projection.pop("apiVersion", None) != "v1":
+            raise ValueError()
+        if json.dumps(candidate, sort_keys=True) != json.dumps(expected, sort_keys=True):
+            raise ValueError()
+        return candidate
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        raise ContractError("LabGuestAdmissionRejected") from None
+
+
+def generator_input(pod, site, *, admission_context=None):
     """Remove API-only controls. Preserve all guest security and mount fields."""
-    result = validate(pod, site)
+    result = validate(pod, site) if admission_context is None else admitted_input(pod, site, admission_context)
     for key in ["schedulingGates", "activeDeadlineSeconds", "automountServiceAccountToken", "enableServiceLinks"]:
         del result["spec"][key]
+    if "seccompProfile" in result["spec"]["securityContext"]:
+        # Every role already declares its exact profile; remove only the
+        # equivalent inherited API default unsupported by this parser.
+        if any("seccompProfile" not in c["securityContext"] for c in result["spec"]["containers"]):
+            raise ContractError("LabGuestContractRejected")
+        del result["spec"]["securityContext"]["seccompProfile"]
     for container in result["spec"]["containers"]:
         # Kubernetes validates this flag; the guest policy pins the numeric UID.
         del container["securityContext"]["runAsNonRoot"]
@@ -140,9 +223,9 @@ FIXED_LAYOUT = {'azure-disk-helper': {'Linux': '553515bed708b2e2b6b2b98919c6f103
 BASE_ENV_SHA256 = '0ab3e89661a5f07a2bddcd726dba242c96235659de751e427056fcaa1fd31921'
 
 
-def compile_policy(pod, site, generated, runtime_profile):
+def compile_policy(pod, site, generated, runtime_profile, *, admission_context=None):
     """Compile only the closed lab preview. Never enables SAW enrollment."""
-    normalized = generator_input(pod, site)
+    normalized = generator_input(pod, site, admission_context=admission_context)
     spec = importlib.util.spec_from_file_location("lab_canonical_attestation", Path(__file__).resolve().parents[1] / "kubernetes-runtime/saw_kubernetes/attestation.py")
     a = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(a)
@@ -213,7 +296,7 @@ def compile_policy(pod, site, generated, runtime_profile):
         rules = rules.replace(propagation_check, "    saw_storage_lab_propagation(i_oci)")
         rules += '\n\nsaw_storage_lab_propagation(oci) if {\n    oci.Annotations["io.kubernetes.cri.container-type"] == "sandbox"\n    count(oci.Linux.RootfsPropagation) == 0\n}\n\nsaw_storage_lab_propagation(oci) if {\n    oci.Annotations["io.kubernetes.cri.container-type"] == "container"\n    name := oci.Annotations["io.kubernetes.cri.container-name"]\n    oci.Linux.RootfsPropagation == policy_data.saw_storage_lab.roles[name].rootfsPropagation\n}\n'
         converted_data = json.loads(encoded.replace(a.IDENTITY_MARKER, "null"))
-        converted_data["saw_storage_lab"] = {"podUID": site["podUID"], "roles": roles, "originalPodSHA256": a.digest(pod), "previewOnly": True}
+        converted_data["saw_storage_lab"] = {"podUID": site["podUID"], "roles": roles, "originalPodSHA256": a.digest(pod), "previewOnly": admission_context is None, "admissionContextSHA256": a.digest(admission_context)}
         # Generated HostToContainer uses rprivate. CRI-O uses rslave for it.
         app = next(c for c in converted_data["containers"] if c["OCI"]["Annotations"].get("io.kubernetes.cri.container-name") == "mount-check")
         mount, = [m for m in app["OCI"]["Mounts"] if m["destination"] == "/work"]

@@ -204,3 +204,17 @@ admission dry run is not a successful mount or attestation test.
 
 If normal detach fails, stop and diagnose it with the storage components still
 available. Do not change host software or the confidential runtime as rollback.
+
+## Admitted guest policy input
+
+Reserve the test Pod behind its scheduling gate. Compile the launch policy from
+the admitted Pod, with its actual UID and bound PV. The lab adapter accepts only
+the pinned peer-pod webhook conversion and known OpenShift API defaults. It keeps
+the admitted VM sizing and the one-VM resource allocation. Unknown fields or
+changes to privileges, projections, placement and mounts fail closed.
+
+The generator does not support the inherited Pod seccomp field. The adapter
+removes that field only after it verifies each container's explicit profile.
+The disk helper retains Unconfined; the wrapper and application retain
+RuntimeDefault. The adapter does not change the deployed Pod. An offline preview
+is not a launch approval. Production enrollment remains disabled for this lab.
