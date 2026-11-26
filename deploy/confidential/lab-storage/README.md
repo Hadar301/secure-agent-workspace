@@ -19,6 +19,8 @@ is not proof that a guest can mount a volume.
 The wrapper rejects foreign claim namespaces, foreign staging paths, CSI secret
 references and credential-bearing CSI requests. The guest can update a volume
 record only with a Pod-bound identity that matches its recorded Pod UID.
+The node registrar and health probe use the wrapper socket owner UID. The
+probe drops all capabilities and mounts only the socket, not the Azure config.
 These controls supplement RBAC. They do not remove the trust placed in the
 privileged host plugin or a guest helper with storage access.
 

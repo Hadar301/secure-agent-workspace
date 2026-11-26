@@ -202,3 +202,15 @@ def test_internal_image_pull_grant_is_explicit_and_limited(tmp_path):
     config["wrapperBuildNamespace"] = "foreign-build"
     result = render(tmp_path, config)
     assert result.returncode != 0 and "LabBuildNamespaceRejected" in result.stderr
+
+
+def test_node_socket_clients_can_connect_without_credential_mount(tmp_path):
+    node = next(x for x in docs(render(tmp_path)) if x["kind"] == "DaemonSet")
+    containers = {x["name"]: x for x in node["spec"]["template"]["spec"]["containers"]}
+    owner_uid = containers["wrapper"]["securityContext"]["runAsUser"]
+    for name in ["registrar", "liveness"]:
+        assert containers[name]["securityContext"]["runAsUser"] == owner_uid
+    probe = containers["liveness"]
+    assert probe["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert probe["securityContext"]["allowPrivilegeEscalation"] is False
+    assert {x["name"] for x in probe["volumeMounts"]} == {"socket"}

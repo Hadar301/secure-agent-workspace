@@ -66,7 +66,8 @@ spec:
         image: {{ .Values.images.liveness | quote }}
         args: ['--csi-address=/csi/wrapper.sock', '--http-endpoint=0.0.0.0:9808', '--probe-timeout=3s', '--v=2']
         resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 128Mi}}
-        securityContext: {runAsUser: 65532, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        # The wrapper creates a root-owned Unix socket. Match its client UID.
+        securityContext: {runAsUser: 0, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
         readinessProbe: {httpGet: {path: /healthz, port: 9808}, initialDelaySeconds: 5, periodSeconds: 5}
         volumeMounts: [{name: socket, mountPath: /csi}]
       volumes:
