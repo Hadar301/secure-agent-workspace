@@ -137,6 +137,8 @@ def test_lock_and_cleanup_schema_match_source():
     fields = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
     assert fields["wrapperNodeUnpublishVolumeReq"]["type"] == "string"
     assert fields["wrapperNodeUnstageVolumeReq"]["type"] == "string"
+    reason = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]["properties"]["reason"]
+    assert reason == {"type": "string", "maxLength": 64}
 
 
 def test_guard_bindings_are_a_separate_inactive_stage(tmp_path):

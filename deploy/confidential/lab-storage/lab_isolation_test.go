@@ -2,11 +2,13 @@
 package wrapper
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	api "github.com/confidential-containers/cloud-api-adaptor/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1"
 	peerclient "github.com/confidential-containers/cloud-api-adaptor/src/csi-wrapper/pkg/generated/peerpodvolume/clientset/versioned"
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/golang/protobuf/jsonpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -166,5 +168,130 @@ func TestLabProvisioningScopeAndCredentialExclusion(t *testing.T) {
 	_, err = node.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{Secrets: secret})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatal("node publish reached storage with a credential")
+	}
+}
+
+type labStageBackend struct {
+	csi.UnimplementedNodeServer
+	failure error
+	block   bool
+}
+
+func (b *labStageBackend) NodeStageVolume(ctx context.Context, request *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+	if request.PublishContext["LUN"] != "0" {
+		return nil, status.Error(codes.InvalidArgument, "bad test LUN")
+	}
+	if b.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if b.failure != nil {
+		return nil, b.failure
+	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+func TestLabGuestStageStatusIsBoundedAndSafe(t *testing.T) {
+	cases := []struct {
+		name, reason                   string
+		failure                        error
+		block, missingBackend, foreign bool
+	}{
+		{name: "success"},
+		{name: "device", reason: "GuestDeviceUnavailable", failure: status.Error(codes.Internal, "failed to find disk: do-not-expose")},
+		{name: "mount", reason: "GuestMountFailed", failure: status.Error(codes.Internal, "could not mount do-not-expose")},
+		{name: "permission", reason: "GuestStagePermissionDenied", failure: status.Error(codes.PermissionDenied, "do-not-expose")},
+		{name: "generic", reason: "GuestStageFailed", failure: status.Error(codes.Internal, "do-not-expose")},
+		{name: "timeout", reason: "GuestStageTimeout", block: true},
+		{name: "missing-backend", reason: "GuestBackendUnavailable", missingBackend: true},
+		{name: "foreign-replacement", foreign: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := api.PeerpodVolume{ObjectMeta: metav1.ObjectMeta{Name: "lab-volume", Namespace: "lab", ResourceVersion: "1"}}
+			original.Spec.PodUID = "01234567-89ab-4cde-8f01-23456789abcd"
+			original.Spec.VolumeID = "lab-volume"
+			original.Spec.VMID = "lab-vm"
+			original.Spec.TargetPath = "/var/lib/kubelet/pods/" + original.Spec.PodUID + "/volumes/kubernetes.io~csi/lab-volume/mount"
+			original.Status.State = api.ControllerPublishVolumeApplied
+			var encoded bytes.Buffer
+			if err := (&jsonpb.Marshaler{}).Marshal(&encoded, &csi.NodeStageVolumeRequest{VolumeId: "lab-volume"}); err != nil {
+				t.Fatal(err)
+			}
+			original.Spec.WrapperNodeStageVolumeReq = encoded.String()
+			original.Spec.WrapperControllerPublishVolumeRes = `{"publishContext":{"LUN":"0"}}`
+			reports := make(chan api.PeerpodVolume, 1)
+			apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				latest := original.DeepCopy()
+				latest.ResourceVersion = "17"
+				if tc.foreign {
+					latest.Spec.PodUID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+				}
+				if r.Method == http.MethodGet {
+					json.NewEncoder(w).Encode(latest)
+					return
+				}
+				if r.Method != http.MethodPut || !strings.HasSuffix(r.URL.Path, "/status") {
+					t.Error("unexpected status mutation")
+					w.WriteHeader(500)
+					return
+				}
+				var report api.PeerpodVolume
+				if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+					t.Error(err)
+					w.WriteHeader(500)
+					return
+				}
+				if report.ResourceVersion != "17" {
+					t.Error("status used a stale version")
+				}
+				reports <- report
+				json.NewEncoder(w).Encode(report)
+			}))
+			defer apiServer.Close()
+			client, err := peerclient.NewForConfig(&rest.Config{Host: apiServer.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "backend.sock")
+			if !tc.missingBackend {
+				listener, err := net.Listen("unix", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := grpc.NewServer()
+				csi.RegisterNodeServer(server, &labStageBackend{failure: tc.failure, block: tc.block})
+				go server.Serve(listener)
+				defer server.Stop()
+			}
+			service := NewPodVMNodeService(path, "lab", client)
+			service.operationTimeout = 200 * time.Millisecond
+			started := time.Now()
+			service.ReproduceNodeStageVolume(&original)
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("guest stage did not stop at its bound")
+			}
+			select {
+			case report := <-reports:
+				if tc.foreign {
+					t.Fatal("status changed a replacement registration")
+				}
+				expected := api.NodeStageVolumeApplied
+				if tc.reason != "" {
+					expected = "nodeStageVolumeFailed"
+				}
+				if report.Status.State != expected || report.Status.Reason != tc.reason {
+					t.Fatal("wrong safe stage result")
+				}
+				value, _ := json.Marshal(report.Status)
+				if strings.Contains(string(value), "do-not-expose") {
+					t.Fatal("backend input leaked into status")
+				}
+			default:
+				if !tc.foreign {
+					t.Fatal("guest stage produced no status")
+				}
+			}
+		})
 	}
 }

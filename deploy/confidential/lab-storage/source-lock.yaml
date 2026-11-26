@@ -4,11 +4,11 @@ wrapper:
   repository: https://github.com/openshift/cloud-api-adaptor
   revision: 1aec1b36f2fa5120376c78d4f53bb299152aa029
   builder: docker.io/library/golang@sha256:3965b9511a9bed199f0b4eb146f99c31971a5c0adb3240d9f25e233cbd9e01c8
-  patchSHA256: bdd097b409f4e7c529d8ccd7619a69aefec4948a5a5d9f9edc2b8f15b6f2f46e
-  testsSHA256: fa9bbc984bc794bb59402fdee5e9963186f69d932e87d043e455f1df116fce10
+  patchSHA256: 60c188e8811cf2698ee878db735b56f6e6755d7241e5b993d1951a99ec259454
+  testsSHA256: 462e08314896c3bd18c2b375e5ec96b11926de3087d14b513e7d92f15a6ee6e1
   monitorTestsSHA256: 5b9131bc54a82afe108146415996c361cbb4d7b438de7580126e85b4e8e5ceb5
-  crdSHA256: 63fe28612a2f15746723e58ae4f407f7a6769dc6c6d77c5c885c14cb3147fdf1
-  containerfileSHA256: eca1e0e0b0d457effcffe608dd668e88ddab0d279b4ac07417459941b7d06a58
+  crdSHA256: aabe03290d2c142feb54964d1cb34dde29ae7a4ed6470e9b38ae4ac9bbf7bcb4
+  containerfileSHA256: c37f43baf6f5aad178c5aeeab248fb36e605675670e7cb4211d59985183425b5
 qualified:
   wrapperImage: null
   guestVolumeTransport: false

@@ -260,3 +260,15 @@ The label does not prove workspace identity. The wrapper keeps all capabilities
 dropped. Complete portable helper requests test the pinned vendor validator,
 including rejected command, identity, capability and storage changes. These
 checks do not qualify live storage or enable production enrollment.
+
+Guest staging uses one bounded request. The wrapper limits a backend connection
+to 10 seconds and its operation to 90 seconds. A failed request sets
+`status.state: nodeStageVolumeFailed` and a finite `status.reason`. The reason
+can identify a backend connection, request, timeout, device or mount failure.
+It never contains the backend error text. Before a status update, the wrapper
+checks the current Pod, volume, VM and target identities with a fresh resource
+version. A replacement registration receives no update.
+
+These diagnostics do not grant access to provider credentials or host execution.
+The live Azure test reached real disk attachment. Guest staging and an
+application write remain unqualified.

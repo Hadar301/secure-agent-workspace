@@ -5,7 +5,7 @@ RUN git init /src && git -C /src remote add origin https://github.com/openshift/
 WORKDIR /src/src/csi-wrapper
 RUN go mod download
 COPY deploy/confidential/lab-storage/csi-wrapper-isolation.patch /isolation.patch
-RUN printf '%s  %s\n' 'bdd097b409f4e7c529d8ccd7619a69aefec4948a5a5d9f9edc2b8f15b6f2f46e' /isolation.patch > /isolation.sha256 && sha256sum -c /isolation.sha256 && cd /src && git apply --check /isolation.patch && git apply /isolation.patch
+RUN printf '%s  %s\n' '60c188e8811cf2698ee878db735b56f6e6755d7241e5b993d1951a99ec259454' /isolation.patch > /isolation.sha256 && sha256sum -c /isolation.sha256 && cd /src && git apply --check /isolation.patch && git apply /isolation.patch
 COPY deploy/confidential/lab-storage/lab_isolation_test.go /src/src/csi-wrapper/pkg/wrapper/lab_isolation_test.go
 COPY deploy/confidential/lab-storage/monitor_scope_test.go /src/src/csi-wrapper/pkg/peerpodvolume/monitor_scope_test.go
 COPY deploy/confidential/lab-storage/marker /src/src/csi-wrapper/cmd/saw-lab-marker
@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go test -mod=readonly -timeout=120s ./pkg/wrapper ./pkg/utils 
 ARG TARGETARCH=amd64
 RUN mkdir /out && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/csi-controller-wrapper ./cmd/csi-controller-wrapper && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/csi-node-wrapper ./cmd/csi-node-wrapper && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/csi-podvm-wrapper ./cmd/csi-podvm-wrapper && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags='-s -w' -o /out/saw-lab-marker ./cmd/saw-lab-marker
 FROM scratch
-LABEL org.opencontainers.image.source="https://github.com/openshift/cloud-api-adaptor" org.opencontainers.image.revision="1aec1b36f2fa5120376c78d4f53bb299152aa029" saw.redhat.com/lab-storage="scoped-markers-v1" saw.redhat.com/owned-helper-marker="v1" saw.redhat.com/helper-marker-sha256="bd53830caf7f1c6e358c904d39cd24e9d9cac5d313b85e9b9c16c8d1119f1329" saw.redhat.com/source-patch-sha256="bdd097b409f4e7c529d8ccd7619a69aefec4948a5a5d9f9edc2b8f15b6f2f46e"
+LABEL org.opencontainers.image.source="https://github.com/openshift/cloud-api-adaptor" org.opencontainers.image.revision="1aec1b36f2fa5120376c78d4f53bb299152aa029" saw.redhat.com/lab-storage="scoped-markers-v1" saw.redhat.com/owned-helper-marker="v1" saw.redhat.com/helper-marker-sha256="bd53830caf7f1c6e358c904d39cd24e9d9cac5d313b85e9b9c16c8d1119f1329" saw.redhat.com/source-patch-sha256="60c188e8811cf2698ee878db735b56f6e6755d7241e5b993d1951a99ec259454"
 COPY --from=build /out/ /
 USER 65532:65532
 ENTRYPOINT ["/csi-node-wrapper"]
