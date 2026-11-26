@@ -8,7 +8,7 @@ nodeName: ''
 region: ''
 resourceGroup: ''
 cloudConfigSecret: azure-cloud-config
-wrapperPatchSHA256: 19dc5bc07961b49b3988b9f03d503ce9f483ffff853a970ddf40710764ecc2b8
+wrapperPatchSHA256: bdd097b409f4e7c529d8ccd7619a69aefec4948a5a5d9f9edc2b8f15b6f2f46e
 images:
   azureDisk: ''
   wrapper: ''

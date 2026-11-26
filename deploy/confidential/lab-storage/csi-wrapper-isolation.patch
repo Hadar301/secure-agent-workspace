@@ -342,3 +342,26 @@
 +	}
 +	return labNoRequestSecrets(req.GetSecrets())
 +}
+--- a/src/csi-wrapper/pkg/peerpodvolume/monitor.go
++++ b/src/csi-wrapper/pkg/peerpodvolume/monitor.go
+@@ -2,6 +2,8 @@
+ 
+ import (
+ 	"context"
++	"fmt"
++	"regexp"
+ 	"sync"
+ 	"time"
+ 
+@@ -34,7 +36,10 @@
+ 	deleteFunction func(peerPodVolume *peerpodvolumeV1alpha1.PeerpodVolume),
+ ) (CsiPodVolumeMonitor, error) {
+ 
+-	informerFactory := informers.NewSharedInformerFactory(client, time.Second*30)
++	if !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(namespace) {
++        return nil, fmt.Errorf("LabMonitorNamespaceRejected")
++    }
++    informerFactory := informers.NewSharedInformerFactoryWithOptions(client, time.Second*30, informers.WithNamespace(namespace))
+ 	informer := informerFactory.Confidentialcontainers().V1alpha1().PeerpodVolumes()
+ 
+ 	controller := newPeerpodvolumeController(

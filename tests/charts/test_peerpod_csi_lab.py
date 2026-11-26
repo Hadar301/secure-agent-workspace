@@ -129,7 +129,7 @@ def test_lock_and_cleanup_schema_match_source():
     lock = yaml.safe_load((base / "source-lock.yaml").read_text())
     assert lock["status"] == "experimental-unqualified"
     assert lock["qualified"]["realCredentialUseAllowed"] is False
-    for field, name in [("patchSHA256", "csi-wrapper-isolation.patch"), ("testsSHA256", "lab_isolation_test.go"), ("crdSHA256", "peerpodvolumes.yaml"), ("containerfileSHA256", "Containerfile")]:
+    for field, name in [("patchSHA256", "csi-wrapper-isolation.patch"), ("testsSHA256", "lab_isolation_test.go"), ("monitorTestsSHA256", "monitor_scope_test.go"), ("crdSHA256", "peerpodvolumes.yaml"), ("containerfileSHA256", "Containerfile")]:
         assert lock["wrapper"][field] == hashlib.sha256((base / name).read_bytes()).hexdigest()
     defaults = yaml.safe_load((CHART / "values.yaml").read_text())
     assert defaults["wrapperPatchSHA256"] == lock["wrapper"]["patchSHA256"]

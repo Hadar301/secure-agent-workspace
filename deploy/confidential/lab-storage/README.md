@@ -218,3 +218,9 @@ removes that field only after it verifies each container's explicit profile.
 The disk helper retains Unconfined; the wrapper and application retain
 RuntimeDefault. The adapter does not change the deployed Pod. An offline preview
 is not a launch approval. Production enrollment remains disabled for this lab.
+
+The volume monitor must use a namespace-scoped informer. Filtering objects after
+a cluster-wide list is insufficient with namespaced RBAC. The lab patch rejects
+an empty or invalid namespace and scopes both the list and watch requests. Its
+HTTP regression test checks the actual API paths. Do not grant cluster-wide
+volume-record access to hide an informer configuration error.
