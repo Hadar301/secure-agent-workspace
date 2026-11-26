@@ -107,6 +107,15 @@ def test_crio_keeps_host_access_denied(tmp_path,artifacts,request_name):
         'data.agent_policy.'+request_name) is False
 
 
+def test_agent_metrics_has_a_defined_denial(tmp_path, artifacts):
+    pod, generated, profile, request = artifacts
+    template = a.compile_launch_policy(pod, generated, profile)
+    assert evaluate(tmp_path, template, request,
+                    'is_boolean(data.agent_policy.GetMetricsRequest)') is True
+    assert evaluate(tmp_path, template, request,
+                    'data.agent_policy.GetMetricsRequest') is False
+
+
 @pytest.mark.parametrize('change',['profile','pause-tag','extra-profile-field','rules'])
 def test_unknown_generation_inputs_fail_closed(artifacts,change):
     pod,generated,profile,_=artifacts

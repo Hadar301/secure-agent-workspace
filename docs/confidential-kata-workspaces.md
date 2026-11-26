@@ -57,6 +57,48 @@ Do not allow an opaque host directory to satisfy the guest launch policy.
 The earlier results below are historical component tests. They do not establish
 qualification of this new cluster or the OpenShell 0.1.10 image pairing.
 
+## Latest lab results (2026-11-26)
+
+The worker recovered from stale runtime state. CRI-O and kubelet passed the
+service checks. A credential-free default-runtime control started, exited with
+code 0, and passed normal deletion. The foundation had fresh Synced and Healthy
+results. No provider credential was used.
+
+A replay of the signed three-second confidential control still reported
+Running. A bounded `GetGuestDetails` query identified guest agent 3.31.0 with
+host runtime 3.25.0. `StatsContainer` reported zero application processes.
+A diagnostic `WaitProcess` request returned exit code 0. That request consumes
+the completed process record; it is not a normal lifecycle acceptance result.
+Normal Pod deletion still timed out.
+
+The installed host shim was inspected offline. Its `readProcessStream` returns
+`(0, nil)` for an empty successful stream reply. The guest's newer EOF behavior
+uses that reply. I/O copying can therefore continue after process exit, before
+the shim reaches its process-wait call. Upstream
+[fix 41e8acb](https://github.com/kata-containers/kata-containers/commit/41e8acbc5e77604fc5c55ecae97b53b90fc342bd)
+converts the empty reply to `io.EOF`. Verify the installed fix or qualify a
+compatible host and guest pair before another real workspace request. A
+version string alone cannot prove that a vendor backport is present.
+
+Red Hat supplies the host Kata runtime through the RHCOS extension. An OSC
+Operator update alone does not establish that the host runtime changed. See
+[the runtime update procedure](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/update-osc-cc-overview_metal-osc-update).
+The current lab will use a vendor-fixed runtime only. Obtain a compatible
+host and guest pair and the supported update and recovery procedure. Do not
+substitute a locally built shim.
+
+The replay also exposed an undefined `GetMetricsRequest` policy query. The
+canonical CRI-O adapter now returns an explicit denial for this request. It
+retains the existing denied access and avoids an internal policy-evaluation
+error. The executable regression checks both a defined Boolean decision and
+its denied value. Regenerate launch policies and their measured approvals
+before deployment; this source change does not qualify the EOF path.
+
+The temporary public resource and measurement approval were revoked. The
+original Trustee policy and reference inputs were restored. Provider release,
+confidential storage, normal lifecycle and the real NVIDIA workspace remain
+unqualified. Keep enrollment blocked until these gates pass.
+
 ## Latest lab results (2026-11-25)
 
 The Validated Pattern foundation install completed. All 12 foundation Argo
@@ -94,8 +136,9 @@ volume transport and audit file ownership also remain unqualified. Keep real
 enrollment blocked until these gates pass. All guest tests used public image
 policy resources and no provider credentials. After the tests, the previous
 Trustee approvals were restored. The diagnostic VMs were removed and their
-absence was checked independently in Azure. CRI-O still retains orphaned
-test sandbox records, so host runtime cleanup remains incomplete.
+absence was checked independently in Azure. The original orphaned runtime
+records were cleared during maintenance on 2026-11-26. The later replay and
+remaining lifecycle failure are recorded above.
 
 ## Deployment integration (2026-11-25)
 

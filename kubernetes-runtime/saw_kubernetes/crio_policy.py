@@ -21,6 +21,10 @@ RENAMED = 'saw_containerd_CreateContainerRequest := {"ops": ops, "allowed": true
 RULES = r'''
 # SAW CRI-O profile. Native fields are checked before normalization. The
 # normalized request is used only by the pinned containerd-format validator.
+# The pinned generator omits this newer telemetry request. Keep it denied
+# with a defined decision instead of an agent policy evaluation error.
+default GetMetricsRequest := false
+
 CreateContainerRequest := result if {
     saw_crio_identity
     saw_crio_storage
