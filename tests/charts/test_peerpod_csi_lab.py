@@ -208,6 +208,9 @@ def test_node_socket_clients_can_connect_without_credential_mount(tmp_path):
     node = next(x for x in docs(render(tmp_path)) if x["kind"] == "DaemonSet")
     containers = {x["name"]: x for x in node["spec"]["template"]["spec"]["containers"]}
     owner_uid = containers["wrapper"]["securityContext"]["runAsUser"]
+    # The node event handler ignores volumes from any other worker.
+    assert containers["wrapper"]["env"] == [{"name": "POD_NODE_NAME",
+        "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}}]
     for name in ["registrar", "liveness"]:
         assert containers[name]["securityContext"]["runAsUser"] == owner_uid
     probe = containers["liveness"]
