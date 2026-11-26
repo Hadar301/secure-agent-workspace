@@ -143,8 +143,11 @@ loaded default-deny policy was restored. All 12 foundation Argo applications
 were Synced and Healthy.
 
 This result resolves the observed process-exit blocker for the tested vendor
-host and guest pair. It does not qualify application image startup, guest
-volume transport, supervisor credential release, or the NVIDIA workspace.
+host and guest pair. A later credential-free test also started the signed real
+supervisor image and completed its version command with exit code 0 inside a
+confidential VM. This verifies image startup, not the running supervisor
+service or credential fetch. Guest volume transport, workload image startup,
+supervisor credential release, and the NVIDIA workspace remain unqualified.
 Keep the source-lock qualification fields unset until those gates pass.
 
 ## Latest lab results (2026-11-25)
@@ -243,9 +246,16 @@ owner. File flag reads succeeded. Setting the append-only flag was not tested.
 The check removed its temporary file and Pod. It used the default runtime and
 no provider credentials. It does not qualify confidential guest volume access.
 
+That check used the older sealed-log helper. Current enrollment sets
+`localAudit: true` when signed receipts are disabled. This default path writes
+a best-effort local log and does not call `prepare_audit.py`. Do not require
+its inode-sealing check for the default canary. Verify the actual configured
+UID/GID access, log writes, read-only gate access, and guest persistence.
+Signed receipts require their own separate qualification.
+
 A Bound claim is insufficient for enrollment. Verify the CSI transport inside
-the confidential guest, UID/GID mapping, gate mount modes, audit append-only
-semantics, and persistence. Keep enrollment disabled until these checks pass.
+the confidential guest, UID/GID mapping, gate mount modes, the configured audit behavior,
+and persistence. Keep enrollment disabled until these checks pass.
 Use dedicated storage configuration for workspace UID mapping; do not change
 the shared default StorageClass to fix one owner.
 
