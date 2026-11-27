@@ -139,6 +139,10 @@ def test_lock_and_cleanup_schema_match_source():
     assert fields["wrapperNodeUnstageVolumeReq"]["type"] == "string"
     reason = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]["properties"]["reason"]
     assert reason == {"type": "string", "maxLength": 64}
+    status_fields = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]["properties"]
+    assert status_fields["deviceProbeAvailable"] == {"type": "boolean"}
+    for field in ["scsiDeviceCount", "lowScsiHostCount", "azureDiskCount"]:
+        assert status_fields[field] == {"type": "integer", "minimum": 0, "maximum": 64}
 
 
 def test_guard_bindings_are_a_separate_inactive_stage(tmp_path):

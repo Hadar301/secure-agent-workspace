@@ -74,5 +74,19 @@ spec:
               reason:
                 type: string
                 maxLength: 64
+              deviceProbeAvailable:
+                type: boolean
+              scsiDeviceCount:
+                type: integer
+                minimum: 0
+                maximum: 64
+              lowScsiHostCount:
+                type: integer
+                minimum: 0
+                maximum: 64
+              azureDiskCount:
+                type: integer
+                minimum: 0
+                maximum: 64
     subresources:
       status: {}

@@ -17,8 +17,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -173,30 +175,51 @@ func TestLabProvisioningScopeAndCredentialExclusion(t *testing.T) {
 
 type labStageBackend struct {
 	csi.UnimplementedNodeServer
-	failure error
-	block   bool
+	failure  error
+	block    bool
+	failFor  int
+	attempts int
+	mu       sync.Mutex
+	started  chan struct{}
 }
 
 func (b *labStageBackend) NodeStageVolume(ctx context.Context, request *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	if request.PublishContext["LUN"] != "0" {
 		return nil, status.Error(codes.InvalidArgument, "bad test LUN")
 	}
+	b.mu.Lock()
+	b.attempts++
+	attempt := b.attempts
+	failure := b.failure
+	if b.failFor > 0 && attempt > b.failFor {
+		failure = nil
+	}
+	b.mu.Unlock()
+	if b.started != nil {
+		select {
+		case b.started <- struct{}{}:
+		default:
+		}
+	}
 	if b.block {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	if b.failure != nil {
-		return nil, b.failure
+	if failure != nil {
+		return nil, failure
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 func TestLabGuestStageStatusIsBoundedAndSafe(t *testing.T) {
 	cases := []struct {
-		name, reason                   string
-		failure                        error
-		block, missingBackend, foreign bool
+		name, reason                               string
+		failure                                    error
+		block, missingBackend, foreign, concurrent bool
+		failFor                                    int
 	}{
 		{name: "success"},
+		{name: "delayed-device", failFor: 2, failure: status.Error(codes.Internal, "failed to find disk: do-not-expose")},
+		{name: "concurrent-stage", reason: "GuestStageTimeout", block: true, concurrent: true},
 		{name: "device", reason: "GuestDeviceUnavailable", failure: status.Error(codes.Internal, "failed to find disk: do-not-expose")},
 		{name: "mount", reason: "GuestMountFailed", failure: status.Error(codes.Internal, "could not mount do-not-expose")},
 		{name: "permission", reason: "GuestStagePermissionDenied", failure: status.Error(codes.PermissionDenied, "do-not-expose")},
@@ -254,20 +277,46 @@ func TestLabGuestStageStatusIsBoundedAndSafe(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(t.TempDir(), "backend.sock")
+			backend := &labStageBackend{failure: tc.failure, block: tc.block, failFor: tc.failFor, started: make(chan struct{}, 1)}
 			if !tc.missingBackend {
 				listener, err := net.Listen("unix", path)
 				if err != nil {
 					t.Fatal(err)
 				}
 				server := grpc.NewServer()
-				csi.RegisterNodeServer(server, &labStageBackend{failure: tc.failure, block: tc.block})
+				csi.RegisterNodeServer(server, backend)
 				go server.Serve(listener)
 				defer server.Stop()
 			}
 			service := NewPodVMNodeService(path, "lab", client)
 			service.operationTimeout = 200 * time.Millisecond
+			service.retryDelay = time.Millisecond
 			started := time.Now()
-			service.ReproduceNodeStageVolume(&original)
+			if tc.concurrent {
+				done := make(chan struct{})
+				go func() { service.ReproduceNodeStageVolume(&original); close(done) }()
+				select {
+				case <-backend.started:
+				case <-time.After(time.Second):
+					t.Fatal("stage backend did not start")
+				}
+				service.ReproduceNodeStageVolume(&original)
+				<-done
+			} else {
+				service.ReproduceNodeStageVolume(&original)
+			}
+			backend.mu.Lock()
+			attempts := backend.attempts
+			backend.mu.Unlock()
+			if tc.name == "delayed-device" && attempts != 3 {
+				t.Fatal("transient device was not retried to readiness")
+			}
+			if tc.concurrent && attempts != 1 {
+				t.Fatal("concurrent stage reached the backend twice")
+			}
+			if tc.name == "generic" && attempts != 1 {
+				t.Fatal("non-transient failure was retried")
+			}
 			if time.Since(started) > 2*time.Second {
 				t.Fatal("guest stage did not stop at its bound")
 			}
@@ -293,5 +342,43 @@ func TestLabGuestStageStatusIsBoundedAndSafe(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLabGuestDeviceCountsExposeNoDeviceIdentifiers(t *testing.T) {
+	root := t.TempDir()
+	devices := []struct{ name, vendor, model string }{
+		{"0:0:0:0", "MSFT", "Virtual Disk"},
+		{"4:0:0:1", "MSFT", "VIRTUAL DISK"},
+		{"9:0:0:2", "do-not-expose", "private-device-description"},
+		{"host0", "MSFT", "Virtual Disk"},
+		{"-1:0:0:0", "MSFT", "Virtual Disk"},
+	}
+	for _, device := range devices {
+		dir := filepath.Join(root, device.name)
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "vendor"), []byte(device.vendor), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "model"), []byte(device.model), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := labGuestDeviceCounts(root)
+	if !got.DeviceProbeAvailable || got.ScsiDeviceCount != 3 || got.LowScsiHostCount != 1 || got.AzureDiskCount != 2 {
+		t.Fatal("wrong bounded guest device counts")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "do-not-expose") || strings.Contains(string(raw), "private-device-description") {
+		t.Fatal("guest device identifiers leaked")
+	}
+	missing := labGuestDeviceCounts(filepath.Join(root, "missing"))
+	if missing.DeviceProbeAvailable || missing.ScsiDeviceCount != 0 {
+		t.Fatal("missing device probe falsely passed")
 	}
 }

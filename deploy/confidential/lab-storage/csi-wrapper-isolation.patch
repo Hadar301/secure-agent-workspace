@@ -1,14 +1,18 @@
 diff --git a/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1/types.go b/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1/types.go
-index 61cdf21..4b6b61d 100644
+index 61cdf21..76f0864 100644
 --- a/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1/types.go
 +++ b/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1/types.go
-@@ -67,7 +67,8 @@ const (
+@@ -67,7 +67,12 @@ const (
  
  // PeerpodVolumeStatus is the status for a PeerpodVolume resource
  type PeerpodVolumeStatus struct {
 -	State PeerpodVolumeState `json:"state"`
-+	State  PeerpodVolumeState `json:"state"`
-+	Reason string             `json:"reason,omitempty"`
++	State                PeerpodVolumeState `json:"state"`
++	Reason               string             `json:"reason,omitempty"`
++	DeviceProbeAvailable bool               `json:"deviceProbeAvailable,omitempty"`
++	ScsiDeviceCount      int                `json:"scsiDeviceCount,omitempty"`
++	LowScsiHostCount     int                `json:"lowScsiHostCount,omitempty"`
++	AzureDiskCount       int                `json:"azureDiskCount,omitempty"`
  }
  
  // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -384,22 +388,25 @@ index 40f2496..04a1666 100644
  			glog.Errorf("Error happens while Update PeerpodVolume status to NodeUnstageVolumeCached, err: %v", err.Error())
  			return
 diff --git a/src/csi-wrapper/pkg/wrapper/podvmservice.go b/src/csi-wrapper/pkg/wrapper/podvmservice.go
-index 019feb3..8e380c7 100644
+index 019feb3..80ee510 100644
 --- a/src/csi-wrapper/pkg/wrapper/podvmservice.go
 +++ b/src/csi-wrapper/pkg/wrapper/podvmservice.go
-@@ -6,8 +6,11 @@ package wrapper
+@@ -6,8 +6,14 @@ package wrapper
  import (
  	"bytes"
  	"context"
 +	"errors"
  	"fmt"
  	"os"
++	"path/filepath"
++	"strconv"
 +	"strings"
++	"sync"
 +	"time"
  
  	peerpodvolumeV1alpha1 "github.com/confidential-containers/cloud-api-adaptor/src/csi-wrapper/pkg/apis/peerpodvolume/v1alpha1"
  	peerpodvolume "github.com/confidential-containers/cloud-api-adaptor/src/csi-wrapper/pkg/generated/peerpodvolume/clientset/versioned"
-@@ -15,7 +18,9 @@ import (
+@@ -15,7 +21,9 @@ import (
  	"github.com/golang/glog"
  	"github.com/golang/protobuf/jsonpb"
  	"google.golang.org/grpc"
@@ -409,15 +416,17 @@ index 019feb3..8e380c7 100644
  	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
  )
  
-@@ -23,6 +28,7 @@ type PodVMNodeService struct {
+@@ -23,6 +31,9 @@ type PodVMNodeService struct {
  	TargetEndpoint      string
  	Namespace           string
  	PeerpodvolumeClient *peerpodvolume.Clientset
 +	operationTimeout    time.Duration
++	retryDelay          time.Duration
++	staging             sync.Map
  }
  
  func NewPodVMNodeService(targetEndpoint, namespace string, peerpodvolumeClientSet *peerpodvolume.Clientset) *PodVMNodeService {
-@@ -34,18 +40,21 @@ func NewPodVMNodeService(targetEndpoint, namespace string, peerpodvolumeClientSe
+@@ -34,18 +45,21 @@ func NewPodVMNodeService(targetEndpoint, namespace string, peerpodvolumeClientSe
  }
  
  func (s *PodVMNodeService) redirect(ctx context.Context, req interface{}, fn func(context.Context, csi.NodeClient)) error {
@@ -448,7 +457,7 @@ index 019feb3..8e380c7 100644
  
  	return nil
  }
-@@ -130,65 +139,82 @@ func (s *PodVMNodeService) NodeExpandVolume(ctx context.Context, req *csi.NodeEx
+@@ -130,65 +144,166 @@ func (s *PodVMNodeService) NodeExpandVolume(ctx context.Context, req *csi.NodeEx
  	return
  }
  
@@ -471,32 +480,22 @@ index 019feb3..8e380c7 100644
 -		}
 -		for k, v := range controllerPublishVolumeRes.PublishContext {
 -			publishContext[k] = v
--		}
++// labGuestDeviceCounts reads topology counts only, never serials or identifiers.
++func labGuestDeviceCounts(root string) peerpodvolumeV1alpha1.PeerpodVolumeStatus {
++	result := peerpodvolumeV1alpha1.PeerpodVolumeStatus{}
++	entries, err := os.ReadDir(root)
++	if err != nil {
++		return result
++	}
++	result.DeviceProbeAvailable = true
++	for _, entry := range entries {
++		parts := strings.Split(entry.Name(), ":")
++		if len(parts) != 4 {
++			continue
+ 		}
 -		publishContext["device-path"] = peerPodVolume.Spec.DevicePath
 -		modifiedRequest.PublishContext = publishContext
-+// guestStageReason exposes a finite code, never a backend message or input.
-+func guestStageReason(err error) string {
-+	if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
-+		return "GuestStageTimeout"
-+	}
-+	switch status.Code(err) {
-+	case codes.Unavailable:
-+		return "GuestBackendUnavailable"
-+	case codes.InvalidArgument:
-+		return "GuestStageRequestRejected"
-+	case codes.PermissionDenied:
-+		return "GuestStagePermissionDenied"
-+	}
-+	message := strings.ToLower(err.Error())
-+	if strings.Contains(message, "failed to find disk") || strings.Contains(message, "finddiskbylun") {
-+		return "GuestDeviceUnavailable"
-+	}
-+	if strings.Contains(message, "could not format") || strings.Contains(message, "could not mount") {
-+		return "GuestMountFailed"
-+	}
-+	return "GuestStageFailed"
-+}
- 
+-
 -		glog.Infof("The modified NodeStageVolumeRequest is :%v", modifiedRequest)
 -		ctx := context.Background()
 -		count := 0
@@ -523,14 +522,63 @@ index 019feb3..8e380c7 100644
 -			})
 -			if count == 20 {
 -				glog.Error("reaches max retry count. gave up Reproducing NodeStageVolumeRequest for peer pod")
--				break
--			}
++		valid := true
++		host := 0
++		for index, part := range parts {
++			value, err := strconv.Atoi(part)
++			if err != nil || value < 0 || value > 255 {
++				valid = false
+ 				break
+ 			}
 -			if reproduced {
 -				break
--			}
++			if index == 0 {
++				host = value
+ 			}
 -			glog.Infof("failed to Reproducing NodeStageVolumeRequest for peer pod (retrying... %d/%d)", count, 20)
 -			count++
--		}
+ 		}
++		if !valid || result.ScsiDeviceCount >= 64 {
++			continue
++		}
++		result.ScsiDeviceCount++
++		if host <= 3 {
++			result.LowScsiHostCount++
++		}
++		vendor, vendorErr := os.ReadFile(filepath.Join(root, entry.Name(), "vendor"))
++		model, modelErr := os.ReadFile(filepath.Join(root, entry.Name(), "model"))
++		if vendorErr == nil && modelErr == nil &&
++			strings.EqualFold(strings.TrimSpace(string(vendor)), "MSFT") &&
++			strings.EqualFold(strings.TrimSpace(string(model)), "Virtual Disk") {
++			result.AzureDiskCount++
++		}
++	}
++	return result
++}
++
++// guestStageReason exposes a finite code, never a backend message or input.
++func guestStageReason(err error) string {
++	if errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded {
++		return "GuestStageTimeout"
++	}
++	switch status.Code(err) {
++	case codes.Unavailable:
++		return "GuestBackendUnavailable"
++	case codes.InvalidArgument:
++		return "GuestStageRequestRejected"
++	case codes.PermissionDenied:
++		return "GuestStagePermissionDenied"
++	}
++	message := strings.ToLower(err.Error())
++	if strings.Contains(message, "failed to find disk") || strings.Contains(message, "finddiskbylun") {
++		return "GuestDeviceUnavailable"
++	}
++	if strings.Contains(message, "could not format") || strings.Contains(message, "could not mount") {
++		return "GuestMountFailed"
++	}
++	return "GuestStageFailed"
++}
++
 +func (s *PodVMNodeService) reportStageResult(original *peerpodvolumeV1alpha1.PeerpodVolume, reason string) {
 +	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 +	defer cancel()
@@ -551,6 +599,13 @@ index 019feb3..8e380c7 100644
 +	if reason != "" {
 +		updated.Status.State = "nodeStageVolumeFailed"
 +		updated.Status.Reason = reason
++		if reason == "GuestDeviceUnavailable" {
++			counts := labGuestDeviceCounts("/sys/bus/scsi/devices")
++			updated.Status.DeviceProbeAvailable = counts.DeviceProbeAvailable
++			updated.Status.ScsiDeviceCount = counts.ScsiDeviceCount
++			updated.Status.LowScsiHostCount = counts.LowScsiHostCount
++			updated.Status.AzureDiskCount = counts.AzureDiskCount
++		}
 +	}
 +	if _, err := volumes.UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
 +		glog.Error("LabGuestStageStatusUpdateFailed")
@@ -558,6 +613,11 @@ index 019feb3..8e380c7 100644
 +}
  
 +func (s *PodVMNodeService) ReproduceNodeStageVolume(peerPodVolume *peerpodvolumeV1alpha1.PeerpodVolume) {
++	// Never issue concurrent stage requests for the same volume.
++	if _, active := s.staging.LoadOrStore(peerPodVolume.Name, true); active {
++		return
++	}
++	defer s.staging.Delete(peerPodVolume.Name)
 +	var request csi.NodeStageVolumeRequest
 +	var published csi.ControllerPublishVolumeResponse
 +	decoder := &jsonpb.Unmarshaler{}
@@ -572,16 +632,45 @@ index 019feb3..8e380c7 100644
 +		request.PublishContext = map[string]string{}
 +	}
 +	request.PublishContext["device-path"] = peerPodVolume.Spec.DevicePath
-+	var backendErr error
-+	dialErr := s.redirect(context.Background(), &request, func(ctx context.Context, client csi.NodeClient) {
-+		_, backendErr = client.NodeStageVolume(ctx, &request)
-+	})
-+	if dialErr != nil {
-+		backendErr = dialErr
++	timeout := s.operationTimeout
++	if timeout <= 0 {
++		timeout = 90 * time.Second
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), timeout)
++	defer cancel()
++	delay := s.retryDelay
++	if delay <= 0 {
++		delay = 2 * time.Second
 +	}
 +	reason := ""
-+	if backendErr != nil {
++	for attempt := 0; attempt < 30; attempt++ {
++		var backendErr error
++		dialErr := s.redirect(ctx, &request, func(callCtx context.Context, client csi.NodeClient) {
++			_, backendErr = client.NodeStageVolume(callCtx, &request)
++		})
++		if dialErr != nil {
++			backendErr = dialErr
++		}
++		if backendErr == nil {
++			reason = ""
++			break
++		}
 +		reason = guestStageReason(backendErr)
++		if reason != "GuestDeviceUnavailable" && reason != "GuestBackendUnavailable" {
++			break
++		}
++		if ctx.Err() != nil || attempt == 29 {
++			break
++		}
++		timer := time.NewTimer(delay)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++		case <-timer.C:
++		}
++		if ctx.Err() != nil {
++			break
++		}
  	}
 +	s.reportStageResult(peerPodVolume, reason)
  }

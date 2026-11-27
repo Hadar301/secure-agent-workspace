@@ -261,8 +261,10 @@ dropped. Complete portable helper requests test the pinned vendor validator,
 including rejected command, identity, capability and storage changes. These
 checks do not qualify live storage or enable production enrollment.
 
-Guest staging uses one bounded request. The wrapper limits a backend connection
-to 10 seconds and its operation to 90 seconds. A failed request sets
+Guest staging keeps one operation in flight per volume. The wrapper limits a
+backend connection to 10 seconds and the whole operation to 90 seconds. It
+retries only a missing backend or device, with a delay and at most 30 attempts
+inside that same time limit. Other failures stop immediately. A failed operation sets
 `status.state: nodeStageVolumeFailed` and a finite `status.reason`. The reason
 can identify a backend connection, request, timeout, device or mount failure.
 It never contains the backend error text. Before a status update, the wrapper
@@ -272,3 +274,8 @@ version. A replacement registration receives no update.
 These diagnostics do not grant access to provider credentials or host execution.
 The live Azure test reached real disk attachment. Guest staging and an
 application write remain unqualified.
+
+A missing-device result can include bounded counts of visible SCSI devices,
+devices on low-numbered SCSI hosts, and Azure virtual disks. It includes no
+serial numbers, paths, device descriptions or other device identifiers. These
+counts are diagnostics. They do not establish attested workspace identity.
