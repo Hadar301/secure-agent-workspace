@@ -212,7 +212,7 @@ def test_node_socket_clients_can_connect_without_credential_mount(tmp_path):
     owner_uid = containers["wrapper"]["securityContext"]["runAsUser"]
     # The node event handler ignores volumes from any other worker.
     assert containers["wrapper"]["env"] == [{"name": "POD_NODE_NAME",
-        "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}}]
+        "valueFrom": {"fieldRef": {"apiVersion": "v1", "fieldPath": "spec.nodeName"}}}]
     for name in ["registrar", "liveness"]:
         assert containers[name]["securityContext"]["runAsUser"] == owner_uid
     probe = containers["liveness"]

@@ -50,7 +50,7 @@ spec:
         command: [/csi-node-wrapper]
         args: ['--endpoint=/csi/wrapper.sock', '--target-endpoint=/csi/backend.sock', '--namespace={{ $ns }}', '--vm-id-information-endpoint=/run/peerpod/hypervisor.sock', '--v=0']
         env:
-        - {name: POD_NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+        - {name: POD_NODE_NAME, valueFrom: {fieldRef: {apiVersion: v1, fieldPath: spec.nodeName}}}
         resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 256Mi}}
         securityContext: {privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}
         volumeMounts:
